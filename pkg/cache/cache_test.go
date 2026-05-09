@@ -98,3 +98,38 @@ func TestFileTracking(t *testing.T) {
 		t.Errorf("after update mtime = %d", mtime)
 	}
 }
+
+func TestInsertMessagesIdempotent(t *testing.T) {
+	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	tab, _ := pricing.Load()
+	ts := time.Now()
+	msgs := []parse.Message{
+		{
+			SessionID:   "s1",
+			ProjectSlug: "slug-a",
+			Model:       "claude-opus-4-7",
+			Timestamp:   ts,
+			InputTokens: 10,
+		},
+	}
+
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatal(err)
+	}
+
+	var n int
+	if err := c.DB().QueryRow(`SELECT count(*) FROM messages`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("messages count after duplicate insert = %d, want 1", n)
+	}
+}

@@ -14,7 +14,7 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
-const SchemaVersion = "1"
+const SchemaVersion = "2"
 
 type Cache struct {
 	db *sql.DB
@@ -48,7 +48,7 @@ func (c *Cache) InsertMessages(msgs []parse.Message, tab pricing.Table) error {
 	defer tx.Rollback()
 
 	stmt, err := tx.Prepare(`
-INSERT INTO messages
+INSERT OR IGNORE INTO messages
 (session_id, project_slug, ts, role, model,
  input_tokens, output_tokens, cache_read_tokens,
  cache_write_5m_tokens, cache_write_1h_tokens,
