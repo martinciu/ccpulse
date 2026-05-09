@@ -39,10 +39,6 @@ func newVersionCmd() *cobra.Command {
 	}
 }
 
-// Stubs — filled in by upcoming tasks.
-func newStatusCmd() *cobra.Command {
-	return &cobra.Command{Use: "status", RunE: func(cmd *cobra.Command, args []string) error { return nil }}
-}
 func newConfigCmd() *cobra.Command {
 	c := &cobra.Command{Use: "config"}
 	c.AddCommand(&cobra.Command{Use: "edit"}, &cobra.Command{Use: "show"}, &cobra.Command{Use: "path"})
