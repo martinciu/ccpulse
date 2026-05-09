@@ -3,6 +3,7 @@ package ingest
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/martinciu/ccpulse/pkg/cache"
@@ -271,5 +272,47 @@ func TestProcessFile_BackfillsCanonical(t *testing.T) {
 	}
 	if branch != "main" {
 		t.Errorf("worktree_branch = %q, want main", branch)
+	}
+}
+
+func TestProcessFile_MissingFileLogsAndReturnsZero(t *testing.T) {
+	ing, projects, _ := newIngesterFixture(t)
+
+	missing := filepath.Join(projects, "-Users-x-foo", "ghost.jsonl")
+	n, err := ing.ProcessFile(missing)
+	if err != nil {
+		t.Fatalf("ProcessFile on missing file returned err: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("inserted on missing = %d, want 0", n)
+	}
+
+	logBytes, _ := os.ReadFile(ing.ParseErrorsLog)
+	if !strings.Contains(string(logBytes), "ghost.jsonl") {
+		t.Errorf("expected log to mention ghost.jsonl, got: %s", logBytes)
+	}
+}
+
+func TestProcessFile_MalformedLineLoggedValidLinesInserted(t *testing.T) {
+	ing, projects, _ := newIngesterFixture(t)
+
+	mixedPath := filepath.Join(projects, "-Users-x-foo", "mixed.jsonl")
+	contents := append(jsonl("good1"), []byte("{not valid json\n")...)
+	contents = append(contents, jsonl("good2")...)
+	if err := os.WriteFile(mixedPath, contents, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := ing.ProcessFile(mixedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Errorf("inserted = %d, want 2 (the two valid lines)", n)
+	}
+
+	logBytes, _ := os.ReadFile(ing.ParseErrorsLog)
+	if !strings.Contains(string(logBytes), "mixed.jsonl:2") {
+		t.Errorf("expected log to mention mixed.jsonl:2 (the bad line), got: %s", logBytes)
 	}
 }
