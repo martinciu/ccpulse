@@ -70,6 +70,14 @@ func (c *Cache) RecordUsageSample(u anthro.Usage, when time.Time) error {
 	return err
 }
 
+func (c *Cache) PruneUsageSamples(cutoff time.Time) (int64, error) {
+	res, err := c.db.Exec(`DELETE FROM usage_samples WHERE ts < ?`, cutoff.UTC().Unix())
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 func (c *Cache) InsertMessages(msgs []parse.Message, tab pricing.Table) error {
 	tx, err := c.db.Begin()
 	if err != nil {
