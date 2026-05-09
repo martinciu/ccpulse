@@ -95,10 +95,6 @@ func defaultTOMLBytes() []byte {
 # See "ccpulse config show" for the live values (defaults + your overrides).
 `)
 }
-func newDoctorCmd() *cobra.Command {
-	return &cobra.Command{Use: "doctor", RunE: func(cmd *cobra.Command, args []string) error { return nil }}
-}
-
 // Stub — filled in by Task 28 (TUI launch).
 func runTUI(out interface{}) error { return nil }
 
