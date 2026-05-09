@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/martinciu/ccpulse/pkg/status"
 )
 
@@ -27,5 +28,14 @@ func TestHeaderShowsPercent(t *testing.T) {
 	}
 	if !strings.Contains(got, "1h 47m") {
 		t.Errorf("expected 1h 47m in:\n%s", got)
+	}
+}
+
+func TestHelpOverlay(t *testing.T) {
+	m := New(Deps{})
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	v := updated.(Model).View()
+	if !strings.Contains(v, "Keys") {
+		t.Errorf("help overlay missing")
 	}
 }

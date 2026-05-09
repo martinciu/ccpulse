@@ -26,11 +26,12 @@ type Deps struct {
 }
 
 type Model struct {
-	deps   Deps
-	tab    Tab
-	style  Style
-	w, h   int
-	window status.Window
+	deps     Deps
+	tab      Tab
+	style    Style
+	w, h     int
+	window   status.Window
+	showHelp bool
 }
 
 func New(d Deps) Model {
@@ -57,12 +58,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.tab = (m.tab + 4) % 5
 		case "1", "2", "3", "4", "5":
 			m.tab = Tab(msg.String()[0] - '1')
+		case "?":
+			m.showHelp = !m.showHelp
 		}
 	}
 	return m, nil
 }
 
 func (m Model) View() string {
+	if m.showHelp {
+		return helpView(m.style)
+	}
 	width := m.w
 	if width < 80 {
 		width = 80
