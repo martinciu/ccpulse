@@ -3,6 +3,7 @@ package pricing
 import (
 	_ "embed"
 	"encoding/json"
+	"os"
 
 	"github.com/martinciu/ccpulse/pkg/parse"
 )
@@ -26,6 +27,16 @@ type Table struct {
 func Load() (Table, error) {
 	var t Table
 	err := json.Unmarshal(embedded, &t)
+	return t, err
+}
+
+func LoadFrom(path string) (Table, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return Table{}, err
+	}
+	var t Table
+	err = json.Unmarshal(data, &t)
 	return t, err
 }
 

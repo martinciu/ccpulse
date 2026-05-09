@@ -54,3 +54,16 @@ func TestCostForUnknown(t *testing.T) {
 		t.Errorf("cost = %v, want 0", cost)
 	}
 }
+
+func TestLoadOverride(t *testing.T) {
+	tab, err := LoadFrom("testdata/override.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tab.Version != "override-test" {
+		t.Errorf("Version = %q", tab.Version)
+	}
+	if tab.Models["claude-opus-4-7"].InputPerMtok != 99.99 {
+		t.Errorf("override didn't load")
+	}
+}
