@@ -383,3 +383,50 @@ func TestOpenWipesOnSchemaVersionMismatch(t *testing.T) {
 		t.Fatalf("schema_version after wipe = %q, want %q", version, SchemaVersion)
 	}
 }
+
+func TestTokenBuckets(t *testing.T) {
+	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	tab, _ := pricing.Load()
+
+	// Bucket A: 11:50 UTC — 1 message, 1500 total tokens
+	ts1 := time.Date(2026, 5, 9, 11, 50, 0, 0, time.UTC)
+	// Bucket B: 11:55 UTC — 2 messages, 3500 total tokens
+	ts2 := time.Date(2026, 5, 9, 11, 55, 0, 0, time.UTC)
+	ts3 := time.Date(2026, 5, 9, 11, 57, 0, 0, time.UTC)
+
+	msgs := []parse.Message{
+		{SessionID: "s1", ProjectSlug: "p", Model: "claude-sonnet-4-6",
+			Timestamp: ts1, InputTokens: 1000, OutputTokens: 500},
+		{SessionID: "s2", ProjectSlug: "p", Model: "claude-sonnet-4-6",
+			Timestamp: ts2, InputTokens: 2000, OutputTokens: 800},
+		{SessionID: "s3", ProjectSlug: "p", Model: "claude-sonnet-4-6",
+			Timestamp: ts3, InputTokens: 500, OutputTokens: 200},
+	}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatal(err)
+	}
+
+	since := time.Date(2026, 5, 9, 11, 0, 0, 0, time.UTC)
+	buckets, err := c.TokenBuckets(5*time.Minute, since)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(buckets) != 2 {
+		t.Fatalf("want 2 buckets, got %d: %+v", len(buckets), buckets)
+	}
+	if buckets[0].Tokens != 1500 {
+		t.Errorf("bucket[0].Tokens = %d, want 1500", buckets[0].Tokens)
+	}
+	if buckets[1].Tokens != 3500 {
+		t.Errorf("bucket[1].Tokens = %d, want 3500", buckets[1].Tokens)
+	}
+	// bucket starts should be aligned to 5-minute boundaries
+	if buckets[0].BucketStart.Minute()%5 != 0 {
+		t.Errorf("bucket[0].BucketStart not on 5-min boundary: %v", buckets[0].BucketStart)
+	}
+}
