@@ -123,6 +123,7 @@ tick_ms = 1000
 [history]
 default_window_days = 30
 include_subagents = true
+retention_days = 0            # days to keep usage history samples (0 = forever)
 
 [paths]
 projects_root = "~/.claude/projects"
