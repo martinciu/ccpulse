@@ -6,6 +6,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/martinciu/ccpulse/pkg/anthro"
 	"github.com/martinciu/ccpulse/pkg/cache"
 	"github.com/martinciu/ccpulse/pkg/state"
 	"github.com/martinciu/ccpulse/pkg/status"
@@ -144,7 +145,7 @@ func TestUpdate_IndexProgressMsg_FinalClearsActive(t *testing.T) {
 }
 
 func TestRenderHeader_NoIndicatorWhenInactive(t *testing.T) {
-	got := renderHeader(Style{}, status.Window{CeilingLabel: "Max 20×"}, 80,
+	got := renderHeader(Style{}, status.Window{CeilingLabel: "Max 20×"}, false, 80,
 		IndexProgress{Active: false})
 	if strings.Contains(got, "indexing") {
 		t.Errorf("header contains 'indexing' when Active=false:\n%s", got)
@@ -152,9 +153,23 @@ func TestRenderHeader_NoIndicatorWhenInactive(t *testing.T) {
 }
 
 func TestRenderHeader_ShowsIndexingWhenActive(t *testing.T) {
-	got := renderHeader(Style{}, status.Window{CeilingLabel: "Max 20×"}, 80,
+	got := renderHeader(Style{}, status.Window{CeilingLabel: "Max 20×"}, false, 80,
 		IndexProgress{Active: true, Done: 12, Total: 47})
 	if !strings.Contains(got, "indexing 12/47") {
 		t.Errorf("header missing 'indexing 12/47':\n%s", got)
+	}
+}
+
+func TestQuotaMsgUpdatesWindow(t *testing.T) {
+	m := New(Deps{Cache: nil})
+	msg := QuotaMsg{
+		Usage:     &anthro.Usage{FiveHour: &anthro.Bucket{Utilization: 12.0, ResetsAt: time.Now().Add(time.Hour)}},
+		Source:    "api",
+		UpdatedAt: time.Now(),
+	}
+	next, _ := m.Update(msg)
+	nm := next.(Model)
+	if nm.quota == nil || nm.quotaSource != "api" {
+		t.Errorf("QuotaMsg not applied: %+v", nm)
 	}
 }

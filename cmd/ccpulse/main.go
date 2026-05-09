@@ -2,16 +2,19 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/BurntSushi/toml"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 
+	"github.com/martinciu/ccpulse/pkg/anthro"
 	"github.com/martinciu/ccpulse/pkg/cache"
 	"github.com/martinciu/ccpulse/pkg/canonical"
 	"github.com/martinciu/ccpulse/pkg/config"
@@ -162,14 +165,33 @@ func runTUI(_ interface{}) error {
 	}
 	defer w.Close()
 
+	cred, credErr := anthro.LoadCredential()
+	if credErr != nil && !errors.Is(credErr, anthro.ErrNoCredential) {
+		fmt.Fprintf(os.Stderr, "ccpulse: %v\n", credErr)
+	}
+	hasOAuth := credErr == nil
+
 	m := tui.New(tui.Deps{
-		Cache:         c,
-		ProjectsRoot:  projectsRoot,
-		HistoryDays:   cfg.History.DefaultWindowDays,
-		Tier:          cfg.Plan.Tier,
-		CeilingTokens: status.CeilingFor(cfg.Plan),
+		Cache:        c,
+		ProjectsRoot: projectsRoot,
+		HistoryDays:  cfg.History.DefaultWindowDays,
+		Credential:   cred,
+		HasOAuth:     hasOAuth,
+		CacheDir:     cacheDir,
+		DisplayMode:  resolveDisplayMode(cfg.Display.Mode, hasOAuth),
+		DisplayBudget: status.DisplayBudget{
+			WarnUSD: cfg.Display.CostWarnUSD,
+			HotUSD:  cfg.Display.CostHotUSD,
+		},
 	})
 	p := tea.NewProgram(m, tea.WithAltScreen())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if hasOAuth {
+		go runQuotaPoller(ctx, p, cred, cacheDir)
+	}
 
 	go w.Run(func(path string) {
 		_, _ = ing.ProcessFile(path)
@@ -207,6 +229,34 @@ func runTUI(_ interface{}) error {
 
 	_, err = p.Run()
 	return err
+}
+
+// runQuotaPoller fires once immediately, then every 2 minutes, fetching
+// usage data and pushing QuotaMsg to the program. Errors are swallowed —
+// the TUI stays on the last known quota (or the JSONL heuristic).
+func runQuotaPoller(ctx context.Context, p *tea.Program, cred anthro.Credential, cacheDir string) {
+	push := func() {
+		res, err := anthro.Fetch(ctx, cred, cacheDir)
+		if err != nil {
+			return
+		}
+		p.Send(tui.QuotaMsg{
+			Usage:     &res.Usage,
+			Source:    res.Source,
+			UpdatedAt: res.UpdatedAt,
+		})
+	}
+	push() // immediate first tick
+	t := time.NewTicker(2 * time.Minute)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			push()
+		}
+	}
 }
 
 func main() {

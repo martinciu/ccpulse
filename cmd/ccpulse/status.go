@@ -1,10 +1,14 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"time"
 
+	"github.com/martinciu/ccpulse/pkg/anthro"
 	"github.com/martinciu/ccpulse/pkg/cache"
 	"github.com/martinciu/ccpulse/pkg/config"
 	"github.com/martinciu/ccpulse/pkg/status"
@@ -31,7 +35,6 @@ func runStatus(cmd *cobra.Command, asJSON, asTmux bool) error {
 	dbPath := filepath.Join(cacheDir, "state.db")
 	c, err := cache.Open(dbPath)
 	if err != nil {
-		// Cache missing: tmux mode prints nothing; others print 0s.
 		if asTmux {
 			return nil
 		}
@@ -39,8 +42,8 @@ func runStatus(cmd *cobra.Command, asJSON, asTmux bool) error {
 	}
 	defer c.Close()
 
-	ceiling := status.CeilingFor(cfg.Plan)
-	w, err := status.Compute(c.DB(), time.Now(), cfg.Plan.Tier, ceiling)
+	q := buildQuotaInput(cacheDir, time.Now())
+	w, err := status.Compute(c.DB(), time.Now(), q)
 	if err != nil {
 		if asTmux {
 			return nil
@@ -48,14 +51,66 @@ func runStatus(cmd *cobra.Command, asJSON, asTmux bool) error {
 		return err
 	}
 
+	mode := resolveDisplayMode(cfg.Display.Mode, q.Usage != nil)
+	budget := status.DisplayBudget{WarnUSD: cfg.Display.CostWarnUSD, HotUSD: cfg.Display.CostHotUSD}
+
 	switch {
 	case asJSON:
 		j, _ := status.JSON(w)
 		fmt.Fprintln(cmd.OutOrStdout(), j)
 	case asTmux:
-		fmt.Fprint(cmd.OutOrStdout(), status.TmuxLine(w, cfg.Plan))
+		fmt.Fprint(cmd.OutOrStdout(), status.TmuxLine(w, mode, budget))
 	default:
-		fmt.Fprintf(cmd.OutOrStdout(), "5h window: %d%% used, resets in %dm\n", w.Percent, w.MinutesToReset)
+		if mode == status.DisplayCost {
+			fmt.Fprintf(cmd.OutOrStdout(), "5h window: $%.2f, resets in %dm\n", w.Cost5hUSD, w.MinutesToReset)
+		} else {
+			fmt.Fprintf(cmd.OutOrStdout(), "5h window: %d%% used, resets in %dm\n", w.Percent, w.MinutesToReset)
+		}
 	}
 	return nil
+}
+
+// buildQuotaInput resolves the credential and (best-effort) fetches usage data.
+// Any failure → empty QuotaInput with TierSlug="unknown" so Compute falls back
+// to the JSONL heuristic. Errors are silently swallowed except for diagnostics
+// to stderr (visible from the status command).
+func buildQuotaInput(cacheDir string, now time.Time) status.QuotaInput {
+	cred, err := anthro.LoadCredential()
+	if err != nil {
+		if !errors.Is(err, anthro.ErrNoCredential) {
+			fmt.Fprintf(os.Stderr, "ccpulse: %v\n", err)
+		}
+		return status.QuotaInput{TierSlug: "unknown", TierPretty: "Unknown"}
+	}
+	q := status.QuotaInput{
+		TierSlug:   anthro.TierSlug(cred.RateLimitTier),
+		TierPretty: anthro.TierPretty(cred.RateLimitTier),
+	}
+	if cred.Expired(now) {
+		fmt.Fprintln(os.Stderr, "ccpulse: OAuth credential expired — run /login in claude")
+	}
+	res, err := anthro.Fetch(context.Background(), cred, cacheDir)
+	if err != nil {
+		return q // fall back; quota nil
+	}
+	q.Usage = &res.Usage
+	q.Source = res.Source
+	q.UpdatedAt = res.UpdatedAt
+	return q
+}
+
+// resolveDisplayMode picks between percent and cost.
+// "auto" → percent if we have OAuth quota, cost otherwise.
+func resolveDisplayMode(cfgMode string, hasQuota bool) status.DisplayMode {
+	switch cfgMode {
+	case "cost":
+		return status.DisplayCost
+	case "percent":
+		return status.DisplayPercent
+	}
+	// "auto" or unrecognized
+	if hasQuota {
+		return status.DisplayPercent
+	}
+	return status.DisplayCost
 }

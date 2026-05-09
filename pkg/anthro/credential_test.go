@@ -1,0 +1,96 @@
+package anthro
+
+import (
+	"errors"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+)
+
+func writeCred(t *testing.T, dir, body string) string {
+	t.Helper()
+	p := filepath.Join(dir, ".credentials.json")
+	if err := os.WriteFile(p, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestLoadCredentialFromFile(t *testing.T) {
+	dir := t.TempDir()
+	body := `{
+	  "claudeAiOauth": {
+	    "accessToken": "tok-abc",
+	    "refreshToken": "ref-xyz",
+	    "expiresAt": 1778358665917,
+	    "scopes": ["user:profile", "user:inference"],
+	    "subscriptionType": "max",
+	    "rateLimitTier": "default_claude_max_20x"
+	  }
+	}`
+	p := writeCred(t, dir, body)
+	c, err := LoadCredentialFromFile(p)
+	if err != nil {
+		t.Fatalf("LoadCredentialFromFile: %v", err)
+	}
+	if c.AccessToken != "tok-abc" {
+		t.Errorf("AccessToken = %q", c.AccessToken)
+	}
+	if c.RateLimitTier != "default_claude_max_20x" {
+		t.Errorf("RateLimitTier = %q", c.RateLimitTier)
+	}
+	if c.SubscriptionType != "max" {
+		t.Errorf("SubscriptionType = %q", c.SubscriptionType)
+	}
+	want := time.UnixMilli(1778358665917)
+	if !c.ExpiresAt.Equal(want) {
+		t.Errorf("ExpiresAt = %v, want %v", c.ExpiresAt, want)
+	}
+	if len(c.Scopes) != 2 {
+		t.Errorf("Scopes = %v", c.Scopes)
+	}
+}
+
+func TestLoadCredentialMissingFile(t *testing.T) {
+	_, err := LoadCredentialFromFile(filepath.Join(t.TempDir(), "nope.json"))
+	if !errors.Is(err, ErrNoCredential) {
+		t.Errorf("missing file: got %v, want ErrNoCredential", err)
+	}
+}
+
+func TestLoadCredentialEmptyToken(t *testing.T) {
+	dir := t.TempDir()
+	p := writeCred(t, dir, `{"claudeAiOauth":{"accessToken":""}}`)
+	_, err := LoadCredentialFromFile(p)
+	if !errors.Is(err, ErrNoCredential) {
+		t.Errorf("empty token: got %v, want ErrNoCredential", err)
+	}
+}
+
+func TestLoadCredentialBadJSON(t *testing.T) {
+	dir := t.TempDir()
+	p := writeCred(t, dir, `not json`)
+	_, err := LoadCredentialFromFile(p)
+	if err == nil {
+		t.Errorf("bad JSON: want error")
+	}
+	if errors.Is(err, ErrNoCredential) {
+		t.Errorf("bad JSON shouldn't be ErrNoCredential, got %v", err)
+	}
+}
+
+func TestExpired(t *testing.T) {
+	c := Credential{ExpiresAt: time.Now().Add(-time.Hour)}
+	if !c.Expired(time.Now()) {
+		t.Errorf("expected expired")
+	}
+	c2 := Credential{ExpiresAt: time.Now().Add(time.Hour)}
+	if c2.Expired(time.Now()) {
+		t.Errorf("expected not expired")
+	}
+	c3 := Credential{}
+	if c3.Expired(time.Now()) {
+		t.Errorf("zero ExpiresAt should not be expired")
+	}
+}
