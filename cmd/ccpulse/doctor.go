@@ -1,12 +1,15 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"time"
 
+	"github.com/martinciu/ccpulse/pkg/anthro"
 	"github.com/martinciu/ccpulse/pkg/cache"
 	"github.com/martinciu/ccpulse/pkg/config"
 	"github.com/martinciu/ccpulse/pkg/pricing"
@@ -43,6 +46,29 @@ func newDoctorCmd() *cobra.Command {
 			check(out, "git on PATH", gitErr == nil, gitErr)
 			_, tmuxErr := exec.LookPath("tmux")
 			check(out, "tmux on PATH", tmuxErr == nil, tmuxErr)
+
+			// OAuth credential check
+			cred, credErr := anthro.LoadCredential()
+			switch {
+			case errors.Is(credErr, anthro.ErrNoCredential):
+				check(out, "OAuth credential: not found (cost mode)", true, nil)
+			case credErr != nil:
+				check(out, "OAuth credential", false, credErr)
+			case cred.Expired(time.Now()):
+				check(out, "OAuth credential: EXPIRED — run /login in claude", false, nil)
+			default:
+				check(out, fmt.Sprintf("OAuth credential: %s (%s)", anthro.TierPretty(cred.RateLimitTier), cred.SubscriptionType), true, nil)
+			}
+
+			// usage cache check
+			usagePath := filepath.Join(cacheDir, "usage.json")
+			if info, err := os.Stat(usagePath); err == nil {
+				age := time.Since(info.ModTime()).Truncate(time.Second)
+				check(out, fmt.Sprintf("usage cache: %s old", age), true, nil)
+			} else {
+				check(out, "usage cache: not present", true, nil)
+			}
+
 			return nil
 		},
 	}
