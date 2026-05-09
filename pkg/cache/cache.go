@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	_ "embed"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/martinciu/ccpulse/pkg/parse"
@@ -29,6 +30,21 @@ func Open(path string) (*Cache, error) {
 		db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
+
+	var version string
+	err = db.QueryRow(`SELECT value FROM meta WHERE key = 'schema_version'`).Scan(&version)
+	if err != nil && err != sql.ErrNoRows {
+		db.Close()
+		return nil, err
+	}
+	if err == nil && version != SchemaVersion {
+		db.Close()
+		if rmErr := os.Remove(path); rmErr != nil {
+			return nil, fmt.Errorf("wipe stale schema: %w", rmErr)
+		}
+		return Open(path)
+	}
+
 	if _, err := db.Exec(`INSERT OR IGNORE INTO meta(key,value) VALUES('schema_version',?)`, SchemaVersion); err != nil {
 		db.Close()
 		return nil, err
