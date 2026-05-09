@@ -2,12 +2,27 @@ package status
 
 import (
 	"database/sql"
+	"math"
 	"time"
+
+	"github.com/martinciu/ccpulse/pkg/anthro"
 )
 
-// Compute folds the last 5 hours of messages into a Window. ceilingTokens
-// of 0 means "raw totals (api tier)" → Percent stays 0.
-func Compute(db *sql.DB, now time.Time, ceilingLabel string, ceilingTokens int64) (Window, error) {
+// QuotaInput carries server-side quota data into Compute.
+// Usage == nil → fall back to the JSONL heuristic for MinutesToReset and
+// leave Percent at 0.
+type QuotaInput struct {
+	Usage      *anthro.Usage
+	Source     string
+	UpdatedAt  time.Time
+	TierSlug   string
+	TierPretty string
+}
+
+// Compute folds the last 5 hours of messages plus the quota input into a
+// Window. The DB query is unchanged from before — only the tail logic
+// (Percent, MinutesToReset) shifts depending on whether quota is available.
+func Compute(db *sql.DB, now time.Time, q QuotaInput) (Window, error) {
 	cutoff := now.UTC().Add(-5 * time.Hour).Format("2006-01-02T15:04:05.000Z07:00")
 	row := db.QueryRow(`
 SELECT
@@ -25,24 +40,42 @@ FROM messages WHERE ts >= ?`, cutoff)
 	}
 
 	w := Window{
-		Tokens5h:     tokens,
-		Cost5hUSD:    cost,
-		CeilingLabel: ceilingLabel,
+		Tokens5h:      tokens,
+		Cost5hUSD:     cost,
+		CeilingLabel:  q.TierSlug,
+		CeilingPretty: q.TierPretty,
 	}
-	if oldest != "" {
+
+	if q.Usage != nil && q.Usage.FiveHour != nil {
+		w.Percent = clampPct(int(math.Round(q.Usage.FiveHour.Utilization)))
+		mins := int(q.Usage.FiveHour.ResetsAt.Sub(now).Minutes())
+		if mins < 0 {
+			mins = 0
+		}
+		w.MinutesToReset = mins
+	} else if oldest != "" {
 		t, _ := time.Parse("2006-01-02T15:04:05.000Z07:00", oldest)
-		reset := t.Add(5 * time.Hour)
-		mins := int(reset.Sub(now).Minutes())
+		mins := int(t.Add(5 * time.Hour).Sub(now).Minutes())
 		if mins < 0 {
 			mins = 0
 		}
 		w.MinutesToReset = mins
 	}
-	if ceilingTokens > 0 {
-		w.Percent = int(float64(tokens) / float64(ceilingTokens) * 100)
-		if w.Percent > 100 {
-			w.Percent = 100
-		}
+
+	if q.Usage != nil {
+		w.Quota = q.Usage
+		w.QuotaSource = q.Source
+		w.QuotaUpdatedAt = q.UpdatedAt
 	}
 	return w, nil
+}
+
+func clampPct(p int) int {
+	if p < 0 {
+		return 0
+	}
+	if p > 100 {
+		return 100
+	}
+	return p
 }
