@@ -12,6 +12,11 @@
 .autonomo/
 .claude/worktrees/
 
+# skills (installed via `npx skills`, personal tooling)
+.agents/
+.claude/skills/
+skills-lock.json
+
 # coverage
 coverage.out
 coverage.html
