@@ -3,6 +3,8 @@
 package watcher
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -23,6 +25,15 @@ func New(root string) (*Watcher, error) {
 		fw.Close()
 		return nil, err
 	}
+	// Walk the existing tree and add every subdirectory.
+	if err := filepath.WalkDir(root, func(p string, d os.DirEntry, _ error) error {
+		if d != nil && d.IsDir() && p != root {
+			_ = fw.Add(p)
+		}
+		return nil
+	}); err != nil {
+		// non-fatal: best-effort
+	}
 	return &Watcher{w: fw, deb: 100 * time.Millisecond}, nil
 }
 
@@ -36,6 +47,13 @@ func (w *Watcher) Run(onChange func(path string)) {
 		case e, ok := <-w.w.Events:
 			if !ok {
 				return
+			}
+			// Newly-created directory: subscribe so we see writes inside it.
+			if e.Op&fsnotify.Create == fsnotify.Create {
+				if info, err := os.Stat(e.Name); err == nil && info.IsDir() {
+					_ = w.w.Add(e.Name)
+					continue
+				}
 			}
 			if !strings.HasSuffix(e.Name, ".jsonl") {
 				continue
