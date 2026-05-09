@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,6 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 
+	"github.com/martinciu/ccpulse/pkg/anthro"
 	"github.com/martinciu/ccpulse/pkg/cache"
 	"github.com/martinciu/ccpulse/pkg/canonical"
 	"github.com/martinciu/ccpulse/pkg/config"
@@ -153,12 +155,24 @@ func runTUI(_ interface{}) error {
 	}
 	defer w.Close()
 
+	cred, credErr := anthro.LoadCredential()
+	if credErr != nil && !errors.Is(credErr, anthro.ErrNoCredential) {
+		fmt.Fprintf(os.Stderr, "ccpulse: %v\n", credErr)
+	}
+	hasOAuth := credErr == nil
+
 	m := tui.New(tui.Deps{
-		Cache:         c,
-		ProjectsRoot:  projectsRoot,
-		HistoryDays:   cfg.History.DefaultWindowDays,
-		Tier:          cfg.Plan.Tier,
-		CeilingTokens: status.CeilingFor(cfg.Plan),
+		Cache:        c,
+		ProjectsRoot: projectsRoot,
+		HistoryDays:  cfg.History.DefaultWindowDays,
+		Credential:   cred,
+		HasOAuth:     hasOAuth,
+		CacheDir:     cacheDir,
+		DisplayMode:  resolveDisplayMode(cfg.Display.Mode, hasOAuth),
+		DisplayBudget: status.DisplayBudget{
+			WarnUSD: cfg.Display.CostWarnUSD,
+			HotUSD:  cfg.Display.CostHotUSD,
+		},
 	})
 	p := tea.NewProgram(m, tea.WithAltScreen())
 

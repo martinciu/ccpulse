@@ -6,6 +6,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/martinciu/ccpulse/pkg/anthro"
 	"github.com/martinciu/ccpulse/pkg/cache"
 	"github.com/martinciu/ccpulse/pkg/state"
 	"github.com/martinciu/ccpulse/pkg/status"
@@ -111,5 +112,19 @@ func TestScopeTogglePersists(t *testing.T) {
 	saved := state.Load()
 	if saved.LiveScope != "this_tmux" {
 		t.Errorf("not persisted, got %q", saved.LiveScope)
+	}
+}
+
+func TestQuotaMsgUpdatesWindow(t *testing.T) {
+	m := New(Deps{Cache: nil})
+	msg := QuotaMsg{
+		Usage:     &anthro.Usage{FiveHour: &anthro.Bucket{Utilization: 12.0, ResetsAt: time.Now().Add(time.Hour)}},
+		Source:    "api",
+		UpdatedAt: time.Now(),
+	}
+	next, _ := m.Update(msg)
+	nm := next.(Model)
+	if nm.quota == nil || nm.quotaSource != "api" {
+		t.Errorf("QuotaMsg not applied: %+v", nm)
 	}
 }
