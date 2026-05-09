@@ -94,3 +94,13 @@ tier = "api"
 		t.Errorf("legacy tier=api should migrate to display.mode=cost, got %q", cfg.Display.Mode)
 	}
 }
+
+func TestLoad_HistoryRetentionDefault(t *testing.T) {
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.History.RetentionDays != 0 {
+		t.Errorf("History.RetentionDays default = %d, want 0", cfg.History.RetentionDays)
+	}
+}

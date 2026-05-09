@@ -14,6 +14,8 @@ tick_ms = 1000
 [history]
 default_window_days = 30
 include_subagents = true
+# 0 = keep usage_samples forever; positive integer = prune older rows on each insert.
+retention_days = 0
 
 [paths]
 projects_root = "~/.claude/projects"
