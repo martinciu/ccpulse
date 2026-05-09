@@ -10,12 +10,9 @@ func helpView(s Style) string {
 	body := `Keys
   tab / shift-tab   cycle tabs
   1..5              jump to tab
-  j / k             move within table
-  enter             drill down
-  esc               back out
-  g                 toggle Live scope
-  r                 refresh
-  c                 open config
+  g                 toggle Live scope (global / this-tmux)
+  enter             drill down (History / Projects)
+  esc               back out of drill-down
   ?                 toggle this help
   q                 quit
 `

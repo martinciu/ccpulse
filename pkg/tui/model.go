@@ -33,9 +33,11 @@ func (t Tab) String() string {
 }
 
 type Deps struct {
-	Cache        *cache.Cache
-	ProjectsRoot string
-	HistoryDays  int
+	Cache         *cache.Cache
+	ProjectsRoot  string
+	HistoryDays   int
+	Tier          string
+	CeilingTokens int64
 }
 
 type Model struct {
@@ -175,7 +177,7 @@ func (m Model) View() string {
 	default:
 		body = "  <" + m.tab.String() + ">"
 	}
-	footer := m.style.Footer.Render("[tab]→  [j/k]nav  [r]efresh  [c]onfig  [?]help  [q]")
+	footer := m.style.Footer.Render("[tab]→  [g]scope  [enter]drill  [?]help  [q]")
 	return lipgloss.JoinVertical(lipgloss.Left, header, tabs, body, footer)
 }
 
@@ -204,7 +206,15 @@ func or30(d int) int {
 // re-uses the cache.DB() handle and a constant ceiling-label of "max_20x"
 // for v0. Phase 11 polish will pull tier from config.
 func computeWindowFromDeps(d Deps, now time.Time) (status.Window, error) {
-	return status.Compute(d.Cache.DB(), now, "max_20x", 240_000_000)
+	tier := d.Tier
+	if tier == "" {
+		tier = "max_20x"
+	}
+	ceiling := d.CeilingTokens
+	if ceiling == 0 && tier != "api" {
+		ceiling = 240_000_000 // sensible default if controller didn't set it
+	}
+	return status.Compute(d.Cache.DB(), now, tier, ceiling)
 }
 
 // currentTmuxSessionIDs returns the set of session IDs whose JSONL is

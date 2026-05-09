@@ -39,7 +39,7 @@ func runStatus(cmd *cobra.Command, asJSON, asTmux bool) error {
 	}
 	defer c.Close()
 
-	ceiling := ceilingFor(cfg.Plan)
+	ceiling := status.CeilingFor(cfg.Plan)
 	w, err := status.Compute(c.DB(), time.Now(), cfg.Plan.Tier, ceiling)
 	if err != nil {
 		if asTmux {
@@ -58,20 +58,4 @@ func runStatus(cmd *cobra.Command, asJSON, asTmux bool) error {
 		fmt.Fprintf(cmd.OutOrStdout(), "5h window: %d%% used, resets in %dm\n", w.Percent, w.MinutesToReset)
 	}
 	return nil
-}
-
-func ceilingFor(p config.Plan) int64 {
-	switch p.Tier {
-	case "custom":
-		return p.CustomCeilingTokens
-	case "max_5x":
-		return 60_000_000 // tune during impl after reading current docs
-	case "max_20x":
-		return 240_000_000
-	case "pro":
-		return 12_000_000
-	case "api":
-		return 0
-	}
-	return 0
 }

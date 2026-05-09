@@ -16,14 +16,22 @@ import (
 	"github.com/martinciu/ccpulse/pkg/config"
 	"github.com/martinciu/ccpulse/pkg/parse"
 	"github.com/martinciu/ccpulse/pkg/pricing"
+	"github.com/martinciu/ccpulse/pkg/status"
 	"github.com/martinciu/ccpulse/pkg/tui"
 	"github.com/martinciu/ccpulse/pkg/watcher"
 )
 
-const version = "v0.0.0"
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
 
 func versionString() string {
-	return "ccpulse " + version
+	if commit == "none" && date == "unknown" {
+		return "ccpulse " + version
+	}
+	return fmt.Sprintf("ccpulse %s (commit %s, built %s)", version, commit, date)
 }
 
 func newRootCmd() *cobra.Command {
@@ -146,9 +154,11 @@ func runTUI(_ interface{}) error {
 	defer w.Close()
 
 	m := tui.New(tui.Deps{
-		Cache:        c,
-		ProjectsRoot: projectsRoot,
-		HistoryDays:  cfg.History.DefaultWindowDays,
+		Cache:         c,
+		ProjectsRoot:  projectsRoot,
+		HistoryDays:   cfg.History.DefaultWindowDays,
+		Tier:          cfg.Plan.Tier,
+		CeilingTokens: status.CeilingFor(cfg.Plan),
 	})
 	p := tea.NewProgram(m, tea.WithAltScreen())
 

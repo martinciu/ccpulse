@@ -69,3 +69,23 @@ func dur(mins int) string {
 	}
 	return fmt.Sprintf("%dm", mins)
 }
+
+// CeilingFor returns the rough token-budget ceiling for the user's plan
+// tier. These are best-effort approximations — Anthropic doesn't publish
+// exact caps. Use tier="custom" with cfg.Plan.CustomCeilingTokens for
+// precise values calibrated from observed rate-limit behaviour.
+func CeilingFor(p config.Plan) int64 {
+	switch p.Tier {
+	case "custom":
+		return p.CustomCeilingTokens
+	case "max_5x":
+		return 60_000_000
+	case "max_20x":
+		return 240_000_000
+	case "pro":
+		return 12_000_000
+	case "api":
+		return 0
+	}
+	return 0
+}
