@@ -2,6 +2,8 @@ package anthro
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -85,4 +87,89 @@ func TestUsageRoundTrip(t *testing.T) {
 			t.Errorf("round-trip missing %s in %s", want, out)
 		}
 	}
+}
+
+func TestReadCacheFresh(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now()
+	wrote := writeFixtureCache(t, dir, now.Add(-1*time.Minute))
+	got, err := readCache(filepath.Join(dir, "usage.json"))
+	if err != nil {
+		t.Fatalf("readCache: %v", err)
+	}
+	if got.UpdatedAt.Sub(wrote).Abs() > time.Second {
+		t.Errorf("UpdatedAt drift: got %v, want %v", got.UpdatedAt, wrote)
+	}
+	if got.Usage.FiveHour == nil {
+		t.Errorf("usage.FiveHour nil")
+	}
+}
+
+func TestReadCacheMissing(t *testing.T) {
+	_, err := readCache(filepath.Join(t.TempDir(), "missing.json"))
+	if err == nil {
+		t.Errorf("expected error on missing cache")
+	}
+}
+
+func TestReadCacheCorrupt(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "usage.json")
+	if err := os.WriteFile(p, []byte("not json"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := readCache(p)
+	if err == nil {
+		t.Errorf("expected error on corrupt cache")
+	}
+}
+
+func TestReadCacheWrongVersion(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "usage.json")
+	body := `{"v":99,"updated_at":"2026-05-09T15:00:00Z","data":{}}`
+	if err := os.WriteFile(p, []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := readCache(p)
+	if err == nil {
+		t.Errorf("expected error on wrong cache version")
+	}
+}
+
+func TestWriteCacheRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "usage.json")
+	var u Usage
+	if err := json.Unmarshal([]byte(sampleAPIBody), &u); err != nil {
+		t.Fatal(err)
+	}
+	when := time.Date(2026, 5, 9, 15, 0, 0, 0, time.UTC)
+	if err := writeCache(p, u, when); err != nil {
+		t.Fatalf("writeCache: %v", err)
+	}
+	got, err := readCache(p)
+	if err != nil {
+		t.Fatalf("readCache: %v", err)
+	}
+	if !got.UpdatedAt.Equal(when) {
+		t.Errorf("UpdatedAt = %v, want %v", got.UpdatedAt, when)
+	}
+	if got.Usage.SevenDay == nil || got.Usage.SevenDay.Utilization != 89.0 {
+		t.Errorf("seven_day round-trip lost: %+v", got.Usage.SevenDay)
+	}
+}
+
+// writeFixtureCache writes sampleAPIBody as a v:1 cache file with the given
+// updated_at and returns the timestamp actually written.
+func writeFixtureCache(t *testing.T, dir string, when time.Time) time.Time {
+	t.Helper()
+	var u Usage
+	if err := json.Unmarshal([]byte(sampleAPIBody), &u); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeCache(filepath.Join(dir, "usage.json"), u, when); err != nil {
+		t.Fatal(err)
+	}
+	return when
 }
