@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -173,6 +174,20 @@ func runTUI(_ interface{}) error {
 		_, _ = ing.ProcessFile(path)
 		p.Send(tui.RefreshMsg{})
 	})
+
+	// Startup backfill: catch the cache up to EOF for every .jsonl
+	// under projectsRoot. Runs concurrently with the watcher;
+	// SQLite serialises writes, InsertMessages is idempotent, so
+	// the worst case of overlap is wasted parse work.
+	bfCtx, bfCancel := context.WithCancel(context.Background())
+	defer bfCancel()
+	bf := &ingest.Backfill{Ingester: ing}
+	go func() {
+		_ = bf.Run(bfCtx, func(pr ingest.Progress) {
+			p.Send(tui.IndexProgressMsg{Done: pr.Done, Total: pr.Total, Active: pr.Active})
+			p.Send(tui.RefreshMsg{})
+		})
+	}()
 
 	// Kick off an initial refresh so the TUI shows current data on launch.
 	go func() {
