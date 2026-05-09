@@ -1,0 +1,20 @@
+[plan]
+tier = "max_20x"
+custom_ceiling_tokens = 0
+
+[ui]
+accent = "#6c71c4"
+default_tab = "live"
+default_scope = "global"
+tick_ms = 1000
+
+[history]
+default_window_days = 30
+include_subagents = true
+
+[paths]
+projects_root = "~/.claude/projects"
+cache_dir = "~/.cache/ccpulse"
+
+[pricing]
+override = ""
