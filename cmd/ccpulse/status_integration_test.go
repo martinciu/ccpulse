@@ -233,7 +233,7 @@ func TestStatusPrunesWhenRetentionConfigured(t *testing.T) {
 	// 2× the configured 1-day retention, so this row is unambiguously inside the cutoff.
 	oldTs := time.Now().Add(-48 * time.Hour).Unix()
 	_, execErr := seed.DB().Exec(
-		`INSERT INTO usage_samples(ts, payload, source) VALUES (?, '{}', 'api')`, oldTs,
+		`INSERT INTO usage_samples(ts, source) VALUES (?, 'api')`, oldTs,
 	)
 	seed.Close()
 	if execErr != nil {

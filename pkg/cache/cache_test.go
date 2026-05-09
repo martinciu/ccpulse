@@ -1,7 +1,7 @@
 package cache
 
 import (
-	"encoding/json"
+	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
@@ -144,10 +144,12 @@ func TestRecordUsageSample_RoundTrip(t *testing.T) {
 	defer c.Close()
 
 	when := time.Date(2026, 5, 9, 12, 34, 56, 0, time.UTC)
+	fiveResets := when.Add(2 * time.Hour)
+	sevenResets := when.Add(48 * time.Hour)
 	util := 42.5
 	u := anthro.Usage{
-		FiveHour: &anthro.Bucket{Utilization: 12.0, ResetsAt: when.Add(2 * time.Hour)},
-		SevenDay: &anthro.Bucket{Utilization: 67.0, ResetsAt: when.Add(48 * time.Hour)},
+		FiveHour: &anthro.Bucket{Utilization: 12.0, ResetsAt: fiveResets},
+		SevenDay: &anthro.Bucket{Utilization: 67.0, ResetsAt: sevenResets},
 		ExtraUsage: &anthro.ExtraUsage{
 			IsEnabled: true, MonthlyLimit: 100, UsedCredits: 42, Utilization: &util, Currency: "USD",
 		},
@@ -158,9 +160,22 @@ func TestRecordUsageSample_RoundTrip(t *testing.T) {
 	}
 
 	var ts int64
-	var payload string
 	var src string
-	err = c.DB().QueryRow(`SELECT ts, payload, source FROM usage_samples`).Scan(&ts, &payload, &src)
+	var fivePct, sevenPct, extraPct sql.NullFloat64
+	var fiveResetsGot, sevenResetsGot, extraCurrency sql.NullString
+	var extraEnabled sql.NullInt64
+	var extraLimit, extraUsed sql.NullFloat64
+	err = c.DB().QueryRow(`SELECT
+		ts, source,
+		five_hour_pct, five_hour_resets_at,
+		seven_day_pct, seven_day_resets_at,
+		extra_usage_enabled, extra_usage_limit, extra_usage_used, extra_usage_pct, extra_usage_currency
+		FROM usage_samples`).Scan(
+		&ts, &src,
+		&fivePct, &fiveResetsGot,
+		&sevenPct, &sevenResetsGot,
+		&extraEnabled, &extraLimit, &extraUsed, &extraPct, &extraCurrency,
+	)
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
@@ -170,18 +185,32 @@ func TestRecordUsageSample_RoundTrip(t *testing.T) {
 	if src != "api" {
 		t.Errorf("source = %q, want api", src)
 	}
-	var got anthro.Usage
-	if err := json.Unmarshal([]byte(payload), &got); err != nil {
-		t.Fatalf("unmarshal payload: %v", err)
+	if !fivePct.Valid || fivePct.Float64 != 12.0 {
+		t.Errorf("five_hour_pct = %+v, want 12.0", fivePct)
 	}
-	if got.FiveHour == nil || got.FiveHour.Utilization != 12.0 {
-		t.Errorf("FiveHour round-trip failed: %+v", got.FiveHour)
+	if !fiveResetsGot.Valid || fiveResetsGot.String != fiveResets.Format(time.RFC3339Nano) {
+		t.Errorf("five_hour_resets_at = %+v, want %s", fiveResetsGot, fiveResets.Format(time.RFC3339Nano))
 	}
-	if got.SevenDay == nil || got.SevenDay.Utilization != 67.0 {
-		t.Errorf("SevenDay round-trip failed: %+v", got.SevenDay)
+	if !sevenPct.Valid || sevenPct.Float64 != 67.0 {
+		t.Errorf("seven_day_pct = %+v, want 67.0", sevenPct)
 	}
-	if got.ExtraUsage == nil || got.ExtraUsage.Utilization == nil || *got.ExtraUsage.Utilization != 42.5 {
-		t.Errorf("ExtraUsage round-trip failed: %+v", got.ExtraUsage)
+	if !sevenResetsGot.Valid || sevenResetsGot.String != sevenResets.Format(time.RFC3339Nano) {
+		t.Errorf("seven_day_resets_at = %+v, want %s", sevenResetsGot, sevenResets.Format(time.RFC3339Nano))
+	}
+	if !extraEnabled.Valid || extraEnabled.Int64 != 1 {
+		t.Errorf("extra_usage_enabled = %+v, want 1", extraEnabled)
+	}
+	if !extraLimit.Valid || extraLimit.Float64 != 100 {
+		t.Errorf("extra_usage_limit = %+v, want 100", extraLimit)
+	}
+	if !extraUsed.Valid || extraUsed.Float64 != 42 {
+		t.Errorf("extra_usage_used = %+v, want 42", extraUsed)
+	}
+	if !extraPct.Valid || extraPct.Float64 != 42.5 {
+		t.Errorf("extra_usage_pct = %+v, want 42.5", extraPct)
+	}
+	if !extraCurrency.Valid || extraCurrency.String != "USD" {
+		t.Errorf("extra_usage_currency = %+v, want USD", extraCurrency)
 	}
 }
 
@@ -211,16 +240,12 @@ func TestRecordUsageSample_DuplicateTs(t *testing.T) {
 		t.Fatalf("rows = %d, want 1 (INSERT OR IGNORE should drop the duplicate)", n)
 	}
 
-	var payload string
-	if err := c.DB().QueryRow(`SELECT payload FROM usage_samples`).Scan(&payload); err != nil {
+	var fivePct sql.NullFloat64
+	if err := c.DB().QueryRow(`SELECT five_hour_pct FROM usage_samples`).Scan(&fivePct); err != nil {
 		t.Fatal(err)
 	}
-	var got anthro.Usage
-	if err := json.Unmarshal([]byte(payload), &got); err != nil {
-		t.Fatal(err)
-	}
-	if got.FiveHour == nil || got.FiveHour.Utilization != 10.0 {
-		t.Errorf("expected first row to win (utilization 10.0), got %+v", got.FiveHour)
+	if !fivePct.Valid || fivePct.Float64 != 10.0 {
+		t.Errorf("expected first row to win (five_hour_pct 10.0), got %+v", fivePct)
 	}
 }
 
@@ -268,6 +293,45 @@ func TestPruneUsageSamples(t *testing.T) {
 	}
 	if earliest != base.Add(-50*time.Second).Unix() {
 		t.Errorf("earliest remaining ts = %d, want %d", earliest, base.Add(-50*time.Second).Unix())
+	}
+}
+
+func TestRecordUsageSample_NilBucket(t *testing.T) {
+	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	when := time.Date(2026, 5, 9, 12, 34, 56, 0, time.UTC)
+	u := anthro.Usage{
+		FiveHour: &anthro.Bucket{Utilization: 12.5, ResetsAt: when.Add(2 * time.Hour)},
+		// SevenDay deliberately nil
+	}
+
+	if err := c.RecordUsageSample(u, when); err != nil {
+		t.Fatalf("RecordUsageSample: %v", err)
+	}
+
+	var fivePct sql.NullFloat64
+	var fiveResets sql.NullString
+	var sevenPct sql.NullFloat64
+	var sevenResets sql.NullString
+	err = c.DB().QueryRow(`SELECT five_hour_pct, five_hour_resets_at, seven_day_pct, seven_day_resets_at FROM usage_samples`).Scan(&fivePct, &fiveResets, &sevenPct, &sevenResets)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if !fivePct.Valid || fivePct.Float64 != 12.5 {
+		t.Errorf("five_hour_pct = %+v, want 12.5", fivePct)
+	}
+	if !fiveResets.Valid || fiveResets.String != when.Add(2*time.Hour).Format(time.RFC3339Nano) {
+		t.Errorf("five_hour_resets_at = %+v, want %s", fiveResets, when.Add(2*time.Hour).Format(time.RFC3339Nano))
+	}
+	if sevenPct.Valid {
+		t.Errorf("seven_day_pct = %v, want NULL", sevenPct.Float64)
+	}
+	if sevenResets.Valid {
+		t.Errorf("seven_day_resets_at = %q, want NULL", sevenResets.String)
 	}
 }
 

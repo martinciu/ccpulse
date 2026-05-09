@@ -3,7 +3,6 @@ package cache
 import (
 	"database/sql"
 	_ "embed"
-	"encoding/json"
 	"fmt"
 	"os"
 	"time"
@@ -17,7 +16,7 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
-const SchemaVersion = "3"
+const SchemaVersion = "4"
 
 type Cache struct {
 	db *sql.DB
@@ -58,18 +57,75 @@ func (c *Cache) DB() *sql.DB { return c.db }
 
 func (c *Cache) Close() error { return c.db.Close() }
 
-// RecordUsageSample marshals u to JSON and inserts a row at when.UTC().Unix().
-// INSERT OR IGNORE: same-second collisions keep the first row.
+// RecordUsageSample inserts a row at when.UTC().Unix() with one column per
+// anthro.Usage bucket. INSERT OR IGNORE: same-second collisions keep the
+// first row. Nil buckets write NULL into both their pct and resets_at columns.
 func (c *Cache) RecordUsageSample(u anthro.Usage, when time.Time) error {
-	payload, err := json.Marshal(u)
-	if err != nil {
-		return err
-	}
-	_, err = c.db.Exec(
-		`INSERT OR IGNORE INTO usage_samples(ts, payload, source) VALUES (?, ?, 'api')`,
-		when.UTC().Unix(), string(payload),
-	)
+	args := []any{when.UTC().Unix(), "api"}
+	args = append(args, bucketArgs(u.FiveHour)...)
+	args = append(args, bucketArgs(u.SevenDay)...)
+	args = append(args, bucketArgs(u.SevenDaySonnet)...)
+	args = append(args, bucketArgs(u.SevenDayOpus)...)
+	args = append(args, bucketArgs(u.SevenDayOmelette)...)
+	args = append(args, bucketArgs(u.SevenDayOauthApps)...)
+	args = append(args, bucketArgs(u.SevenDayCowork)...)
+	args = append(args, bucketArgs(u.Tangelo)...)
+	args = append(args, bucketArgs(u.IguanaNecktie)...)
+	args = append(args, bucketArgs(u.OmelettePromotional)...)
+	args = append(args, extraUsageArgs(u.ExtraUsage)...)
+
+	_, err := c.db.Exec(insertUsageSampleSQL, args...)
 	return err
+}
+
+const insertUsageSampleSQL = `INSERT OR IGNORE INTO usage_samples(
+	ts, source,
+	five_hour_pct, five_hour_resets_at,
+	seven_day_pct, seven_day_resets_at,
+	seven_day_sonnet_pct, seven_day_sonnet_resets_at,
+	seven_day_opus_pct, seven_day_opus_resets_at,
+	seven_day_omelette_pct, seven_day_omelette_resets_at,
+	seven_day_oauth_apps_pct, seven_day_oauth_apps_resets_at,
+	seven_day_cowork_pct, seven_day_cowork_resets_at,
+	tangelo_pct, tangelo_resets_at,
+	iguana_necktie_pct, iguana_necktie_resets_at,
+	omelette_promotional_pct, omelette_promotional_resets_at,
+	extra_usage_enabled, extra_usage_limit, extra_usage_used, extra_usage_pct, extra_usage_currency
+) VALUES (
+	?, ?,
+	?, ?,
+	?, ?,
+	?, ?,
+	?, ?,
+	?, ?,
+	?, ?,
+	?, ?,
+	?, ?,
+	?, ?,
+	?, ?,
+	?, ?, ?, ?, ?
+)`
+
+func bucketArgs(b *anthro.Bucket) []any {
+	if b == nil {
+		return []any{nil, nil}
+	}
+	return []any{b.Utilization, b.ResetsAt.UTC().Format(time.RFC3339Nano)}
+}
+
+func extraUsageArgs(e *anthro.ExtraUsage) []any {
+	if e == nil {
+		return []any{nil, nil, nil, nil, nil}
+	}
+	var enabled any = 0
+	if e.IsEnabled {
+		enabled = 1
+	}
+	var pct any
+	if e.Utilization != nil {
+		pct = *e.Utilization
+	}
+	return []any{enabled, e.MonthlyLimit, e.UsedCredits, pct, e.Currency}
 }
 
 // PruneUsageSamples deletes rows with ts < cutoff.UTC().Unix().
