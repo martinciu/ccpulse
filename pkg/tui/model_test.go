@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/martinciu/ccpulse/pkg/cache"
 	"github.com/martinciu/ccpulse/pkg/status"
 )
 
@@ -37,5 +38,20 @@ func TestHelpOverlay(t *testing.T) {
 	v := updated.(Model).View()
 	if !strings.Contains(v, "Keys") {
 		t.Errorf("help overlay missing")
+	}
+}
+
+func TestLiveTabRendersSessions(t *testing.T) {
+	m := New(Deps{})
+	m.tab = TabLive
+	m.live = []cache.LiveSession{
+		{ProjectCanonical: "/foo/dotfiles", Model: "claude-opus-4-7", CostUSD: 1.84},
+	}
+	v := m.View()
+	if !strings.Contains(v, "dotfiles") {
+		t.Errorf("expected project in view:\n%s", v)
+	}
+	if !strings.Contains(v, "$1.84") {
+		t.Errorf("expected $1.84 in view:\n%s", v)
 	}
 }

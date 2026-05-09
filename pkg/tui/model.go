@@ -4,6 +4,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/martinciu/ccpulse/pkg/cache"
 	"github.com/martinciu/ccpulse/pkg/status"
 )
 
@@ -32,6 +33,7 @@ type Model struct {
 	w, h     int
 	window   status.Window
 	showHelp bool
+	live     []cache.LiveSession
 }
 
 func New(d Deps) Model {
@@ -75,7 +77,13 @@ func (m Model) View() string {
 	}
 	header := renderHeader(m.style, m.window, width)
 	tabs := m.renderTabs()
-	body := "  <" + m.tab.String() + ">"
+	var body string
+	switch m.tab {
+	case TabLive:
+		body = renderLive(m.live)
+	default:
+		body = "  <" + m.tab.String() + ">"
+	}
 	footer := m.style.Footer.Render("[tab]→  [j/k]nav  [r]efresh  [c]onfig  [?]help  [q]")
 	return lipgloss.JoinVertical(lipgloss.Left, header, tabs, body, footer)
 }

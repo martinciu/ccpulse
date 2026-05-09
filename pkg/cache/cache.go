@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	_ "embed"
 	"fmt"
+	"time"
 
 	"github.com/martinciu/ccpulse/pkg/parse"
 	"github.com/martinciu/ccpulse/pkg/pricing"
@@ -145,4 +146,50 @@ FROM slug_canonical WHERE slug = ?`, slug)
 	}
 	s.Resolved = r != 0
 	return s, true, nil
+}
+
+type LiveSession struct {
+	SessionID        string
+	ProjectCanonical string
+	WorktreeBranch   string
+	Model            string
+	LastTS           time.Time
+	WorkingTimeSec   int64
+	CostUSD          float64
+}
+
+// LiveSessions returns sessions with activity in [now-since, now],
+// most-recent first.
+func (c *Cache) LiveSessions(now time.Time, since time.Duration) ([]LiveSession, error) {
+	cutoff := now.Add(-since).Format("2006-01-02T15:04:05.000Z07:00")
+	rows, err := c.db.Query(`
+SELECT
+  session_id,
+  COALESCE(NULLIF(project_canonical, ''), project_slug) AS proj,
+  COALESCE(worktree_branch, '') AS wt,
+  model,
+  MAX(ts) AS last_ts,
+  SUM(cost_usd_estimate) AS cost
+FROM messages
+WHERE ts >= ?
+GROUP BY session_id
+ORDER BY last_ts DESC
+LIMIT 200
+`, cutoff)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []LiveSession
+	for rows.Next() {
+		var ls LiveSession
+		var lastTS string
+		if err := rows.Scan(&ls.SessionID, &ls.ProjectCanonical,
+			&ls.WorktreeBranch, &ls.Model, &lastTS, &ls.CostUSD); err != nil {
+			return nil, err
+		}
+		ls.LastTS, _ = time.Parse("2006-01-02T15:04:05.000Z07:00", lastTS)
+		out = append(out, ls)
+	}
+	return out, rows.Err()
 }
