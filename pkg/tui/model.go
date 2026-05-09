@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/martinciu/ccpulse/pkg/anthro"
 	"github.com/martinciu/ccpulse/pkg/cache"
 	"github.com/martinciu/ccpulse/pkg/state"
 	"github.com/martinciu/ccpulse/pkg/status"
@@ -36,8 +37,19 @@ type Deps struct {
 	Cache         *cache.Cache
 	ProjectsRoot  string
 	HistoryDays   int
-	Tier          string
-	CeilingTokens int64
+	Credential    anthro.Credential
+	HasOAuth      bool
+	CacheDir      string
+	DisplayMode   status.DisplayMode
+	DisplayBudget status.DisplayBudget
+}
+
+// QuotaMsg is sent by the background goroutine in runTUI when fresh
+// usage data is available (or when the cached/stale fallback is used).
+type QuotaMsg struct {
+	Usage     *anthro.Usage
+	Source    string
+	UpdatedAt time.Time
 }
 
 type Model struct {
@@ -55,6 +67,10 @@ type Model struct {
 	modelsWindow cache.ModelsWindow
 	drilled      bool
 	liveScope    string
+
+	quota          *anthro.Usage
+	quotaSource    string
+	quotaUpdatedAt time.Time
 }
 
 func New(d Deps) Model {
@@ -78,12 +94,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.w, m.h = msg.Width, msg.Height
+	case QuotaMsg:
+		m.quota = msg.Usage
+		m.quotaSource = msg.Source
+		m.quotaUpdatedAt = msg.UpdatedAt
+		if m.deps.Cache != nil {
+			if w, err := computeWindowFromDeps(m.deps, time.Now(), m.quota, m.quotaSource, m.quotaUpdatedAt); err == nil {
+				m.window = w
+			}
+		}
+		return m, nil
 	case RefreshMsg:
 		if m.deps.Cache == nil {
 			return m, nil
 		}
 		now := time.Now()
-		if w, err := computeWindowFromDeps(m.deps, now); err == nil {
+		if w, err := computeWindowFromDeps(m.deps, now, m.quota, m.quotaSource, m.quotaUpdatedAt); err == nil {
 			m.window = w
 		}
 		if rows, err := m.deps.Cache.LiveSessions(now, 24*time.Hour); err == nil {
@@ -141,7 +167,8 @@ func (m Model) View() string {
 	if width < 80 {
 		width = 80
 	}
-	header := renderHeader(m.style, m.window, width)
+	expired := m.deps.HasOAuth && m.deps.Credential.Expired(time.Now())
+	header := renderHeader(m.style, m.window, expired, width)
 	tabs := m.renderTabs()
 	var body string
 	switch m.tab {
@@ -201,20 +228,18 @@ func or30(d int) int {
 	return d
 }
 
-// computeWindowFromDeps is a thin shim around status.Compute.
-// Lives here to avoid leaking config plumbing into Deps; the TUI
-// re-uses the cache.DB() handle and a constant ceiling-label of "max_20x"
-// for v0. Phase 11 polish will pull tier from config.
-func computeWindowFromDeps(d Deps, now time.Time) (status.Window, error) {
-	tier := d.Tier
-	if tier == "" {
-		tier = "max_20x"
+// computeWindowFromDeps merges the latest Usage (from QuotaMsg or zero state)
+// with the DB heuristic. The TUI never hits the API itself — that's the
+// background goroutine's job.
+func computeWindowFromDeps(d Deps, now time.Time, q *anthro.Usage, src string, updatedAt time.Time) (status.Window, error) {
+	in := status.QuotaInput{
+		Usage:      q,
+		Source:     src,
+		UpdatedAt:  updatedAt,
+		TierSlug:   anthro.TierSlug(d.Credential.RateLimitTier),
+		TierPretty: anthro.TierPretty(d.Credential.RateLimitTier),
 	}
-	ceiling := d.CeilingTokens
-	if ceiling == 0 && tier != "api" {
-		ceiling = 240_000_000 // sensible default if controller didn't set it
-	}
-	return status.Compute(d.Cache.DB(), now, tier, ceiling)
+	return status.Compute(d.Cache.DB(), now, in)
 }
 
 // currentTmuxSessionIDs returns the set of session IDs whose JSONL is

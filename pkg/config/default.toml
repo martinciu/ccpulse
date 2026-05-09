@@ -1,6 +1,9 @@
-[plan]
-tier = "max_20x"
-custom_ceiling_tokens = 0
+[display]
+# "auto" picks "percent" when an OAuth credential is present, "cost" otherwise.
+# Override with "percent" or "cost" to lock it.
+mode = "auto"
+cost_warn_usd = 5.0
+cost_hot_usd = 10.0
 
 [ui]
 accent = "#6c71c4"
