@@ -137,3 +137,32 @@ func TestProcessFile_TailFromStoredOffset(t *testing.T) {
 		t.Errorf("offset did not advance: off1=%d off2=%d", off1, off2)
 	}
 }
+
+func TestProcessFile_SkipsWhenAtEOF(t *testing.T) {
+	ing, _, path := newIngesterFixture(t)
+
+	// First pass: ingest fully.
+	if _, err := ing.ProcessFile(path); err != nil {
+		t.Fatal(err)
+	}
+
+	// Make the file unreadable AFTER recording the offset.
+	// If ProcessFile attempts to open it, it will log a permission
+	// error. If it skips correctly, the log stays empty.
+	if err := os.Chmod(path, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(path, 0o644) })
+
+	n, err := ing.ProcessFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("inserted on skip pass = %d, want 0", n)
+	}
+
+	if data, _ := os.ReadFile(ing.ParseErrorsLog); len(data) > 0 {
+		t.Errorf("expected empty log (file should not have been opened), got: %s", data)
+	}
+}

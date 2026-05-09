@@ -32,7 +32,12 @@ func (i *Ingester) ProcessFile(path string) (inserted int, err error) {
 		return 0, nil
 	}
 
-	_, offset, line, _, _ := i.Cache.GetFile(path)
+	_, offset, line, found, _ := i.Cache.GetFile(path)
+
+	// Skip optimisation: file recorded and size unchanged → nothing new.
+	if found && offset == st.Size() {
+		return 0, nil
+	}
 
 	slug, _, _ := SlugAndSubagent(i.ProjectsRoot, path)
 
