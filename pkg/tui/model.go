@@ -1,6 +1,9 @@
 package tui
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -8,6 +11,7 @@ import (
 
 	"github.com/martinciu/ccpulse/pkg/cache"
 	"github.com/martinciu/ccpulse/pkg/status"
+	"github.com/martinciu/ccpulse/pkg/tmux"
 )
 
 // RefreshMsg is sent by the watcher loop to trigger a TUI re-query.
@@ -123,7 +127,8 @@ func (m Model) View() string {
 	var body string
 	switch m.tab {
 	case TabLive:
-		body = renderLive(m.live)
+		thisTmux := m.currentTmuxSessionIDs(m.deps.ProjectsRoot)
+		body = renderLive(m.live, thisTmux, time.Now())
 	case TabToday:
 		body = renderToday(m.today)
 	case TabHistory:
@@ -173,4 +178,70 @@ func or30(d int) int {
 // for v0. Phase 11 polish will pull tier from config.
 func computeWindowFromDeps(d Deps, now time.Time) (status.Window, error) {
 	return status.Compute(d.Cache.DB(), now, "max_20x", 240_000_000)
+}
+
+// currentTmuxSessionIDs returns the set of session IDs whose JSONL is
+// the most-recently-modified one in a slug whose decoded path matches
+// any pane in the current tmux session.
+//
+// Outside tmux: returns an empty map (no markers applied).
+// Errors from tmux calls are swallowed — markers are best-effort.
+func (m Model) currentTmuxSessionIDs(projectsRoot string) map[string]bool {
+	out := map[string]bool{}
+	if os.Getenv("TMUX") == "" {
+		return out
+	}
+	t := tmux.New()
+	sess, err := t.CurrentSession()
+	if err != nil {
+		return out
+	}
+	paths, err := t.PanePaths(strings.TrimSpace(sess))
+	if err != nil {
+		return out
+	}
+	for _, p := range paths {
+		slug := encodeSlug(p)
+		dir := filepath.Join(projectsRoot, slug)
+		jsonl, err := mostRecentJSONL(dir)
+		if err != nil || jsonl == "" {
+			continue
+		}
+		sid := strings.TrimSuffix(filepath.Base(jsonl), ".jsonl")
+		out[sid] = true
+	}
+	return out
+}
+
+// encodeSlug is the inverse of canonical.DecodeSlug for the `/` and `.`
+// substitutions: '/' → '-', '.' → '--'.
+func encodeSlug(path string) string {
+	s := strings.ReplaceAll(path, ".", "--")
+	s = strings.ReplaceAll(s, "/", "-")
+	return s
+}
+
+// mostRecentJSONL returns the path to the most recently modified
+// `*.jsonl` file in dir, or empty string if none exists.
+func mostRecentJSONL(dir string) (string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", err
+	}
+	var newestName string
+	var newestT time.Time
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
+			continue
+		}
+		info, _ := e.Info()
+		if newestName == "" || info.ModTime().After(newestT) {
+			newestName = e.Name()
+			newestT = info.ModTime()
+		}
+	}
+	if newestName == "" {
+		return "", nil
+	}
+	return filepath.Join(dir, newestName), nil
 }

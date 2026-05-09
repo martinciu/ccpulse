@@ -3,6 +3,7 @@ package tui
 import (
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/martinciu/ccpulse/pkg/cache"
@@ -45,7 +46,8 @@ func TestLiveTabRendersSessions(t *testing.T) {
 	m := New(Deps{})
 	m.tab = TabLive
 	m.live = []cache.LiveSession{
-		{ProjectCanonical: "/foo/dotfiles", Model: "claude-opus-4-7", CostUSD: 1.84},
+		{ProjectCanonical: "/foo/dotfiles", Model: "claude-opus-4-7", CostUSD: 1.84,
+			LastTS: time.Now().Add(-time.Hour)},
 	}
 	v := m.View()
 	if !strings.Contains(v, "dotfiles") {
@@ -53,6 +55,20 @@ func TestLiveTabRendersSessions(t *testing.T) {
 	}
 	if !strings.Contains(v, "$1.84") {
 		t.Errorf("expected $1.84 in view:\n%s", v)
+	}
+}
+
+func TestLiveMarkers(t *testing.T) {
+	now := time.Now()
+	rows := []cache.LiveSession{
+		{SessionID: "s1", ProjectCanonical: "/x/dotfiles", Model: "opus", CostUSD: 1.0,
+			LastTS: now.Add(-1 * time.Minute)},
+		{SessionID: "s2", ProjectCanonical: "/x/foo", Model: "sonnet", CostUSD: 2.0,
+			LastTS: now.Add(-1 * time.Hour)},
+	}
+	got := renderLive(rows, map[string]bool{"s1": true}, now)
+	if !strings.Contains(got, "⚡◆") {
+		t.Errorf("expected ⚡◆ on s1: %s", got)
 	}
 }
 
