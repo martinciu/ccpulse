@@ -224,6 +224,53 @@ func TestRecordUsageSample_DuplicateTs(t *testing.T) {
 	}
 }
 
+func TestPruneUsageSamples(t *testing.T) {
+	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	base := time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)
+	samples := []time.Time{
+		base.Add(-100 * time.Second),
+		base.Add(-50 * time.Second),
+		base,
+	}
+	for i, when := range samples {
+		u := anthro.Usage{FiveHour: &anthro.Bucket{Utilization: float64(i), ResetsAt: when.Add(time.Hour)}}
+		if err := c.RecordUsageSample(u, when); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cutoff := base.Add(-60 * time.Second) // boundary: drop the -100s row, keep -50s and base
+	n, err := c.PruneUsageSamples(cutoff)
+	if err != nil {
+		t.Fatalf("PruneUsageSamples: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("rows deleted = %d, want 1", n)
+	}
+
+	var remaining int
+	if err := c.DB().QueryRow(`SELECT count(*) FROM usage_samples`).Scan(&remaining); err != nil {
+		t.Fatal(err)
+	}
+	if remaining != 2 {
+		t.Errorf("remaining rows = %d, want 2", remaining)
+	}
+
+	// Cutoff is strictly less-than: a row exactly at cutoff is kept.
+	var earliest int64
+	if err := c.DB().QueryRow(`SELECT MIN(ts) FROM usage_samples`).Scan(&earliest); err != nil {
+		t.Fatal(err)
+	}
+	if earliest != base.Add(-50*time.Second).Unix() {
+		t.Errorf("earliest remaining ts = %d, want %d", earliest, base.Add(-50*time.Second).Unix())
+	}
+}
+
 func TestOpenWipesOnSchemaVersionMismatch(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "state.db")
