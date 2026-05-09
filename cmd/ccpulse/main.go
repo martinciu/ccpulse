@@ -14,6 +14,7 @@ import (
 	"github.com/martinciu/ccpulse/pkg/cache"
 	"github.com/martinciu/ccpulse/pkg/canonical"
 	"github.com/martinciu/ccpulse/pkg/config"
+	"github.com/martinciu/ccpulse/pkg/ingest"
 	"github.com/martinciu/ccpulse/pkg/parse"
 	"github.com/martinciu/ccpulse/pkg/pricing"
 	"github.com/martinciu/ccpulse/pkg/status"
@@ -173,7 +174,7 @@ func runTUI(_ interface{}) error {
 		}
 		// Append parse errors to the rotated parse-errors.log.
 		if len(perrs) > 0 {
-			appendParseErrors(filepath.Join(cacheDir, "parse-errors.log"), path, perrs)
+			ingest.AppendParseErrors(filepath.Join(cacheDir, "parse-errors.log"), path, perrs)
 		}
 		if len(msgs) == 0 {
 			return
@@ -201,25 +202,6 @@ func runTUI(_ interface{}) error {
 
 	_, err = p.Run()
 	return err
-}
-
-const parseErrorsMaxBytes = 10 * 1024 * 1024 // 10 MB
-
-// appendParseErrors writes per-line parse errors to a log file, rotating
-// once the file exceeds 10 MB by truncating it and starting fresh.
-// Best-effort — any error is swallowed.
-func appendParseErrors(logPath, source string, perrs []parse.ParseError) {
-	if info, err := os.Stat(logPath); err == nil && info.Size() > parseErrorsMaxBytes {
-		_ = os.Remove(logPath)
-	}
-	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-	for _, pe := range perrs {
-		fmt.Fprintf(f, "%s:%d %v\n", source, pe.Line, pe.Err)
-	}
 }
 
 // slugFor extracts the slug (top-level dir under projects root) from a path.
