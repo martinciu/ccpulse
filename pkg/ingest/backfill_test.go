@@ -8,12 +8,6 @@ import (
 	"time"
 )
 
-// recordedProgress collects every Progress callback for assertion.
-type recordedProgress struct {
-	calls []Progress
-	paths []string // populated by tests that wrap ProcessFile
-}
-
 func TestBackfillRun_WalksFilesNewestFirstWithProgress(t *testing.T) {
 	ing, projects, _ := newIngesterFixture(t)
 	// newIngesterFixture already wrote sess.jsonl. Add two more
@@ -165,14 +159,28 @@ func TestBackfillRun_EmptyTree(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if len(calls) != 2 {
-		t.Fatalf("calls = %d, want 2 (initial + final)", len(calls))
+	if len(calls) != 0 {
+		t.Errorf("empty tree fired %d progress calls, want 0", len(calls))
 	}
-	if calls[0].Total != 0 || !calls[0].Active {
-		t.Errorf("initial = %+v, want Total=0 Active=true", calls[0])
+}
+
+func TestBackfillRun_NoIndicatorWhenAllFilesCached(t *testing.T) {
+	// Regression for the post-`index --rebuild` UX bug: every file
+	// is at-EOF in the cache, so backfill should fire zero progress
+	// callbacks and the indicator should never appear.
+	ing, _, path := newIngesterFixture(t)
+	if _, err := ing.ProcessFile(path); err != nil {
+		t.Fatal(err)
 	}
-	if calls[1].Active || calls[1].Done != 0 {
-		t.Errorf("final = %+v, want Active=false Done=0", calls[1])
+
+	bf := &Backfill{Ingester: ing}
+	var calls []Progress
+	if err := bf.Run(context.Background(), func(p Progress) { calls = append(calls, p) }); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(calls) != 0 {
+		t.Errorf("all-cached tree fired %d progress calls, want 0", len(calls))
 	}
 }
 
@@ -231,7 +239,7 @@ func TestBackfillRun_ConcurrentWatcherSameFile(t *testing.T) {
 func TestBackfillRun_HonoursCtxCancellation(t *testing.T) {
 	ing, projects, _ := newIngesterFixture(t)
 	dir := filepath.Join(projects, "-Users-x-foo")
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		p := filepath.Join(dir, "extra-"+string(rune('a'+i))+".jsonl")
 		if err := os.WriteFile(p, jsonl("e"+string(rune('a'+i))), 0644); err != nil {
 			t.Fatal(err)

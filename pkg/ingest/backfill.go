@@ -26,14 +26,16 @@ type Backfill struct {
 	onBeforeProcess func(path string)
 }
 
-// Run enumerates .jsonl files, sorts newest-mtime first, and feeds
-// each one through Ingester.ProcessFile. onProgress is called with
-// Active:true Done:0 Total:N before the loop starts, with each
-// (i+1)/N step after each file, and once at the end with
-// Active:false. Honours ctx cancellation between files. Never
-// returns an error from a single bad file; only top-level walk
-// failure (e.g. ProjectsRoot does not exist) returns nil with no
-// progress callbacks.
+// Run enumerates .jsonl files, filters out files that are already
+// caught up, sorts the remainder newest-mtime first, and feeds each
+// through Ingester.ProcessFile. onProgress is only called when
+// there is at least one file to process: Active:true Done:0 Total:N
+// before the loop, (i+1)/N after each file, and once at the end
+// with Active:false. When every file is already caught up (the
+// common case immediately after `index --rebuild`), no progress
+// callback fires and the TUI never shows the indicator. Honours
+// ctx cancellation between files; never aborts on a single bad
+// file. ProjectsRoot missing returns nil with no callbacks.
 func (b *Backfill) Run(ctx context.Context, onProgress func(Progress)) error {
 	// Pre-stat the root so a missing ProjectsRoot exits cleanly with
 	// zero progress callbacks. The walker below can't distinguish
@@ -53,6 +55,12 @@ func (b *Backfill) Run(ctx context.Context, onProgress func(Progress)) error {
 	// the walk continues across permission glitches in single
 	// subdirectories. Root-not-found is handled by the pre-stat
 	// above, so WalkDir's return value is always nil here.
+	//
+	// We also drop files whose stored offset already matches the
+	// current size — Ingester.ProcessFile would skip them anyway,
+	// but enqueueing them here would inflate Total and tick the
+	// indicator across files that need no work (very visible after
+	// `index --rebuild`).
 	var entries []entry
 	_ = filepath.WalkDir(b.Ingester.ProjectsRoot, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -70,6 +78,10 @@ func (b *Backfill) Run(ctx context.Context, onProgress func(Progress)) error {
 			LogFileError(b.Ingester.ParseErrorsLog, p, err)
 			return nil
 		}
+		_, offset, _, found, _ := b.Ingester.Cache.GetFile(p)
+		if found && offset == info.Size() {
+			return nil
+		}
 		entries = append(entries, entry{path: p, mtime: info.ModTime()})
 		return nil
 	})
@@ -79,6 +91,11 @@ func (b *Backfill) Run(ctx context.Context, onProgress func(Progress)) error {
 	})
 
 	total := len(entries)
+	if total == 0 {
+		// Nothing to do — don't show the indicator at all.
+		return nil
+	}
+
 	if onProgress != nil {
 		onProgress(Progress{Done: 0, Total: total, Active: true})
 	}
