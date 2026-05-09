@@ -115,6 +115,51 @@ func TestScopeTogglePersists(t *testing.T) {
 	}
 }
 
+func TestUpdate_IndexProgressMsgUpdatesModelState(t *testing.T) {
+	m := Model{}
+	updated, _ := m.Update(IndexProgressMsg{Done: 3, Total: 7, Active: true})
+	got := updated.(Model)
+
+	if got.indexDone != 3 {
+		t.Errorf("indexDone = %d, want 3", got.indexDone)
+	}
+	if got.indexTotal != 7 {
+		t.Errorf("indexTotal = %d, want 7", got.indexTotal)
+	}
+	if !got.indexActive {
+		t.Errorf("indexActive = false, want true")
+	}
+}
+
+func TestUpdate_IndexProgressMsg_FinalClearsActive(t *testing.T) {
+	m := Model{indexDone: 3, indexTotal: 7, indexActive: true}
+	updated, _ := m.Update(IndexProgressMsg{Done: 7, Total: 7, Active: false})
+	got := updated.(Model)
+
+	if got.indexActive {
+		t.Errorf("indexActive = true, want false (final progress)")
+	}
+	if got.indexTotal != 7 {
+		t.Errorf("indexTotal = %d, want 7", got.indexTotal)
+	}
+}
+
+func TestRenderHeader_NoIndicatorWhenInactive(t *testing.T) {
+	got := renderHeader(Style{}, status.Window{CeilingLabel: "Max 20×"}, false, 80,
+		IndexProgress{Active: false})
+	if strings.Contains(got, "indexing") {
+		t.Errorf("header contains 'indexing' when Active=false:\n%s", got)
+	}
+}
+
+func TestRenderHeader_ShowsIndexingWhenActive(t *testing.T) {
+	got := renderHeader(Style{}, status.Window{CeilingLabel: "Max 20×"}, false, 80,
+		IndexProgress{Active: true, Done: 12, Total: 47})
+	if !strings.Contains(got, "indexing 12/47") {
+		t.Errorf("header missing 'indexing 12/47':\n%s", got)
+	}
+}
+
 func TestQuotaMsgUpdatesWindow(t *testing.T) {
 	m := New(Deps{Cache: nil})
 	msg := QuotaMsg{

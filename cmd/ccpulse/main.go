@@ -7,7 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
+	"sync"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -18,7 +18,7 @@ import (
 	"github.com/martinciu/ccpulse/pkg/cache"
 	"github.com/martinciu/ccpulse/pkg/canonical"
 	"github.com/martinciu/ccpulse/pkg/config"
-	"github.com/martinciu/ccpulse/pkg/parse"
+	"github.com/martinciu/ccpulse/pkg/ingest"
 	"github.com/martinciu/ccpulse/pkg/pricing"
 	"github.com/martinciu/ccpulse/pkg/status"
 	"github.com/martinciu/ccpulse/pkg/tui"
@@ -151,6 +151,14 @@ func runTUI(_ interface{}) error {
 
 	projectsRoot := envOr("CCPULSE_PROJECTS_ROOT", expand(cfg.Paths.ProjectsRoot))
 
+	ing := &ingest.Ingester{
+		Cache:          c,
+		Resolver:       res,
+		Pricing:        tab,
+		ProjectsRoot:   projectsRoot,
+		ParseErrorsLog: filepath.Join(cacheDir, "parse-errors.log"),
+	}
+
 	w, err := watcher.New(projectsRoot)
 	if err != nil {
 		return err
@@ -186,36 +194,33 @@ func runTUI(_ interface{}) error {
 	}
 
 	go w.Run(func(path string) {
-		// Tail-parse on event, write deltas, back-fill canonical,
-		// then post a RefreshMsg.
-		slug := slugFor(projectsRoot, path)
-		_, off, line, _, _ := c.GetFile(path)
-		msgs, perrs, newOff, newLine, err := parse.ParseFromOffsetWithErrors(path, slug, off, int(line))
-		if err != nil {
-			return
-		}
-		// Append parse errors to the rotated parse-errors.log.
-		if len(perrs) > 0 {
-			appendParseErrors(filepath.Join(cacheDir, "parse-errors.log"), path, perrs)
-		}
-		if len(msgs) == 0 {
-			return
-		}
-		if err := c.InsertMessages(msgs, tab); err != nil {
-			return
-		}
-		// New slug? Resolve and back-fill canonical for these rows.
-		r, _ := res.Resolve(slug)
-		if r.CanonicalPath != "" {
-			_, _ = c.DB().Exec(
-				`UPDATE messages SET project_canonical = ?, worktree_branch = ? WHERE project_slug = ? AND project_canonical = ''`,
-				r.CanonicalPath, r.Branch, slug,
-			)
-		}
-		st, _ := os.Stat(path)
-		_ = c.RecordFile(path, st.ModTime().UnixNano(), newOff, int64(newLine))
+		_, _ = ing.ProcessFile(path)
 		p.Send(tui.RefreshMsg{})
 	})
+
+	// Startup backfill: catch the cache up to EOF for every .jsonl
+	// under projectsRoot. Runs concurrently with the watcher;
+	// SQLite serialises writes, InsertMessages is idempotent, so
+	// the worst case of overlap is wasted parse work.
+	//
+	// On shutdown the goroutine must finish before c.Close runs, or
+	// an in-flight ProcessFile would write to a closed SQLite handle.
+	// Defer order is LIFO, so registering Wait *after* Cancel makes
+	// Cancel fire first (signal the goroutine), then Wait blocks
+	// until the goroutine returns, then w.Close and c.Close run.
+	bfCtx, bfCancel := context.WithCancel(context.Background())
+	var bfDone sync.WaitGroup
+	bfDone.Add(1)
+	bf := &ingest.Backfill{Ingester: ing}
+	go func() {
+		defer bfDone.Done()
+		_ = bf.Run(bfCtx, func(pr ingest.Progress) {
+			p.Send(tui.IndexProgressMsg{Done: pr.Done, Total: pr.Total, Active: pr.Active})
+			p.Send(tui.RefreshMsg{})
+		})
+	}()
+	defer bfDone.Wait()
+	defer bfCancel()
 
 	// Kick off an initial refresh so the TUI shows current data on launch.
 	go func() {
@@ -224,38 +229,6 @@ func runTUI(_ interface{}) error {
 
 	_, err = p.Run()
 	return err
-}
-
-const parseErrorsMaxBytes = 10 * 1024 * 1024 // 10 MB
-
-// appendParseErrors writes per-line parse errors to a log file, rotating
-// once the file exceeds 10 MB by truncating it and starting fresh.
-// Best-effort — any error is swallowed.
-func appendParseErrors(logPath, source string, perrs []parse.ParseError) {
-	if info, err := os.Stat(logPath); err == nil && info.Size() > parseErrorsMaxBytes {
-		_ = os.Remove(logPath)
-	}
-	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-	for _, pe := range perrs {
-		fmt.Fprintf(f, "%s:%d %v\n", source, pe.Line, pe.Err)
-	}
-}
-
-// slugFor extracts the slug (top-level dir under projects root) from a path.
-func slugFor(root, path string) string {
-	rel, err := filepath.Rel(root, path)
-	if err != nil {
-		return ""
-	}
-	parts := strings.Split(rel, string(os.PathSeparator))
-	if len(parts) == 0 {
-		return ""
-	}
-	return parts[0]
 }
 
 // runQuotaPoller fires once immediately, then every 2 minutes, fetching
