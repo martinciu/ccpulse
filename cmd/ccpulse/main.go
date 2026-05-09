@@ -7,9 +7,11 @@ import (
 	"path/filepath"
 
 	"github.com/BurntSushi/toml"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 
 	"github.com/martinciu/ccpulse/pkg/config"
+	"github.com/martinciu/ccpulse/pkg/tui"
 )
 
 const version = "v0.0.0"
@@ -95,8 +97,15 @@ func defaultTOMLBytes() []byte {
 # See "ccpulse config show" for the live values (defaults + your overrides).
 `)
 }
-// Stub — filled in by Task 28 (TUI launch).
-func runTUI(out interface{}) error { return nil }
+// runTUI launches the Bubble Tea program with the TUI model. The `out`
+// parameter is reserved for future use (currently the TUI manages its
+// own terminal IO via the alt screen).
+func runTUI(_ interface{}) error {
+	m := tui.New(tui.Deps{})
+	p := tea.NewProgram(m, tea.WithAltScreen())
+	_, err := p.Run()
+	return err
+}
 
 func main() {
 	if err := newRootCmd().Execute(); err != nil {
