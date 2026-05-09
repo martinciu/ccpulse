@@ -19,13 +19,13 @@ func TestOpenAppliesSchema(t *testing.T) {
 	}
 	defer c.Close()
 
-	row := c.DB().QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('messages','files','slug_canonical','meta')`)
+	row := c.DB().QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('messages','files','slug_canonical','meta','usage_samples')`)
 	var n int
 	if err := row.Scan(&n); err != nil {
 		t.Fatal(err)
 	}
-	if n != 4 {
-		t.Fatalf("expected 4 tables, got %d", n)
+	if n != 5 {
+		t.Fatalf("expected 5 tables, got %d", n)
 	}
 }
 

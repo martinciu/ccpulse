@@ -15,7 +15,7 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
-const SchemaVersion = "2"
+const SchemaVersion = "3"
 
 type Cache struct {
 	db *sql.DB
