@@ -5,6 +5,8 @@ import (
 	_ "embed"
 	"fmt"
 
+	"github.com/martinciu/ccpulse/pkg/parse"
+	"github.com/martinciu/ccpulse/pkg/pricing"
 	_ "modernc.org/sqlite"
 )
 
@@ -36,3 +38,46 @@ func Open(path string) (*Cache, error) {
 func (c *Cache) DB() *sql.DB { return c.db }
 
 func (c *Cache) Close() error { return c.db.Close() }
+
+func (c *Cache) InsertMessages(msgs []parse.Message, tab pricing.Table) error {
+	tx, err := c.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`
+INSERT INTO messages
+(session_id, project_slug, ts, role, model,
+ input_tokens, output_tokens, cache_read_tokens,
+ cache_write_5m_tokens, cache_write_1h_tokens,
+ cost_usd_estimate, pricing_unknown,
+ is_subagent, parent_session_id)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, m := range msgs {
+		cost, unknown := tab.CostFor(m)
+		unk := 0
+		if unknown {
+			unk = 1
+		}
+		sub := 0
+		if m.IsSubagent {
+			sub = 1
+		}
+		if _, err := stmt.Exec(
+			m.SessionID, m.ProjectSlug, m.Timestamp.Format("2006-01-02T15:04:05.000Z07:00"),
+			m.Role, m.Model,
+			m.InputTokens, m.OutputTokens, m.CacheReadTokens,
+			m.CacheWrite5mTokens, m.CacheWrite1hTokens,
+			cost, unk, sub, m.ParentSessionID,
+		); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}

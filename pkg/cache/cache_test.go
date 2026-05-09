@@ -3,6 +3,10 @@ package cache
 import (
 	"path/filepath"
 	"testing"
+	"time"
+
+	"github.com/martinciu/ccpulse/pkg/parse"
+	"github.com/martinciu/ccpulse/pkg/pricing"
 )
 
 func TestOpenAppliesSchema(t *testing.T) {
@@ -22,5 +26,47 @@ func TestOpenAppliesSchema(t *testing.T) {
 	}
 	if n != 4 {
 		t.Fatalf("expected 4 tables, got %d", n)
+	}
+}
+
+func TestInsertMessages(t *testing.T) {
+	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	tab, _ := pricing.Load()
+	msgs := []parse.Message{
+		{
+			SessionID:   "s1",
+			ProjectSlug: "slug-a",
+			Model:       "claude-opus-4-7",
+			Timestamp:   time.Now(),
+			InputTokens: 10,
+		},
+	}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatal(err)
+	}
+
+	var n int
+	if err := c.DB().QueryRow(`SELECT count(*) FROM messages`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("messages count = %d, want 1", n)
+	}
+
+	var cost float64
+	var unknown int
+	if err := c.DB().QueryRow(`SELECT cost_usd_estimate, pricing_unknown FROM messages`).Scan(&cost, &unknown); err != nil {
+		t.Fatal(err)
+	}
+	if unknown != 0 {
+		t.Errorf("pricing_unknown = %d, want 0", unknown)
+	}
+	if cost <= 0 {
+		t.Errorf("cost = %v, want > 0", cost)
 	}
 }
