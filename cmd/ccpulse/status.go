@@ -53,8 +53,7 @@ func runStatus(cmd *cobra.Command, asJSON, asTmux bool) error {
 		j, _ := status.JSON(w)
 		fmt.Fprintln(cmd.OutOrStdout(), j)
 	case asTmux:
-		// TmuxLine added in Task 22. For now, print plain text.
-		fmt.Fprintf(cmd.OutOrStdout(), "5h window: %d%% used, resets in %dm\n", w.Percent, w.MinutesToReset)
+		fmt.Fprint(cmd.OutOrStdout(), status.TmuxLine(w, cfg.Plan))
 	default:
 		fmt.Fprintf(cmd.OutOrStdout(), "5h window: %d%% used, resets in %dm\n", w.Percent, w.MinutesToReset)
 	}
