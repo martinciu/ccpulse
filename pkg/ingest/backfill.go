@@ -49,11 +49,15 @@ func (b *Backfill) Run(ctx context.Context, onProgress func(Progress)) error {
 		mtime time.Time
 	}
 
+	// The visitor swallows per-entry errors (logged, return nil) so
+	// the walk continues across permission glitches in single
+	// subdirectories. Root-not-found is handled by the pre-stat
+	// above, so WalkDir's return value is always nil here.
 	var entries []entry
-	walkErr := filepath.WalkDir(b.Ingester.ProjectsRoot, func(p string, d os.DirEntry, err error) error {
+	_ = filepath.WalkDir(b.Ingester.ProjectsRoot, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
 			LogFileError(b.Ingester.ParseErrorsLog, p, err)
-			return nil // continue walk
+			return nil
 		}
 		if d.IsDir() {
 			return nil
@@ -69,12 +73,6 @@ func (b *Backfill) Run(ctx context.Context, onProgress func(Progress)) error {
 		entries = append(entries, entry{path: p, mtime: info.ModTime()})
 		return nil
 	})
-	if walkErr != nil {
-		// Top-level walk failed (root missing). Log and bail without
-		// any progress callbacks; the TUI never shows an indicator.
-		LogFileError(b.Ingester.ParseErrorsLog, b.Ingester.ProjectsRoot, walkErr)
-		return nil
-	}
 
 	sort.Slice(entries, func(i, j int) bool {
 		return entries[i].mtime.After(entries[j].mtime)

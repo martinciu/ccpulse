@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 
 	"github.com/BurntSushi/toml"
 	tea "github.com/charmbracelet/bubbletea"
@@ -179,15 +180,25 @@ func runTUI(_ interface{}) error {
 	// under projectsRoot. Runs concurrently with the watcher;
 	// SQLite serialises writes, InsertMessages is idempotent, so
 	// the worst case of overlap is wasted parse work.
+	//
+	// On shutdown the goroutine must finish before c.Close runs, or
+	// an in-flight ProcessFile would write to a closed SQLite handle.
+	// Defer order is LIFO, so registering Wait *after* Cancel makes
+	// Cancel fire first (signal the goroutine), then Wait blocks
+	// until the goroutine returns, then w.Close and c.Close run.
 	bfCtx, bfCancel := context.WithCancel(context.Background())
-	defer bfCancel()
+	var bfDone sync.WaitGroup
+	bfDone.Add(1)
 	bf := &ingest.Backfill{Ingester: ing}
 	go func() {
+		defer bfDone.Done()
 		_ = bf.Run(bfCtx, func(pr ingest.Progress) {
 			p.Send(tui.IndexProgressMsg{Done: pr.Done, Total: pr.Total, Active: pr.Active})
 			p.Send(tui.RefreshMsg{})
 		})
 	}()
+	defer bfDone.Wait()
+	defer bfCancel()
 
 	// Kick off an initial refresh so the TUI shows current data on launch.
 	go func() {

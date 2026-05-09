@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"sort"
 	"testing"
 	"time"
 )
@@ -120,8 +119,6 @@ func TestBackfillRun_NewestMtimeFirst(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	gotOrder := append([]string{}, seen...)
-	sort.SliceStable(gotOrder, func(i, j int) bool { return false }) // no-op; assert raw order
 	if len(seen) != 3 {
 		t.Fatalf("processed %d files, want 3", len(seen))
 	}
