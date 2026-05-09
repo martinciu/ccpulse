@@ -7,11 +7,10 @@ import (
 	"testing"
 )
 
-func TestIndexCmdSmoke(t *testing.T) {
-	// Lay out a fake projects root and cache dir.
+func TestIndexRebuildSmoke(t *testing.T) {
 	dir := t.TempDir()
 	projects := filepath.Join(dir, "projects")
-	cache := filepath.Join(dir, "cache")
+	cacheDir := filepath.Join(dir, "cache")
 	if err := os.MkdirAll(filepath.Join(projects, "-fake-slug"), 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -21,17 +20,17 @@ func TestIndexCmdSmoke(t *testing.T) {
 	}
 
 	t.Setenv("CCPULSE_PROJECTS_ROOT", projects)
-	t.Setenv("CCPULSE_CACHE_DIR", cache)
+	t.Setenv("CCPULSE_CACHE_DIR", cacheDir)
 
 	root := newRootCmd()
-	root.SetArgs([]string{"index"})
+	root.SetArgs([]string{"index", "--rebuild"})
 	var out bytes.Buffer
 	root.SetOut(&out)
 	if err := root.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	// Verify the cache exists
-	if _, err := os.Stat(filepath.Join(cache, "state.db")); err != nil {
+
+	if _, err := os.Stat(filepath.Join(cacheDir, "state.db")); err != nil {
 		t.Fatalf("cache db not created: %v", err)
 	}
 }

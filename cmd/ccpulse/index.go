@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,7 +9,7 @@ import (
 	"github.com/martinciu/ccpulse/pkg/cache"
 	"github.com/martinciu/ccpulse/pkg/canonical"
 	"github.com/martinciu/ccpulse/pkg/config"
-	"github.com/martinciu/ccpulse/pkg/parse"
+	"github.com/martinciu/ccpulse/pkg/ingest"
 	"github.com/martinciu/ccpulse/pkg/pricing"
 	"github.com/spf13/cobra"
 )
@@ -27,6 +28,10 @@ func newIndexCmd() *cobra.Command {
 }
 
 func runIndex(rebuild bool) error {
+	if !rebuild {
+		return fmt.Errorf("`ccpulse index` (no flag) was removed; the TUI now backfills on launch. Use `ccpulse index --rebuild` to drop and rebuild the cache from JSONL")
+	}
+
 	cfg, err := config.Load(config.DefaultPath())
 	if err != nil && !os.IsNotExist(err) {
 		return err
@@ -38,9 +43,9 @@ func runIndex(rebuild bool) error {
 		return err
 	}
 	dbPath := filepath.Join(cacheDir, "state.db")
-	if rebuild {
-		_ = os.Remove(dbPath)
-	}
+
+	_ = os.Remove(dbPath)
+
 	c, err := cache.Open(dbPath)
 	if err != nil {
 		return err
@@ -57,35 +62,25 @@ func runIndex(rebuild bool) error {
 		}
 	}
 
-	msgs, err := parse.WalkProjects(projectsRoot)
-	if err != nil {
-		return err
+	res := canonical.NewResolver(c, "/")
+	ing := &ingest.Ingester{
+		Cache:          c,
+		Resolver:       res,
+		Pricing:        tab,
+		ProjectsRoot:   projectsRoot,
+		ParseErrorsLog: filepath.Join(cacheDir, "parse-errors.log"),
 	}
-	if err := c.InsertMessages(msgs, tab); err != nil {
+	bf := &ingest.Backfill{Ingester: ing}
+
+	if err := bf.Run(context.Background(), nil); err != nil {
 		return err
 	}
 
-	// Resolve slugs and back-fill messages.project_canonical so the
-	// Projects tab can collapse worktrees correctly.
-	res := canonical.NewResolver(c, "/")
-	seen := map[string]bool{}
-	for _, m := range msgs {
-		if seen[m.ProjectSlug] {
-			continue
-		}
-		seen[m.ProjectSlug] = true
-		r, err := res.Resolve(m.ProjectSlug)
-		if err != nil || r.CanonicalPath == "" {
-			continue
-		}
-		if _, err := c.DB().Exec(
-			`UPDATE messages SET project_canonical = ?, worktree_branch = ? WHERE project_slug = ?`,
-			r.CanonicalPath, r.Branch, m.ProjectSlug,
-		); err != nil {
-			return err
-		}
+	var n int
+	if err := c.DB().QueryRow(`SELECT count(*) FROM messages`).Scan(&n); err != nil {
+		return err
 	}
-	fmt.Printf("indexed %d messages from %d slugs\n", len(msgs), len(seen))
+	fmt.Printf("rebuilt: %d messages\n", n)
 	return nil
 }
 
