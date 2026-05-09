@@ -117,6 +117,16 @@ func runTUI(_ interface{}) error {
 	if err != nil {
 		return err
 	}
+	// Integrity check; if the cache is corrupt, rebuild from scratch.
+	// JSONL is the source of truth; SQLite is derived.
+	if !c.IntegrityOK() {
+		c.Close()
+		_ = os.Remove(dbPath)
+		c, err = cache.Open(dbPath)
+		if err != nil {
+			return err
+		}
+	}
 	defer c.Close()
 
 	tab, _ := pricing.Load()

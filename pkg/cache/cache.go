@@ -312,6 +312,18 @@ GROUP BY model ORDER BY SUM(cost_usd_estimate) DESC
 	return out, rows.Err()
 }
 
+// IntegrityOK runs `PRAGMA integrity_check` and reports whether SQLite
+// considers the database file healthy. Returns false on any error or
+// non-"ok" result.
+func (c *Cache) IntegrityOK() bool {
+	row := c.db.QueryRow(`PRAGMA integrity_check`)
+	var s string
+	if err := row.Scan(&s); err != nil {
+		return false
+	}
+	return s == "ok"
+}
+
 func (c *Cache) LiveSessions(now time.Time, since time.Duration) ([]LiveSession, error) {
 	cutoff := now.Add(-since).Format("2006-01-02T15:04:05.000Z07:00")
 	rows, err := c.db.Query(`
