@@ -340,6 +340,42 @@ func (c *Cache) IntegrityOK() bool {
 	return s == "ok"
 }
 
+type TokenBucket struct {
+	BucketStart time.Time
+	Tokens      int64
+}
+
+func (c *Cache) TokenBuckets(bucketDur time.Duration, since time.Time) ([]TokenBucket, error) {
+	bucketSecs := int64(bucketDur.Seconds())
+	sinceStr := since.UTC().Format("2006-01-02T15:04:05.000Z07:00")
+	rows, err := c.db.Query(`
+SELECT
+  CAST(CAST(strftime('%s', ts) AS INTEGER) / ? AS INTEGER) * ? AS bucket_epoch,
+  SUM(input_tokens + output_tokens + cache_read_tokens
+      + cache_write_5m_tokens + cache_write_1h_tokens)
+FROM messages
+WHERE ts >= ?
+GROUP BY bucket_epoch
+ORDER BY bucket_epoch ASC
+`, bucketSecs, bucketSecs, sinceStr)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []TokenBucket
+	for rows.Next() {
+		var epoch, tokens int64
+		if err := rows.Scan(&epoch, &tokens); err != nil {
+			return nil, err
+		}
+		out = append(out, TokenBucket{
+			BucketStart: time.Unix(epoch, 0).UTC(),
+			Tokens:      tokens,
+		})
+	}
+	return out, rows.Err()
+}
+
 func (c *Cache) LiveSessions(now time.Time, since time.Duration) ([]LiveSession, error) {
 	cutoff := now.UTC().Add(-since).Format("2006-01-02T15:04:05.000Z07:00")
 	rows, err := c.db.Query(`
