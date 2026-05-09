@@ -41,6 +41,7 @@ type Model struct {
 	projects     []cache.ProjectTotals
 	models       []cache.ModelTotals
 	modelsWindow cache.ModelsWindow
+	drilled      bool
 }
 
 func New(d Deps) Model {
@@ -70,6 +71,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.tab = Tab(msg.String()[0] - '1')
 		case "?":
 			m.showHelp = !m.showHelp
+		case "enter":
+			if m.tab == TabHistory || m.tab == TabProjects {
+				m.drilled = true
+			}
+		case "esc":
+			m.drilled = false
 		}
 	}
 	return m, nil
@@ -92,9 +99,17 @@ func (m Model) View() string {
 	case TabToday:
 		body = renderToday(m.today)
 	case TabHistory:
-		body = renderHistory(m.history)
+		if m.drilled {
+			body = "  History — drill-down (per-project for selected day)\n  [v0.1]"
+		} else {
+			body = renderHistory(m.history)
+		}
 	case TabProjects:
-		body = renderProjects(m.projects, time.Now())
+		if m.drilled {
+			body = "  Projects — drill-down (per-day for selected project)\n  [v0.1]"
+		} else {
+			body = renderProjects(m.projects, time.Now())
+		}
 	case TabModels:
 		body = renderModels(m.models, m.modelsWindow)
 	default:

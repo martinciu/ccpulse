@@ -67,3 +67,17 @@ func TestTodayTabRendersModels(t *testing.T) {
 		t.Errorf("today rendering missing data: %s", v)
 	}
 }
+
+func TestEnterDrillsHistory(t *testing.T) {
+	m := New(Deps{})
+	m.tab = TabHistory
+	m.history = []cache.DayTotals{{Date: "2026-05-08", Sessions: 1, CostUSD: 1.0}}
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if !updated.(Model).drilled {
+		t.Errorf("expected drilled=true")
+	}
+	upBack, _ := updated.(Model).Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if upBack.(Model).drilled {
+		t.Errorf("expected drilled=false after esc")
+	}
+}
