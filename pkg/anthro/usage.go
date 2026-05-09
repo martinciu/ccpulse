@@ -1,8 +1,11 @@
 package anthro
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"time"
@@ -91,4 +94,73 @@ func writeCache(path string, u Usage, when time.Time) error {
 		return err
 	}
 	return os.WriteFile(path, out, 0644)
+}
+
+// Tunable knobs. Vars (not consts) so tests can override apiURL.
+var (
+	apiURL      = "https://api.anthropic.com/api/oauth/usage"
+	cacheTTL    = 3 * time.Minute
+	httpTimeout = 5 * time.Second
+)
+
+// FetchResult is what Fetch returns to the caller.
+type FetchResult struct {
+	Usage     Usage
+	Source    string    // "api" | "cache_fresh" | "cache_stale"
+	UpdatedAt time.Time // when the data was actually pulled from Anthropic
+}
+
+// Fetch resolves the usage data per the spec's resolution tree:
+//  1. cache exists & fresh           → cache_fresh
+//  2. cache exists & stale + API ok  → api (cache rewritten)
+//  3. cache exists & stale + API fail → cache_stale
+//  4. no cache + API ok              → api (cache written)
+//  5. no cache + API fail            → error
+//
+// On error, callers should fall back to the JSONL heuristic.
+func Fetch(ctx context.Context, cred Credential, cacheDir string) (FetchResult, error) {
+	if cred.AccessToken == "" {
+		return FetchResult{}, errors.New("anthro: empty access token")
+	}
+	cachePath := filepath.Join(cacheDir, "usage.json")
+	now := time.Now()
+
+	cached, cacheErr := readCache(cachePath)
+	if cacheErr == nil && now.Sub(cached.UpdatedAt) < cacheTTL {
+		return FetchResult{Usage: cached.Usage, Source: "cache_fresh", UpdatedAt: cached.UpdatedAt}, nil
+	}
+
+	u, err := fetchAPI(ctx, cred.AccessToken)
+	if err != nil {
+		if cacheErr == nil {
+			return FetchResult{Usage: cached.Usage, Source: "cache_stale", UpdatedAt: cached.UpdatedAt}, nil
+		}
+		return FetchResult{}, fmt.Errorf("anthro fetch: %w", err)
+	}
+	_ = writeCache(cachePath, u, now)
+	return FetchResult{Usage: u, Source: "api", UpdatedAt: now.UTC()}, nil
+}
+
+func fetchAPI(ctx context.Context, token string) (Usage, error) {
+	ctx, cancel := context.WithTimeout(ctx, httpTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
+	if err != nil {
+		return Usage{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("anthropic-beta", "oauth-2025-04-20")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return Usage{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return Usage{}, fmt.Errorf("api status %d", resp.StatusCode)
+	}
+	var u Usage
+	if err := json.NewDecoder(resp.Body).Decode(&u); err != nil {
+		return Usage{}, fmt.Errorf("decode response: %w", err)
+	}
+	return u, nil
 }

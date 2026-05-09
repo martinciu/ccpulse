@@ -1,7 +1,10 @@
 package anthro
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -172,4 +175,123 @@ func writeFixtureCache(t *testing.T, dir string, when time.Time) time.Time {
 		t.Fatal(err)
 	}
 	return when
+}
+
+func newTestServer(t *testing.T, handler http.HandlerFunc) *httptest.Server {
+	t.Helper()
+	s := httptest.NewServer(handler)
+	t.Cleanup(s.Close)
+	return s
+}
+
+// withTestEndpoint redirects Fetch to a test server for the duration of the test.
+func withTestEndpoint(t *testing.T, url string) {
+	t.Helper()
+	prev := apiURL
+	apiURL = url
+	t.Cleanup(func() { apiURL = prev })
+}
+
+func TestFetchAPISuccess(t *testing.T) {
+	srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer tok" {
+			t.Errorf("Authorization = %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(sampleAPIBody))
+	})
+	withTestEndpoint(t, srv.URL)
+
+	dir := t.TempDir()
+	cred := Credential{AccessToken: "tok"}
+	res, err := Fetch(context.Background(), cred, dir)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if res.Source != "api" {
+		t.Errorf("Source = %q, want api", res.Source)
+	}
+	if res.Usage.FiveHour == nil {
+		t.Errorf("FiveHour nil")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "usage.json")); err != nil {
+		t.Errorf("cache not written: %v", err)
+	}
+}
+
+func TestFetchUsesFreshCache(t *testing.T) {
+	dir := t.TempDir()
+	writeFixtureCache(t, dir, time.Now().Add(-1*time.Minute))
+	srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("should not hit API on fresh cache")
+	})
+	withTestEndpoint(t, srv.URL)
+	res, err := Fetch(context.Background(), Credential{AccessToken: "tok"}, dir)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if res.Source != "cache_fresh" {
+		t.Errorf("Source = %q, want cache_fresh", res.Source)
+	}
+}
+
+func TestFetchCacheStaleAPIOK(t *testing.T) {
+	dir := t.TempDir()
+	writeFixtureCache(t, dir, time.Now().Add(-10*time.Minute))
+	hit := 0
+	srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		hit++
+		_, _ = w.Write([]byte(sampleAPIBody))
+	})
+	withTestEndpoint(t, srv.URL)
+	res, err := Fetch(context.Background(), Credential{AccessToken: "tok"}, dir)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if hit != 1 {
+		t.Errorf("API hits = %d, want 1", hit)
+	}
+	if res.Source != "api" {
+		t.Errorf("Source = %q, want api", res.Source)
+	}
+}
+
+func TestFetchCacheStaleAPIFail(t *testing.T) {
+	dir := t.TempDir()
+	wrote := time.Now().Add(-10 * time.Minute)
+	writeFixtureCache(t, dir, wrote)
+	srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	})
+	withTestEndpoint(t, srv.URL)
+	res, err := Fetch(context.Background(), Credential{AccessToken: "tok"}, dir)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if res.Source != "cache_stale" {
+		t.Errorf("Source = %q, want cache_stale", res.Source)
+	}
+	if res.UpdatedAt.Sub(wrote).Abs() > time.Second {
+		t.Errorf("UpdatedAt should be original write time")
+	}
+}
+
+func TestFetchNoCacheAPIFail(t *testing.T) {
+	dir := t.TempDir()
+	srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	})
+	withTestEndpoint(t, srv.URL)
+	_, err := Fetch(context.Background(), Credential{AccessToken: "tok"}, dir)
+	if err == nil {
+		t.Errorf("expected error when no cache and API fails")
+	}
+}
+
+func TestFetchEmptyTokenErrors(t *testing.T) {
+	dir := t.TempDir()
+	_, err := Fetch(context.Background(), Credential{}, dir)
+	if err == nil {
+		t.Errorf("expected error for empty token")
+	}
 }
