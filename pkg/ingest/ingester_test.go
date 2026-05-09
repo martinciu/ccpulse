@@ -192,3 +192,52 @@ func TestProcessFile_ResetsOnTruncation(t *testing.T) {
 		t.Errorf("line after reset = %d, want 1", line)
 	}
 }
+
+func TestProcessFile_TagsSubagentMessages(t *testing.T) {
+	ing, projects, _ := newIngesterFixture(t)
+
+	subDir := filepath.Join(projects, "-Users-x-foo", "sid-abc", "subagents")
+	if err := os.MkdirAll(subDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	subPath := filepath.Join(subDir, "agent-1.jsonl")
+	if err := os.WriteFile(subPath, jsonl("sub1"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := ing.ProcessFile(subPath); err != nil {
+		t.Fatal(err)
+	}
+
+	var isSub int
+	var parent string
+	if err := ing.Cache.DB().QueryRow(
+		`SELECT is_subagent, parent_session_id FROM messages WHERE session_id = 'sub1'`,
+	).Scan(&isSub, &parent); err != nil {
+		t.Fatal(err)
+	}
+	if isSub != 1 {
+		t.Errorf("is_subagent = %d, want 1", isSub)
+	}
+	if parent != "sid-abc" {
+		t.Errorf("parent_session_id = %q, want sid-abc", parent)
+	}
+}
+
+func TestProcessFile_TopLevelHasNoSubagentTag(t *testing.T) {
+	ing, _, path := newIngesterFixture(t)
+	if _, err := ing.ProcessFile(path); err != nil {
+		t.Fatal(err)
+	}
+
+	var isSub int
+	var parent string
+	if err := ing.Cache.DB().QueryRow(
+		`SELECT is_subagent, parent_session_id FROM messages WHERE session_id = 's1'`,
+	).Scan(&isSub, &parent); err != nil {
+		t.Fatal(err)
+	}
+	if isSub != 0 || parent != "" {
+		t.Errorf("top-level message tagged as subagent: isSub=%d parent=%q", isSub, parent)
+	}
+}

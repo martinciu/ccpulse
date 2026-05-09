@@ -51,7 +51,7 @@ func (i *Ingester) ProcessFile(path string) (inserted int, err error) {
 		line = 0
 	}
 
-	slug, _, _ := SlugAndSubagent(i.ProjectsRoot, path)
+	slug, isSub, parentSID := SlugAndSubagent(i.ProjectsRoot, path)
 
 	msgs, perrs, newOff, newLine, parseErr := parse.ParseFromOffsetWithErrors(
 		path, slug, offset, int(line),
@@ -62,6 +62,11 @@ func (i *Ingester) ProcessFile(path string) (inserted int, err error) {
 	if parseErr != nil {
 		LogFileError(i.ParseErrorsLog, path, parseErr)
 		return 0, nil
+	}
+
+	for k := range msgs {
+		msgs[k].IsSubagent = isSub
+		msgs[k].ParentSessionID = parentSID
 	}
 
 	if len(msgs) > 0 {
