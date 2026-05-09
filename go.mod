@@ -6,6 +6,7 @@ require modernc.org/sqlite v1.50.0
 
 require (
 	github.com/BurntSushi/toml v1.6.0 // indirect
+	github.com/NimbleMarkets/ntcharts v0.5.1 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/charmbracelet/bubbles v1.0.0 // indirect
 	github.com/charmbracelet/bubbletea v1.3.10 // indirect
@@ -36,7 +37,7 @@ require (
 	github.com/spf13/pflag v1.0.9 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	golang.org/x/sys v0.42.0 // indirect
-	golang.org/x/text v0.3.8 // indirect
+	golang.org/x/text v0.20.0 // indirect
 	modernc.org/libc v1.72.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
