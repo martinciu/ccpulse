@@ -123,6 +123,7 @@ tick_ms = 1000
 [history]
 default_window_days = 30
 include_subagents = true
+retention_days = 0           # 0 = keep usage history forever; positive int prunes older rows
 
 [paths]
 projects_root = "~/.claude/projects"
@@ -131,6 +132,8 @@ cache_dir = "~/.cache/ccpulse"
 [pricing]
 override = ""                # path to a custom pricing.json
 ```
+
+- `[history] retention_days` — drop usage history rows older than N days on each insert. Default `0` keeps history forever. Usage history is recorded once per ~3 minutes whenever ccpulse is running and successfully reaches the Anthropic usage API.
 
 Plan-tier ceilings are rough estimates (Anthropic doesn't publish exact
 caps). For precision, use `tier = "custom"` and tune
