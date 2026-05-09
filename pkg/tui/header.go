@@ -13,7 +13,7 @@ func renderHeader(s Style, w status.Window, expired bool, width int) string {
 	bar := renderBar(w.Percent, width-41)
 	dur := durString(w.MinutesToReset)
 	right := fmt.Sprintf("%d%%   %s to reset", w.Percent, dur)
-	line := fmt.Sprintf("Plan window  %s  %s", bar, right)
+	line := fmt.Sprintf("Usage window  %s  %s", bar, right)
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(Base01).

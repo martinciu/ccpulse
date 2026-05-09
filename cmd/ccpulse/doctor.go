@@ -24,6 +24,9 @@ func newDoctorCmd() *cobra.Command {
 			out := cmd.OutOrStdout()
 			cfg, err := config.Load(config.DefaultPath())
 			check(out, "config loads", err == nil, err)
+			if cfg.HasLegacyPlan() {
+				check(out, "config: [plan] section is deprecated — migrate to [display]", false, nil)
+			}
 
 			projects := envOr("CCPULSE_PROJECTS_ROOT", expand(cfg.Paths.ProjectsRoot))
 			_, statErr := os.Stat(projects)
