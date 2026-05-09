@@ -55,3 +55,15 @@ func TestLiveTabRendersSessions(t *testing.T) {
 		t.Errorf("expected $1.84 in view:\n%s", v)
 	}
 }
+
+func TestTodayTabRendersModels(t *testing.T) {
+	m := New(Deps{})
+	m.tab = TabToday
+	m.today = []cache.ModelTotals{
+		{Model: "claude-opus-4-7", Messages: 12, CostUSD: 7.10},
+	}
+	v := m.View()
+	if !strings.Contains(v, "opus-4-7") || !strings.Contains(v, "$7.10") {
+		t.Errorf("today rendering missing data: %s", v)
+	}
+}

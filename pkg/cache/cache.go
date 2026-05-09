@@ -160,6 +160,43 @@ type LiveSession struct {
 
 // LiveSessions returns sessions with activity in [now-since, now],
 // most-recent first.
+type ModelTotals struct {
+	Model      string
+	Messages   int64
+	Input      int64
+	Output     int64
+	CacheRead  int64
+	CacheWrite int64 // sum of 5m + 1h
+	CostUSD    float64
+}
+
+func (c *Cache) TodayByModel(now time.Time) ([]ModelTotals, error) {
+	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).
+		Format("2006-01-02T15:04:05.000Z07:00")
+	rows, err := c.db.Query(`
+SELECT model, COUNT(*), SUM(input_tokens), SUM(output_tokens),
+       SUM(cache_read_tokens),
+       SUM(cache_write_5m_tokens) + SUM(cache_write_1h_tokens),
+       SUM(cost_usd_estimate)
+FROM messages WHERE ts >= ?
+GROUP BY model ORDER BY SUM(cost_usd_estimate) DESC
+`, startOfDay)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ModelTotals
+	for rows.Next() {
+		var m ModelTotals
+		if err := rows.Scan(&m.Model, &m.Messages, &m.Input, &m.Output,
+			&m.CacheRead, &m.CacheWrite, &m.CostUSD); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
 func (c *Cache) LiveSessions(now time.Time, since time.Duration) ([]LiveSession, error) {
 	cutoff := now.Add(-since).Format("2006-01-02T15:04:05.000Z07:00")
 	rows, err := c.db.Query(`
