@@ -57,7 +57,7 @@ These env vars override `config.toml` at runtime — useful for testing against 
 
 ### SQLite schema
 
-Four tables: `messages` (one row per assistant turn), `files` (last byte offset and line number per JSONL file for incremental parsing), `slug_canonical` (slug → canonical path cache), `meta` (schema version).
+Five tables: `messages` (one row per assistant turn), `files` (last byte offset and line number per JSONL file for incremental parsing), `slug_canonical` (slug → canonical path cache), `meta` (schema version), `usage_samples` (one row per successful Anthropic usage-API fetch, JSON payload of `anthro.Usage`).
 
 ### Slug encoding
 

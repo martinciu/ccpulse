@@ -42,3 +42,9 @@ CREATE TABLE IF NOT EXISTS meta (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS usage_samples (
+  ts      INTEGER PRIMARY KEY,         -- Unix epoch seconds; one row per successful API fetch (INSERT OR IGNORE on collision)
+  payload TEXT NOT NULL,                -- json.Marshal(anthro.Usage)
+  source  TEXT NOT NULL DEFAULT 'api'   -- always 'api' today; reserved for future sources
+);

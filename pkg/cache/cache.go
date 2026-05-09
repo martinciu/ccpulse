@@ -3,10 +3,12 @@ package cache
 import (
 	"database/sql"
 	_ "embed"
+	"encoding/json"
 	"fmt"
 	"os"
 	"time"
 
+	"github.com/martinciu/ccpulse/pkg/anthro"
 	"github.com/martinciu/ccpulse/pkg/parse"
 	"github.com/martinciu/ccpulse/pkg/pricing"
 	_ "modernc.org/sqlite"
@@ -15,7 +17,7 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
-const SchemaVersion = "2"
+const SchemaVersion = "3"
 
 type Cache struct {
 	db *sql.DB
@@ -55,6 +57,30 @@ func Open(path string) (*Cache, error) {
 func (c *Cache) DB() *sql.DB { return c.db }
 
 func (c *Cache) Close() error { return c.db.Close() }
+
+// RecordUsageSample marshals u to JSON and inserts a row at when.UTC().Unix().
+// INSERT OR IGNORE: same-second collisions keep the first row.
+func (c *Cache) RecordUsageSample(u anthro.Usage, when time.Time) error {
+	payload, err := json.Marshal(u)
+	if err != nil {
+		return err
+	}
+	_, err = c.db.Exec(
+		`INSERT OR IGNORE INTO usage_samples(ts, payload, source) VALUES (?, ?, 'api')`,
+		when.UTC().Unix(), string(payload),
+	)
+	return err
+}
+
+// PruneUsageSamples deletes rows with ts < cutoff.UTC().Unix().
+// Returns the number of rows deleted.
+func (c *Cache) PruneUsageSamples(cutoff time.Time) (int64, error) {
+	res, err := c.db.Exec(`DELETE FROM usage_samples WHERE ts < ?`, cutoff.UTC().Unix())
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
 
 func (c *Cache) InsertMessages(msgs []parse.Message, tab pricing.Table) error {
 	tx, err := c.db.Begin()

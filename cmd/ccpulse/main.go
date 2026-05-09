@@ -190,7 +190,8 @@ func runTUI(_ interface{}) error {
 	defer cancel()
 
 	if hasOAuth {
-		go runQuotaPoller(ctx, p, cred, cacheDir)
+		retention := time.Duration(cfg.History.RetentionDays) * 24 * time.Hour
+		go runQuotaPoller(ctx, p, cred, cacheDir, c, retention)
 	}
 
 	go w.Run(func(path string) {
@@ -232,13 +233,29 @@ func runTUI(_ interface{}) error {
 }
 
 // runQuotaPoller fires once immediately, then every 2 minutes, fetching
-// usage data and pushing QuotaMsg to the program. Errors are swallowed —
-// the TUI stays on the last known quota (or the JSONL heuristic).
-func runQuotaPoller(ctx context.Context, p *tea.Program, cred anthro.Credential, cacheDir string) {
+// usage data and pushing QuotaMsg to the program. On a successful fetch
+// where Source=="api", it also appends a row to usage_samples and (if
+// retention > 0) prunes anything older than now-retention. All side
+// effects are best-effort; errors are swallowed so the TUI quota stays
+// up to date even if the cache is misbehaving.
+func runQuotaPoller(
+	ctx context.Context,
+	p *tea.Program,
+	cred anthro.Credential,
+	cacheDir string,
+	c *cache.Cache,
+	retention time.Duration,
+) {
 	push := func() {
 		res, err := anthro.Fetch(ctx, cred, cacheDir)
 		if err != nil {
 			return
+		}
+		if res.Source == "api" {
+			_ = c.RecordUsageSample(res.Usage, res.UpdatedAt)
+			if retention > 0 {
+				_, _ = c.PruneUsageSamples(time.Now().Add(-retention))
+			}
 		}
 		p.Send(tui.QuotaMsg{
 			Usage:     &res.Usage,

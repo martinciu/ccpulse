@@ -103,6 +103,16 @@ var (
 	httpTimeout = 5 * time.Second
 )
 
+// SetAPIURLForTest overrides the usage endpoint URL and returns a restore
+// function for the previous value. Intended for test packages outside
+// pkg/anthro that need to redirect Fetch at an httptest.Server. Calling
+// the returned function in t.Cleanup is the expected pattern.
+func SetAPIURLForTest(url string) (restore func()) {
+	prev := apiURL
+	apiURL = url
+	return func() { apiURL = prev }
+}
+
 // FetchResult is what Fetch returns to the caller.
 type FetchResult struct {
 	Usage     Usage

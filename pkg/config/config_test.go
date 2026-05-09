@@ -76,6 +76,16 @@ api_hot_usd = 16.0
 	}
 }
 
+func TestLoad_HistoryRetentionDefault(t *testing.T) {
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.History.RetentionDays != 0 {
+		t.Errorf("History.RetentionDays default = %d, want 0", cfg.History.RetentionDays)
+	}
+}
+
 func TestLegacyTierAPIMigratesToCostMode(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "config.toml")

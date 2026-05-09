@@ -28,6 +28,7 @@ type UI struct {
 type History struct {
 	DefaultWindowDays int  `toml:"default_window_days"`
 	IncludeSubagents  bool `toml:"include_subagents"`
+	RetentionDays     int  `toml:"retention_days"`
 }
 
 type Paths struct {

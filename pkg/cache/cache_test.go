@@ -1,10 +1,12 @@
 package cache
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/martinciu/ccpulse/pkg/anthro"
 	"github.com/martinciu/ccpulse/pkg/parse"
 	"github.com/martinciu/ccpulse/pkg/pricing"
 )
@@ -19,13 +21,13 @@ func TestOpenAppliesSchema(t *testing.T) {
 	}
 	defer c.Close()
 
-	row := c.DB().QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('messages','files','slug_canonical','meta')`)
+	row := c.DB().QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('messages','files','slug_canonical','meta','usage_samples')`)
 	var n int
 	if err := row.Scan(&n); err != nil {
 		t.Fatal(err)
 	}
-	if n != 4 {
-		t.Fatalf("expected 4 tables, got %d", n)
+	if n != 5 {
+		t.Fatalf("expected 5 tables, got %d", n)
 	}
 }
 
@@ -131,6 +133,141 @@ func TestInsertMessagesIdempotent(t *testing.T) {
 	}
 	if n != 1 {
 		t.Fatalf("messages count after duplicate insert = %d, want 1", n)
+	}
+}
+
+func TestRecordUsageSample_RoundTrip(t *testing.T) {
+	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	when := time.Date(2026, 5, 9, 12, 34, 56, 0, time.UTC)
+	util := 42.5
+	u := anthro.Usage{
+		FiveHour: &anthro.Bucket{Utilization: 12.0, ResetsAt: when.Add(2 * time.Hour)},
+		SevenDay: &anthro.Bucket{Utilization: 67.0, ResetsAt: when.Add(48 * time.Hour)},
+		ExtraUsage: &anthro.ExtraUsage{
+			IsEnabled: true, MonthlyLimit: 100, UsedCredits: 42, Utilization: &util, Currency: "USD",
+		},
+	}
+
+	if err := c.RecordUsageSample(u, when); err != nil {
+		t.Fatalf("RecordUsageSample: %v", err)
+	}
+
+	var ts int64
+	var payload string
+	var src string
+	err = c.DB().QueryRow(`SELECT ts, payload, source FROM usage_samples`).Scan(&ts, &payload, &src)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if ts != when.Unix() {
+		t.Errorf("ts = %d, want %d", ts, when.Unix())
+	}
+	if src != "api" {
+		t.Errorf("source = %q, want api", src)
+	}
+	var got anthro.Usage
+	if err := json.Unmarshal([]byte(payload), &got); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if got.FiveHour == nil || got.FiveHour.Utilization != 12.0 {
+		t.Errorf("FiveHour round-trip failed: %+v", got.FiveHour)
+	}
+	if got.SevenDay == nil || got.SevenDay.Utilization != 67.0 {
+		t.Errorf("SevenDay round-trip failed: %+v", got.SevenDay)
+	}
+	if got.ExtraUsage == nil || got.ExtraUsage.Utilization == nil || *got.ExtraUsage.Utilization != 42.5 {
+		t.Errorf("ExtraUsage round-trip failed: %+v", got.ExtraUsage)
+	}
+}
+
+func TestRecordUsageSample_DuplicateTs(t *testing.T) {
+	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	when := time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)
+	first := anthro.Usage{FiveHour: &anthro.Bucket{Utilization: 10.0, ResetsAt: when.Add(time.Hour)}}
+	second := anthro.Usage{FiveHour: &anthro.Bucket{Utilization: 99.0, ResetsAt: when.Add(time.Hour)}}
+
+	if err := c.RecordUsageSample(first, when); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.RecordUsageSample(second, when); err != nil {
+		t.Fatalf("second insert should be a silent no-op, got: %v", err)
+	}
+
+	var n int
+	if err := c.DB().QueryRow(`SELECT count(*) FROM usage_samples`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("rows = %d, want 1 (INSERT OR IGNORE should drop the duplicate)", n)
+	}
+
+	var payload string
+	if err := c.DB().QueryRow(`SELECT payload FROM usage_samples`).Scan(&payload); err != nil {
+		t.Fatal(err)
+	}
+	var got anthro.Usage
+	if err := json.Unmarshal([]byte(payload), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.FiveHour == nil || got.FiveHour.Utilization != 10.0 {
+		t.Errorf("expected first row to win (utilization 10.0), got %+v", got.FiveHour)
+	}
+}
+
+func TestPruneUsageSamples(t *testing.T) {
+	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	base := time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)
+	samples := []time.Time{
+		base.Add(-100 * time.Second),
+		base.Add(-50 * time.Second),
+		base,
+	}
+	for i, when := range samples {
+		u := anthro.Usage{FiveHour: &anthro.Bucket{Utilization: float64(i), ResetsAt: when.Add(time.Hour)}}
+		if err := c.RecordUsageSample(u, when); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cutoff := base.Add(-60 * time.Second) // boundary: drop the -100s row, keep -50s and base
+	n, err := c.PruneUsageSamples(cutoff)
+	if err != nil {
+		t.Fatalf("PruneUsageSamples: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("rows deleted = %d, want 1", n)
+	}
+
+	var remaining int
+	if err := c.DB().QueryRow(`SELECT count(*) FROM usage_samples`).Scan(&remaining); err != nil {
+		t.Fatal(err)
+	}
+	if remaining != 2 {
+		t.Errorf("remaining rows = %d, want 2", remaining)
+	}
+
+	// Cutoff is strictly less-than: a row exactly at cutoff is kept.
+	var earliest int64
+	if err := c.DB().QueryRow(`SELECT MIN(ts) FROM usage_samples`).Scan(&earliest); err != nil {
+		t.Fatal(err)
+	}
+	if earliest != base.Add(-50*time.Second).Unix() {
+		t.Errorf("earliest remaining ts = %d, want %d", earliest, base.Add(-50*time.Second).Unix())
 	}
 }
 
