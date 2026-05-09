@@ -20,7 +20,6 @@ import (
 	"github.com/martinciu/ccpulse/pkg/config"
 	"github.com/martinciu/ccpulse/pkg/ingest"
 	"github.com/martinciu/ccpulse/pkg/pricing"
-	"github.com/martinciu/ccpulse/pkg/status"
 	"github.com/martinciu/ccpulse/pkg/tui"
 	"github.com/martinciu/ccpulse/pkg/watcher"
 )
@@ -174,15 +173,9 @@ func runTUI(_ interface{}) error {
 	m := tui.New(tui.Deps{
 		Cache:        c,
 		ProjectsRoot: projectsRoot,
-		HistoryDays:  cfg.History.DefaultWindowDays,
 		Credential:   cred,
 		HasOAuth:     hasOAuth,
 		CacheDir:     cacheDir,
-		DisplayMode:  resolveDisplayMode(cfg.Display.Mode, hasOAuth),
-		DisplayBudget: status.DisplayBudget{
-			WarnUSD: cfg.Display.CostWarnUSD,
-			HotUSD:  cfg.Display.CostHotUSD,
-		},
 	})
 	p := tea.NewProgram(m, tea.WithAltScreen())
 
