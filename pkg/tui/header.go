@@ -8,7 +8,15 @@ import (
 	"github.com/martinciu/ccpulse/pkg/status"
 )
 
-func renderHeader(s Style, w status.Window, width int) string {
+// IndexProgress is a small render-time view of the model's three
+// indexing fields, passed into renderHeader.
+type IndexProgress struct {
+	Done   int
+	Total  int
+	Active bool
+}
+
+func renderHeader(s Style, w status.Window, width int, idx IndexProgress) string {
 	bar := renderBar(w.Percent, width-41)
 	dur := durString(w.MinutesToReset)
 	right := fmt.Sprintf("%d%%   %s to reset", w.Percent, dur)
@@ -18,7 +26,15 @@ func renderHeader(s Style, w status.Window, width int) string {
 		BorderForeground(Base01).
 		Padding(0, 1).
 		Width(width - 2)
+
 	title := fmt.Sprintf(" ccpulse  %s ", w.CeilingLabel)
+	if idx.Active {
+		suffix := lipgloss.NewStyle().
+			Foreground(Base01).
+			Render(fmt.Sprintf(" · indexing %d/%d", idx.Done, idx.Total))
+		title = strings.TrimRight(title, " ") + suffix + " "
+	}
+
 	return box.Render(strings.TrimSpace(title) + "\n" + line)
 }
 

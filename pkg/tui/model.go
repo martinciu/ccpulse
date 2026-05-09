@@ -158,7 +158,11 @@ func (m Model) View() string {
 	if width < 80 {
 		width = 80
 	}
-	header := renderHeader(m.style, m.window, width)
+	header := renderHeader(m.style, m.window, width, IndexProgress{
+		Done:   m.indexDone,
+		Total:  m.indexTotal,
+		Active: m.indexActive,
+	})
 	tabs := m.renderTabs()
 	var body string
 	switch m.tab {
