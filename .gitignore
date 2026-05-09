@@ -1,0 +1,17 @@
+# build output
+/ccpulse
+/bin/
+/dist/
+
+# editor + os
+.DS_Store
+*.swp
+
+# planning artefacts (carried across worktrees, never committed)
+.superpowers/
+.autonomo/
+.claude/worktrees/
+
+# coverage
+coverage.out
+coverage.html
