@@ -35,6 +35,15 @@ type Backfill struct {
 // failure (e.g. ProjectsRoot does not exist) returns nil with no
 // progress callbacks.
 func (b *Backfill) Run(ctx context.Context, onProgress func(Progress)) error {
+	// Pre-stat the root so a missing ProjectsRoot exits cleanly with
+	// zero progress callbacks. The walker below can't distinguish
+	// "root vanished" from "one subdirectory unreadable" — we want
+	// the former to skip the indicator entirely.
+	if _, err := os.Stat(b.Ingester.ProjectsRoot); err != nil {
+		LogFileError(b.Ingester.ParseErrorsLog, b.Ingester.ProjectsRoot, err)
+		return nil
+	}
+
 	type entry struct {
 		path  string
 		mtime time.Time

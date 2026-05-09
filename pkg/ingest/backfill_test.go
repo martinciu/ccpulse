@@ -148,3 +148,112 @@ func newTestIngester(t *testing.T, projectsRoot, cacheDir string) *Ingester {
 		ParseErrorsLog: filepath.Join(cacheDir, "parse-errors.log"),
 	}
 }
+
+func TestBackfillRun_EmptyTree(t *testing.T) {
+	dir := t.TempDir()
+	projects := filepath.Join(dir, "projects")
+	cacheDir := filepath.Join(dir, "cache")
+	if err := os.MkdirAll(projects, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(cacheDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	ing := newTestIngester(t, projects, cacheDir)
+	bf := &Backfill{Ingester: ing}
+
+	var calls []Progress
+	if err := bf.Run(context.Background(), func(p Progress) { calls = append(calls, p) }); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(calls) != 2 {
+		t.Fatalf("calls = %d, want 2 (initial + final)", len(calls))
+	}
+	if calls[0].Total != 0 || !calls[0].Active {
+		t.Errorf("initial = %+v, want Total=0 Active=true", calls[0])
+	}
+	if calls[1].Active || calls[1].Done != 0 {
+		t.Errorf("final = %+v, want Active=false Done=0", calls[1])
+	}
+}
+
+func TestBackfillRun_MissingRoot(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+	if err := os.MkdirAll(cacheDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	ing := newTestIngester(t, filepath.Join(dir, "does-not-exist"), cacheDir)
+	bf := &Backfill{Ingester: ing}
+
+	var calls []Progress
+	if err := bf.Run(context.Background(), func(p Progress) { calls = append(calls, p) }); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(calls) != 0 {
+		t.Errorf("missing root produced %d progress calls, want 0", len(calls))
+	}
+}
+
+func TestBackfillRun_ConcurrentWatcherSameFile(t *testing.T) {
+	// Sanity check: a watcher event handler invoking ProcessFile on
+	// the same path the backfill is about to walk must not corrupt
+	// the cache. InsertMessages' INSERT OR IGNORE + SQLite's write
+	// serialisation should make this safe.
+	ing, _, path := newIngesterFixture(t)
+
+	bf := &Backfill{
+		Ingester: ing,
+		onBeforeProcess: func(p string) {
+			if p == path {
+				// Simulate a watcher event for the same file landing
+				// just before backfill processes it.
+				_, _ = ing.ProcessFile(p)
+			}
+		},
+	}
+	if err := bf.Run(context.Background(), func(Progress) {}); err != nil {
+		t.Fatal(err)
+	}
+
+	var n int
+	if err := ing.Cache.DB().QueryRow(
+		`SELECT count(*) FROM messages WHERE session_id = 's1'`,
+	).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("messages count = %d, want exactly 1 (idempotent insert)", n)
+	}
+}
+
+func TestBackfillRun_HonoursCtxCancellation(t *testing.T) {
+	ing, projects, _ := newIngesterFixture(t)
+	dir := filepath.Join(projects, "-Users-x-foo")
+	for i := 0; i < 5; i++ {
+		p := filepath.Join(dir, "extra-"+string(rune('a'+i))+".jsonl")
+		if err := os.WriteFile(p, jsonl("e"+string(rune('a'+i))), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	bf := &Backfill{
+		Ingester:        ing,
+		onBeforeProcess: func(path string) { cancel() }, // cancel as soon as the first file starts
+	}
+
+	var last Progress
+	if err := bf.Run(ctx, func(p Progress) { last = p }); err != nil {
+		t.Fatal(err)
+	}
+
+	if last.Active {
+		t.Errorf("final progress still Active after cancel: %+v", last)
+	}
+}
