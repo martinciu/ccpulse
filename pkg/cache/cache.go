@@ -3,10 +3,12 @@ package cache
 import (
 	"database/sql"
 	_ "embed"
+	"encoding/json"
 	"fmt"
 	"os"
 	"time"
 
+	"github.com/martinciu/ccpulse/pkg/anthro"
 	"github.com/martinciu/ccpulse/pkg/parse"
 	"github.com/martinciu/ccpulse/pkg/pricing"
 	_ "modernc.org/sqlite"
@@ -55,6 +57,18 @@ func Open(path string) (*Cache, error) {
 func (c *Cache) DB() *sql.DB { return c.db }
 
 func (c *Cache) Close() error { return c.db.Close() }
+
+func (c *Cache) RecordUsageSample(u anthro.Usage, when time.Time) error {
+	payload, err := json.Marshal(u)
+	if err != nil {
+		return err
+	}
+	_, err = c.db.Exec(
+		`INSERT OR IGNORE INTO usage_samples(ts, payload, source) VALUES (?, ?, 'api')`,
+		when.UTC().Unix(), string(payload),
+	)
+	return err
+}
 
 func (c *Cache) InsertMessages(msgs []parse.Message, tab pricing.Table) error {
 	tx, err := c.db.Begin()
