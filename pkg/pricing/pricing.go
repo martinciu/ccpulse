@@ -3,6 +3,8 @@ package pricing
 import (
 	_ "embed"
 	"encoding/json"
+
+	"github.com/martinciu/ccpulse/pkg/parse"
 )
 
 //go:embed pricing.json
@@ -25,4 +27,20 @@ func Load() (Table, error) {
 	var t Table
 	err := json.Unmarshal(embedded, &t)
 	return t, err
+}
+
+// CostFor returns USD estimate for the message and whether the model
+// was missing from the pricing table.
+func (t Table) CostFor(m parse.Message) (float64, bool) {
+	r, ok := t.Models[m.Model]
+	if !ok {
+		return 0, true
+	}
+	const M = 1_000_000
+	cost := float64(m.InputTokens)/M*r.InputPerMtok +
+		float64(m.OutputTokens)/M*r.OutputPerMtok +
+		float64(m.CacheReadTokens)/M*r.CacheReadPerMtok +
+		float64(m.CacheWrite5mTokens)/M*r.CacheWrite5mPerMtok +
+		float64(m.CacheWrite1hTokens)/M*r.CacheWrite1hPerMtok
+	return cost, false
 }
