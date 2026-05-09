@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 
 	"github.com/BurntSushi/toml"
 	tea "github.com/charmbracelet/bubbletea"
@@ -15,7 +14,6 @@ import (
 	"github.com/martinciu/ccpulse/pkg/canonical"
 	"github.com/martinciu/ccpulse/pkg/config"
 	"github.com/martinciu/ccpulse/pkg/ingest"
-	"github.com/martinciu/ccpulse/pkg/parse"
 	"github.com/martinciu/ccpulse/pkg/pricing"
 	"github.com/martinciu/ccpulse/pkg/status"
 	"github.com/martinciu/ccpulse/pkg/tui"
@@ -148,6 +146,14 @@ func runTUI(_ interface{}) error {
 
 	projectsRoot := envOr("CCPULSE_PROJECTS_ROOT", expand(cfg.Paths.ProjectsRoot))
 
+	ing := &ingest.Ingester{
+		Cache:          c,
+		Resolver:       res,
+		Pricing:        tab,
+		ProjectsRoot:   projectsRoot,
+		ParseErrorsLog: filepath.Join(cacheDir, "parse-errors.log"),
+	}
+
 	w, err := watcher.New(projectsRoot)
 	if err != nil {
 		return err
@@ -164,34 +170,7 @@ func runTUI(_ interface{}) error {
 	p := tea.NewProgram(m, tea.WithAltScreen())
 
 	go w.Run(func(path string) {
-		// Tail-parse on event, write deltas, back-fill canonical,
-		// then post a RefreshMsg.
-		slug := slugFor(projectsRoot, path)
-		_, off, line, _, _ := c.GetFile(path)
-		msgs, perrs, newOff, newLine, err := parse.ParseFromOffsetWithErrors(path, slug, off, int(line))
-		if err != nil {
-			return
-		}
-		// Append parse errors to the rotated parse-errors.log.
-		if len(perrs) > 0 {
-			ingest.AppendParseErrors(filepath.Join(cacheDir, "parse-errors.log"), path, perrs)
-		}
-		if len(msgs) == 0 {
-			return
-		}
-		if err := c.InsertMessages(msgs, tab); err != nil {
-			return
-		}
-		// New slug? Resolve and back-fill canonical for these rows.
-		r, _ := res.Resolve(slug)
-		if r.CanonicalPath != "" {
-			_, _ = c.DB().Exec(
-				`UPDATE messages SET project_canonical = ?, worktree_branch = ? WHERE project_slug = ? AND project_canonical = ''`,
-				r.CanonicalPath, r.Branch, slug,
-			)
-		}
-		st, _ := os.Stat(path)
-		_ = c.RecordFile(path, st.ModTime().UnixNano(), newOff, int64(newLine))
+		_, _ = ing.ProcessFile(path)
 		p.Send(tui.RefreshMsg{})
 	})
 
@@ -202,19 +181,6 @@ func runTUI(_ interface{}) error {
 
 	_, err = p.Run()
 	return err
-}
-
-// slugFor extracts the slug (top-level dir under projects root) from a path.
-func slugFor(root, path string) string {
-	rel, err := filepath.Rel(root, path)
-	if err != nil {
-		return ""
-	}
-	parts := strings.Split(rel, string(os.PathSeparator))
-	if len(parts) == 0 {
-		return ""
-	}
-	return parts[0]
 }
 
 func main() {
