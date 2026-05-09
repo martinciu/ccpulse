@@ -230,13 +230,15 @@ func TestStatusPrunesWhenRetentionConfigured(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// 2× the configured 1-day retention, so this row is unambiguously inside the cutoff.
 	oldTs := time.Now().Add(-48 * time.Hour).Unix()
-	if _, err := seed.DB().Exec(
+	_, execErr := seed.DB().Exec(
 		`INSERT INTO usage_samples(ts, payload, source) VALUES (?, '{}', 'api')`, oldTs,
-	); err != nil {
-		t.Fatal(err)
-	}
+	)
 	seed.Close()
+	if execErr != nil {
+		t.Fatal(execErr)
+	}
 
 	var hits int
 	srv := stubUsageServer(t, &hits)
@@ -249,6 +251,9 @@ func TestStatusPrunesWhenRetentionConfigured(t *testing.T) {
 	cmd.SetOut(&buf)
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("status: %v", err)
+	}
+	if hits != 1 {
+		t.Fatalf("API hit count = %d, want 1 (prune test must trigger an API fetch)", hits)
 	}
 
 	// After the call: 1 fresh row inserted, 1 old row pruned → exactly 1 row total.
