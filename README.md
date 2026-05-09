@@ -33,16 +33,75 @@ mise install        # fetches Go 1.25 into the project-scoped toolchain
 make install        # builds → ~/.local/bin/ccpulse
 ```
 
-The binary lives in `~/.local/bin/ccpulse`. Run from anywhere:
+The binary lives in `~/.local/bin/ccpulse`. On first run, populate the
+cache from your existing transcripts before opening the TUI:
 
 ```sh
+ccpulse index        # one-time scan of all existing JSONL history
 ccpulse              # opens the TUI
-ccpulse status --tmux   # one-line status, for tmux status-right
-ccpulse status --json   # JSON for scripting
-ccpulse index --rebuild # full rebuild of the SQLite cache
-ccpulse config edit  # open $EDITOR on config.toml
-ccpulse doctor       # health-check checklist
 ```
+
+After that, the watcher keeps the cache up to date automatically.
+
+## Commands
+
+### `ccpulse`
+
+Opens the interactive TUI. Five tabs, navigated with `tab` / `shift+tab`
+or number keys `1`–`5`. Press `?` for the full keybinding list.
+
+### `ccpulse index`
+
+Scans all `.jsonl` files under `projects_root` and populates the SQLite
+cache. Run once after install to load existing history. Safe to re-run
+— already-indexed turns are skipped.
+
+```sh
+ccpulse index             # incremental scan (adds new data)
+ccpulse index --rebuild   # drop the cache first, then do a full scan
+```
+
+Use `--rebuild` if the cache gets out of sync or you want a clean slate.
+
+### `ccpulse status`
+
+Prints the current 5-hour rolling window without opening the TUI.
+
+```sh
+ccpulse status            # human-readable summary
+ccpulse status --tmux     # single line with tmux #[fg=…] color escapes
+ccpulse status --json     # JSON: percent, tokens_5h, cost_5h_usd, minutes_to_reset
+```
+
+`--tmux` is designed for `status-right` in `tmux.conf` (see tmux
+integration below). `--json` is useful for scripting or status bars that
+consume structured data.
+
+### `ccpulse config`
+
+```sh
+ccpulse config edit   # create config if missing, then open in $EDITOR
+ccpulse config show   # print the live config (defaults + your overrides)
+ccpulse config path   # print the path to config.toml
+```
+
+`edit` never overwrites an existing file — safe to run at any time to
+check where the file lives before editing it manually.
+
+### `ccpulse doctor`
+
+Runs a health-check checklist and prints a pass/fail report:
+
+- Config file loads and `projects_root` is readable
+- SQLite cache opens and `PRAGMA integrity_check` passes
+- Pricing table version
+- `git` and `tmux` are on `PATH`
+
+Run this first when something looks wrong.
+
+### `ccpulse version`
+
+Prints the build version, commit hash, and build date.
 
 ## Configuration
 
