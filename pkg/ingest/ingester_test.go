@@ -241,3 +241,35 @@ func TestProcessFile_TopLevelHasNoSubagentTag(t *testing.T) {
 		t.Errorf("top-level message tagged as subagent: isSub=%d parent=%q", isSub, parent)
 	}
 }
+
+func TestProcessFile_BackfillsCanonical(t *testing.T) {
+	ing, _, path := newIngesterFixture(t)
+
+	// Pre-seed the slug_canonical table so the resolver returns
+	// a concrete CanonicalPath without needing a real git repo.
+	if err := ing.Cache.PutSlugCanonical(cache.SlugCanonical{
+		Slug:          "-Users-x-foo",
+		CanonicalPath: "/Users/x/foo",
+		Branch:        "main",
+		Resolved:      true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := ing.ProcessFile(path); err != nil {
+		t.Fatal(err)
+	}
+
+	var canon, branch string
+	if err := ing.Cache.DB().QueryRow(
+		`SELECT project_canonical, worktree_branch FROM messages WHERE session_id = 's1'`,
+	).Scan(&canon, &branch); err != nil {
+		t.Fatal(err)
+	}
+	if canon != "/Users/x/foo" {
+		t.Errorf("project_canonical = %q, want /Users/x/foo", canon)
+	}
+	if branch != "main" {
+		t.Errorf("worktree_branch = %q, want main", branch)
+	}
+}

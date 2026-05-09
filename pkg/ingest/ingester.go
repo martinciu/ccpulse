@@ -76,6 +76,16 @@ func (i *Ingester) ProcessFile(path string) (inserted int, err error) {
 		}
 	}
 
+	// Back-fill canonical for rows of this slug that don't have one.
+	if r, _ := i.Resolver.Resolve(slug); r.CanonicalPath != "" {
+		if _, err := i.Cache.DB().Exec(
+			`UPDATE messages SET project_canonical = ?, worktree_branch = ? WHERE project_slug = ? AND project_canonical = ''`,
+			r.CanonicalPath, r.Branch, slug,
+		); err != nil {
+			LogFileError(i.ParseErrorsLog, path, err)
+		}
+	}
+
 	if err := i.Cache.RecordFile(path, st.ModTime().UnixNano(), newOff, int64(newLine)); err != nil {
 		LogFileError(i.ParseErrorsLog, path, err)
 		// Do not return the error: idempotent re-parse will recover
