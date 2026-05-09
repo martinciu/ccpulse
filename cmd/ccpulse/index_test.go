@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -32,5 +33,25 @@ func TestIndexRebuildSmoke(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Join(cacheDir, "state.db")); err != nil {
 		t.Fatalf("cache db not created: %v", err)
+	}
+}
+
+func TestBareIndexReturnsRemovalError(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CCPULSE_PROJECTS_ROOT", filepath.Join(dir, "projects"))
+	t.Setenv("CCPULSE_CACHE_DIR", filepath.Join(dir, "cache"))
+
+	root := newRootCmd()
+	root.SetArgs([]string{"index"})
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&out)
+
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("expected `ccpulse index` (no flag) to error")
+	}
+	if !strings.Contains(err.Error(), "--rebuild") {
+		t.Errorf("error message should mention --rebuild, got: %v", err)
 	}
 }
