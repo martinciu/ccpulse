@@ -316,3 +316,27 @@ func TestProcessFile_MalformedLineLoggedValidLinesInserted(t *testing.T) {
 		t.Errorf("expected log to mention mixed.jsonl:2 (the bad line), got: %s", logBytes)
 	}
 }
+
+// helpers shared with backfill_test.go
+
+func openTestCache(t *testing.T, cacheDir string) (*cache.Cache, error) {
+	t.Helper()
+	c, err := cache.Open(filepath.Join(cacheDir, "state.db"))
+	if err == nil {
+		t.Cleanup(func() { c.Close() })
+	}
+	return c, err
+}
+
+func mustPricing(t *testing.T) pricing.Table {
+	t.Helper()
+	tab, err := pricing.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tab
+}
+
+func newTestResolver(c *cache.Cache) *canonical.Resolver {
+	return canonical.NewResolver(c, "/")
+}
