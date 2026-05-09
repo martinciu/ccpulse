@@ -172,7 +172,7 @@ type ModelTotals struct {
 
 func (c *Cache) TodayByModel(now time.Time) ([]ModelTotals, error) {
 	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).
-		Format("2006-01-02T15:04:05.000Z07:00")
+		UTC().Format("2006-01-02T15:04:05.000Z07:00")
 	rows, err := c.db.Query(`
 SELECT model, COUNT(*), SUM(input_tokens), SUM(output_tokens),
        SUM(cache_read_tokens),
@@ -325,7 +325,7 @@ func (c *Cache) IntegrityOK() bool {
 }
 
 func (c *Cache) LiveSessions(now time.Time, since time.Duration) ([]LiveSession, error) {
-	cutoff := now.Add(-since).Format("2006-01-02T15:04:05.000Z07:00")
+	cutoff := now.UTC().Add(-since).Format("2006-01-02T15:04:05.000Z07:00")
 	rows, err := c.db.Query(`
 SELECT
   session_id,

@@ -8,7 +8,7 @@ import (
 // Compute folds the last 5 hours of messages into a Window. ceilingTokens
 // of 0 means "raw totals (api tier)" → Percent stays 0.
 func Compute(db *sql.DB, now time.Time, ceilingLabel string, ceilingTokens int64) (Window, error) {
-	cutoff := now.Add(-5 * time.Hour).Format("2006-01-02T15:04:05.000Z07:00")
+	cutoff := now.UTC().Add(-5 * time.Hour).Format("2006-01-02T15:04:05.000Z07:00")
 	row := db.QueryRow(`
 SELECT
   COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens
