@@ -35,6 +35,7 @@ type Model struct {
 	showHelp bool
 	live     []cache.LiveSession
 	today    []cache.ModelTotals
+	history  []cache.DayTotals
 }
 
 func New(d Deps) Model {
@@ -84,6 +85,8 @@ func (m Model) View() string {
 		body = renderLive(m.live)
 	case TabToday:
 		body = renderToday(m.today)
+	case TabHistory:
+		body = renderHistory(m.history)
 	default:
 		body = "  <" + m.tab.String() + ">"
 	}

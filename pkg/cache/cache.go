@@ -197,6 +197,39 @@ GROUP BY model ORDER BY SUM(cost_usd_estimate) DESC
 	return out, rows.Err()
 }
 
+type DayTotals struct {
+	Date     string
+	Sessions int64
+	Tokens   int64
+	CostUSD  float64
+}
+
+func (c *Cache) HistoryByDay(days int) ([]DayTotals, error) {
+	rows, err := c.db.Query(`
+SELECT substr(ts,1,10) AS d,
+       COUNT(DISTINCT session_id),
+       SUM(input_tokens+output_tokens+cache_read_tokens
+           +cache_write_5m_tokens+cache_write_1h_tokens),
+       SUM(cost_usd_estimate)
+FROM messages
+WHERE ts >= date('now', ?)
+GROUP BY d ORDER BY d DESC
+`, fmt.Sprintf("-%d days", days))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []DayTotals
+	for rows.Next() {
+		var d DayTotals
+		if err := rows.Scan(&d.Date, &d.Sessions, &d.Tokens, &d.CostUSD); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
 func (c *Cache) LiveSessions(now time.Time, since time.Duration) ([]LiveSession, error) {
 	cutoff := now.Add(-since).Format("2006-01-02T15:04:05.000Z07:00")
 	rows, err := c.db.Query(`
