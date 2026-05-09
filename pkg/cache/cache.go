@@ -105,3 +105,44 @@ func (c *Cache) GetFile(path string) (mtime, offset, line int64, found bool, err
 	}
 	return mtime, offset, line, true, nil
 }
+
+type SlugCanonical struct {
+	Slug          string
+	CanonicalPath string
+	Branch        string
+	Resolved      bool
+}
+
+func (c *Cache) PutSlugCanonical(s SlugCanonical) error {
+	r := 0
+	if s.Resolved {
+		r = 1
+	}
+	_, err := c.db.Exec(`
+INSERT INTO slug_canonical(slug, canonical_path, worktree_branch, resolved, resolved_at)
+VALUES (?,?,?,?,datetime('now'))
+ON CONFLICT(slug) DO UPDATE SET
+ canonical_path = excluded.canonical_path,
+ worktree_branch = excluded.worktree_branch,
+ resolved = excluded.resolved,
+ resolved_at = excluded.resolved_at
+`, s.Slug, s.CanonicalPath, s.Branch, r)
+	return err
+}
+
+func (c *Cache) GetSlugCanonical(slug string) (SlugCanonical, bool, error) {
+	row := c.db.QueryRow(`
+SELECT slug, canonical_path, COALESCE(worktree_branch,''), resolved
+FROM slug_canonical WHERE slug = ?`, slug)
+	var s SlugCanonical
+	var r int
+	err := row.Scan(&s.Slug, &s.CanonicalPath, &s.Branch, &r)
+	if err == sql.ErrNoRows {
+		return SlugCanonical{}, false, nil
+	}
+	if err != nil {
+		return SlugCanonical{}, false, err
+	}
+	s.Resolved = r != 0
+	return s, true, nil
+}
