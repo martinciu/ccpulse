@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 	tea "github.com/charmbracelet/bubbletea"
@@ -176,6 +178,13 @@ func runTUI(_ interface{}) error {
 	})
 	p := tea.NewProgram(m, tea.WithAltScreen())
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if hasOAuth {
+		go runQuotaPoller(ctx, p, cred, cacheDir)
+	}
+
 	go w.Run(func(path string) {
 		// Tail-parse on event, write deltas, back-fill canonical,
 		// then post a RefreshMsg.
@@ -247,6 +256,34 @@ func slugFor(root, path string) string {
 		return ""
 	}
 	return parts[0]
+}
+
+// runQuotaPoller fires once immediately, then every 2 minutes, fetching
+// usage data and pushing QuotaMsg to the program. Errors are swallowed —
+// the TUI stays on the last known quota (or the JSONL heuristic).
+func runQuotaPoller(ctx context.Context, p *tea.Program, cred anthro.Credential, cacheDir string) {
+	push := func() {
+		res, err := anthro.Fetch(ctx, cred, cacheDir)
+		if err != nil {
+			return
+		}
+		p.Send(tui.QuotaMsg{
+			Usage:     &res.Usage,
+			Source:    res.Source,
+			UpdatedAt: res.UpdatedAt,
+		})
+	}
+	push() // immediate first tick
+	t := time.NewTicker(2 * time.Minute)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			push()
+		}
+	}
 }
 
 func main() {
