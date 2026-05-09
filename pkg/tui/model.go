@@ -3,6 +3,8 @@ package tui
 import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/martinciu/ccpulse/pkg/status"
 )
 
 type Tab int
@@ -24,10 +26,11 @@ type Deps struct {
 }
 
 type Model struct {
-	deps  Deps
-	tab   Tab
-	style Style
-	w, h  int
+	deps   Deps
+	tab    Tab
+	style  Style
+	w, h   int
+	window status.Window
 }
 
 func New(d Deps) Model {
@@ -60,7 +63,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) View() string {
-	header := m.style.Header.Render("ccpulse")
+	width := m.w
+	if width < 80 {
+		width = 80
+	}
+	header := renderHeader(m.style, m.window, width)
 	tabs := m.renderTabs()
 	body := "  <" + m.tab.String() + ">"
 	footer := m.style.Footer.Render("[tab]→  [j/k]nav  [r]efresh  [c]onfig  [?]help  [q]")
