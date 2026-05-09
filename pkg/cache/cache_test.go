@@ -98,3 +98,87 @@ func TestFileTracking(t *testing.T) {
 		t.Errorf("after update mtime = %d", mtime)
 	}
 }
+
+func TestInsertMessagesIdempotent(t *testing.T) {
+	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	tab, _ := pricing.Load()
+	ts := time.Now()
+	msgs := []parse.Message{
+		{
+			SessionID:   "s1",
+			ProjectSlug: "slug-a",
+			Model:       "claude-opus-4-7",
+			Timestamp:   ts,
+			InputTokens: 10,
+		},
+	}
+
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatal(err)
+	}
+
+	var n int
+	if err := c.DB().QueryRow(`SELECT count(*) FROM messages`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("messages count after duplicate insert = %d, want 1", n)
+	}
+}
+
+func TestOpenWipesOnSchemaVersionMismatch(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.db")
+
+	c, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tab, _ := pricing.Load()
+	if err := c.InsertMessages([]parse.Message{{
+		SessionID:   "s1",
+		ProjectSlug: "slug-a",
+		Model:       "claude-opus-4-7",
+		Timestamp:   time.Now(),
+		InputTokens: 10,
+	}}, tab); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := c.DB().Exec(`UPDATE meta SET value = '0' WHERE key = 'schema_version'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	c2, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c2.Close()
+
+	var n int
+	if err := c2.DB().QueryRow(`SELECT count(*) FROM messages`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("messages count after wipe = %d, want 0", n)
+	}
+
+	var version string
+	if err := c2.DB().QueryRow(`SELECT value FROM meta WHERE key = 'schema_version'`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != SchemaVersion {
+		t.Fatalf("schema_version after wipe = %q, want %q", version, SchemaVersion)
+	}
+}

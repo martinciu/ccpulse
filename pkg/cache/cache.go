@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	_ "embed"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/martinciu/ccpulse/pkg/parse"
@@ -14,7 +15,7 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
-const SchemaVersion = "1"
+const SchemaVersion = "2"
 
 type Cache struct {
 	db *sql.DB
@@ -29,6 +30,21 @@ func Open(path string) (*Cache, error) {
 		db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
+
+	var version string
+	err = db.QueryRow(`SELECT value FROM meta WHERE key = 'schema_version'`).Scan(&version)
+	if err != nil && err != sql.ErrNoRows {
+		db.Close()
+		return nil, err
+	}
+	if err == nil && version != SchemaVersion {
+		db.Close()
+		if rmErr := os.Remove(path); rmErr != nil {
+			return nil, fmt.Errorf("wipe stale schema: %w", rmErr)
+		}
+		return Open(path)
+	}
+
 	if _, err := db.Exec(`INSERT OR IGNORE INTO meta(key,value) VALUES('schema_version',?)`, SchemaVersion); err != nil {
 		db.Close()
 		return nil, err
@@ -48,7 +64,7 @@ func (c *Cache) InsertMessages(msgs []parse.Message, tab pricing.Table) error {
 	defer tx.Rollback()
 
 	stmt, err := tx.Prepare(`
-INSERT INTO messages
+INSERT OR IGNORE INTO messages
 (session_id, project_slug, ts, role, model,
  input_tokens, output_tokens, cache_read_tokens,
  cache_write_5m_tokens, cache_write_1h_tokens,

@@ -15,7 +15,8 @@ CREATE TABLE IF NOT EXISTS messages (
   cost_usd_estimate REAL NOT NULL,
   pricing_unknown INTEGER NOT NULL DEFAULT 0,
   is_subagent INTEGER NOT NULL DEFAULT 0,
-  parent_session_id TEXT
+  parent_session_id TEXT,
+  UNIQUE(session_id, ts)
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_ts ON messages(ts);
