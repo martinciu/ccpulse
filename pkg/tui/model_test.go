@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/martinciu/ccpulse/pkg/anthro"
 	"github.com/martinciu/ccpulse/pkg/cache"
@@ -157,6 +158,26 @@ func TestRenderHeader_ShowsIndexingWhenActive(t *testing.T) {
 		IndexProgress{Active: true, Done: 12, Total: 47})
 	if !strings.Contains(got, "indexing 12/47") {
 		t.Errorf("header missing 'indexing 12/47':\n%s", got)
+	}
+}
+
+func TestHeatColor(t *testing.T) {
+	tests := []struct {
+		ratio float64
+		want  lipgloss.Color
+	}{
+		{0.0, Green},
+		{0.32, Green},
+		{0.33, Yellow},
+		{0.65, Yellow},
+		{0.66, Red},
+		{1.0, Red},
+	}
+	for _, tt := range tests {
+		got := heatColor(tt.ratio)
+		if got != tt.want {
+			t.Errorf("heatColor(%v) = %v, want %v", tt.ratio, got, tt.want)
+		}
 	}
 }
 
