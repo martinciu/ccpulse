@@ -72,3 +72,25 @@ func TestParseMixedLines(t *testing.T) {
 		t.Errorf("msgs[1].Model = %q", msgs[1].Model)
 	}
 }
+
+func TestParseReportsMalformed(t *testing.T) {
+	f, err := os.Open("testdata/mixed_lines.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	msgs, errs, err := ParseWithErrors(f, "slug")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("messages: got %d, want 2", len(msgs))
+	}
+	if len(errs) != 1 {
+		t.Fatalf("errs: got %d, want 1", len(errs))
+	}
+	if errs[0].Line != 4 {
+		t.Errorf("err line = %d, want 4", errs[0].Line)
+	}
+}

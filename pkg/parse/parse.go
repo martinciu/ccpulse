@@ -43,30 +43,49 @@ type rawLine struct {
 	} `json:"message"`
 }
 
-func Parse(r io.Reader, projectSlug string) ([]Message, error) {
+type ParseError struct {
+	Line int
+	Err  error
+}
+
+func ParseWithErrors(r io.Reader, projectSlug string) ([]Message, []ParseError, error) {
 	var msgs []Message
+	var errs []ParseError
 	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 1<<20), 16<<20) // up to 16 MB per line
-	for sc.Scan() {
+	sc.Buffer(make([]byte, 0, 1<<20), 16<<20)
+	for line := 1; sc.Scan(); line++ {
 		var raw rawLine
 		if err := json.Unmarshal(sc.Bytes(), &raw); err != nil {
-			continue // skip malformed; full skip-and-log behavior added in Task 7
+			errs = append(errs, ParseError{Line: line, Err: err})
+			continue
 		}
 		if raw.Type != "assistant" {
 			continue
 		}
-		msgs = append(msgs, Message{
-			SessionID:          raw.SessionID,
-			ProjectSlug:        projectSlug,
-			Timestamp:          raw.Timestamp,
-			Role:               raw.Message.Role,
-			Model:              raw.Message.Model,
-			InputTokens:        raw.Message.Usage.InputTokens,
-			OutputTokens:       raw.Message.Usage.OutputTokens,
-			CacheReadTokens:    raw.Message.Usage.CacheReadInputTokens,
-			CacheWrite5mTokens: raw.Message.Usage.CacheCreation.Ephemeral5mInputTokens,
-			CacheWrite1hTokens: raw.Message.Usage.CacheCreation.Ephemeral1hInputTokens,
-		})
+		msgs = append(msgs, toMessage(raw, projectSlug))
 	}
-	return msgs, sc.Err()
+	return msgs, errs, sc.Err()
+}
+
+// toMessage converts a parsed JSONL line into a Message.
+func toMessage(raw rawLine, slug string) Message {
+	return Message{
+		SessionID:          raw.SessionID,
+		ProjectSlug:        slug,
+		Timestamp:          raw.Timestamp,
+		Role:               raw.Message.Role,
+		Model:              raw.Message.Model,
+		InputTokens:        raw.Message.Usage.InputTokens,
+		OutputTokens:       raw.Message.Usage.OutputTokens,
+		CacheReadTokens:    raw.Message.Usage.CacheReadInputTokens,
+		CacheWrite5mTokens: raw.Message.Usage.CacheCreation.Ephemeral5mInputTokens,
+		CacheWrite1hTokens: raw.Message.Usage.CacheCreation.Ephemeral1hInputTokens,
+	}
+}
+
+// Parse is a convenience wrapper around ParseWithErrors that drops
+// per-line error details (callers that want them use ParseWithErrors).
+func Parse(r io.Reader, projectSlug string) ([]Message, error) {
+	msgs, _, err := ParseWithErrors(r, projectSlug)
+	return msgs, err
 }
