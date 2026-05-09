@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"time"
+
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -36,6 +38,7 @@ type Model struct {
 	live     []cache.LiveSession
 	today    []cache.ModelTotals
 	history  []cache.DayTotals
+	projects []cache.ProjectTotals
 }
 
 func New(d Deps) Model {
@@ -87,6 +90,8 @@ func (m Model) View() string {
 		body = renderToday(m.today)
 	case TabHistory:
 		body = renderHistory(m.history)
+	case TabProjects:
+		body = renderProjects(m.projects, time.Now())
 	default:
 		body = "  <" + m.tab.String() + ">"
 	}

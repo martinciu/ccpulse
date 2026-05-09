@@ -230,6 +230,42 @@ GROUP BY d ORDER BY d DESC
 	return out, rows.Err()
 }
 
+type ProjectTotals struct {
+	ProjectCanonical string
+	Sessions         int64
+	CostUSD          float64
+	LastActive       time.Time
+}
+
+func (c *Cache) ProjectsTotals(days int) ([]ProjectTotals, error) {
+	rows, err := c.db.Query(`
+SELECT
+  COALESCE(NULLIF(project_canonical, ''), project_slug) AS proj,
+  COUNT(DISTINCT session_id),
+  SUM(cost_usd_estimate),
+  MAX(ts)
+FROM messages
+WHERE ts >= date('now', ?)
+GROUP BY proj
+ORDER BY SUM(cost_usd_estimate) DESC
+`, fmt.Sprintf("-%d days", days))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ProjectTotals
+	for rows.Next() {
+		var p ProjectTotals
+		var last string
+		if err := rows.Scan(&p.ProjectCanonical, &p.Sessions, &p.CostUSD, &last); err != nil {
+			return nil, err
+		}
+		p.LastActive, _ = time.Parse("2006-01-02T15:04:05.000Z07:00", last)
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
 func (c *Cache) LiveSessions(now time.Time, since time.Duration) ([]LiveSession, error) {
 	cutoff := now.Add(-since).Format("2006-01-02T15:04:05.000Z07:00")
 	rows, err := c.db.Query(`
