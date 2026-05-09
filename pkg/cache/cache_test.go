@@ -70,3 +70,31 @@ func TestInsertMessages(t *testing.T) {
 		t.Errorf("cost = %v, want > 0", cost)
 	}
 }
+
+func TestFileTracking(t *testing.T) {
+	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	if err := c.RecordFile("/tmp/x.jsonl", 1234, 5678, 42); err != nil {
+		t.Fatal(err)
+	}
+	mtime, off, line, found, err := c.GetFile("/tmp/x.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found || mtime != 1234 || off != 5678 || line != 42 {
+		t.Errorf("got mtime=%d off=%d line=%d found=%v", mtime, off, line, found)
+	}
+
+	// Update existing record
+	if err := c.RecordFile("/tmp/x.jsonl", 9999, 8888, 99); err != nil {
+		t.Fatal(err)
+	}
+	mtime, _, _, _, _ = c.GetFile("/tmp/x.jsonl")
+	if mtime != 9999 {
+		t.Errorf("after update mtime = %d", mtime)
+	}
+}

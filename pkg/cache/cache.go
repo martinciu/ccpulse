@@ -81,3 +81,27 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 	}
 	return tx.Commit()
 }
+
+func (c *Cache) RecordFile(path string, mtimeNs, offset, lastLine int64) error {
+	_, err := c.db.Exec(`
+INSERT INTO files(path, mtime_ns, last_offset_bytes, last_line)
+VALUES (?, ?, ?, ?)
+ON CONFLICT(path) DO UPDATE SET
+  mtime_ns = excluded.mtime_ns,
+  last_offset_bytes = excluded.last_offset_bytes,
+  last_line = excluded.last_line
+`, path, mtimeNs, offset, lastLine)
+	return err
+}
+
+func (c *Cache) GetFile(path string) (mtime, offset, line int64, found bool, err error) {
+	row := c.db.QueryRow(`SELECT mtime_ns, last_offset_bytes, last_line FROM files WHERE path = ?`, path)
+	err = row.Scan(&mtime, &offset, &line)
+	if err == sql.ErrNoRows {
+		return 0, 0, 0, false, nil
+	}
+	if err != nil {
+		return 0, 0, 0, false, err
+	}
+	return mtime, offset, line, true, nil
+}
