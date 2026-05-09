@@ -264,7 +264,7 @@ func runQuotaPoller(
 		})
 	}
 	push() // immediate first tick
-	t := time.NewTicker(2 * time.Minute)
+	t := time.NewTicker(3 * time.Minute)
 	defer t.Stop()
 	for {
 		select {
