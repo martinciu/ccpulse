@@ -44,7 +44,42 @@ CREATE TABLE IF NOT EXISTS meta (
 );
 
 CREATE TABLE IF NOT EXISTS usage_samples (
-  ts      INTEGER PRIMARY KEY,         -- Unix epoch seconds; one row per successful API fetch (INSERT OR IGNORE on collision)
-  payload TEXT NOT NULL,                -- json.Marshal(anthro.Usage)
-  source  TEXT NOT NULL DEFAULT 'api'   -- always 'api' today; reserved for future sources
+  ts                              INTEGER PRIMARY KEY,           -- Unix epoch seconds; one row per fetch (INSERT OR IGNORE on collision)
+  source                          TEXT NOT NULL DEFAULT 'api',   -- always 'api' today; reserved
+
+  five_hour_pct                   REAL,
+  five_hour_resets_at             TEXT,
+
+  seven_day_pct                   REAL,
+  seven_day_resets_at             TEXT,
+
+  seven_day_sonnet_pct            REAL,
+  seven_day_sonnet_resets_at      TEXT,
+
+  seven_day_opus_pct              REAL,
+  seven_day_opus_resets_at        TEXT,
+
+  seven_day_omelette_pct          REAL,
+  seven_day_omelette_resets_at    TEXT,
+
+  seven_day_oauth_apps_pct        REAL,
+  seven_day_oauth_apps_resets_at  TEXT,
+
+  seven_day_cowork_pct            REAL,
+  seven_day_cowork_resets_at      TEXT,
+
+  tangelo_pct                     REAL,
+  tangelo_resets_at               TEXT,
+
+  iguana_necktie_pct              REAL,
+  iguana_necktie_resets_at        TEXT,
+
+  omelette_promotional_pct        REAL,
+  omelette_promotional_resets_at  TEXT,
+
+  extra_usage_enabled             INTEGER,
+  extra_usage_limit               REAL,
+  extra_usage_used                REAL,
+  extra_usage_pct                 REAL,
+  extra_usage_currency            TEXT
 );
