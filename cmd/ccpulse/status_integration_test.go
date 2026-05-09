@@ -3,12 +3,18 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/martinciu/ccpulse/pkg/anthro"
+	"github.com/martinciu/ccpulse/pkg/cache"
 )
 
 const sampleAPIBody = `{
@@ -108,5 +114,135 @@ func TestStatusJSONWithoutCredential(t *testing.T) {
 	}
 	if !strings.Contains(out, `"ceiling_label":"unknown"`) {
 		t.Errorf("expected ceiling_label=unknown without cred: %s", out)
+	}
+}
+
+func stubUsageServer(t *testing.T, hits *int) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		*hits++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, sampleAPIBody)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func countSamples(t *testing.T, dbPath string) int {
+	t.Helper()
+	c, err := cache.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	var n int
+	if err := c.DB().QueryRow(`SELECT count(*) FROM usage_samples`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func TestStatusRecordsUsageSampleOnAPIFetch(t *testing.T) {
+	cacheDir := t.TempDir()
+	credDir := t.TempDir()
+	t.Setenv("CCPULSE_CACHE_DIR", cacheDir)
+	t.Setenv("HOME", credDir)
+	writeTempCredential(t, credDir)
+
+	var hits int
+	srv := stubUsageServer(t, &hits)
+	restore := anthro.SetAPIURLForTest(srv.URL)
+	t.Cleanup(restore)
+
+	cmd := newStatusCmd()
+	cmd.SetArgs([]string{"--json"})
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if hits != 1 {
+		t.Fatalf("API hit count = %d, want 1", hits)
+	}
+	if got := countSamples(t, filepath.Join(cacheDir, "state.db")); got != 1 {
+		t.Fatalf("usage_samples rows = %d, want 1 after first API fetch", got)
+	}
+}
+
+func TestStatusSkipsRecordOnCacheFresh(t *testing.T) {
+	cacheDir := t.TempDir()
+	credDir := t.TempDir()
+	t.Setenv("CCPULSE_CACHE_DIR", cacheDir)
+	t.Setenv("HOME", credDir)
+	writeTempCredential(t, credDir)
+	writeTempCache(t, cacheDir)
+
+	var hits int
+	srv := stubUsageServer(t, &hits)
+	restore := anthro.SetAPIURLForTest(srv.URL)
+	t.Cleanup(restore)
+
+	cmd := newStatusCmd()
+	cmd.SetArgs([]string{"--json"})
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if hits != 0 {
+		t.Fatalf("API hit count = %d, want 0 (cache_fresh path)", hits)
+	}
+	if got := countSamples(t, filepath.Join(cacheDir, "state.db")); got != 0 {
+		t.Fatalf("usage_samples rows = %d, want 0 on cache_fresh", got)
+	}
+}
+
+func TestStatusPrunesWhenRetentionConfigured(t *testing.T) {
+	cacheDir := t.TempDir()
+	credDir := t.TempDir()
+	cfgDir := t.TempDir()
+	t.Setenv("CCPULSE_CACHE_DIR", cacheDir)
+	t.Setenv("HOME", credDir)
+	t.Setenv("XDG_CONFIG_HOME", cfgDir)
+	writeTempCredential(t, credDir)
+
+	if err := os.MkdirAll(filepath.Join(cfgDir, "ccpulse"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(cfgDir, "ccpulse", "config.toml"),
+		[]byte("[history]\nretention_days = 1\n"),
+		0600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	seed, err := cache.Open(filepath.Join(cacheDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldTs := time.Now().Add(-48 * time.Hour).Unix()
+	if _, err := seed.DB().Exec(
+		`INSERT INTO usage_samples(ts, payload, source) VALUES (?, '{}', 'api')`, oldTs,
+	); err != nil {
+		t.Fatal(err)
+	}
+	seed.Close()
+
+	var hits int
+	srv := stubUsageServer(t, &hits)
+	restore := anthro.SetAPIURLForTest(srv.URL)
+	t.Cleanup(restore)
+
+	cmd := newStatusCmd()
+	cmd.SetArgs([]string{"--json"})
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("status: %v", err)
+	}
+
+	if got := countSamples(t, filepath.Join(cacheDir, "state.db")); got != 1 {
+		t.Fatalf("usage_samples rows = %d, want 1 (old row pruned, fresh row inserted)", got)
 	}
 }

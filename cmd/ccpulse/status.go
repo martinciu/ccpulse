@@ -43,6 +43,19 @@ func runStatus(cmd *cobra.Command, asJSON, asTmux bool) error {
 	defer c.Close()
 
 	q := buildQuotaInput(cacheDir, time.Now())
+
+	if q.Source == "api" && q.Usage != nil {
+		if recErr := c.RecordUsageSample(*q.Usage, q.UpdatedAt); recErr != nil {
+			fmt.Fprintf(os.Stderr, "ccpulse: record sample: %v\n", recErr)
+		}
+		if cfg.History.RetentionDays > 0 {
+			cutoff := time.Now().Add(-time.Duration(cfg.History.RetentionDays) * 24 * time.Hour)
+			if _, prErr := c.PruneUsageSamples(cutoff); prErr != nil {
+				fmt.Fprintf(os.Stderr, "ccpulse: prune samples: %v\n", prErr)
+			}
+		}
+	}
+
 	w, err := status.Compute(c.DB(), time.Now(), q)
 	if err != nil {
 		if asTmux {
