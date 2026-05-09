@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/martinciu/ccpulse/pkg/cache"
+	"github.com/martinciu/ccpulse/pkg/state"
 	"github.com/martinciu/ccpulse/pkg/status"
 )
 
@@ -95,5 +96,20 @@ func TestEnterDrillsHistory(t *testing.T) {
 	upBack, _ := updated.(Model).Update(tea.KeyMsg{Type: tea.KeyEsc})
 	if upBack.(Model).drilled {
 		t.Errorf("expected drilled=false after esc")
+	}
+}
+
+func TestScopeTogglePersists(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", tmp)
+	m := New(Deps{})
+	m.tab = TabLive
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}})
+	if updated.(Model).liveScope != "this_tmux" {
+		t.Errorf("scope not flipped, got %q", updated.(Model).liveScope)
+	}
+	saved := state.Load()
+	if saved.LiveScope != "this_tmux" {
+		t.Errorf("not persisted, got %q", saved.LiveScope)
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/martinciu/ccpulse/pkg/cache"
+	"github.com/martinciu/ccpulse/pkg/state"
 	"github.com/martinciu/ccpulse/pkg/status"
 	"github.com/martinciu/ccpulse/pkg/tmux"
 )
@@ -51,14 +52,21 @@ type Model struct {
 	models       []cache.ModelTotals
 	modelsWindow cache.ModelsWindow
 	drilled      bool
+	liveScope    string
 }
 
 func New(d Deps) Model {
+	st := state.Load()
+	scope := st.LiveScope
+	if scope == "" {
+		scope = "global"
+	}
 	return Model{
 		deps:         d,
 		tab:          TabLive,
 		style:        DefaultStyle(Violet),
 		modelsWindow: cache.WindowToday,
+		liveScope:    scope,
 	}
 }
 
@@ -109,6 +117,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "esc":
 			m.drilled = false
+		case "g":
+			if m.tab == TabLive {
+				if m.liveScope == "global" {
+					m.liveScope = "this_tmux"
+				} else {
+					m.liveScope = "global"
+				}
+				_ = state.Save(state.State{LiveScope: m.liveScope, Tab: m.tab.String()})
+			}
 		}
 	}
 	return m, nil
@@ -128,7 +145,17 @@ func (m Model) View() string {
 	switch m.tab {
 	case TabLive:
 		thisTmux := m.currentTmuxSessionIDs(m.deps.ProjectsRoot)
-		body = renderLive(m.live, thisTmux, time.Now())
+		rows := m.live
+		if m.liveScope == "this_tmux" {
+			filtered := rows[:0:0]
+			for _, r := range rows {
+				if thisTmux[r.SessionID] {
+					filtered = append(filtered, r)
+				}
+			}
+			rows = filtered
+		}
+		body = renderLive(rows, thisTmux, time.Now())
 	case TabToday:
 		body = renderToday(m.today)
 	case TabHistory:
