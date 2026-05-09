@@ -62,6 +62,16 @@ FROM messages WHERE ts >= ?`, cutoff)
 		w.MinutesToReset = mins
 	}
 
+	if q.Usage != nil && q.Usage.SevenDay != nil {
+		w.Has7d = true
+		w.Percent7d = clampPct(int(math.Round(q.Usage.SevenDay.Utilization)))
+		mins := int(q.Usage.SevenDay.ResetsAt.Sub(now).Minutes())
+		if mins < 0 {
+			mins = 0
+		}
+		w.MinutesToReset7d = mins
+	}
+
 	if q.Usage != nil {
 		w.Quota = q.Usage
 		w.QuotaSource = q.Source

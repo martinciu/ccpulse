@@ -173,3 +173,55 @@ func TestQuotaMsgUpdatesWindow(t *testing.T) {
 		t.Errorf("QuotaMsg not applied: %+v", nm)
 	}
 }
+
+func TestRenderHeader_BothBars(t *testing.T) {
+	w := status.Window{
+		Percent:          14,
+		MinutesToReset:   2*60 + 3,
+		Has7d:            true,
+		Percent7d:        89,
+		MinutesToReset7d: 17*60 + 33,
+		CeilingLabel:     "max_20x",
+	}
+	got := renderHeader(Style{}, w, false, 80, IndexProgress{})
+	for _, want := range []string{"5h", "7d", "14%", "89%", "2h 3m", "17h 33m"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "Usage window") {
+		t.Errorf("did not expect single-bar caption when Has7d=true:\n%s", got)
+	}
+	if strings.Contains(got, "to reset") {
+		t.Errorf("did not expect 'to reset' suffix in side-by-side layout:\n%s", got)
+	}
+}
+
+func TestRenderHeader_SingleBarWhenNo7d(t *testing.T) {
+	w := status.Window{
+		Percent:        14,
+		MinutesToReset: 2*60 + 3,
+		CeilingLabel:   "max_20x",
+	}
+	got := renderHeader(Style{}, w, false, 80, IndexProgress{})
+	for _, want := range []string{"Usage window", "14%", "2h 3m", "to reset"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in single-bar fallback:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "7d") {
+		t.Errorf("unexpected 7d label in single-bar fallback:\n%s", got)
+	}
+}
+
+func TestRenderHeader_NoPanicOnZeroWindow(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("renderHeader panicked on zero Window: %v", r)
+		}
+	}()
+	got := renderHeader(Style{}, status.Window{}, false, 80, IndexProgress{})
+	if strings.Contains(got, "7d") {
+		t.Errorf("zero Window should not include 7d label:\n%s", got)
+	}
+}

@@ -134,3 +134,57 @@ func TestTmuxLineHot(t *testing.T) {
 		t.Errorf("expected red fg in %q", got)
 	}
 }
+
+func TestCompute_PopulatesSevenDay(t *testing.T) {
+	db := freshDB(t)
+	now := time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)
+	resets5h := now.Add(2*time.Hour + 3*time.Minute)
+	resets7d := now.Add(17*time.Hour + 33*time.Minute)
+	usage := &anthro.Usage{
+		FiveHour: &anthro.Bucket{Utilization: 14.0, ResetsAt: resets5h},
+		SevenDay: &anthro.Bucket{Utilization: 89.0, ResetsAt: resets7d},
+	}
+	w, err := Compute(db, now, QuotaInput{Usage: usage, Source: "api", UpdatedAt: now})
+	if err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+	if !w.Has7d {
+		t.Errorf("Has7d = false, want true")
+	}
+	if w.Percent7d != 89 {
+		t.Errorf("Percent7d = %d, want 89", w.Percent7d)
+	}
+	if w.MinutesToReset7d != 17*60+33 {
+		t.Errorf("MinutesToReset7d = %d, want %d", w.MinutesToReset7d, 17*60+33)
+	}
+}
+
+func TestCompute_OmitsSevenDayWhenSevenDayNil(t *testing.T) {
+	db := freshDB(t)
+	now := time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)
+	usage := &anthro.Usage{
+		FiveHour: &anthro.Bucket{Utilization: 14.0, ResetsAt: now.Add(2 * time.Hour)},
+	}
+	w, err := Compute(db, now, QuotaInput{Usage: usage, Source: "api", UpdatedAt: now})
+	if err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+	if w.Has7d {
+		t.Errorf("Has7d = true, want false")
+	}
+	if w.Percent7d != 0 || w.MinutesToReset7d != 0 {
+		t.Errorf("7d fields nonzero: percent=%d minutes=%d", w.Percent7d, w.MinutesToReset7d)
+	}
+}
+
+func TestCompute_OmitsSevenDayWhenUsageNil(t *testing.T) {
+	db := freshDB(t)
+	now := time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)
+	w, err := Compute(db, now, QuotaInput{Usage: nil, Source: "cache_stale", UpdatedAt: now})
+	if err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+	if w.Has7d {
+		t.Errorf("Has7d = true, want false")
+	}
+}
