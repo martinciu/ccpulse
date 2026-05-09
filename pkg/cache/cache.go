@@ -266,6 +266,52 @@ ORDER BY SUM(cost_usd_estimate) DESC
 	return out, rows.Err()
 }
 
+type ModelsWindow string
+
+const (
+	WindowToday ModelsWindow = "today"
+	Window7d    ModelsWindow = "7d"
+	Window30d   ModelsWindow = "30d"
+	WindowAll   ModelsWindow = "all"
+)
+
+func (c *Cache) ModelsTotals(w ModelsWindow) ([]ModelTotals, error) {
+	var where string
+	switch w {
+	case WindowToday:
+		where = "ts >= date('now')"
+	case Window7d:
+		where = "ts >= date('now','-7 days')"
+	case Window30d:
+		where = "ts >= date('now','-30 days')"
+	default:
+		where = "1=1"
+	}
+	q := fmt.Sprintf(`
+SELECT model, COUNT(*), SUM(input_tokens), SUM(output_tokens),
+       SUM(cache_read_tokens),
+       SUM(cache_write_5m_tokens) + SUM(cache_write_1h_tokens),
+       SUM(cost_usd_estimate)
+FROM messages WHERE %s
+GROUP BY model ORDER BY SUM(cost_usd_estimate) DESC
+`, where)
+	rows, err := c.db.Query(q)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ModelTotals
+	for rows.Next() {
+		var m ModelTotals
+		if err := rows.Scan(&m.Model, &m.Messages, &m.Input, &m.Output,
+			&m.CacheRead, &m.CacheWrite, &m.CostUSD); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
 func (c *Cache) LiveSessions(now time.Time, since time.Duration) ([]LiveSession, error) {
 	cutoff := now.Add(-since).Format("2006-01-02T15:04:05.000Z07:00")
 	rows, err := c.db.Query(`

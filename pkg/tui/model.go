@@ -29,23 +29,26 @@ type Deps struct {
 }
 
 type Model struct {
-	deps     Deps
-	tab      Tab
-	style    Style
-	w, h     int
-	window   status.Window
-	showHelp bool
-	live     []cache.LiveSession
-	today    []cache.ModelTotals
-	history  []cache.DayTotals
-	projects []cache.ProjectTotals
+	deps         Deps
+	tab          Tab
+	style        Style
+	w, h         int
+	window       status.Window
+	showHelp     bool
+	live         []cache.LiveSession
+	today        []cache.ModelTotals
+	history      []cache.DayTotals
+	projects     []cache.ProjectTotals
+	models       []cache.ModelTotals
+	modelsWindow cache.ModelsWindow
 }
 
 func New(d Deps) Model {
 	return Model{
-		deps:  d,
-		tab:   TabLive,
-		style: DefaultStyle(Violet),
+		deps:         d,
+		tab:          TabLive,
+		style:        DefaultStyle(Violet),
+		modelsWindow: cache.WindowToday,
 	}
 }
 
@@ -92,6 +95,8 @@ func (m Model) View() string {
 		body = renderHistory(m.history)
 	case TabProjects:
 		body = renderProjects(m.projects, time.Now())
+	case TabModels:
+		body = renderModels(m.models, m.modelsWindow)
 	default:
 		body = "  <" + m.tab.String() + ">"
 	}
