@@ -50,3 +50,25 @@ func TestParseSingleAssistant(t *testing.T) {
 		t.Errorf("ProjectSlug = %q", m.ProjectSlug)
 	}
 }
+
+func TestParseMixedLines(t *testing.T) {
+	f, err := os.Open("testdata/mixed_lines.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	msgs, err := Parse(f, "slug")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("got %d messages, want 2", len(msgs))
+	}
+	if msgs[0].Model != "claude-sonnet-4-6" {
+		t.Errorf("msgs[0].Model = %q", msgs[0].Model)
+	}
+	if msgs[1].Model != "claude-haiku-4-5-20251001" {
+		t.Errorf("msgs[1].Model = %q", msgs[1].Model)
+	}
+}
