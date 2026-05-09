@@ -166,3 +166,29 @@ func TestProcessFile_SkipsWhenAtEOF(t *testing.T) {
 		t.Errorf("expected empty log (file should not have been opened), got: %s", data)
 	}
 }
+
+func TestProcessFile_ResetsOnTruncation(t *testing.T) {
+	ing, _, path := newIngesterFixture(t)
+
+	// Pretend a previous run recorded a much larger offset.
+	st, _ := os.Stat(path)
+	if err := ing.Cache.RecordFile(path, st.ModTime().UnixNano(), st.Size()*10, 100); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := ing.ProcessFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("inserted after truncation reset = %d, want 1", n)
+	}
+
+	_, off, line, _, _ := ing.Cache.GetFile(path)
+	if off != st.Size() {
+		t.Errorf("offset after reset = %d, want %d", off, st.Size())
+	}
+	if line != 1 {
+		t.Errorf("line after reset = %d, want 1", line)
+	}
+}

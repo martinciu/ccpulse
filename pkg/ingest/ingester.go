@@ -1,6 +1,7 @@
 package ingest
 
 import (
+	"errors"
 	"os"
 
 	"github.com/martinciu/ccpulse/pkg/cache"
@@ -8,6 +9,8 @@ import (
 	"github.com/martinciu/ccpulse/pkg/parse"
 	"github.com/martinciu/ccpulse/pkg/pricing"
 )
+
+var errTruncated = errors.New("recorded offset past EOF; resetting and re-parsing")
 
 // Ingester catches one .jsonl transcript up to current EOF.
 // Same code path runs from the watcher callback (one file per
@@ -37,6 +40,15 @@ func (i *Ingester) ProcessFile(path string) (inserted int, err error) {
 	// Skip optimisation: file recorded and size unchanged → nothing new.
 	if found && offset == st.Size() {
 		return 0, nil
+	}
+
+	// Truncation guard: file shrank since last record (manual edit,
+	// rotation, etc.). Seek past EOF would yield zero rows and the
+	// gap would persist forever — reset to the start instead.
+	if found && offset > st.Size() {
+		LogFileError(i.ParseErrorsLog, path, errTruncated)
+		offset = 0
+		line = 0
 	}
 
 	slug, _, _ := SlugAndSubagent(i.ProjectsRoot, path)
