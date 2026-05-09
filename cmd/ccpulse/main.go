@@ -6,11 +6,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 
+	"github.com/martinciu/ccpulse/pkg/anthro"
 	"github.com/martinciu/ccpulse/pkg/cache"
 	"github.com/martinciu/ccpulse/pkg/canonical"
 	"github.com/martinciu/ccpulse/pkg/config"
@@ -197,6 +199,17 @@ func runTUI(_ interface{}) error {
 	// Kick off an initial refresh so the TUI shows current data on launch.
 	go func() {
 		p.Send(tui.RefreshMsg{})
+	}()
+
+	// Background goroutine: fetch real block reset time from Anthropic API
+	// (or its cache) and push AnthroMsg every 2 minutes.
+	go func() {
+		for {
+			if d, err := anthro.Fetch(cacheDir); err == nil {
+				p.Send(tui.AnthroMsg{ResetAt: d.SessionResetAt, Pct: d.Pct})
+			}
+			time.Sleep(2 * time.Minute)
+		}
 	}()
 
 	_, err = p.Run()

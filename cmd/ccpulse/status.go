@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/martinciu/ccpulse/pkg/anthro"
 	"github.com/martinciu/ccpulse/pkg/cache"
 	"github.com/martinciu/ccpulse/pkg/config"
 	"github.com/martinciu/ccpulse/pkg/status"
@@ -40,12 +41,25 @@ func runStatus(cmd *cobra.Command, asJSON, asTmux bool) error {
 	defer c.Close()
 
 	ceiling := status.CeilingFor(cfg.Plan)
-	w, err := status.Compute(c.DB(), time.Now(), cfg.Plan.Tier, ceiling)
+	now := time.Now()
+	w, err := status.Compute(c.DB(), now, cfg.Plan.Tier, ceiling)
 	if err != nil {
 		if asTmux {
 			return nil
 		}
 		return err
+	}
+	if d, err := anthro.Fetch(cacheDir); err == nil {
+		if !d.SessionResetAt.IsZero() {
+			mins := int(d.SessionResetAt.Sub(now).Minutes())
+			if mins < 0 {
+				mins = 0
+			}
+			w.MinutesToReset = mins
+		}
+		if d.Pct > 0 {
+			w.Percent = d.Pct
+		}
 	}
 
 	switch {

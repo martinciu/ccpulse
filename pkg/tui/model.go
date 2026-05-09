@@ -18,6 +18,12 @@ import (
 // RefreshMsg is sent by the watcher loop to trigger a TUI re-query.
 type RefreshMsg struct{}
 
+// AnthroMsg carries live usage data from the Anthropic API.
+type AnthroMsg struct {
+	ResetAt time.Time
+	Pct     int
+}
+
 type Tab int
 
 const (
@@ -55,6 +61,8 @@ type Model struct {
 	modelsWindow cache.ModelsWindow
 	drilled      bool
 	liveScope    string
+	anthroReset  time.Time
+	anthroPct    int
 }
 
 func New(d Deps) Model {
@@ -78,13 +86,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.w, m.h = msg.Width, msg.Height
+	case AnthroMsg:
+		m.anthroReset = msg.ResetAt
+		m.anthroPct = msg.Pct
+		m.window = applyAnthro(m.window, msg.ResetAt, msg.Pct, time.Now())
 	case RefreshMsg:
 		if m.deps.Cache == nil {
 			return m, nil
 		}
 		now := time.Now()
 		if w, err := computeWindowFromDeps(m.deps, now); err == nil {
-			m.window = w
+			m.window = applyAnthro(w, m.anthroReset, m.anthroPct, now)
 		}
 		if rows, err := m.deps.Cache.LiveSessions(now, 24*time.Hour); err == nil {
 			m.live = rows
@@ -199,6 +211,22 @@ func or30(d int) int {
 		return 30
 	}
 	return d
+}
+
+// applyAnthro overrides MinutesToReset (and optionally Percent) in w
+// with values sourced from the Anthropic usage API.
+func applyAnthro(w status.Window, resetAt time.Time, pct int, now time.Time) status.Window {
+	if !resetAt.IsZero() {
+		mins := int(resetAt.Sub(now).Minutes())
+		if mins < 0 {
+			mins = 0
+		}
+		w.MinutesToReset = mins
+	}
+	if pct > 0 {
+		w.Percent = pct
+	}
+	return w
 }
 
 // computeWindowFromDeps is a thin shim around status.Compute.
