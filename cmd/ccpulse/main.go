@@ -5,13 +5,19 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 
+	"github.com/martinciu/ccpulse/pkg/cache"
+	"github.com/martinciu/ccpulse/pkg/canonical"
 	"github.com/martinciu/ccpulse/pkg/config"
+	"github.com/martinciu/ccpulse/pkg/parse"
+	"github.com/martinciu/ccpulse/pkg/pricing"
 	"github.com/martinciu/ccpulse/pkg/tui"
+	"github.com/martinciu/ccpulse/pkg/watcher"
 )
 
 const version = "v0.0.0"
@@ -101,10 +107,86 @@ func defaultTOMLBytes() []byte {
 // parameter is reserved for future use (currently the TUI manages its
 // own terminal IO via the alt screen).
 func runTUI(_ interface{}) error {
-	m := tui.New(tui.Deps{})
+	cfg, _ := config.Load(config.DefaultPath())
+	cacheDir := envOr("CCPULSE_CACHE_DIR", expand(cfg.Paths.CacheDir))
+	if err := os.MkdirAll(cacheDir, 0755); err != nil {
+		return err
+	}
+	dbPath := filepath.Join(cacheDir, "state.db")
+	c, err := cache.Open(dbPath)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+
+	tab, _ := pricing.Load()
+	if cfg.Pricing.Override != "" {
+		if t, err := pricing.LoadFrom(expand(cfg.Pricing.Override)); err == nil {
+			tab = t
+		}
+	}
+	res := canonical.NewResolver(c, "/")
+
+	projectsRoot := envOr("CCPULSE_PROJECTS_ROOT", expand(cfg.Paths.ProjectsRoot))
+
+	w, err := watcher.New(projectsRoot)
+	if err != nil {
+		return err
+	}
+	defer w.Close()
+
+	m := tui.New(tui.Deps{
+		Cache:        c,
+		ProjectsRoot: projectsRoot,
+		HistoryDays:  cfg.History.DefaultWindowDays,
+	})
 	p := tea.NewProgram(m, tea.WithAltScreen())
-	_, err := p.Run()
+
+	go w.Run(func(path string) {
+		// Tail-parse on event, write deltas, back-fill canonical,
+		// then post a RefreshMsg.
+		slug := slugFor(projectsRoot, path)
+		_, off, line, _, _ := c.GetFile(path)
+		msgs, newOff, newLine, err := parse.ParseFromOffset(path, slug, off, int(line))
+		if err != nil || len(msgs) == 0 {
+			return
+		}
+		if err := c.InsertMessages(msgs, tab); err != nil {
+			return
+		}
+		// New slug? Resolve and back-fill canonical for these rows.
+		r, _ := res.Resolve(slug)
+		if r.CanonicalPath != "" {
+			_, _ = c.DB().Exec(
+				`UPDATE messages SET project_canonical = ?, worktree_branch = ? WHERE project_slug = ? AND project_canonical = ''`,
+				r.CanonicalPath, r.Branch, slug,
+			)
+		}
+		st, _ := os.Stat(path)
+		_ = c.RecordFile(path, st.ModTime().UnixNano(), newOff, int64(newLine))
+		p.Send(tui.RefreshMsg{})
+	})
+
+	// Kick off an initial refresh so the TUI shows current data on launch.
+	go func() {
+		p.Send(tui.RefreshMsg{})
+	}()
+
+	_, err = p.Run()
 	return err
+}
+
+// slugFor extracts the slug (top-level dir under projects root) from a path.
+func slugFor(root, path string) string {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return ""
+	}
+	parts := strings.Split(rel, string(os.PathSeparator))
+	if len(parts) == 0 {
+		return ""
+	}
+	return parts[0]
 }
 
 func main() {

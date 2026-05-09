@@ -10,6 +10,9 @@ import (
 	"github.com/martinciu/ccpulse/pkg/status"
 )
 
+// RefreshMsg is sent by the watcher loop to trigger a TUI re-query.
+type RefreshMsg struct{}
+
 type Tab int
 
 const (
@@ -25,7 +28,9 @@ func (t Tab) String() string {
 }
 
 type Deps struct {
-	// filled in over upcoming tasks: cache, config, status computer.
+	Cache        *cache.Cache
+	ProjectsRoot string
+	HistoryDays  int
 }
 
 type Model struct {
@@ -59,6 +64,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.w, m.h = msg.Width, msg.Height
+	case RefreshMsg:
+		if m.deps.Cache == nil {
+			return m, nil
+		}
+		now := time.Now()
+		if w, err := computeWindowFromDeps(m.deps, now); err == nil {
+			m.window = w
+		}
+		if rows, err := m.deps.Cache.LiveSessions(now, 24*time.Hour); err == nil {
+			m.live = rows
+		}
+		if rows, err := m.deps.Cache.TodayByModel(now); err == nil {
+			m.today = rows
+		}
+		if rows, err := m.deps.Cache.HistoryByDay(or30(m.deps.HistoryDays)); err == nil {
+			m.history = rows
+		}
+		if rows, err := m.deps.Cache.ProjectsTotals(or30(m.deps.HistoryDays)); err == nil {
+			m.projects = rows
+		}
+		if rows, err := m.deps.Cache.ModelsTotals(m.modelsWindow); err == nil {
+			m.models = rows
+		}
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "q", "ctrl+c":
@@ -130,4 +158,19 @@ func (m Model) renderTabs() string {
 		}
 	}
 	return lipgloss.JoinHorizontal(lipgloss.Top, tabs...)
+}
+
+func or30(d int) int {
+	if d == 0 {
+		return 30
+	}
+	return d
+}
+
+// computeWindowFromDeps is a thin shim around status.Compute.
+// Lives here to avoid leaking config plumbing into Deps; the TUI
+// re-uses the cache.DB() handle and a constant ceiling-label of "max_20x"
+// for v0. Phase 11 polish will pull tier from config.
+func computeWindowFromDeps(d Deps, now time.Time) (status.Window, error) {
+	return status.Compute(d.Cache.DB(), now, "max_20x", 240_000_000)
 }
