@@ -18,6 +18,15 @@ import (
 // RefreshMsg is sent by the watcher loop to trigger a TUI re-query.
 type RefreshMsg struct{}
 
+// IndexProgressMsg is sent by the startup backfill goroutine. The
+// header renders an "indexing N/M" suffix while Active is true and
+// removes it when the final message (Active:false) lands.
+type IndexProgressMsg struct {
+	Done   int
+	Total  int
+	Active bool
+}
+
 type Tab int
 
 const (
@@ -55,6 +64,9 @@ type Model struct {
 	modelsWindow cache.ModelsWindow
 	drilled      bool
 	liveScope    string
+	indexActive  bool
+	indexDone    int
+	indexTotal   int
 }
 
 func New(d Deps) Model {
@@ -78,6 +90,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.w, m.h = msg.Width, msg.Height
+	case IndexProgressMsg:
+		m.indexActive = msg.Active
+		m.indexDone = msg.Done
+		m.indexTotal = msg.Total
+		return m, nil
 	case RefreshMsg:
 		if m.deps.Cache == nil {
 			return m, nil

@@ -113,3 +113,32 @@ func TestScopeTogglePersists(t *testing.T) {
 		t.Errorf("not persisted, got %q", saved.LiveScope)
 	}
 }
+
+func TestUpdate_IndexProgressMsgUpdatesModelState(t *testing.T) {
+	m := Model{}
+	updated, _ := m.Update(IndexProgressMsg{Done: 3, Total: 7, Active: true})
+	got := updated.(Model)
+
+	if got.indexDone != 3 {
+		t.Errorf("indexDone = %d, want 3", got.indexDone)
+	}
+	if got.indexTotal != 7 {
+		t.Errorf("indexTotal = %d, want 7", got.indexTotal)
+	}
+	if !got.indexActive {
+		t.Errorf("indexActive = false, want true")
+	}
+}
+
+func TestUpdate_IndexProgressMsg_FinalClearsActive(t *testing.T) {
+	m := Model{indexDone: 3, indexTotal: 7, indexActive: true}
+	updated, _ := m.Update(IndexProgressMsg{Done: 7, Total: 7, Active: false})
+	got := updated.(Model)
+
+	if got.indexActive {
+		t.Errorf("indexActive = true, want false (final progress)")
+	}
+	if got.indexTotal != 7 {
+		t.Errorf("indexTotal = %d, want 7", got.indexTotal)
+	}
+}
