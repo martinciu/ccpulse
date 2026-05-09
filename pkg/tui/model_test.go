@@ -6,6 +6,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/martinciu/ccpulse/pkg/anthro"
 	"github.com/martinciu/ccpulse/pkg/cache"
 	"github.com/martinciu/ccpulse/pkg/state"
@@ -223,5 +224,25 @@ func TestRenderHeader_NoPanicOnZeroWindow(t *testing.T) {
 	got := renderHeader(Style{}, status.Window{}, false, 80, IndexProgress{})
 	if strings.Contains(got, "7d") {
 		t.Errorf("zero Window should not include 7d label:\n%s", got)
+	}
+}
+
+func TestHeatColor(t *testing.T) {
+	tests := []struct {
+		ratio float64
+		want  lipgloss.Color
+	}{
+		{0.0, Green},
+		{0.32, Green},
+		{0.33, Yellow},
+		{0.65, Yellow},
+		{0.66, Red},
+		{1.0, Red},
+	}
+	for _, tt := range tests {
+		got := heatColor(tt.ratio)
+		if got != tt.want {
+			t.Errorf("heatColor(%v) = %v, want %v", tt.ratio, got, tt.want)
+		}
 	}
 }
