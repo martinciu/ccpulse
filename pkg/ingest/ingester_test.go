@@ -95,3 +95,45 @@ func TestProcessFile_NewFileFullParse(t *testing.T) {
 		t.Errorf("recorded line = %d, want 1", line)
 	}
 }
+
+func TestProcessFile_TailFromStoredOffset(t *testing.T) {
+	ing, _, path := newIngesterFixture(t)
+
+	// First pass — full parse, records offset.
+	if _, err := ing.ProcessFile(path); err != nil {
+		t.Fatal(err)
+	}
+	_, off1, _, _, _ := ing.Cache.GetFile(path)
+
+	// Append a second assistant line to the same file.
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write(jsonl("s2")); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	// Second pass — should tail-parse only the appended line.
+	n, err := ing.ProcessFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("inserted on second pass = %d, want 1", n)
+	}
+
+	var total int
+	if err := ing.Cache.DB().QueryRow(`SELECT count(*) FROM messages`).Scan(&total); err != nil {
+		t.Fatal(err)
+	}
+	if total != 2 {
+		t.Errorf("total messages = %d, want 2", total)
+	}
+
+	_, off2, _, _, _ := ing.Cache.GetFile(path)
+	if off2 <= off1 {
+		t.Errorf("offset did not advance: off1=%d off2=%d", off1, off2)
+	}
+}
