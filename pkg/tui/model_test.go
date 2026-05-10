@@ -114,7 +114,7 @@ func TestQuitKey(t *testing.T) {
 	}
 }
 
-func TestRefreshChartClearsOnEmptyData(t *testing.T) {
+func TestRefreshChart_AllEmptyShowsBaseline(t *testing.T) {
 	c, err := cache.Open(filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -126,15 +126,22 @@ func TestRefreshChartClearsOnEmptyData(t *testing.T) {
 	m.viewport.Width = m.chartWidth()
 	m.viewport.Height = m.chartHeight()
 
-	// Seed the viewport with a non-placeholder chart string to simulate
-	// stale content from a prior refresh.
+	// Seed stale content to confirm refresh clears it.
 	m.viewport.SetContent("STALE CHART CONTENT")
 
 	m.refreshChart()
 
 	got := m.viewport.View()
 	if strings.Contains(got, "STALE CHART CONTENT") {
-		t.Errorf("refreshChart left stale content in viewport when cache empty:\n%s", got)
+		t.Errorf("refreshChart left stale content in viewport:\n%s", got)
+	}
+	// New behaviour: a cache with no rows renders as a flat baseline of
+	// '░' gap markers, not the old "(no usage data)" placeholder.
+	if strings.Contains(got, "no usage data") {
+		t.Errorf("placeholder text still present after empty-state refactor:\n%s", got)
+	}
+	if !strings.Contains(got, "░") {
+		t.Errorf("expected gap-baseline character '░' on empty cache, got:\n%s", got)
 	}
 }
 
