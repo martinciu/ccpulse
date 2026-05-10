@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -405,6 +406,67 @@ func TestWriteCacheConcurrent(t *testing.T) {
 	}
 	if !slices.ContainsFunc(timestamps, got.UpdatedAt.Equal) {
 		t.Errorf("final UpdatedAt %v matched none of the N input timestamps", got.UpdatedAt)
+	}
+}
+
+// TestFetchSerializesConcurrentStaleCallers proves the fix for #76: N
+// concurrent Fetch callers that all observe a stale cache must produce
+// exactly one upstream API hit. The first caller through the lock refreshes
+// the cache; the rest re-read under the lock and return cache_fresh.
+func TestFetchSerializesConcurrentStaleCallers(t *testing.T) {
+	dir := t.TempDir()
+	writeFixtureCache(t, dir, time.Now().Add(-10*time.Minute))
+
+	var hits atomic.Int64
+	srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		// Hold the response open long enough for the other goroutines to
+		// pile up on the lock; without the sleep they could finish their
+		// fast-path check, hit the lock, and serialize trivially.
+		time.Sleep(50 * time.Millisecond)
+		_, _ = w.Write([]byte(sampleAPIBody))
+	})
+	withTestEndpoint(t, srv.URL)
+
+	const N = 8
+	results := make([]FetchResult, N)
+	errs := make([]error, N)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(N)
+	for i := range N {
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			results[i], errs[i] = Fetch(context.Background(), Credential{AccessToken: "tok"}, dir)
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	if got := hits.Load(); got != 1 {
+		t.Errorf("API hits = %d, want 1", got)
+	}
+	apiCount, freshCount := 0, 0
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("Fetch[%d]: %v", i, err)
+			continue
+		}
+		switch results[i].Source {
+		case "api":
+			apiCount++
+		case "cache_fresh":
+			freshCount++
+		default:
+			t.Errorf("Fetch[%d].Source = %q, want api or cache_fresh", i, results[i].Source)
+		}
+	}
+	if apiCount != 1 {
+		t.Errorf("Source=api count = %d, want 1", apiCount)
+	}
+	if apiCount+freshCount != N {
+		t.Errorf("api+fresh = %d, want %d", apiCount+freshCount, N)
 	}
 }
 
