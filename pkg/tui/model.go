@@ -158,6 +158,37 @@ func (m Model) View() string {
 	return lipgloss.JoinVertical(lipgloss.Left, header, label, sep, body, sep, footer)
 }
 
+// renderIndicators builds the right-aligned status block for the footer.
+// Indicators are ordered stale → indexing → [DEV] (dev rightmost), joined
+// by dim ' · ' separators, and only included when active. Returns "" when
+// nothing's active so the footer is just keybindings.
+//
+// Styling note: stale-quota uses the default foreground (intentionally
+// undimmed — it's a warning meant to draw the eye); indexing and [DEV]
+// are dim. The separator is dim.
+func renderIndicators(isDev bool, idx IndexProgress, w status.Window) string {
+	dim := lipgloss.NewStyle().Foreground(Base01)
+	var parts []string
+	if w.QuotaSource == "cache_stale" {
+		mins := int(time.Since(w.QuotaUpdatedAt).Minutes())
+		if mins < 1 {
+			mins = 1
+		}
+		parts = append(parts, fmt.Sprintf("⚠ %dm old", mins))
+	}
+	if idx.Active {
+		parts = append(parts, dim.Render(fmt.Sprintf("indexing %d/%d", idx.Done, idx.Total)))
+	}
+	if isDev {
+		parts = append(parts, dim.Render("[DEV]"))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	sep := dim.Render(" · ")
+	return strings.Join(parts, sep)
+}
+
 // quotaBars renders the 5h and 7d quota bars as a single line, designed
 // to live as the second row of the bordered header box. The two bars are
 // separated by a dim '│' divider; when 7d data is unavailable that side

@@ -361,6 +361,49 @@ func TestHeaderHidesDevChipInRelease(t *testing.T) {
 	}
 }
 
+func TestRenderIndicators(t *testing.T) {
+	now := time.Now()
+	stale := status.Window{QuotaSource: "cache_stale", QuotaUpdatedAt: now.Add(-5 * time.Minute)}
+	tests := []struct {
+		name      string
+		isDev     bool
+		idx       IndexProgress
+		w         status.Window
+		wantParts []string
+		wantEmpty bool
+	}{
+		{"all idle", false, IndexProgress{}, status.Window{}, nil, true},
+		{"dev only", true, IndexProgress{}, status.Window{}, []string{"[DEV]"}, false},
+		{"indexing only", false, IndexProgress{Active: true, Done: 12, Total: 30}, status.Window{}, []string{"indexing 12/30"}, false},
+		{"stale only", false, IndexProgress{}, stale, []string{"⚠ 5m old"}, false},
+		{"all active", true, IndexProgress{Active: true, Done: 1, Total: 2}, stale, []string{"⚠ 5m old", "indexing 1/2", "[DEV]"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := renderIndicators(tt.isDev, tt.idx, tt.w)
+			if tt.wantEmpty {
+				if got != "" {
+					t.Errorf("expected empty, got %q", got)
+				}
+				return
+			}
+			for _, p := range tt.wantParts {
+				if !strings.Contains(got, p) {
+					t.Errorf("missing %q in %q", p, got)
+				}
+			}
+			if tt.name == "all active" {
+				stIdx := strings.Index(got, "⚠")
+				ixIdx := strings.Index(got, "indexing")
+				devIdx := strings.Index(got, "[DEV]")
+				if !(stIdx < ixIdx && ixIdx < devIdx) {
+					t.Errorf("expected stale < indexing < [DEV] order, got %q", got)
+				}
+			}
+		})
+	}
+}
+
 func TestFormatReset7d(t *testing.T) {
 	tests := []struct {
 		mins int
