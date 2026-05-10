@@ -48,12 +48,13 @@ type Deps struct {
 
 // Model is the root Bubble Tea model for the chart view.
 type Model struct {
-	deps     Deps
-	keys     KeyMap
-	progress progress.Model
-	viewport viewport.Model
-	help     help.Model
-	showHelp bool
+	deps       Deps
+	keys       KeyMap
+	progress   progress.Model // 5-hour quota bar
+	progress7d progress.Model // 7-day quota bar
+	viewport   viewport.Model
+	help       help.Model
+	showHelp   bool
 
 	zoomIdx int // index into ZoomLevels
 
@@ -77,6 +78,7 @@ func New(d Deps) Model {
 		zoomIdx: 1, // default: 15m
 	}
 	m.progress = newProgressBar(0, 40)
+	m.progress7d = newProgressBar(0, 40)
 	m.viewport = viewport.New(80, 20)
 	m.viewport.SetHorizontalStep(horizontalScrollStep)
 	return m
@@ -91,6 +93,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.viewport.Width = m.chartWidth()
 		m.viewport.Height = m.chartHeight()
 		m.progress = newProgressBar(float64(m.window.Percent)/100.0, m.progressWidth())
+		m.progress7d = newProgressBar(float64(m.window.Percent7d)/100.0, m.progressWidth())
 		m.refreshChart()
 	case IndexProgressMsg:
 		m.indexActive = msg.Active
@@ -132,9 +135,7 @@ func (m Model) View() string {
 	header := renderHeader(m.window, m.w, IndexProgress{
 		Done: m.indexDone, Total: m.indexTotal, Active: m.indexActive,
 	})
-	bar := lipgloss.NewStyle().Padding(0, 2).Render(
-		m.progress.ViewAs(float64(m.window.Percent) / 100.0),
-	)
+	bars := m.quotaBars()
 	zoom := ZoomLevels[m.zoomIdx]
 	label := lipgloss.NewStyle().Foreground(Base01).Render(
 		fmt.Sprintf("  %s per bar  ·  [z] zoom", zoom.Label),
@@ -147,7 +148,32 @@ func (m Model) View() string {
 		body = m.viewport.View()
 	}
 	footer := m.help.View(m.keys)
-	return lipgloss.JoinVertical(lipgloss.Left, header, bar, label, sep, body, sep, footer)
+	return lipgloss.JoinVertical(lipgloss.Left, header, bars, label, sep, body, sep, footer)
+}
+
+// quotaBars renders the 5h and 7d quota progress bars as a two-row block.
+// When 7d data is unavailable the second row shows a placeholder so the
+// chart layout below stays stable across the lifecycle of a quota fetch.
+func (m Model) quotaBars() string {
+	labelStyle := lipgloss.NewStyle().Foreground(Base01).Bold(true)
+
+	bar5h := labelStyle.Render("5h ") +
+		m.progress.ViewAs(float64(m.window.Percent)/100.0) +
+		fmt.Sprintf(" %3d%%", m.window.Percent)
+
+	var bar7d string
+	if m.window.Has7d {
+		bar7d = labelStyle.Render("7d ") +
+			m.progress7d.ViewAs(float64(m.window.Percent7d)/100.0) +
+			fmt.Sprintf(" %3d%%", m.window.Percent7d)
+	} else {
+		bar7d = labelStyle.Render("7d ") +
+			lipgloss.NewStyle().Foreground(Base01).Render("(no data)")
+	}
+
+	return lipgloss.NewStyle().Padding(0, 2).Render(
+		lipgloss.JoinVertical(lipgloss.Left, bar5h, bar7d),
+	)
 }
 
 // refreshChart queries the cache and updates the viewport content.
@@ -191,6 +217,8 @@ func (m *Model) recomputeWindow() {
 	}
 	pct := float64(m.window.Percent) / 100.0
 	m.progress = newProgressBar(pct, m.progressWidth())
+	pct7d := float64(m.window.Percent7d) / 100.0
+	m.progress7d = newProgressBar(pct7d, m.progressWidth())
 }
 
 // chartWidth returns the available width for the viewport.
@@ -203,21 +231,24 @@ func (m Model) chartWidth() int {
 }
 
 // chartHeight returns the available rows for the chart, leaving room for
-// header, quota bar, zoom label, two separators, and the help footer.
+// header, two-row quota bar block, zoom label, two separators, and footer.
 func (m Model) chartHeight() int {
-	// Bordered header box = 4 rows. Quota bar 1, label 1, top sep 1,
-	// bottom sep 1, footer 1. Total non-body overhead = 9 rows.
-	h := m.h - 9
+	// Bordered header box = 4 rows. Quota bars 2 (5h + 7d), label 1,
+	// top sep 1, bottom sep 1, footer 1. Total non-body overhead = 10.
+	h := m.h - 10
 	if h < 5 {
 		return 5
 	}
 	return h
 }
 
-// progressWidth returns the rendered width of the quota bar, accounting
-// for the 2-column horizontal padding applied to it in View.
+// progressWidth returns the rendered width of each quota bar, leaving
+// room for the surrounding chrome on the bar row:
+//   - 4 cols horizontal padding (Padding(0, 2) on the outer block)
+//   - 3 cols label prefix ("5h ")
+//   - 5 cols percent suffix (" 100%")
 func (m Model) progressWidth() int {
-	w := m.w - 4
+	w := m.w - 12
 	if w < 10 {
 		return 10
 	}

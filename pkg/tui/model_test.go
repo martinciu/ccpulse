@@ -100,6 +100,38 @@ func TestIndexProgressMsg(t *testing.T) {
 	}
 }
 
+func TestSevenDayBarRendered(t *testing.T) {
+	m := New(Deps{})
+	m.w, m.h = 120, 40
+	m.window = status.Window{Percent: 1, Has7d: true, Percent7d: 12}
+	m.progress = newProgressBar(0.01, m.progressWidth())
+	m.progress7d = newProgressBar(0.12, m.progressWidth())
+	v := m.View()
+	if !strings.Contains(v, "5h") {
+		t.Errorf("expected '5h' label in:\n%s", v)
+	}
+	if !strings.Contains(v, "7d") {
+		t.Errorf("expected '7d' label in:\n%s", v)
+	}
+	if !strings.Contains(v, " 12%") {
+		t.Errorf("expected '12%%' for 7d in:\n%s", v)
+	}
+}
+
+func TestSevenDayBarPlaceholderWhenAbsent(t *testing.T) {
+	m := New(Deps{})
+	m.w, m.h = 120, 40
+	m.window = status.Window{Percent: 1, Has7d: false}
+	m.progress = newProgressBar(0.01, m.progressWidth())
+	v := m.View()
+	if !strings.Contains(v, "7d") {
+		t.Errorf("expected '7d' label even when absent: %s", v)
+	}
+	if !strings.Contains(v, "no data") {
+		t.Errorf("expected 'no data' placeholder in:\n%s", v)
+	}
+}
+
 func TestQuotaBarRendered(t *testing.T) {
 	// progress.ViewAs at a non-zero percent emits the solid-fill ANSI
 	// background sequence for at least one block. View() at 0% emits only
