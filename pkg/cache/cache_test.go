@@ -384,7 +384,7 @@ func TestOpenWipesOnSchemaVersionMismatch(t *testing.T) {
 	}
 }
 
-func TestTokenBuckets(t *testing.T) {
+func TestTokenBuckets_ContiguousRange(t *testing.T) {
 	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -393,9 +393,10 @@ func TestTokenBuckets(t *testing.T) {
 
 	tab, _ := pricing.Load()
 
-	// Bucket A: 11:50 UTC — 1 message, 1500 total tokens
+	// Two messages: one at 11:50, two more at 11:55 + 11:57.
+	// Empty buckets at 11:00, 11:05, ..., 11:45 separate the active stretch
+	// from the requested window start.
 	ts1 := time.Date(2026, 5, 9, 11, 50, 0, 0, time.UTC)
-	// Bucket B: 11:55 UTC — 2 messages, 3500 total tokens
 	ts2 := time.Date(2026, 5, 9, 11, 55, 0, 0, time.UTC)
 	ts3 := time.Date(2026, 5, 9, 11, 57, 0, 0, time.UTC)
 
@@ -411,23 +412,98 @@ func TestTokenBuckets(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	since := time.Date(2026, 5, 9, 11, 0, 0, 0, time.UTC)
-	buckets, err := c.TokenBuckets(5*time.Minute, since)
+	from := time.Date(2026, 5, 9, 11, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)
+	buckets, err := c.TokenBuckets(5*time.Minute, from, to)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(buckets) != 2 {
-		t.Fatalf("want 2 buckets, got %d: %+v", len(buckets), buckets)
+
+	// 1 hour / 5 min = 12 buckets, contiguous, oldest first.
+	if len(buckets) != 12 {
+		t.Fatalf("want 12 buckets, got %d: %+v", len(buckets), buckets)
 	}
-	if buckets[0].Tokens != 1500 {
-		t.Errorf("bucket[0].Tokens = %d, want 1500", buckets[0].Tokens)
+	for i, b := range buckets {
+		want := from.Add(time.Duration(i) * 5 * time.Minute)
+		if !b.BucketStart.Equal(want) {
+			t.Errorf("bucket[%d].BucketStart = %v, want %v", i, b.BucketStart, want)
+		}
 	}
-	if buckets[1].Tokens != 3500 {
-		t.Errorf("bucket[1].Tokens = %d, want 3500", buckets[1].Tokens)
+	// Indices 10 (11:50), 11 (11:55) carry data; everything else is zero.
+	for i, b := range buckets {
+		switch i {
+		case 10:
+			if b.Tokens != 1500 {
+				t.Errorf("bucket[10].Tokens = %d, want 1500", b.Tokens)
+			}
+		case 11:
+			if b.Tokens != 3500 {
+				t.Errorf("bucket[11].Tokens = %d, want 3500", b.Tokens)
+			}
+		default:
+			if b.Tokens != 0 {
+				t.Errorf("bucket[%d].Tokens = %d, want 0 (gap)", i, b.Tokens)
+			}
+		}
 	}
-	// bucket starts should be aligned to 5-minute boundaries
-	if buckets[0].BucketStart.Minute()%5 != 0 {
-		t.Errorf("bucket[0].BucketStart not on 5-min boundary: %v", buckets[0].BucketStart)
+}
+
+func TestTokenBuckets_AllEmpty(t *testing.T) {
+	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	from := time.Date(2026, 5, 9, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 5, 9, 6, 0, 0, 0, time.UTC)
+	buckets, err := c.TokenBuckets(15*time.Minute, from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 6h / 15m = 24 buckets, all zero, monotonic.
+	if len(buckets) != 24 {
+		t.Fatalf("want 24 buckets, got %d", len(buckets))
+	}
+	for i, b := range buckets {
+		if b.Tokens != 0 {
+			t.Errorf("bucket[%d].Tokens = %d, want 0", i, b.Tokens)
+		}
+		if i > 0 && !b.BucketStart.After(buckets[i-1].BucketStart) {
+			t.Errorf("bucket starts not monotonic at index %d", i)
+		}
+	}
+}
+
+func TestTokenBuckets_BoundsSnap(t *testing.T) {
+	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	// Mid-bucket bounds: 11:03:30 → 12:07:45 with 5m buckets snaps to
+	// [11:00, 12:05) → 13 buckets.
+	from := time.Date(2026, 5, 9, 11, 3, 30, 0, time.UTC)
+	to := time.Date(2026, 5, 9, 12, 7, 45, 0, time.UTC)
+	buckets, err := c.TokenBuckets(5*time.Minute, from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(buckets) != 13 {
+		t.Fatalf("want 13 buckets after snap, got %d", len(buckets))
+	}
+	if !buckets[0].BucketStart.Equal(time.Date(2026, 5, 9, 11, 0, 0, 0, time.UTC)) {
+		t.Errorf("first bucket = %v, want 11:00", buckets[0].BucketStart)
+	}
+	last := buckets[len(buckets)-1].BucketStart
+	if !last.Equal(time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)) {
+		t.Errorf("last bucket = %v, want 12:00", last)
+	}
+	for _, b := range buckets {
+		if b.BucketStart.Unix()%int64((5*time.Minute).Seconds()) != 0 {
+			t.Errorf("bucket start not on 5m boundary: %v", b.BucketStart)
+		}
 	}
 }
 

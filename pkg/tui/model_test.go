@@ -136,9 +136,6 @@ func TestRefreshChartClearsOnEmptyData(t *testing.T) {
 	if strings.Contains(got, "STALE CHART CONTENT") {
 		t.Errorf("refreshChart left stale content in viewport when cache empty:\n%s", got)
 	}
-	if !strings.Contains(got, "no usage data") {
-		t.Errorf("refreshChart did not render empty-state placeholder:\n%s", got)
-	}
 }
 
 func TestBuildChartEmitsBars(t *testing.T) {

@@ -437,37 +437,57 @@ type TokenBucket struct {
 	Tokens      int64
 }
 
-// TokenBuckets returns token totals grouped into fixed-size time buckets,
-// oldest bucket first, for all messages at or after since.
-func (c *Cache) TokenBuckets(bucketDur time.Duration, since time.Time) ([]TokenBucket, error) {
-	bucketSecs := int64(bucketDur.Seconds())
-	sinceStr := since.UTC().Format("2006-01-02T15:04:05.000Z07:00")
+// TokenBuckets returns one TokenBucket per `dur` interval covering
+// [from, to). Both bounds are snapped down to bucket boundaries before
+// query (BucketAlign is idempotent, so callers may also pre-snap).
+// Empty intervals are returned with Tokens == 0; output is ordered
+// oldest-first, len = (to.Sub(from) / dur).
+func (c *Cache) TokenBuckets(dur time.Duration, from, to time.Time) ([]TokenBucket, error) {
+	from = BucketAlign(from, dur)
+	to = BucketAlign(to, dur)
+	if !to.After(from) {
+		return nil, nil
+	}
+	bucketSecs := int64(dur.Seconds())
+	fromStr := from.Format("2006-01-02T15:04:05.000Z07:00")
+	toStr := to.Format("2006-01-02T15:04:05.000Z07:00")
 	rows, err := c.db.Query(`
 SELECT
   CAST(CAST(strftime('%s', ts) AS INTEGER) / ? AS INTEGER) * ? AS bucket_epoch,
   SUM(input_tokens + output_tokens + cache_read_tokens
       + cache_write_5m_tokens + cache_write_1h_tokens)
 FROM messages
-WHERE ts >= ?
+WHERE ts >= ? AND ts < ?
 GROUP BY bucket_epoch
 ORDER BY bucket_epoch ASC
-`, bucketSecs, bucketSecs, sinceStr)
+`, bucketSecs, bucketSecs, fromStr, toStr)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []TokenBucket
+
+	totals := make(map[int64]int64)
 	for rows.Next() {
 		var epoch, tokens int64
 		if err := rows.Scan(&epoch, &tokens); err != nil {
 			return nil, err
 		}
-		out = append(out, TokenBucket{
-			BucketStart: time.Unix(epoch, 0).UTC(),
-			Tokens:      tokens,
-		})
+		totals[epoch] = tokens
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	n := int(to.Sub(from) / dur)
+	out := make([]TokenBucket, n)
+	for i := range n {
+		start := from.Add(time.Duration(i) * dur)
+		out[i] = TokenBucket{
+			BucketStart: start,
+			Tokens:      totals[start.Unix()],
+		}
+	}
+	return out, nil
 }
 
 func (c *Cache) LiveSessions(now time.Time, since time.Duration) ([]LiveSession, error) {
