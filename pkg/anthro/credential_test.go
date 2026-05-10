@@ -80,6 +80,18 @@ func TestLoadCredentialBadJSON(t *testing.T) {
 	}
 }
 
+func TestLoadCredentialMissingSubscriptionType(t *testing.T) {
+	dir := t.TempDir()
+	p := writeCred(t, dir, `{"claudeAiOauth":{"accessToken":"tok-abc"}}`)
+	_, err := LoadCredentialFromFile(p)
+	if err == nil {
+		t.Fatalf("want error, got nil")
+	}
+	if errors.Is(err, ErrNoCredential) {
+		t.Errorf("missing subscriptionType shouldn't be ErrNoCredential, got %v", err)
+	}
+}
+
 func TestExpired(t *testing.T) {
 	c := Credential{ExpiresAt: time.Now().Add(-time.Hour)}
 	if !c.Expired(time.Now()) {
