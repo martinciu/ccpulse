@@ -553,6 +553,102 @@ func TestTokenBuckets_IncludesInFlightBucket(t *testing.T) {
 	}
 }
 
+func TestEarliestMessageTime_Empty(t *testing.T) {
+	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	ts, ok, err := c.EarliestMessageTime()
+	if err != nil {
+		t.Fatalf("EarliestMessageTime: %v", err)
+	}
+	if ok {
+		t.Errorf("ok = true on empty cache, want false")
+	}
+	if !ts.IsZero() {
+		t.Errorf("ts = %v, want zero time", ts)
+	}
+}
+
+func TestEarliestMessageTime_SingleRow(t *testing.T) {
+	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	tab, _ := pricing.Load()
+	want := time.Date(2026, 4, 1, 12, 30, 0, 0, time.UTC)
+	if err := c.InsertMessages([]parse.Message{{
+		SessionID:   "s1",
+		ProjectSlug: "slug-a",
+		Model:       "claude-opus-4-7",
+		Timestamp:   want,
+		InputTokens: 10,
+	}}, tab); err != nil {
+		t.Fatal(err)
+	}
+
+	ts, ok, err := c.EarliestMessageTime()
+	if err != nil {
+		t.Fatalf("EarliestMessageTime: %v", err)
+	}
+	if !ok {
+		t.Fatalf("ok = false, want true")
+	}
+	if !ts.Equal(want) {
+		t.Errorf("ts = %v, want %v", ts, want)
+	}
+	if ts.Location() != time.UTC {
+		t.Errorf("ts location = %v, want UTC", ts.Location())
+	}
+}
+
+func TestEarliestMessageTime_MultipleRows(t *testing.T) {
+	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	tab, _ := pricing.Load()
+	earliest := time.Date(2026, 1, 5, 8, 0, 0, 0, time.UTC)
+	mid := time.Date(2026, 3, 10, 14, 0, 0, 0, time.UTC)
+	latest := time.Date(2026, 5, 1, 22, 0, 0, 0, time.UTC)
+
+	mk := func(id string, when time.Time) parse.Message {
+		return parse.Message{
+			SessionID:   id,
+			ProjectSlug: "slug-a",
+			Model:       "claude-opus-4-7",
+			Timestamp:   when,
+			InputTokens: 10,
+		}
+	}
+	// Insert in non-sorted order to make sure we return MIN, not the
+	// first-inserted row.
+	if err := c.InsertMessages([]parse.Message{
+		mk("s2", mid),
+		mk("s3", latest),
+		mk("s1", earliest),
+	}, tab); err != nil {
+		t.Fatal(err)
+	}
+
+	ts, ok, err := c.EarliestMessageTime()
+	if err != nil {
+		t.Fatalf("EarliestMessageTime: %v", err)
+	}
+	if !ok {
+		t.Fatalf("ok = false, want true")
+	}
+	if !ts.Equal(earliest) {
+		t.Errorf("ts = %v, want %v (earliest)", ts, earliest)
+	}
+}
+
 func TestBucketAlign(t *testing.T) {
 	// 14:23:45 UTC, snapped down at 5m → 14:20:00 UTC
 	in := time.Date(2026, 5, 10, 14, 23, 45, 0, time.UTC)
