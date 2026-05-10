@@ -2,6 +2,7 @@ package cache
 
 import (
 	"database/sql"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -670,6 +671,70 @@ func TestOpenSetsWALAndBusyTimeout(t *testing.T) {
 	}
 	if timeout != 5000 {
 		t.Errorf("busy_timeout = %d, want 5000", timeout)
+	}
+}
+
+func TestConcurrentReadWriteNoBusy(t *testing.T) {
+	c, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	tab, _ := pricing.Load()
+	base := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+
+	stop := make(chan struct{})
+	errs := make(chan error, 2)
+
+	go func() {
+		i := 0
+		for {
+			select {
+			case <-stop:
+				errs <- nil
+				return
+			default:
+			}
+			msg := parse.Message{
+				SessionID:   fmt.Sprintf("s%d", i),
+				ProjectSlug: "p",
+				Model:       "claude-sonnet-4-6",
+				Timestamp:   base.Add(time.Duration(i) * time.Millisecond),
+				InputTokens: 100,
+			}
+			if err := c.InsertMessages([]parse.Message{msg}, tab); err != nil {
+				errs <- fmt.Errorf("InsertMessages: %w", err)
+				return
+			}
+			i++
+		}
+	}()
+
+	go func() {
+		from := base
+		to := base.Add(time.Hour)
+		for {
+			select {
+			case <-stop:
+				errs <- nil
+				return
+			default:
+			}
+			if _, err := c.TokenBuckets(5*time.Minute, from, to); err != nil {
+				errs <- fmt.Errorf("TokenBuckets: %w", err)
+				return
+			}
+		}
+	}()
+
+	time.Sleep(500 * time.Millisecond)
+	close(stop)
+
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatalf("concurrent op: %v", err)
+		}
 	}
 }
 
