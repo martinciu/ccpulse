@@ -117,3 +117,47 @@ func TestSeedDevUnknownSubcommand(t *testing.T) {
 		t.Fatalf("expected non-zero exit on unknown subcommand; output:\n%s", out)
 	}
 }
+
+func resetScriptPath(t *testing.T) string {
+	t.Helper()
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Join(wd, "reset-dev.sh")
+}
+
+func TestResetDev_RemovesDevPathsOnly(t *testing.T) {
+	dir := t.TempDir()
+	devCfg := filepath.Join(dir, ".config", "ccpulse-dev")
+	devCache := filepath.Join(dir, ".cache", "ccpulse-dev")
+	relCfg := filepath.Join(dir, ".config", "ccpulse")
+	relCache := filepath.Join(dir, ".cache", "ccpulse")
+	for _, p := range []string{devCfg, devCache, relCfg, relCache} {
+		if err := os.MkdirAll(p, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(p, "marker"), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cmd := exec.Command(resetScriptPath(t))
+	cmd.Env = xdgEnv(dir)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("reset-dev.sh failed: %v\n%s", err, out)
+	}
+
+	if _, err := os.Stat(devCfg); !os.IsNotExist(err) {
+		t.Errorf("dev config dir not removed: err=%v", err)
+	}
+	if _, err := os.Stat(devCache); !os.IsNotExist(err) {
+		t.Errorf("dev cache dir not removed: err=%v", err)
+	}
+	if _, err := os.Stat(relCfg); err != nil {
+		t.Errorf("released config dir was touched: err=%v", err)
+	}
+	if _, err := os.Stat(relCache); err != nil {
+		t.Errorf("released cache dir was touched: err=%v", err)
+	}
+}
