@@ -649,6 +649,30 @@ func TestEarliestMessageTime_MultipleRows(t *testing.T) {
 	}
 }
 
+func TestOpenSetsWALAndBusyTimeout(t *testing.T) {
+	c, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	var mode string
+	if err := c.DB().QueryRow(`PRAGMA journal_mode`).Scan(&mode); err != nil {
+		t.Fatalf("query journal_mode: %v", err)
+	}
+	if mode != "wal" {
+		t.Errorf("journal_mode = %q, want %q", mode, "wal")
+	}
+
+	var timeout int
+	if err := c.DB().QueryRow(`PRAGMA busy_timeout`).Scan(&timeout); err != nil {
+		t.Fatalf("query busy_timeout: %v", err)
+	}
+	if timeout != 5000 {
+		t.Errorf("busy_timeout = %d, want 5000", timeout)
+	}
+}
+
 func TestBucketAlign(t *testing.T) {
 	// 14:23:45 UTC, snapped down at 5m → 14:20:00 UTC
 	in := time.Date(2026, 5, 10, 14, 23, 45, 0, time.UTC)
