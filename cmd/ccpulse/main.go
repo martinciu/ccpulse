@@ -19,6 +19,7 @@ import (
 	"github.com/martinciu/ccpulse/pkg/canonical"
 	"github.com/martinciu/ccpulse/pkg/channel"
 	"github.com/martinciu/ccpulse/pkg/config"
+	"github.com/martinciu/ccpulse/pkg/devlog"
 	"github.com/martinciu/ccpulse/pkg/ingest"
 	"github.com/martinciu/ccpulse/pkg/pricing"
 	"github.com/martinciu/ccpulse/pkg/tui"
@@ -126,6 +127,9 @@ func runTUI(_ interface{}) error {
 	if err := os.MkdirAll(cacheDir, 0755); err != nil {
 		return err
 	}
+	if logCloser, err := devlog.Init(channel.IsDev(), cacheDir); err == nil && logCloser != nil {
+		defer logCloser.Close()
+	}
 	dbPath := filepath.Join(cacheDir, "state.db")
 	c, err := cache.Open(dbPath)
 	if err != nil {
@@ -179,6 +183,7 @@ func runTUI(_ interface{}) error {
 		Credential:   cred,
 		HasOAuth:     hasOAuth,
 		CacheDir:     cacheDir,
+		IsDev:        channel.IsDev(),
 	})
 	p := tea.NewProgram(m, tea.WithAltScreen())
 
