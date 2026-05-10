@@ -122,10 +122,7 @@ func runSeed(opts seedOpts) (inserted int64, total int64, err error) {
 	msgs := generate(opts.profile, params, opts.days, rng)
 
 	for start := 0; start < len(msgs); start += batchSize {
-		end := start + batchSize
-		if end > len(msgs) {
-			end = len(msgs)
-		}
+		end := min(start+batchSize, len(msgs))
 		if err := c.InsertMessages(msgs[start:end], priceTable); err != nil {
 			return 0, 0, fmt.Errorf("insert batch [%d:%d]: %w", start, end, err)
 		}
@@ -195,7 +192,7 @@ func generate(profileName string, p profileParams, days int, rng *rand.Rand) []p
 	// (~5 sessions/day × 8h × 120 rows/h ≈ 4800 rows/day at heavy.)
 	out := make([]parse.Message, 0, days*5000)
 
-	for day := 0; day < days; day++ {
+	for day := range days {
 		if rng.Float64() > p.activeRate {
 			continue
 		}
@@ -205,7 +202,7 @@ func generate(profileName string, p profileParams, days int, rng *rand.Rand) []p
 		sessionsThisDay := p.sessionsPerDayMin +
 			rng.IntN(p.sessionsPerDayMax-p.sessionsPerDayMin+1)
 
-		for s := 0; s < sessionsThisDay; s++ {
+		for s := range sessionsThisDay {
 			// Session ID encodes the date directly so cross-day re-runs
 			// don't accumulate stacked rows under the same id.
 			sessionID := fmt.Sprintf("%s%s-%s-%d", seedSessionPrefix, profileName, dayLabel, s)
