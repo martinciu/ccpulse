@@ -50,7 +50,7 @@ func runIndex(rebuild bool) error {
 	}
 	dbPath := filepath.Join(cacheDir, "state.db")
 
-	_ = os.Remove(dbPath)
+	_ = cache.RemoveWithSiblings(dbPath)
 
 	c, err := cache.Open(dbPath)
 	if err != nil {

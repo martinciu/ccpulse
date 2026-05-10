@@ -152,7 +152,7 @@ func runTUI(_ interface{}) error {
 	// JSONL is the source of truth; SQLite is derived.
 	if !c.IntegrityOK() {
 		c.Close()
-		_ = os.Remove(dbPath)
+		_ = cache.RemoveWithSiblings(dbPath)
 		c, err = cache.Open(dbPath)
 		if err != nil {
 			return err

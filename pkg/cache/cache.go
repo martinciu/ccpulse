@@ -3,6 +3,7 @@ package cache
 import (
 	"database/sql"
 	_ "embed"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -18,12 +19,23 @@ var schemaSQL string
 
 const SchemaVersion = "4"
 
+// cachePragmas is appended to the DSN so modernc.org/sqlite applies them
+// on every new pool connection, not just the first one. Issuing pragmas
+// post-Open via db.Exec only configures whichever connection database/sql
+// hands out; subsequent connections start with driver defaults, leaving
+// readers and writers under the un-tuned busy_timeout=0 / synchronous=FULL.
+// busy_timeout sorts first inside the driver so later pragmas can wait.
+const cachePragmas = "_pragma=busy_timeout(5000)" +
+	"&_pragma=journal_mode(wal)" +
+	"&_pragma=synchronous(normal)" +
+	"&_pragma=temp_store(memory)"
+
 type Cache struct {
 	db *sql.DB
 }
 
 func Open(path string) (*Cache, error) {
-	db, err := sql.Open("sqlite", path)
+	db, err := sql.Open("sqlite", path+"?"+cachePragmas)
 	if err != nil {
 		return nil, err
 	}
@@ -40,7 +52,7 @@ func Open(path string) (*Cache, error) {
 	}
 	if err == nil && version != SchemaVersion {
 		db.Close()
-		if rmErr := os.Remove(path); rmErr != nil {
+		if rmErr := RemoveWithSiblings(path); rmErr != nil {
 			return nil, fmt.Errorf("wipe stale schema: %w", rmErr)
 		}
 		return Open(path)
@@ -56,6 +68,23 @@ func Open(path string) (*Cache, error) {
 func (c *Cache) DB() *sql.DB { return c.db }
 
 func (c *Cache) Close() error { return c.db.Close() }
+
+// RemoveWithSiblings deletes path plus its SQLite sidecar files
+// (-wal, -shm, -journal). path must be the SQLite DB file path (not a
+// directory and without a trailing separator); the sidecar names are
+// formed by simple suffix concatenation. Missing files are not an
+// error; any other removal failure is wrapped and returned without
+// attempting later siblings. Use this — not raw os.Remove — at every
+// state.db rebuild site, so a leftover -wal from a prior schema cannot
+// be replayed onto a freshly-rebuilt main file.
+func RemoveWithSiblings(path string) error {
+	for _, suffix := range []string{"", "-wal", "-shm", "-journal"} {
+		if err := os.Remove(path + suffix); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove %s%s: %w", path, suffix, err)
+		}
+	}
+	return nil
+}
 
 // RecordUsageSample inserts a row at when.UTC().Unix() with one column per
 // anthro.Usage bucket. INSERT OR IGNORE: same-second collisions keep the

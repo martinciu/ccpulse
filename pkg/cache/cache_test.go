@@ -1,7 +1,11 @@
 package cache
 
 import (
+	"context"
 	"database/sql"
+	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -645,6 +649,142 @@ func TestEarliestMessageTime_MultipleRows(t *testing.T) {
 	}
 	if !ts.Equal(earliest) {
 		t.Errorf("ts = %v, want %v (earliest)", ts, earliest)
+	}
+}
+
+func TestOpenSetsWALAndBusyTimeout(t *testing.T) {
+	c, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	// busy_timeout, synchronous, and temp_store are per-connection. Holding
+	// one Conn open forces sql.DB to hand us a second, distinct connection —
+	// proving the DSN pragmas hit every conn, not just the one db.Exec
+	// happened to grab. Without the DSN, conn2 would report busy_timeout=0.
+	ctx := context.Background()
+	conn1, err := c.DB().Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn1.Close()
+	conn2, err := c.DB().Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn2.Close()
+
+	for i, conn := range []*sql.Conn{conn1, conn2} {
+		var mode string
+		if err := conn.QueryRowContext(ctx, `PRAGMA journal_mode`).Scan(&mode); err != nil {
+			t.Fatalf("conn[%d] journal_mode: %v", i, err)
+		}
+		if mode != "wal" {
+			t.Errorf("conn[%d] journal_mode = %q, want wal", i, mode)
+		}
+
+		var timeout int
+		if err := conn.QueryRowContext(ctx, `PRAGMA busy_timeout`).Scan(&timeout); err != nil {
+			t.Fatalf("conn[%d] busy_timeout: %v", i, err)
+		}
+		if timeout != 5000 {
+			t.Errorf("conn[%d] busy_timeout = %d, want 5000", i, timeout)
+		}
+	}
+}
+
+func TestConcurrentReadWriteNoBusy(t *testing.T) {
+	c, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	tab, _ := pricing.Load()
+	base := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+
+	stop := make(chan struct{})
+	errs := make(chan error, 2)
+
+	go func() {
+		i := 0
+		for {
+			select {
+			case <-stop:
+				errs <- nil
+				return
+			default:
+			}
+			msg := parse.Message{
+				SessionID:   fmt.Sprintf("s%d", i),
+				ProjectSlug: "p",
+				Model:       "claude-sonnet-4-6",
+				Timestamp:   base.Add(time.Duration(i) * time.Millisecond),
+				InputTokens: 100,
+			}
+			if err := c.InsertMessages([]parse.Message{msg}, tab); err != nil {
+				errs <- fmt.Errorf("InsertMessages: %w", err)
+				return
+			}
+			i++
+		}
+	}()
+
+	go func() {
+		from := base
+		to := base.Add(time.Hour)
+		for {
+			select {
+			case <-stop:
+				errs <- nil
+				return
+			default:
+			}
+			if _, err := c.TokenBuckets(5*time.Minute, from, to); err != nil {
+				errs <- fmt.Errorf("TokenBuckets: %w", err)
+				return
+			}
+		}
+	}()
+
+	time.Sleep(500 * time.Millisecond)
+	close(stop)
+
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatalf("concurrent op: %v", err)
+		}
+	}
+}
+
+func TestRemoveWithSiblings(t *testing.T) {
+	dir := t.TempDir()
+	base := filepath.Join(dir, "state.db")
+
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		if err := os.WriteFile(base+suffix, []byte("planted"), 0644); err != nil {
+			t.Fatalf("plant %s: %v", base+suffix, err)
+		}
+	}
+
+	if err := RemoveWithSiblings(base); err != nil {
+		t.Fatalf("RemoveWithSiblings: %v", err)
+	}
+
+	for _, suffix := range []string{"", "-wal", "-shm", "-journal"} {
+		if _, err := os.Stat(base + suffix); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("expected %s%s to be absent, stat err = %v", base, suffix, err)
+		}
+	}
+}
+
+func TestRemoveWithSiblings_AllMissing(t *testing.T) {
+	dir := t.TempDir()
+	base := filepath.Join(dir, "absent.db")
+
+	if err := RemoveWithSiblings(base); err != nil {
+		t.Fatalf("RemoveWithSiblings on missing tree: %v", err)
 	}
 }
 
