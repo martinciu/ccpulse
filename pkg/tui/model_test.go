@@ -65,6 +65,47 @@ func TestZoomCycles(t *testing.T) {
 	}
 }
 
+func TestHelpModeSuppressesScroll(t *testing.T) {
+	// While the help overlay is up, scroll keys must not affect the
+	// underlying chart's offset — otherwise dismissing help (?) reveals
+	// a different position than the one the user left.
+	m := New(Deps{})
+	m.w, m.h = 120, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	// Seed the viewport with content wider than its width so scroll has
+	// room to actually move.
+	m.viewport.SetContent(strings.Repeat("X", 500))
+	m.viewport.SetXOffset(50)
+	startPct := m.viewport.HorizontalScrollPercent()
+
+	// Toggle help on.
+	r1, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	m = r1.(Model)
+	if !m.showHelp {
+		t.Fatalf("expected showHelp=true after '?'")
+	}
+
+	// Mash scroll keys.
+	for _, k := range []rune{'l', 'l', 'h', 'l'} {
+		r, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{k}})
+		m = r.(Model)
+	}
+	if m.viewport.HorizontalScrollPercent() != startPct {
+		t.Errorf("scroll keys leaked through help overlay: scroll%% went %.3f → %.3f",
+			startPct, m.viewport.HorizontalScrollPercent())
+	}
+
+	// Zoom must also not change.
+	startZoom := m.zoomIdx
+	rz, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
+	m = rz.(Model)
+	if m.zoomIdx != startZoom {
+		t.Errorf("zoom key leaked through help overlay: %d → %d",
+			startZoom, m.zoomIdx)
+	}
+}
+
 func TestQuitKey(t *testing.T) {
 	m := New(Deps{})
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})

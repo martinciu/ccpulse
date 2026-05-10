@@ -92,6 +92,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.w, m.h = msg.Width, msg.Height
 		m.viewport.Width = m.chartWidth()
 		m.viewport.Height = m.chartHeight()
+		// help.Width controls when ShortHelp ellipsizes; if left at 0
+		// the footer can wrap onto the body row and break chartHeight().
+		m.help.Width = m.w
 		m.progress = newProgressBar(float64(m.window.Percent)/100.0, m.progressWidth())
 		m.progress7d = newProgressBar(float64(m.window.Percent7d)/100.0, m.progressWidth())
 		m.refreshChart()
@@ -116,6 +119,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case key.Matches(msg, m.keys.Help):
 			m.showHelp = !m.showHelp
+		case m.showHelp:
+			// Suppress chart-affecting keys while the help overlay is up,
+			// so dismissing help returns the user to the same scroll/zoom
+			// state they left.
 		case key.Matches(msg, m.keys.Zoom):
 			m.zoomIdx = (m.zoomIdx + 1) % len(ZoomLevels)
 			m.refreshChart()
