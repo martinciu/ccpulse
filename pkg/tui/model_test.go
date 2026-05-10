@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -13,12 +14,12 @@ import (
 	"github.com/martinciu/ccpulse/pkg/status"
 )
 
-func TestInitialView_ContainsCcpulse(t *testing.T) {
+func TestInitialView_RendersHeader(t *testing.T) {
 	m := New(Deps{})
 	m.w, m.h = 120, 40
 	v := m.View()
-	if !strings.Contains(v, "ccpulse") {
-		t.Errorf("expected 'ccpulse' in view, got:\n%s", v)
+	if !strings.Contains(v, "╭") {
+		t.Errorf("expected box border '╭' in view, got:\n%s", v)
 	}
 }
 
@@ -227,24 +228,24 @@ func TestSevenDayBarRendered(t *testing.T) {
 	m.progress = newProgressBar(0.01, m.progressWidth())
 	m.progress7d = newProgressBar(0.12, m.progressWidth())
 	v := m.View()
-	if !strings.Contains(v, "5h") {
-		t.Errorf("expected '5h' label in:\n%s", v)
-	}
-	if !strings.Contains(v, "7d") {
-		t.Errorf("expected '7d' label in:\n%s", v)
+	if !strings.Contains(v, "  1%") {
+		t.Errorf("expected 5h percent '  1%%' in:\n%s", v)
 	}
 	if !strings.Contains(v, " 12%") {
-		t.Errorf("expected '12%%' for 7d in:\n%s", v)
+		t.Errorf("expected 7d percent ' 12%%' in:\n%s", v)
+	}
+	if !strings.Contains(v, " │ ") {
+		t.Errorf("expected dim divider ' │ ' in:\n%s", v)
 	}
 
-	// Both labels must appear on the same line — they sit side-by-side
-	// inside the header box rather than stacked.
+	// Both percents and the divider must appear on the same line — bars
+	// sit side-by-side inside the header box rather than stacked.
 	for _, line := range strings.Split(v, "\n") {
-		if strings.Contains(line, "5h") && strings.Contains(line, "7d") {
+		if strings.Contains(line, "  1%") && strings.Contains(line, " 12%") && strings.Contains(line, " │ ") {
 			return
 		}
 	}
-	t.Errorf("expected '5h' and '7d' on the same line; got:\n%s", v)
+	t.Errorf("expected both percents and the divider on the same line; got:\n%s", v)
 }
 
 func TestSevenDayBarPlaceholderWhenAbsent(t *testing.T) {
@@ -253,9 +254,6 @@ func TestSevenDayBarPlaceholderWhenAbsent(t *testing.T) {
 	m.window = status.Window{Percent: 1, Has7d: false}
 	m.progress = newProgressBar(0.01, m.progressWidth())
 	v := m.View()
-	if !strings.Contains(v, "7d") {
-		t.Errorf("expected '7d' label even when absent: %s", v)
-	}
 	if !strings.Contains(v, "no data") {
 		t.Errorf("expected 'no data' placeholder in:\n%s", v)
 	}
@@ -348,6 +346,42 @@ func TestHeaderShowsDevChip(t *testing.T) {
 	if !strings.Contains(got, "[DEV]") {
 		t.Errorf("expected [DEV] chip in dev header, got:\n%s", got)
 	}
+	// [DEV] now lives on the footer line, side-by-side with keybindings.
+	for _, line := range strings.Split(got, "\n") {
+		if strings.Contains(line, "[DEV]") && strings.Contains(line, "q quit") {
+			return
+		}
+	}
+	t.Errorf("expected [DEV] on the same line as 'q quit' (footer); got:\n%s", got)
+}
+
+func TestFooterRightAlignsIndicators(t *testing.T) {
+	m := New(Deps{IsDev: true})
+	m.w, m.h = 120, 40
+	m.window = status.Window{Percent: 5, MinutesToReset: 60}
+	updated, _ := m.Update(IndexProgressMsg{Done: 12, Total: 30, Active: true})
+	m = updated.(Model)
+	v := m.View()
+
+	var footer string
+	for _, line := range strings.Split(v, "\n") {
+		if strings.Contains(line, "q quit") {
+			footer = line
+			break
+		}
+	}
+	if footer == "" {
+		t.Fatalf("footer line (containing 'q quit') not found in:\n%s", v)
+	}
+	if !strings.Contains(footer, "indexing 12/30") {
+		t.Errorf("footer missing 'indexing 12/30': %q", footer)
+	}
+	if !strings.Contains(footer, "[DEV]") {
+		t.Errorf("footer missing '[DEV]': %q", footer)
+	}
+	if strings.Index(footer, "indexing") >= strings.Index(footer, "[DEV]") {
+		t.Errorf("expected 'indexing' before '[DEV]' (DEV rightmost): %q", footer)
+	}
 }
 
 func TestHeaderHidesDevChipInRelease(t *testing.T) {
@@ -357,5 +391,70 @@ func TestHeaderHidesDevChipInRelease(t *testing.T) {
 	got := m.View()
 	if strings.Contains(got, "[DEV]") {
 		t.Errorf("release header should not contain [DEV] chip:\n%s", got)
+	}
+}
+
+func TestRenderIndicators(t *testing.T) {
+	now := time.Now()
+	stale := status.Window{QuotaSource: "cache_stale", QuotaUpdatedAt: now.Add(-5 * time.Minute)}
+	tests := []struct {
+		name      string
+		isDev     bool
+		idx       IndexProgress
+		w         status.Window
+		wantParts []string
+		wantEmpty bool
+	}{
+		{"all idle", false, IndexProgress{}, status.Window{}, nil, true},
+		{"dev only", true, IndexProgress{}, status.Window{}, []string{"[DEV]"}, false},
+		{"indexing only", false, IndexProgress{Active: true, Done: 12, Total: 30}, status.Window{}, []string{"indexing 12/30"}, false},
+		{"stale only", false, IndexProgress{}, stale, []string{"⚠ 5m old"}, false},
+		{"all active", true, IndexProgress{Active: true, Done: 1, Total: 2}, stale, []string{"⚠ 5m old", "indexing 1/2", "[DEV]"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := renderIndicators(tt.isDev, tt.idx, tt.w)
+			if tt.wantEmpty {
+				if got != "" {
+					t.Errorf("expected empty, got %q", got)
+				}
+				return
+			}
+			for _, p := range tt.wantParts {
+				if !strings.Contains(got, p) {
+					t.Errorf("missing %q in %q", p, got)
+				}
+			}
+			if tt.name == "all active" {
+				stIdx := strings.Index(got, "⚠")
+				ixIdx := strings.Index(got, "indexing")
+				devIdx := strings.Index(got, "[DEV]")
+				if !(stIdx < ixIdx && ixIdx < devIdx) {
+					t.Errorf("expected stale < indexing < [DEV] order, got %q", got)
+				}
+			}
+		})
+	}
+}
+
+func TestFormatReset7d(t *testing.T) {
+	tests := []struct {
+		mins int
+		want string
+	}{
+		{30, "00:30"},
+		{90, "01:30"},
+		{1439, "23:59"},
+		{1440, "1d"},
+		{1500, "1d"}, // truncates, does not round
+		{10080, "7d"},
+	}
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("%dmins", tt.mins), func(t *testing.T) {
+			got := formatReset7d(tt.mins)
+			if got != tt.want {
+				t.Errorf("formatReset7d(%d) = %q, want %q", tt.mins, got, tt.want)
+			}
+		})
 	}
 }
