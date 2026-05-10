@@ -50,3 +50,26 @@ func TestSeedYear_RejectsUnknownProfile(t *testing.T) {
 		t.Errorf("runSeed: error %q does not name the bad profile", err)
 	}
 }
+
+func TestSeedYear_LightProfile_RowCountInRange(t *testing.T) {
+	cacheDir := filepath.Join(t.TempDir(), "ccpulse-dev")
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	inserted, total, err := runSeed(seedOpts{
+		profile:  "light",
+		cacheDir: cacheDir,
+		seed:     1,
+		days:     365,
+	})
+	if err != nil {
+		t.Fatalf("runSeed: %v", err)
+	}
+	if inserted < 18000 || inserted > 32000 {
+		t.Errorf("light 365d: inserted=%d, want [18000, 32000]", inserted)
+	}
+	if total != inserted {
+		t.Errorf("first run: total=%d, inserted=%d (want equal)", total, inserted)
+	}
+}

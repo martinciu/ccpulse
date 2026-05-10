@@ -12,10 +12,27 @@ package main
 import (
 	"errors"
 	"fmt"
+	"math/rand/v2"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/martinciu/ccpulse/pkg/cache"
+	"github.com/martinciu/ccpulse/pkg/parse"
+	"github.com/martinciu/ccpulse/pkg/pricing"
 )
+
+// batchSize bounds the per-transaction row count when inserting via
+// cache.InsertMessages. Each batch opens its own short tx; sized large
+// enough to amortise tx overhead and small enough to keep memory bounded.
+const batchSize = 5000
+
+// seedSessionPrefix scopes all rows the seeder writes so they can be
+// found and (manually) deleted in bulk:
+//
+//	DELETE FROM messages WHERE session_id LIKE 'seed-year-%';
+const seedSessionPrefix = "seed-year-"
 
 // profileParams parameterises the synthetic-data shape per profile.
 // All ranges are uniform on the half-open interval [min, max).
@@ -73,10 +90,69 @@ func runSeed(opts seedOpts) (inserted int64, total int64, err error) {
 	if err := validateCacheDir(opts.cacheDir); err != nil {
 		return 0, 0, err
 	}
-	if _, ok := profiles[opts.profile]; !ok {
+	params, ok := profiles[opts.profile]
+	if !ok {
 		return 0, 0, fmt.Errorf("unknown profile %q: want one of light, heavy", opts.profile)
 	}
-	return 0, 0, errors.New("not implemented")
+	if opts.days <= 0 {
+		return 0, 0, fmt.Errorf("days must be > 0 (got %d)", opts.days)
+	}
+
+	if err := os.MkdirAll(opts.cacheDir, 0o755); err != nil {
+		return 0, 0, fmt.Errorf("create cache dir: %w", err)
+	}
+	dbPath := filepath.Join(opts.cacheDir, "state.db")
+	c, err := cache.Open(dbPath)
+	if err != nil {
+		return 0, 0, fmt.Errorf("open cache %s: %w", dbPath, err)
+	}
+	defer c.Close()
+
+	priceTable, err := pricing.Load()
+	if err != nil {
+		return 0, 0, fmt.Errorf("load pricing: %w", err)
+	}
+
+	pre, err := countSeedRows(c)
+	if err != nil {
+		return 0, 0, fmt.Errorf("count rows (pre): %w", err)
+	}
+
+	rng := rand.New(rand.NewPCG(uint64(opts.seed), 0xCCCCCCCCCCCCCCCC))
+	msgs := generate(opts.profile, params, opts.days, rng)
+
+	for start := 0; start < len(msgs); start += batchSize {
+		end := start + batchSize
+		if end > len(msgs) {
+			end = len(msgs)
+		}
+		if err := c.InsertMessages(msgs[start:end], priceTable); err != nil {
+			return 0, 0, fmt.Errorf("insert batch [%d:%d]: %w", start, end, err)
+		}
+	}
+
+	post, err := countSeedRows(c)
+	if err != nil {
+		return 0, 0, fmt.Errorf("count rows (post): %w", err)
+	}
+	return post - pre, post, nil
+}
+
+// countSeedRows returns the total rows in messages whose session_id
+// starts with seedSessionPrefix. Used to compute "rows inserted this
+// run" by diffing pre vs post counts (cleaner than tracking the
+// SQLite-side rowsAffected, which counts INSERT OR IGNORE skips
+// inconsistently across drivers).
+func countSeedRows(c *cache.Cache) (int64, error) {
+	var n int64
+	err := c.DB().QueryRow(
+		`SELECT COUNT(*) FROM messages WHERE session_id LIKE ?`,
+		seedSessionPrefix+"%",
+	).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("query seed row count: %w", err)
+	}
+	return n, nil
 }
 
 // validateCacheDir is the belt-and-braces guard that prevents the seeder
@@ -93,6 +169,82 @@ func validateCacheDir(cacheDir string) error {
 		return fmt.Errorf("refusing to seed: cache dir basename %q does not end in '-dev' (got path %q)", base, cacheDir)
 	}
 	return nil
+}
+
+// generate produces synthetic parse.Message rows shaped by params over
+// the last `days` days. Day anchors snap to UTC midnight so that two
+// runs on the same UTC day with the same seed produce identical rows
+// (idempotent under INSERT OR IGNORE on UNIQUE(session_id, ts)). Runs
+// across UTC midnight may add a small number of "today" sessions.
+func generate(profileName string, p profileParams, days int, rng *rand.Rand) []parse.Message {
+	models := []string{
+		"claude-opus-4-7",
+		"claude-sonnet-4-6",
+		"claude-haiku-4-5-20251001",
+	}
+	slugs := []string{
+		"-Users-seed-projectA",
+		"-Users-seed-projectB",
+		"-Users-seed-projectC",
+		"-Users-seed-projectD",
+	}
+
+	today := time.Now().UTC().Truncate(24 * time.Hour)
+
+	// Pre-size: rough upper bound to reduce reallocation churn.
+	// (~5 sessions/day × 8h × 120 rows/h ≈ 4800 rows/day at heavy.)
+	out := make([]parse.Message, 0, days*5000)
+
+	for day := 0; day < days; day++ {
+		if rng.Float64() > p.activeRate {
+			continue
+		}
+		dayStart := today.Add(-time.Duration(day) * 24 * time.Hour)
+		dayLabel := dayStart.Format("20060102")
+
+		sessionsThisDay := p.sessionsPerDayMin +
+			rng.IntN(p.sessionsPerDayMax-p.sessionsPerDayMin+1)
+
+		for s := 0; s < sessionsThisDay; s++ {
+			// Session ID encodes the date directly so cross-day re-runs
+			// don't accumulate stacked rows under the same id.
+			sessionID := fmt.Sprintf("%s%s-%s-%d", seedSessionPrefix, profileName, dayLabel, s)
+
+			// Start somewhere in the first 18h of the day; long sessions
+			// may bleed past midnight (realistic, harmless to the cache).
+			startOffsetSec := rng.IntN(int(18 * time.Hour / time.Second))
+			sessionStart := dayStart.Add(time.Duration(startOffsetSec) * time.Second)
+
+			durRange := int64(p.sessionDurMax - p.sessionDurMin)
+			duration := p.sessionDurMin + time.Duration(rng.Int64N(durRange))
+			sessionEnd := sessionStart.Add(duration)
+
+			model := models[s%len(models)]
+			slug := slugs[s%len(slugs)]
+
+			ts := sessionStart
+			intervalRange := int64(p.intervalMax - p.intervalMin)
+			for ts.Before(sessionEnd) {
+				out = append(out, parse.Message{
+					SessionID:          sessionID,
+					ProjectSlug:        slug,
+					Timestamp:          ts,
+					Role:               "assistant",
+					Model:              model,
+					InputTokens:        int64(100 + rng.IntN(1900)),
+					OutputTokens:       int64(200 + rng.IntN(7800)),
+					CacheReadTokens:    int64(1000 + rng.IntN(49000)),
+					CacheWrite5mTokens: int64(rng.IntN(5000)),
+					CacheWrite1hTokens: 0,
+					IsSubagent:         false,
+					ParentSessionID:    "",
+				})
+				interval := p.intervalMin + time.Duration(rng.Int64N(intervalRange))
+				ts = ts.Add(interval)
+			}
+		}
+	}
+	return out
 }
 
 func main() {
