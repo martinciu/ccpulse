@@ -367,10 +367,10 @@ func (m Model) progressWidth() int {
 }
 
 // newProgressBar builds a quota bar styled by percent threshold (the bar's
-// solid fill is fixed at construction, so the color only changes when this
-// is rebuilt). The actual fill amount is supplied at render time via
-// progress.ViewAs. The <70% bucket leaves WithSolidFill unset so
-// bubbles/progress renders its default gradient.
+// fill is fixed at construction, so the color only changes when this is
+// rebuilt). The actual fill amount is supplied at render time via
+// progress.ViewAs. The <70% bucket uses bubbles/progress's default
+// gradient (#5A56E0 → #EE6FF8); 70% and 90% switch to solid Yellow/Red.
 func newProgressBar(pct float64, w int) progress.Model {
 	if w < 10 {
 		w = 10
@@ -384,6 +384,8 @@ func newProgressBar(pct float64, w int) progress.Model {
 		opts = append(opts, progress.WithSolidFill(string(Red)))
 	case pct >= 0.70:
 		opts = append(opts, progress.WithSolidFill(string(Yellow)))
+	default:
+		opts = append(opts, progress.WithDefaultGradient())
 	}
 	return progress.New(opts...)
 }
