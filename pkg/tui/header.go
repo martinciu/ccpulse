@@ -56,3 +56,14 @@ func durString(mins int) string {
 	}
 	return fmt.Sprintf("%dm", mins)
 }
+
+// formatReset7d renders the 7d quota reset time. For >= 24h remaining,
+// it returns whole days ("1d", "7d") — the rounding loss is harmless for
+// a multi-day horizon. For < 24h, it switches to zero-padded HH:MM
+// duration ("23:59", "00:30") so the eventual reset reads at a glance.
+func formatReset7d(mins int) string {
+	if mins >= 1440 {
+		return fmt.Sprintf("%dd", mins/1440)
+	}
+	return fmt.Sprintf("%02d:%02d", mins/60, mins%60)
+}

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -357,5 +358,27 @@ func TestHeaderHidesDevChipInRelease(t *testing.T) {
 	got := m.View()
 	if strings.Contains(got, "[DEV]") {
 		t.Errorf("release header should not contain [DEV] chip:\n%s", got)
+	}
+}
+
+func TestFormatReset7d(t *testing.T) {
+	tests := []struct {
+		mins int
+		want string
+	}{
+		{30, "00:30"},
+		{90, "01:30"},
+		{1439, "23:59"},
+		{1440, "1d"},
+		{1500, "1d"}, // truncates, does not round
+		{10080, "7d"},
+	}
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("%dmins", tt.mins), func(t *testing.T) {
+			got := formatReset7d(tt.mins)
+			if got != tt.want {
+				t.Errorf("formatReset7d(%d) = %q, want %q", tt.mins, got, tt.want)
+			}
+		})
 	}
 }
