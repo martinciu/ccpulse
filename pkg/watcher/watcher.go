@@ -42,6 +42,10 @@ func New(root string) (*Watcher, error) {
 // Blocks until the watcher is closed; once Run returns, no further
 // onChange calls fire (in-flight timers drop their event via the
 // non-blocking send on `fire`).
+//
+// onChange is invoked sequentially from the Run loop's goroutine;
+// long-running callbacks delay subsequent events and may cause
+// drops past the 16-event fire buffer.
 func (w *Watcher) Run(onChange func(path string)) {
 	pending := map[string]*time.Timer{}
 	fire := make(chan string, 16) // buffered so the timer goroutine never blocks
@@ -83,7 +87,6 @@ func (w *Watcher) Run(onChange func(path string)) {
 				}
 			})
 		case path := <-fire:
-			delete(pending, path)
 			onChange(path)
 		case _, ok := <-w.w.Errors:
 			if !ok {
