@@ -176,6 +176,24 @@ func TestProjectBucket(t *testing.T) {
 				Confidence:          "ok",
 			},
 		},
+		{
+			// Already past 100 — "minutes until 100" is nonsense; expect nil.
+			// will_overreach is still true so consumers branching on the bool
+			// keep working.
+			name:        "5h already over 100, no ETA",
+			utilization: 105,
+			elapsed:     60 * time.Minute,
+			window:      fiveHour,
+			lowCutoff:   fiveHourLow,
+			want: Projection{
+				ElapsedMinutes:      60,
+				SlopePctPerHour:     105.00,
+				ProjectedPctAtReset: 525,
+				WillOverreach:       true,
+				Confidence:          "ok",
+			},
+			// wantMinutesTo100Set defaults to false → expect nil.
+		},
 	}
 
 	for _, tc := range cases {
@@ -220,7 +238,7 @@ func TestRound2(t *testing.T) {
 		{0, 0},
 		{0.05, 0.05},
 		{0.333333, 0.33},
-		{0.005, 0.01}, // banker's rounding lands either way; math.Round rounds half-away-from-zero
+		{0.005, 0.01}, // Go's math.Round rounds half away from zero, not banker's
 		{21.005, 21.01},
 		{21.004, 21.00},
 	}

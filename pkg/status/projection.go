@@ -42,7 +42,9 @@ func projectBucket(utilization float64, resetsAt, now time.Time, window, lowCuto
 		WillOverreach:       projectedAtReset > 100,
 		Confidence:          confidenceFor(elapsed, lowCutoff),
 	}
-	if proj.WillOverreach && slopePerHour > 0 {
+	// utilization >= 100 means we've already crossed the threshold —
+	// "minutes until 100 %" is nonsensical (would be negative), so leave nil.
+	if proj.WillOverreach && slopePerHour > 0 && utilization < 100 {
 		m := int(math.Round((100 - utilization) / slopePerHour * 60))
 		proj.MinutesTo100Pct = &m
 	}

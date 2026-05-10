@@ -78,7 +78,6 @@ FROM messages WHERE ts >= ?`, cutoff)
 		w.QuotaUpdatedAt = q.UpdatedAt
 
 		var p Projections
-		var any bool
 		if q.Usage.FiveHour != nil {
 			fh := projectBucket(
 				q.Usage.FiveHour.Utilization,
@@ -88,7 +87,6 @@ FROM messages WHERE ts >= ?`, cutoff)
 				fiveHourLowConfidenceCutoff,
 			)
 			p.FiveHour = &fh
-			any = true
 		}
 		if q.Usage.SevenDay != nil {
 			sd := projectBucket(
@@ -99,9 +97,8 @@ FROM messages WHERE ts >= ?`, cutoff)
 				sevenDayLowConfidenceCutoff,
 			)
 			p.SevenDay = &sd
-			any = true
 		}
-		if any {
+		if p.FiveHour != nil || p.SevenDay != nil {
 			w.Projection = &p
 		}
 	}
