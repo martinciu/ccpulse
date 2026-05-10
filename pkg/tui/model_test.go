@@ -278,3 +278,23 @@ func TestQuotaMsgApplied(t *testing.T) {
 		t.Errorf("QuotaMsg not applied: %+v", nm)
 	}
 }
+
+func TestHeaderShowsDevChip(t *testing.T) {
+	m := New(Deps{IsDev: true})
+	m.w, m.h = 120, 40
+	m.window = status.Window{Percent: 5, MinutesToReset: 60, CeilingLabel: "max_20x"}
+	got := m.View()
+	if !strings.Contains(got, "[DEV]") {
+		t.Errorf("expected [DEV] chip in dev header, got:\n%s", got)
+	}
+}
+
+func TestHeaderHidesDevChipInRelease(t *testing.T) {
+	m := New(Deps{}) // IsDev defaults to false
+	m.w, m.h = 120, 40
+	m.window = status.Window{Percent: 5, MinutesToReset: 60, CeilingLabel: "max_20x"}
+	got := m.View()
+	if strings.Contains(got, "[DEV]") {
+		t.Errorf("release header should not contain [DEV] chip:\n%s", got)
+	}
+}

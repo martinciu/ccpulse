@@ -16,7 +16,7 @@ type IndexProgress struct {
 	Active bool
 }
 
-func renderHeader(w status.Window, width int, idx IndexProgress, subtitle string) string {
+func renderHeader(w status.Window, width int, idx IndexProgress, subtitle string, isDev bool) string {
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(Base01).
@@ -31,6 +31,10 @@ func renderHeader(w status.Window, width int, idx IndexProgress, subtitle string
 		label = "Unknown"
 	}
 	title := fmt.Sprintf("ccpulse  %s", label)
+	if isDev {
+		title += lipgloss.NewStyle().Foreground(Base01).
+			Render(" [DEV]")
+	}
 	if idx.Active {
 		title += lipgloss.NewStyle().Foreground(Base01).
 			Render(fmt.Sprintf(" · indexing %d/%d", idx.Done, idx.Total))
