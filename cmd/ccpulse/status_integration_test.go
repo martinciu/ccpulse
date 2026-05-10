@@ -91,6 +91,17 @@ func TestStatusJSONWithCachedUsage(t *testing.T) {
 	if int(parsed["percent"].(float64)) != 5 {
 		t.Errorf("percent = %v, want 5", parsed["percent"])
 	}
+	if !strings.Contains(out, `"projection":`) {
+		t.Errorf("missing projection: %s", out)
+	}
+	// 5h projection is always present in this fixture (FiveHour bucket non-nil).
+	proj, ok := parsed["projection"].(map[string]any)
+	if !ok {
+		t.Fatalf("projection is not an object: %v", parsed["projection"])
+	}
+	if _, ok := proj["five_hour"]; !ok {
+		t.Errorf("projection.five_hour missing: %v", proj)
+	}
 }
 
 func TestStatusJSONWithoutCredential(t *testing.T) {
@@ -115,6 +126,9 @@ func TestStatusJSONWithoutCredential(t *testing.T) {
 	}
 	if !strings.Contains(out, `"ceiling_label":"unknown"`) {
 		t.Errorf("expected ceiling_label=unknown without cred: %s", out)
+	}
+	if strings.Contains(out, `"projection":`) {
+		t.Errorf("projection should be omitted when no quota: %s", out)
 	}
 }
 
@@ -291,6 +305,82 @@ func TestStatusTmuxFlagRemoved(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "unknown flag") && !strings.Contains(buf.String(), "unknown flag") {
 		t.Errorf("error should mention 'unknown flag': %v / %s", err, buf.String())
+	}
+}
+
+// writeOverreachCache writes a usage.json with resets_at anchored to now,
+// chosen so that the 5h bucket projects > 100% utilisation at reset.
+//
+// Math: with utilization=50 and resets_at = now + 4h (elapsed = 1h of a 5h
+// window), projected_pct_at_reset = 50 * 5 / 1 = 250.
+func writeOverreachCache(t *testing.T, dir string) {
+	t.Helper()
+	now := time.Now().UTC()
+	resets5h := now.Add(4 * time.Hour).Format(time.RFC3339Nano)
+	resets7d := now.Add(6 * 24 * time.Hour).Format(time.RFC3339Nano)
+	body := `{"v":1,"updated_at":"` + now.Add(-30*time.Second).Format(time.RFC3339Nano) + `","data":{
+		"five_hour":            {"utilization": 50.0, "resets_at": "` + resets5h + `"},
+		"seven_day":            {"utilization": 10.0, "resets_at": "` + resets7d + `"},
+		"seven_day_oauth_apps": null,
+		"seven_day_opus":       null,
+		"seven_day_sonnet":     null,
+		"seven_day_cowork":     null,
+		"seven_day_omelette":   null,
+		"tangelo":              null,
+		"iguana_necktie":       null,
+		"omelette_promotional": null,
+		"extra_usage":          {"is_enabled": false, "monthly_limit": 0, "used_credits": 0.0, "utilization": null, "currency": "USD"}
+	}}`
+	if err := os.WriteFile(filepath.Join(dir, "usage.json"), []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStatusJSONProjectionOverreach(t *testing.T) {
+	cacheDir := t.TempDir()
+	credDir := t.TempDir()
+	t.Setenv("CCPULSE_CACHE_DIR", cacheDir)
+	t.Setenv("HOME", credDir)
+	writeOverreachCache(t, cacheDir)
+	writeTempCredential(t, credDir)
+
+	cmd := newStatusCmd()
+	cmd.SetArgs([]string{"--json"})
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	out := buf.String()
+
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, out)
+	}
+	proj, ok := parsed["projection"].(map[string]any)
+	if !ok {
+		t.Fatalf("projection missing or not an object: %v", parsed["projection"])
+	}
+	fh, ok := proj["five_hour"].(map[string]any)
+	if !ok {
+		t.Fatalf("projection.five_hour missing: %v", proj)
+	}
+	if will, _ := fh["will_overreach"].(bool); !will {
+		t.Errorf("five_hour.will_overreach = false, want true (out=%s)", out)
+	}
+	if conf, _ := fh["confidence"].(string); conf != "ok" {
+		t.Errorf("five_hour.confidence = %q, want \"ok\" (out=%s)", conf, out)
+	}
+	// minutes_to_100_pct must be a number, not null, when overreaching.
+	if _, isNum := fh["minutes_to_100_pct"].(float64); !isNum {
+		t.Errorf("five_hour.minutes_to_100_pct expected number, got %T (out=%s)",
+			fh["minutes_to_100_pct"], out)
+	}
+	// 7d at 10% with ~1d elapsed projects ~70 — no overreach.
+	if sd, ok := proj["seven_day"].(map[string]any); ok {
+		if will, _ := sd["will_overreach"].(bool); will {
+			t.Errorf("seven_day.will_overreach = true, want false (out=%s)", out)
+		}
 	}
 }
 
