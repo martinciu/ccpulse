@@ -20,6 +20,7 @@ func newStatusCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "status",
 		Short: "Print 5-hour window status",
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runStatus(cmd, asJSON)
 		},

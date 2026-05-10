@@ -44,8 +44,10 @@ func versionString() string {
 
 func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
-		Use:   "ccpulse",
-		Short: "Claude Code usage TUI dashboard",
+		Use:           "ccpulse",
+		Short:         "Claude Code usage TUI dashboard",
+		SilenceUsage:  true,
+		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runTUI(cmd.OutOrStdout())
 		},
@@ -62,6 +64,7 @@ func newVersionCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
 		Short: "Print version",
+		Args:  cobra.NoArgs,
 		Run: func(cmd *cobra.Command, args []string) {
 			fmt.Fprintln(cmd.OutOrStdout(), versionString())
 		},
@@ -71,13 +74,15 @@ func newVersionCmd() *cobra.Command {
 func newConfigCmd() *cobra.Command {
 	c := &cobra.Command{Use: "config", Short: "Inspect / edit config"}
 	c.AddCommand(&cobra.Command{
-		Use: "path",
+		Use:  "path",
+		Args: cobra.NoArgs,
 		Run: func(cmd *cobra.Command, args []string) {
 			fmt.Fprintln(cmd.OutOrStdout(), config.DefaultPath())
 		},
 	})
 	c.AddCommand(&cobra.Command{
-		Use: "show",
+		Use:  "show",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path := config.DefaultPath()
 			if _, err := os.Stat(path); os.IsNotExist(err) {
@@ -92,7 +97,8 @@ func newConfigCmd() *cobra.Command {
 		},
 	})
 	c.AddCommand(&cobra.Command{
-		Use: "edit",
+		Use:  "edit",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path := config.DefaultPath()
 			if err := ensureConfigFile(path); err != nil {

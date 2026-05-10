@@ -22,6 +22,7 @@ func newIndexCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "index",
 		Short: "Rebuild SQLite cache from JSONL",
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runIndex(rebuild)
 		},
