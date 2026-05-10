@@ -7,7 +7,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -315,6 +317,43 @@ func TestUsageCache_FreshModes(t *testing.T) {
 	}
 	if got, want := fileInfo.Mode().Perm(), os.FileMode(0o600); got != want {
 		t.Fatalf("file mode: got %o want %o", got, want)
+	}
+}
+
+func TestWriteCacheConcurrent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "usage.json")
+
+	var u Usage
+	if err := json.Unmarshal([]byte(sampleAPIBody), &u); err != nil {
+		t.Fatalf("seed unmarshal: %v", err)
+	}
+
+	const N = 16
+	timestamps := make([]time.Time, N)
+	base := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	for i := range timestamps {
+		timestamps[i] = base.Add(time.Duration(i) * time.Second)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(N)
+	for i := range N {
+		go func(when time.Time) {
+			defer wg.Done()
+			if err := writeCache(path, u, when); err != nil {
+				t.Errorf("writeCache: %v", err)
+			}
+		}(timestamps[i])
+	}
+	wg.Wait()
+
+	got, err := readCache(path)
+	if err != nil {
+		t.Fatalf("readCache after concurrent writes: %v", err)
+	}
+	if !slices.ContainsFunc(timestamps, got.UpdatedAt.Equal) {
+		t.Errorf("UpdatedAt %v matched none of the N input timestamps", got.UpdatedAt)
 	}
 }
 
