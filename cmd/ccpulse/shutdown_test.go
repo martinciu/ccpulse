@@ -12,7 +12,6 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/spf13/cobra"
 	"go.uber.org/goleak"
 
 	"github.com/martinciu/ccpulse/pkg/anthro"
@@ -66,18 +65,11 @@ func TestRunTUIQuitsCleanly(t *testing.T) {
 		)
 	}
 
-	// Build a minimal cobra command and seed its context, so
-	// runTUI's cmd.Context() returns a real (non-cancelled) context.
-	// We exit via the `q` keypress, not via signal — so background
-	// is fine.
-	root := &cobra.Command{Use: "ccpulse"}
-	root.SetOut(io.Discard)
-	root.SetErr(io.Discard)
-	root.SetContext(context.Background())
-
+	// We exit via the `q` keypress, not via signal — context.Background
+	// is fine here.
 	done := make(chan error, 1)
 	go func() {
-		done <- runTUI(root)
+		done <- runTUI(context.Background())
 	}()
 
 	select {

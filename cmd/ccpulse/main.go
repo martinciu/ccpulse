@@ -58,7 +58,7 @@ func newRootCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runTUI(cmd)
+			return runTUI(cmd.Context())
 		},
 	}
 	root.AddCommand(newStatusCmd())
@@ -146,10 +146,12 @@ func ensureConfigFile(path string) error {
 	}
 	return secfile.WriteFile(path, defaultTOMLBytes())
 }
-// runTUI launches the Bubble Tea program with the TUI model.
-// Takes the cobra command so it can derive a signal-aware context
-// from cmd.Context(); the *cobra.Command itself isn't otherwise used.
-func runTUI(cmd *cobra.Command) error {
+// runTUI launches the Bubble Tea program with the TUI model. The
+// passed ctx is the signal-aware root context — used as the parent
+// for the quota poller's context and for the startup backfill, so
+// SIGINT/SIGTERM cancels in-flight work even before the user quits
+// the TUI itself.
+func runTUI(ctx context.Context) error {
 	cfg, _ := config.Load(config.DefaultPath())
 	cacheDir := envOr("CCPULSE_CACHE_DIR", expand(cfg.Paths.CacheDir))
 	if err := secfile.MkdirAll(cacheDir); err != nil {
@@ -228,16 +230,18 @@ func runTUI(cmd *cobra.Command) error {
 	//   6. c.Close closes the cache (registered earlier; runs last among
 	//      the cache-touching defers).
 	//
-	// The backfill keeps a separate WaitGroup (bfDone) because it has a
-	// distinct lifecycle (one-shot) and a private context (bfCtx).
+	// The backfill keeps a separate WaitGroup (bfDone) because it has
+	// a distinct lifecycle (one-shot). Both bfCtx and the poller ctx
+	// derive from the signal-aware root, so SIGINT/SIGTERM cancels
+	// in-flight work immediately, not only after p.Run returns.
 	var bg sync.WaitGroup
 
-	ctx, cancel := context.WithCancel(cmd.Context())
+	pollerCtx, cancel := context.WithCancel(ctx)
 
 	if hasOAuth {
 		retention := time.Duration(cfg.History.RetentionDays) * 24 * time.Hour
 		bg.Go(func() {
-			runQuotaPoller(ctx, p, cred, cacheDir, c, retention)
+			runQuotaPoller(pollerCtx, p, cred, cacheDir, c, retention)
 		})
 	}
 
@@ -248,7 +252,7 @@ func runTUI(cmd *cobra.Command) error {
 		})
 	})
 
-	bfCtx, bfCancel := context.WithCancel(context.Background())
+	bfCtx, bfCancel := context.WithCancel(ctx)
 	var bfDone sync.WaitGroup
 	bfDone.Add(1)
 	bf := &ingest.Backfill{Ingester: ing}
