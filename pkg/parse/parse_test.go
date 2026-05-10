@@ -2,6 +2,7 @@ package parse
 
 import (
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -70,6 +71,36 @@ func TestParseMixedLines(t *testing.T) {
 	}
 	if msgs[1].Model != "claude-haiku-4-5-20251001" {
 		t.Errorf("msgs[1].Model = %q", msgs[1].Model)
+	}
+}
+
+func TestParseWithErrors_ReportsOversizedLine(t *testing.T) {
+	prev := ScannerMaxBytes
+	ScannerMaxBytes = 4096
+	t.Cleanup(func() { ScannerMaxBytes = prev })
+
+	valid := `{"type":"assistant","message":{"role":"assistant","model":"claude-opus-4-7","usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}},"sessionId":"s","timestamp":"2026-05-09T10:00:00.000Z"}` + "\n"
+	big := `{"type":"assistant","padding":"` + strings.Repeat("x", 5000) + `"}` + "\n"
+
+	var buf strings.Builder
+	buf.WriteString(valid)
+	buf.WriteString(valid)
+	buf.WriteString(big)
+	buf.WriteString(valid) // not yielded — io.Reader path stops at overflow
+	buf.WriteString(valid)
+
+	msgs, errs, err := ParseWithErrors(strings.NewReader(buf.String()), "slug")
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if len(msgs) != 2 {
+		t.Errorf("len(msgs) = %d, want 2", len(msgs))
+	}
+	if len(errs) != 1 {
+		t.Fatalf("len(errs) = %d, want 1", len(errs))
+	}
+	if !strings.Contains(errs[0].Err.Error(), "oversized line") {
+		t.Errorf("errs[0].Err = %q, want containing 'oversized line'", errs[0].Err.Error())
 	}
 }
 
