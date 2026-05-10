@@ -14,7 +14,7 @@ operation.
 - **Today / History / Projects / Models tabs** — drill-downs by date,
   project, and model.
 - **5-hour plan-window gauge** — rolling window over the Claude Max
-  rate-limit period, color-bucketed at the 70% and 90% thresholds (yellow / red).
+  rate-limit period, rendered with the bubbles/progress default gradient.
 - **Worktree-aware project grouping** — collapses session slugs back
   to the canonical project via git.
 - **fsnotify live updates** — file watcher (not polling) keeps the TUI

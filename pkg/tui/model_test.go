@@ -224,8 +224,8 @@ func TestSevenDayBarRendered(t *testing.T) {
 	m := New(Deps{})
 	m.w, m.h = 120, 40
 	m.window = status.Window{Percent: 1, Has7d: true, Percent7d: 12}
-	m.progress = newProgressBar(0.01, m.progressWidth())
-	m.progress7d = newProgressBar(0.12, m.progressWidth())
+	m.progress = newProgressBar(m.progressWidth())
+	m.progress7d = newProgressBar(m.progressWidth())
 	v := m.View()
 	if !strings.Contains(v, "  1%") {
 		t.Errorf("expected 5h percent '  1%%' in:\n%s", v)
@@ -251,7 +251,7 @@ func TestSevenDayBarPlaceholderWhenAbsent(t *testing.T) {
 	m := New(Deps{})
 	m.w, m.h = 120, 40
 	m.window = status.Window{Percent: 1, Has7d: false}
-	m.progress = newProgressBar(0.01, m.progressWidth())
+	m.progress = newProgressBar(m.progressWidth())
 	v := m.View()
 	if !strings.Contains(v, "no data") {
 		t.Errorf("expected 'no data' placeholder in:\n%s", v)
@@ -265,12 +265,12 @@ func TestQuotaBarRendered(t *testing.T) {
 	low := New(Deps{})
 	low.w, low.h = 120, 40
 	low.window = status.Window{Percent: 0}
-	low.progress = newProgressBar(0, low.progressWidth())
+	low.progress = newProgressBar(low.progressWidth())
 
 	hi := New(Deps{})
 	hi.w, hi.h = 120, 40
 	hi.window = status.Window{Percent: 80}
-	hi.progress = newProgressBar(0.8, hi.progressWidth())
+	hi.progress = newProgressBar(hi.progressWidth())
 
 	if low.View() == hi.View() {
 		t.Errorf("quota bar must render differently at 0%% vs 80%%; got identical View output")
