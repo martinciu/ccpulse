@@ -33,11 +33,16 @@ func TestIndexSIGINTExitsCleanly(t *testing.T) {
 		t.Fatalf("go build failed: %v\n%s", err, out)
 	}
 
-	// Build a fake projects tree: 200 files × 100 lines each. JSONL
-	// content doesn't have to be valid — Ingester logs and skips bad
-	// files, so the walk still has work to do.
+	// Build a fake projects tree large enough that the walk reliably
+	// takes longer than the SIGINT delay even on a fast CI runner.
+	// 2000 files × 200 lines (each line ~50 bytes) is ~20MB of
+	// rejected-by-parser JSONL — enough to keep the walk busy for
+	// well over 200ms on macos-latest / ubuntu-latest GitHub runners.
+	// JSONL content is intentionally non-parseable; Ingester logs and
+	// skips bad files, so the walk's work is dominated by file I/O
+	// and parse-error logging rather than DB inserts.
 	projects := filepath.Join(tmp, "projects")
-	mkFakeProjectsTree(t, projects, 200, 100)
+	mkFakeProjectsTree(t, projects, 2000, 200)
 
 	cache := filepath.Join(tmp, "cache")
 	if err := os.MkdirAll(cache, 0o755); err != nil {
