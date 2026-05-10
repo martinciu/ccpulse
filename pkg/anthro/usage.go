@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/martinciu/ccpulse/pkg/secfile"
@@ -130,6 +131,11 @@ type FetchResult struct {
 //  5. no cache + API fail            → error
 //
 // On error, callers should fall back to the JSONL heuristic.
+//
+// Concurrent callers that observe a stale cache serialize behind an advisory
+// flock on a sibling lock file: the first caller refreshes the cache, the
+// rest re-read under the lock and find a fresh entry — eliminating the
+// duplicate-API-hit race that survived the atomic-write fix in #75.
 func Fetch(ctx context.Context, cred Credential, cacheDir string) (FetchResult, error) {
 	if cred.AccessToken == "" {
 		return FetchResult{}, errors.New("anthro: empty access token")
@@ -142,6 +148,15 @@ func Fetch(ctx context.Context, cred Credential, cacheDir string) (FetchResult, 
 		return FetchResult{Usage: cached.Usage, Source: "cache_fresh", UpdatedAt: cached.UpdatedAt}, nil
 	}
 
+	if release, lockErr := acquireFetchLock(cacheDir); lockErr == nil {
+		defer release()
+		now = time.Now()
+		cached, cacheErr = readCache(cachePath)
+		if cacheErr == nil && now.Sub(cached.UpdatedAt) < cacheTTL {
+			return FetchResult{Usage: cached.Usage, Source: "cache_fresh", UpdatedAt: cached.UpdatedAt}, nil
+		}
+	}
+
 	u, err := fetchAPI(ctx, cred.AccessToken)
 	if err != nil {
 		if cacheErr == nil {
@@ -151,6 +166,31 @@ func Fetch(ctx context.Context, cred Credential, cacheDir string) (FetchResult, 
 	}
 	_ = writeCache(cachePath, u, now)
 	return FetchResult{Usage: u, Source: "api", UpdatedAt: now.UTC()}, nil
+}
+
+// acquireFetchLock takes an exclusive advisory lock on cacheDir/usage.json.lock
+// via flock(2). The returned closure releases the lock and closes the file;
+// callers must invoke it (typically via defer). The lockfile is a sibling of
+// usage.json so atomic-rename writes to the cache don't disturb the lock fd.
+//
+// On a system where flock fails (e.g. ENOLCK on a quirky filesystem), Fetch
+// degrades to its pre-#76 behaviour rather than refusing to fetch.
+func acquireFetchLock(cacheDir string) (release func(), err error) {
+	if err := secfile.MkdirAll(cacheDir); err != nil {
+		return nil, err
+	}
+	f, err := secfile.OpenFile(filepath.Join(cacheDir, "usage.json.lock"), os.O_RDWR|os.O_CREATE)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		f.Close()
+		return nil, err
+	}
+	return func() {
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = f.Close()
+	}, nil
 }
 
 func fetchAPI(ctx context.Context, token string) (Usage, error) {
