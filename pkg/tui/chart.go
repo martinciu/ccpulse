@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"log/slog"
 	"strings"
 	"time"
 
@@ -44,6 +45,7 @@ func heatColor(ratio float64) lipgloss.Color {
 // (bars + baseline). The bottom row is always a baseline strip:
 // '▒' over data columns, '░' over gap columns.
 func buildChart(buckets []cache.TokenBucket, chartW, chartH int) string {
+	start := time.Now()
 	if chartH < 2 {
 		chartH = 2 // need at least one bar row + one baseline row
 	}
@@ -95,5 +97,11 @@ func buildChart(buckets []cache.TokenBucket, chartW, chartH int) string {
 		}
 	}
 
-	return lipgloss.JoinVertical(lipgloss.Left, bc.View(), sb.String())
+	out := lipgloss.JoinVertical(lipgloss.Left, bc.View(), sb.String())
+	slog.Debug("tui.buildChart",
+		"dur_ms", time.Since(start).Milliseconds(),
+		"buckets", len(buckets),
+		"chartW", chartW,
+		"chartH", chartH)
+	return out
 }

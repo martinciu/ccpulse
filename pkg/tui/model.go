@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -19,6 +20,11 @@ import (
 
 // horizontalScrollStep is the per-keypress shift in columns.
 const horizontalScrollStep = 3
+
+// viewLogThreshold gates the slog.Debug emitted from View(); frames
+// faster than this aren't logged so idle/animation renders stay quiet
+// on the dev channel. 5 ms is below the perception floor.
+const viewLogThreshold = 5 * time.Millisecond
 
 // RefreshMsg is sent by the watcher loop to trigger a TUI re-query.
 type RefreshMsg struct{}
@@ -110,8 +116,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.recomputeWindow()
 		m.refreshChart()
 	case RefreshMsg:
+		start := time.Now()
 		m.recomputeWindow()
 		m.refreshChart()
+		slog.Debug("tui.refreshMsg",
+			"dur_ms", time.Since(start).Milliseconds(),
+			"zoom", ZoomLevels[m.zoomIdx].Label)
 	case tea.KeyMsg:
 		switch {
 		case msg.String() == "ctrl+c":
@@ -138,8 +148,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) View() string {
 	if m.w == 0 {
-		return ""
+		return "" // pre-init; don't time
 	}
+	start := time.Now()
 	header := renderHeader(m.w, m.quotaBars())
 	sep := lipgloss.NewStyle().Foreground(Base02).Render(strings.Repeat("─", m.w))
 	var body string
@@ -149,7 +160,16 @@ func (m Model) View() string {
 		body = m.viewport.View()
 	}
 	footer := m.renderFooter()
-	return lipgloss.JoinVertical(lipgloss.Left, header, sep, body, sep, footer)
+	out := lipgloss.JoinVertical(lipgloss.Left, header, sep, body, sep, footer)
+	if d := time.Since(start); d >= viewLogThreshold {
+		slog.Debug("tui.View",
+			"dur_ms", d.Milliseconds(),
+			"zoom", ZoomLevels[m.zoomIdx].Label,
+			"chartW", m.chartWidth(),
+			"chartH", m.chartHeight(),
+			"show_help", m.showHelp)
+	}
+	return out
 }
 
 // renderFooter composes the bottom line: keybinding help on the left,
