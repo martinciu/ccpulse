@@ -14,7 +14,46 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 )
+
+// profileParams parameterises the synthetic-data shape per profile.
+// All ranges are uniform on the half-open interval [min, max).
+type profileParams struct {
+	activeRate        float64       // P(any sessions on a given day)
+	sessionsPerDayMin int           // inclusive
+	sessionsPerDayMax int           // inclusive
+	sessionDurMin     time.Duration // inclusive
+	sessionDurMax     time.Duration // exclusive
+	intervalMin       time.Duration // inclusive
+	intervalMax       time.Duration // exclusive
+}
+
+// profiles maps the --profile flag value to its parameter set.
+//
+// Approximate row counts at days=365, seed=1:
+//   - light: ~22k rows  (70% active days, 1–3 sessions/day, 1–4h sessions, 2–5min interval)
+//   - heavy: ~420k rows (100% active, 2–5 sessions/day, 3–8h sessions, 30–90s interval)
+var profiles = map[string]profileParams{
+	"light": {
+		activeRate:        0.7,
+		sessionsPerDayMin: 1,
+		sessionsPerDayMax: 3,
+		sessionDurMin:     1 * time.Hour,
+		sessionDurMax:     4 * time.Hour,
+		intervalMin:       2 * time.Minute,
+		intervalMax:       5 * time.Minute,
+	},
+	"heavy": {
+		activeRate:        1.0,
+		sessionsPerDayMin: 2,
+		sessionsPerDayMax: 5,
+		sessionDurMin:     3 * time.Hour,
+		sessionDurMax:     8 * time.Hour,
+		intervalMin:       30 * time.Second,
+		intervalMax:       90 * time.Second,
+	},
+}
 
 // seedOpts is the parsed input to runSeed. All fields are explicit; main()
 // resolves defaults from flags + pkg/config before calling runSeed so the
@@ -33,6 +72,9 @@ type seedOpts struct {
 func runSeed(opts seedOpts) (inserted int64, total int64, err error) {
 	if err := validateCacheDir(opts.cacheDir); err != nil {
 		return 0, 0, err
+	}
+	if _, ok := profiles[opts.profile]; !ok {
+		return 0, 0, fmt.Errorf("unknown profile %q: want one of light, heavy", opts.profile)
 	}
 	return 0, 0, errors.New("not implemented")
 }

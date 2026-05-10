@@ -30,3 +30,23 @@ func TestSeedYear_RejectsReleaseCacheDir(t *testing.T) {
 		t.Error("state.db was created despite path-guard rejection")
 	}
 }
+
+func TestSeedYear_RejectsUnknownProfile(t *testing.T) {
+	cacheDir := filepath.Join(t.TempDir(), "ccpulse-dev")
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := runSeed(seedOpts{
+		profile:  "garbage",
+		cacheDir: cacheDir,
+		seed:     1,
+		days:     1,
+	})
+	if err == nil {
+		t.Fatal("runSeed: expected error for unknown profile, got nil")
+	}
+	if !strings.Contains(err.Error(), "garbage") {
+		t.Errorf("runSeed: error %q does not name the bad profile", err)
+	}
+}
