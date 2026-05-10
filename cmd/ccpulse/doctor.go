@@ -47,8 +47,6 @@ func newDoctorCmd() *cobra.Command {
 
 			_, gitErr := exec.LookPath("git")
 			check(out, "git on PATH", gitErr == nil, gitErr)
-			_, tmuxErr := exec.LookPath("tmux")
-			check(out, "tmux on PATH", tmuxErr == nil, tmuxErr)
 
 			// OAuth credential check
 			cred, credErr := anthro.LoadCredential()

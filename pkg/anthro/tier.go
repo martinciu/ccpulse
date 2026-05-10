@@ -17,7 +17,7 @@ func TierSlug(rateLimitTier string) string {
 	return rateLimitTier
 }
 
-// TierPretty returns a human-readable label for the TUI / tmux line.
+// TierPretty returns a human-readable label for the TUI.
 func TierPretty(rateLimitTier string) string {
 	slug := TierSlug(rateLimitTier)
 	switch slug {

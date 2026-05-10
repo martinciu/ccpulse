@@ -10,7 +10,7 @@ import (
 //go:embed default.toml
 var defaultTOML []byte
 
-// Display controls the tmux/TUI presentation. Mode is one of "auto", "percent",
+// Display controls the TUI presentation. Mode is one of "auto", "percent",
 // "cost". "auto" picks based on whether an OAuth credential is found.
 type Display struct {
 	Mode        string  `toml:"mode"`
