@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -78,6 +79,54 @@ func TestLoadCredentialBadJSON(t *testing.T) {
 	if errors.Is(err, ErrNoCredential) {
 		t.Errorf("bad JSON shouldn't be ErrNoCredential, got %v", err)
 	}
+}
+
+func TestLoadCredentialMissingSubscriptionType(t *testing.T) {
+	dir := t.TempDir()
+	p := writeCred(t, dir, `{"claudeAiOauth":{"accessToken":"tok-abc"}}`)
+	_, err := LoadCredentialFromFile(p)
+	if err == nil {
+		t.Fatalf("want error, got nil")
+	}
+	if errors.Is(err, ErrNoCredential) {
+		t.Errorf("missing subscriptionType shouldn't be ErrNoCredential, got %v", err)
+	}
+}
+
+func TestLoadCredentialFromKeychainPinsAccount(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("keychain only on darwin")
+	}
+	var gotArgs []string
+	prev := keychainExec
+	keychainExec = func(name string, args ...string) ([]byte, error) {
+		gotArgs = append([]string{name}, args...)
+		return []byte(`{"claudeAiOauth":{"accessToken":"tok","subscriptionType":"max"}}`), nil
+	}
+	t.Cleanup(func() { keychainExec = prev })
+
+	if _, err := loadCredentialFromKeychain(); err != nil {
+		t.Fatalf("loadCredentialFromKeychain: %v", err)
+	}
+	idx := indexOfArg(gotArgs, "-a")
+	if idx < 0 {
+		t.Fatalf("missing -a in args: %v", gotArgs)
+	}
+	if idx+1 >= len(gotArgs) {
+		t.Fatalf("no value after -a: %v", gotArgs)
+	}
+	if gotArgs[idx+1] == "" {
+		t.Errorf("-a value is empty: %v", gotArgs)
+	}
+}
+
+func indexOfArg(ss []string, s string) int {
+	for i, x := range ss {
+		if x == s {
+			return i
+		}
+	}
+	return -1
 }
 
 func TestExpired(t *testing.T) {

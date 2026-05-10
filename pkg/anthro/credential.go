@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -67,9 +68,30 @@ func LoadCredentialFromFile(path string) (Credential, error) {
 	return parseCredential(b)
 }
 
+// keychainExec is overridable in tests.
+var keychainExec = func(name string, args ...string) ([]byte, error) {
+	return exec.Command(name, args...).Output()
+}
+
+// keychainAccount returns the account name to pin keychain lookups to.
+// Claude Code writes the credential under the user's Unix login name.
+func keychainAccount() string {
+	if u, err := user.Current(); err == nil && u.Username != "" {
+		return u.Username
+	}
+	return os.Getenv("USER")
+}
+
 func loadCredentialFromKeychain() (Credential, error) {
-	out, err := exec.Command("security",
-		"find-generic-password", "-s", "Claude Code-credentials", "-w").Output()
+	acct := keychainAccount()
+	if acct == "" {
+		return Credential{}, ErrNoCredential
+	}
+	out, err := keychainExec("security",
+		"find-generic-password",
+		"-s", "Claude Code-credentials",
+		"-a", acct,
+		"-w")
 	if err != nil {
 		return Credential{}, ErrNoCredential
 	}
@@ -95,6 +117,9 @@ func parseCredential(b []byte) (Credential, error) {
 	o := env.ClaudeAiOauth
 	if o.AccessToken == "" {
 		return Credential{}, ErrNoCredential
+	}
+	if o.SubscriptionType == "" {
+		return Credential{}, fmt.Errorf("invalid credential: subscriptionType is empty")
 	}
 	c := Credential{
 		AccessToken:      o.AccessToken,
