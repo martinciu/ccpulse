@@ -1,0 +1,3 @@
+# Default reviewer for every path. CODEOWNERS auto-requests review
+# on PRs and is required for some branch-protection rules later.
+* @martinciu
