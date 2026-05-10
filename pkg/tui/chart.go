@@ -10,19 +10,19 @@ import (
 	"github.com/martinciu/ccpulse/pkg/cache"
 )
 
-// ZoomLevel maps a human label to a bucket duration.
+// ZoomLevel maps a human label to a bucket duration. The chart's
+// horizontal extent is no longer per-zoom — it spans from the earliest
+// cached message to "now" at every zoom (see issue #53).
 type ZoomLevel struct {
 	Label    string
 	Duration time.Duration
-	Lookback time.Duration // total wall-clock span of the chart at this zoom
 }
 
 // ZoomLevels are the available zoom steps, cycled with the z key.
-// Lookback / Duration is the column count at each zoom: 288 / 288 / 168.
 var ZoomLevels = []ZoomLevel{
-	{"5m", 5 * time.Minute, 24 * time.Hour},
-	{"15m", 15 * time.Minute, 72 * time.Hour},
-	{"1h", time.Hour, 7 * 24 * time.Hour},
+	{"5m", 5 * time.Minute},
+	{"15m", 15 * time.Minute},
+	{"1h", time.Hour},
 }
 
 // heatColor returns a lipgloss color on a green→yellow→red ramp
