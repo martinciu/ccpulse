@@ -21,18 +21,31 @@ func TestDecodeSlug(t *testing.T) {
 	must("Users/x/code/dotfiles/.claude/worktrees/156-zsh-cleanup")
 
 	cases := []struct {
-		slug string
-		want string
+		slug   string
+		want   string
+		wantOK bool
 	}{
-		{"-Users-x-code-dotfiles", "/Users/x/code/dotfiles"},
+		// Existing positive cases.
+		{"-Users-x-code-dotfiles", "/Users/x/code/dotfiles", true},
 		{"-Users-x-code-dotfiles--claude-worktrees-156-zsh-cleanup",
-			"/Users/x/code/dotfiles/.claude/worktrees/156-zsh-cleanup"},
+			"/Users/x/code/dotfiles/.claude/worktrees/156-zsh-cleanup", true},
+		// Traversal rejections — must return ("", false) without
+		// touching the filesystem on the escape target.
+		{"-Users-x-..-etc-passwd", "", false}, // middle .. (issue #47 example)
+		{"-..-etc-passwd", "", false},         // leading ..
+		{"-Users-x-code-..", "", false},       // trailing ..
+		{"-..", "", false},                    // root-only ..
 	}
 	for _, c := range cases {
-		// Resolver in tests is rooted at the temp dir.
 		got, ok := DecodeSlugIn(c.slug, root)
-		if !ok {
-			t.Errorf("%s: not found", c.slug)
+		if ok != c.wantOK {
+			t.Errorf("%s: ok = %v, want %v (got=%q)", c.slug, ok, c.wantOK, got)
+			continue
+		}
+		if !c.wantOK {
+			if got != "" {
+				t.Errorf("%s: rejected slug returned non-empty path %q", c.slug, got)
+			}
 			continue
 		}
 		want := root + c.want
