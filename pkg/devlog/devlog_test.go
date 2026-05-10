@@ -68,3 +68,49 @@ func TestInit_DevCreatesParentDir(t *testing.T) {
 		t.Errorf("debug.log not created under fresh dir: %v", err)
 	}
 }
+
+func TestInit_DevModes(t *testing.T) {
+	prev := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	dir := t.TempDir()
+	closer, err := Init(true, dir)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if closer != nil {
+		defer closer.Close()
+	}
+	if got, _ := os.Stat(dir); got.Mode().Perm() != 0o700 {
+		t.Fatalf("dir mode: got %o want %o", got.Mode().Perm(), 0o700)
+	}
+	if got, _ := os.Stat(filepath.Join(dir, "debug.log")); got.Mode().Perm() != 0o600 {
+		t.Fatalf("file mode: got %o want %o", got.Mode().Perm(), 0o600)
+	}
+}
+
+func TestInit_TightensExisting(t *testing.T) {
+	prev := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatalf("seed dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "debug.log"), []byte(""), 0o644); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+	closer, err := Init(true, dir)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if closer != nil {
+		defer closer.Close()
+	}
+	if got, _ := os.Stat(dir); got.Mode().Perm() != 0o700 {
+		t.Fatalf("dir mode: got %o want %o", got.Mode().Perm(), 0o700)
+	}
+	if got, _ := os.Stat(filepath.Join(dir, "debug.log")); got.Mode().Perm() != 0o600 {
+		t.Fatalf("file mode: got %o want %o", got.Mode().Perm(), 0o600)
+	}
+}

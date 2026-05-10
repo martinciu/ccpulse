@@ -198,7 +198,7 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 			sub = 1
 		}
 		if _, err := stmt.Exec(
-			m.SessionID, m.ProjectSlug, m.Timestamp.Format("2006-01-02T15:04:05.000Z07:00"),
+			m.SessionID, m.ProjectSlug, m.Timestamp.UTC().Format("2006-01-02T15:04:05.000Z07:00"),
 			m.Role, m.Model,
 			m.InputTokens, m.OutputTokens, m.CacheReadTokens,
 			m.CacheWrite5mTokens, m.CacheWrite1hTokens,
@@ -478,8 +478,8 @@ func (c *Cache) TokenBuckets(dur time.Duration, from, to time.Time) ([]TokenBuck
 		return nil, nil
 	}
 	bucketSecs := int64(dur.Seconds())
-	fromStr := from.Format("2006-01-02T15:04:05.000Z07:00")
-	toStr := to.Format("2006-01-02T15:04:05.000Z07:00")
+	fromStr := from.UTC().Format("2006-01-02T15:04:05.000Z07:00")
+	toStr := to.UTC().Format("2006-01-02T15:04:05.000Z07:00")
 	rows, err := c.db.Query(`
 SELECT
   CAST(CAST(strftime('%s', ts) AS INTEGER) / ? AS INTEGER) * ? AS bucket_epoch,

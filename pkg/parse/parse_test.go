@@ -1,7 +1,10 @@
 package parse
 
 import (
+	"bufio"
+	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -70,6 +73,37 @@ func TestParseMixedLines(t *testing.T) {
 	}
 	if msgs[1].Model != "claude-haiku-4-5-20251001" {
 		t.Errorf("msgs[1].Model = %q", msgs[1].Model)
+	}
+}
+
+func TestParseWithErrors_ReportsOversizedLine(t *testing.T) {
+	withScannerMaxBytes(t, 4096)
+
+	valid := validAssistantLine("")
+	big := `{"type":"assistant","padding":"` + strings.Repeat("x", 5000) + `"}` + "\n"
+
+	var buf strings.Builder
+	buf.WriteString(valid)
+	buf.WriteString(valid)
+	buf.WriteString(big)
+	buf.WriteString(valid) // not yielded — io.Reader path stops at overflow
+	buf.WriteString(valid)
+
+	msgs, errs, err := ParseWithErrors(strings.NewReader(buf.String()), "slug")
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if len(msgs) != 2 {
+		t.Errorf("len(msgs) = %d, want 2", len(msgs))
+	}
+	if len(errs) != 1 {
+		t.Fatalf("len(errs) = %d, want 1", len(errs))
+	}
+	if !errors.Is(errs[0].Err, ErrOversizedLineSkipped) {
+		t.Errorf("errs[0].Err not ErrOversizedLineSkipped: %v", errs[0].Err)
+	}
+	if !errors.Is(errs[0].Err, bufio.ErrTooLong) {
+		t.Errorf("errs[0].Err not wrapping bufio.ErrTooLong: %v", errs[0].Err)
 	}
 }
 

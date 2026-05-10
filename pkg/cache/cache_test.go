@@ -524,10 +524,9 @@ func TestTokenBuckets_IncludesInFlightBucket(t *testing.T) {
 
 	tab, _ := pricing.Load()
 
-	// Production messages come from JSONL parsing — always UTC. Use UTC
-	// here so the stored ts text starts with "...Z", matching the
-	// UTC-formatted query bounds; lexicographic comparison only works
-	// when both sides share the same offset.
+	// Production messages come from JSONL parsing — always UTC. The
+	// cache layer normalizes both insert and query bounds to UTC, so
+	// non-UTC inputs would also work; UTC here just matches reality.
 	now := time.Now().UTC()
 	msgs := []parse.Message{
 		{SessionID: "s1", ProjectSlug: "p", Model: "claude-sonnet-4-6",
@@ -816,5 +815,51 @@ func TestBucketAlign(t *testing.T) {
 	got3 := BucketAlign(in3, 15*time.Minute)
 	if got3.Location() != time.UTC {
 		t.Errorf("BucketAlign output location = %v, want UTC", got3.Location())
+	}
+}
+
+// TestInsertMessages_NormalizesNonUTCTimestamp locks in the invariant
+// that messages.ts is always stored as a Z-suffixed UTC string and that
+// TokenBuckets compares its query bounds in UTC, regardless of the
+// time.Time zone the caller hands in. Without normalization at both
+// boundaries the WHERE ts >= ? AND ts < ? lex comparison silently
+// misbehaves when a caller passes non-UTC values.
+func TestInsertMessages_NormalizesNonUTCTimestamp(t *testing.T) {
+	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	tab, _ := pricing.Load()
+
+	loc := time.FixedZone("test+02", 2*60*60)
+	// 11:50 in +02:00 == 09:50 UTC. Both insert and query use the
+	// non-UTC zone; the cache layer must normalize on both sides.
+	ts := time.Date(2026, 5, 9, 11, 50, 0, 0, loc)
+
+	msgs := []parse.Message{
+		{SessionID: "s1", ProjectSlug: "p", Model: "claude-sonnet-4-6",
+			Timestamp: ts, InputTokens: 1000, OutputTokens: 500},
+	}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatal(err)
+	}
+
+	from := time.Date(2026, 5, 9, 11, 0, 0, 0, loc)
+	to := time.Date(2026, 5, 9, 12, 0, 0, 0, loc)
+	buckets, err := c.TokenBuckets(5*time.Minute, from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 1 hour / 5 min = 12 buckets. The message at 11:50 (loc) lands in
+	// the bucket starting 09:50 UTC == 11:50 in loc, i.e. index 10.
+	if len(buckets) != 12 {
+		t.Fatalf("want 12 buckets, got %d: %+v", len(buckets), buckets)
+	}
+	if buckets[10].Tokens != 1500 {
+		t.Errorf("bucket[10].Tokens = %d, want 1500 (input+output of the non-UTC insert)",
+			buckets[10].Tokens)
 	}
 }
