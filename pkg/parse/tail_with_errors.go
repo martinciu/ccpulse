@@ -16,8 +16,15 @@ import (
 // recovery path for ErrTooLong is the backstop above this ceiling.
 //
 // Exposed as a var (not a const) so tests can shrink it cheaply to
-// trigger ErrTooLong without synthesising 64 MiB lines.
+// trigger ErrTooLong without synthesising 64 MiB lines. Mutators must
+// not run in parallel — there is no synchronisation around access.
 var ScannerMaxBytes = 64 << 20
+
+// ErrOversizedLineSkipped is wrapped into the synthesised ParseError
+// produced when a line exceeds ScannerMaxBytes. Callers can inspect
+// the recovery class with errors.Is rather than substring-matching
+// the formatted message.
+var ErrOversizedLineSkipped = errors.New("oversized line skipped")
 
 // scannerInitialCap is the initial buffer capacity used at every
 // Scanner.Buffer site in this package. Capped by ScannerMaxBytes so
@@ -87,7 +94,7 @@ func ParseFromOffsetWithErrors(path, slug string, startOffset int64, startLine i
 		line++
 		errs = append(errs, ParseError{
 			Line: line,
-			Err:  fmt.Errorf("oversized line skipped at offset %d (%d bytes)", oversizedStart, skipped),
+			Err:  fmt.Errorf("%w at offset %d (%d bytes): %w", ErrOversizedLineSkipped, oversizedStart, skipped, bufio.ErrTooLong),
 		})
 		off += int64(skipped) + 1 // +1 for the trailing '\n'
 		if _, err := f.Seek(off, io.SeekStart); err != nil {

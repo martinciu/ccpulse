@@ -1,6 +1,9 @@
 package parse
 
 import (
+	"bufio"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -133,12 +136,15 @@ func TestParseFromOffsetWithErrors_SkipsOversizedLine(t *testing.T) {
 	if errs[0].Line != 26 {
 		t.Errorf("errs[0].Line = %d, want 26", errs[0].Line)
 	}
-	wantSubstr := "oversized line skipped"
-	if !strings.Contains(errs[0].Err.Error(), wantSubstr) {
-		t.Errorf("errs[0].Err = %q, want containing %q", errs[0].Err.Error(), wantSubstr)
+	if !errors.Is(errs[0].Err, ErrOversizedLineSkipped) {
+		t.Errorf("errs[0].Err not ErrOversizedLineSkipped: %v", errs[0].Err)
 	}
-	if !strings.Contains(errs[0].Err.Error(), "offset") {
-		t.Errorf("errs[0].Err = %q, want containing %q", errs[0].Err.Error(), "offset")
+	if !errors.Is(errs[0].Err, bufio.ErrTooLong) {
+		t.Errorf("errs[0].Err not wrapping bufio.ErrTooLong: %v", errs[0].Err)
+	}
+	wantOffset := fmt.Sprintf("offset %d", preOff)
+	if !strings.Contains(errs[0].Err.Error(), wantOffset) {
+		t.Errorf("errs[0].Err = %q, want containing %q", errs[0].Err.Error(), wantOffset)
 	}
 	if int64(len(b)) != newOff {
 		t.Errorf("newOff = %d, want %d (file size)", newOff, len(b))
@@ -149,7 +155,6 @@ func TestParseFromOffsetWithErrors_SkipsOversizedLine(t *testing.T) {
 	if bigSize <= int64(ScannerMaxBytes) {
 		t.Fatalf("test setup wrong: bigSize=%d not > ScannerMaxBytes=%d", bigSize, ScannerMaxBytes)
 	}
-	_ = preOff
 }
 
 func TestParseFromOffsetWithErrors_IdempotentReparse(t *testing.T) {
@@ -226,6 +231,100 @@ func TestParseFromOffsetWithErrors_OversizedTailNoNewline(t *testing.T) {
 	}
 	if newLine != 5 {
 		t.Errorf("newLine = %d, want 5", newLine)
+	}
+}
+
+func TestParseFromOffsetWithErrors_FirstLineOversized(t *testing.T) {
+	withScannerMaxBytes(t, 4096)
+
+	dir := t.TempDir()
+	p := filepath.Join(dir, "t.jsonl")
+
+	var b []byte
+	b = append(b, []byte(validAssistantLine(strings.Repeat("x", 5000)))...)
+	for range 3 {
+		b = append(b, []byte(validAssistantLine(""))...)
+	}
+	if err := os.WriteFile(p, b, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	msgs, errs, newOff, newLine, err := ParseFromOffsetWithErrors(p, "slug", 0, 0)
+	if err != nil {
+		t.Fatalf("parseErr = %v, want nil", err)
+	}
+	if len(msgs) != 3 {
+		t.Errorf("len(msgs) = %d, want 3", len(msgs))
+	}
+	if len(errs) != 1 {
+		t.Fatalf("len(errs) = %d, want 1", len(errs))
+	}
+	if errs[0].Line != 1 {
+		t.Errorf("errs[0].Line = %d, want 1 (oversized line is line 1)", errs[0].Line)
+	}
+	if !errors.Is(errs[0].Err, ErrOversizedLineSkipped) {
+		t.Errorf("errs[0].Err not ErrOversizedLineSkipped: %v", errs[0].Err)
+	}
+	if !strings.Contains(errs[0].Err.Error(), "offset 0") {
+		t.Errorf("errs[0].Err = %q, want containing 'offset 0'", errs[0].Err.Error())
+	}
+	if newOff != int64(len(b)) {
+		t.Errorf("newOff = %d, want %d (file size)", newOff, len(b))
+	}
+	if newLine != 4 {
+		t.Errorf("newLine = %d, want 4", newLine)
+	}
+}
+
+func TestParseFromOffsetWithErrors_BackToBackOversizedLines(t *testing.T) {
+	withScannerMaxBytes(t, 4096)
+
+	dir := t.TempDir()
+	p := filepath.Join(dir, "t.jsonl")
+
+	// 2 small valid, then 3 oversized lines back-to-back, then 2 small valid.
+	// Each ErrTooLong should drive the recovery loop through one more iteration;
+	// the second iteration is the case the rest of the suite never exercises.
+	var b []byte
+	for range 2 {
+		b = append(b, []byte(validAssistantLine(""))...)
+	}
+	for range 3 {
+		b = append(b, []byte(validAssistantLine(strings.Repeat("x", 5000)))...)
+	}
+	for range 2 {
+		b = append(b, []byte(validAssistantLine(""))...)
+	}
+	if err := os.WriteFile(p, b, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	msgs, errs, newOff, newLine, err := ParseFromOffsetWithErrors(p, "slug", 0, 0)
+	if err != nil {
+		t.Fatalf("parseErr = %v, want nil", err)
+	}
+	if len(msgs) != 4 {
+		t.Errorf("len(msgs) = %d, want 4", len(msgs))
+	}
+	if len(errs) != 3 {
+		t.Fatalf("len(errs) = %d, want 3 (one synthesised entry per oversized line)", len(errs))
+	}
+	for i, pe := range errs {
+		if !errors.Is(pe.Err, ErrOversizedLineSkipped) {
+			t.Errorf("errs[%d].Err not ErrOversizedLineSkipped: %v", i, pe.Err)
+		}
+	}
+	wantLines := []int{3, 4, 5}
+	for i, want := range wantLines {
+		if errs[i].Line != want {
+			t.Errorf("errs[%d].Line = %d, want %d", i, errs[i].Line, want)
+		}
+	}
+	if newOff != int64(len(b)) {
+		t.Errorf("newOff = %d, want %d (file size)", newOff, len(b))
+	}
+	if newLine != 7 {
+		t.Errorf("newLine = %d, want 7", newLine)
 	}
 }
 

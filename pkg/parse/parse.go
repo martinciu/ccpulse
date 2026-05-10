@@ -79,7 +79,7 @@ func ParseWithErrors(r io.Reader, projectSlug string) ([]Message, []ParseError, 
 	if err != nil && errors.Is(err, bufio.ErrTooLong) {
 		errs = append(errs, ParseError{
 			Line: line + 1,
-			Err:  fmt.Errorf("oversized line; cannot recover from io.Reader"),
+			Err:  fmt.Errorf("%w; cannot recover from io.Reader: %w", ErrOversizedLineSkipped, bufio.ErrTooLong),
 		})
 		return msgs, errs, nil
 	}

@@ -1,6 +1,8 @@
 package parse
 
 import (
+	"bufio"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -75,11 +77,9 @@ func TestParseMixedLines(t *testing.T) {
 }
 
 func TestParseWithErrors_ReportsOversizedLine(t *testing.T) {
-	prev := ScannerMaxBytes
-	ScannerMaxBytes = 4096
-	t.Cleanup(func() { ScannerMaxBytes = prev })
+	withScannerMaxBytes(t, 4096)
 
-	valid := `{"type":"assistant","message":{"role":"assistant","model":"claude-opus-4-7","usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}},"sessionId":"s","timestamp":"2026-05-09T10:00:00.000Z"}` + "\n"
+	valid := validAssistantLine("")
 	big := `{"type":"assistant","padding":"` + strings.Repeat("x", 5000) + `"}` + "\n"
 
 	var buf strings.Builder
@@ -99,8 +99,11 @@ func TestParseWithErrors_ReportsOversizedLine(t *testing.T) {
 	if len(errs) != 1 {
 		t.Fatalf("len(errs) = %d, want 1", len(errs))
 	}
-	if !strings.Contains(errs[0].Err.Error(), "oversized line") {
-		t.Errorf("errs[0].Err = %q, want containing 'oversized line'", errs[0].Err.Error())
+	if !errors.Is(errs[0].Err, ErrOversizedLineSkipped) {
+		t.Errorf("errs[0].Err not ErrOversizedLineSkipped: %v", errs[0].Err)
+	}
+	if !errors.Is(errs[0].Err, bufio.ErrTooLong) {
+		t.Errorf("errs[0].Err not wrapping bufio.ErrTooLong: %v", errs[0].Err)
 	}
 }
 
