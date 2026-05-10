@@ -5,6 +5,7 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"time"
 
@@ -472,6 +473,7 @@ type TokenBucket struct {
 // Empty intervals are returned with Tokens == 0; output is ordered
 // oldest-first, len = (to.Sub(from) / dur).
 func (c *Cache) TokenBuckets(dur time.Duration, from, to time.Time) ([]TokenBucket, error) {
+	start := time.Now()
 	from = BucketAlign(from, dur)
 	to = BucketAlign(to, dur)
 	if !to.After(from) {
@@ -510,12 +512,17 @@ ORDER BY bucket_epoch ASC
 	n := int(to.Sub(from) / dur)
 	out := make([]TokenBucket, n)
 	for i := range n {
-		start := from.Add(time.Duration(i) * dur)
+		bs := from.Add(time.Duration(i) * dur)
 		out[i] = TokenBucket{
-			BucketStart: start,
-			Tokens:      totals[start.Unix()],
+			BucketStart: bs,
+			Tokens:      totals[bs.Unix()],
 		}
 	}
+	slog.Debug("cache.TokenBuckets",
+		"dur_ms", time.Since(start).Milliseconds(),
+		"zoom", dur.String(),
+		"buckets", n,
+		"rows_aggregated", len(totals))
 	return out, nil
 }
 
