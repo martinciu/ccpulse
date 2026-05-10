@@ -1,11 +1,16 @@
 package tui
 
 import (
+	"runtime"
 	"testing"
 	"time"
 
 	"github.com/martinciu/ccpulse/pkg/cache"
 )
+
+// sinkString prevents the compiler from eliding the buildChart call
+// in BenchmarkBuildChart when its return value is otherwise unused.
+var sinkString string
 
 // syntheticBuckets returns n contiguous 5-minute TokenBucket entries
 // with deterministic, varied Tokens values so heatColor exercises all
@@ -28,8 +33,12 @@ func BenchmarkBuildChart(b *testing.B) {
 		buckets := syntheticBuckets(n)
 		b.Run(formatN(n), func(b *testing.B) {
 			b.ReportAllocs()
+			// Drain GC pressure from the syntheticBuckets allocation so it
+			// doesn't bleed into the first iteration's measurement.
+			runtime.GC()
+			b.ResetTimer()
 			for b.Loop() {
-				_ = buildChart(buckets, n, 20)
+				sinkString = buildChart(buckets, n, 20)
 			}
 		})
 	}
