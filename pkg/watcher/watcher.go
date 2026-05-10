@@ -38,10 +38,18 @@ func New(root string) (*Watcher, error) {
 }
 
 // Run consumes fsnotify events. For each .jsonl WRITE/CREATE event,
-// debounces 100ms and then calls onChange with the file path. Blocks
-// until the watcher is closed.
+// debounces by w.deb and then calls onChange with the file path.
+// Blocks until the watcher is closed; once Run returns, no further
+// onChange calls fire (in-flight timers drop their event via the
+// non-blocking send on `fire`).
 func (w *Watcher) Run(onChange func(path string)) {
 	pending := map[string]*time.Timer{}
+	fire := make(chan string, 16) // buffered so the timer goroutine never blocks
+	defer func() {
+		for _, t := range pending {
+			t.Stop()
+		}
+	}()
 	for {
 		select {
 		case e, ok := <-w.w.Events:
@@ -66,8 +74,21 @@ func (w *Watcher) Run(onChange func(path string)) {
 			if t, ok := pending[name]; ok {
 				t.Stop()
 			}
-			pending[name] = time.AfterFunc(w.deb, func() { onChange(name) })
-		case <-w.w.Errors:
+			pending[name] = time.AfterFunc(w.deb, func() {
+				// Non-blocking: if Run has returned and `fire` is full
+				// or unreceived, drop the event.
+				select {
+				case fire <- name:
+				default:
+				}
+			})
+		case path := <-fire:
+			delete(pending, path)
+			onChange(path)
+		case _, ok := <-w.w.Errors:
+			if !ok {
+				return
+			}
 			// ignore — fsnotify error stream
 		}
 	}
