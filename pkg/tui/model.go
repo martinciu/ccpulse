@@ -179,7 +179,10 @@ func (m Model) quotaBars() string {
 }
 
 // refreshChart queries the cache and updates the viewport content.
-// Safe to call when deps.Cache is nil (no-op).
+// Safe to call when deps.Cache is nil (no-op). When the query fails or
+// returns no buckets, the viewport is replaced with a centered "no data"
+// placeholder so prior chart content does not linger after the data
+// underneath has cleared (fresh cache, retention rollover, etc.).
 func (m *Model) refreshChart() {
 	if m.deps.Cache == nil {
 		return
@@ -188,6 +191,8 @@ func (m *Model) refreshChart() {
 	since := time.Now().Add(-7 * 24 * time.Hour)
 	buckets, err := m.deps.Cache.TokenBuckets(zoom.Duration, since)
 	if err != nil || len(buckets) == 0 {
+		m.viewport.SetContent(emptyChartView(m.chartWidth(), m.chartHeight()))
+		m.viewport.SetXOffset(0)
 		return
 	}
 	chartW := len(buckets)
@@ -200,6 +205,15 @@ func (m *Model) refreshChart() {
 	// Anchor the view at "now" on each refresh — the rightmost column.
 	// SetXOffset is clamped internally by the viewport.
 	m.viewport.SetXOffset(chartW)
+}
+
+// emptyChartView returns a placeholder string filling width × height with
+// a centered "no usage data" message. Used when the cache has no rows in
+// the chart's lookback window.
+func emptyChartView(width, height int) string {
+	msg := lipgloss.NewStyle().Foreground(Base01).Italic(true).
+		Render("(no usage data in the last 7 days)")
+	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, msg)
 }
 
 // recomputeWindow updates the status.Window from the DB + quota data.

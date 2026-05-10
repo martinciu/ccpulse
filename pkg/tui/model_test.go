@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -69,6 +70,33 @@ func TestQuitKey(t *testing.T) {
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
 	if cmd == nil {
 		t.Error("expected quit cmd, got nil")
+	}
+}
+
+func TestRefreshChartClearsOnEmptyData(t *testing.T) {
+	c, err := cache.Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	m := New(Deps{Cache: c})
+	m.w, m.h = 120, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+
+	// Seed the viewport with a non-placeholder chart string to simulate
+	// stale content from a prior refresh.
+	m.viewport.SetContent("STALE CHART CONTENT")
+
+	m.refreshChart()
+
+	got := m.viewport.View()
+	if strings.Contains(got, "STALE CHART CONTENT") {
+		t.Errorf("refreshChart left stale content in viewport when cache empty:\n%s", got)
+	}
+	if !strings.Contains(got, "no usage data") {
+		t.Errorf("refreshChart did not render empty-state placeholder:\n%s", got)
 	}
 }
 
