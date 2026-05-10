@@ -73,3 +73,25 @@ func TestSeedYear_LightProfile_RowCountInRange(t *testing.T) {
 		t.Errorf("first run: total=%d, inserted=%d (want equal)", total, inserted)
 	}
 }
+
+func TestSeedYear_HeavyProfile_RowCountInRange(t *testing.T) {
+	cacheDir := filepath.Join(t.TempDir(), "ccpulse-dev")
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// 30 days × 100% × 3.5 sessions × 5.5h × 60s/row ≈ 34k rows.
+	// Range is ~±25% to absorb RNG variance under a fixed seed.
+	inserted, _, err := runSeed(seedOpts{
+		profile:  "heavy",
+		cacheDir: cacheDir,
+		seed:     1,
+		days:     30,
+	})
+	if err != nil {
+		t.Fatalf("runSeed: %v", err)
+	}
+	if inserted < 25000 || inserted > 40000 {
+		t.Errorf("heavy 30d: inserted=%d, want [25000, 40000]", inserted)
+	}
+}
