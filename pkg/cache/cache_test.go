@@ -2,7 +2,9 @@ package cache
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -735,6 +737,36 @@ func TestConcurrentReadWriteNoBusy(t *testing.T) {
 		if err := <-errs; err != nil {
 			t.Fatalf("concurrent op: %v", err)
 		}
+	}
+}
+
+func TestRemoveWithSiblings(t *testing.T) {
+	dir := t.TempDir()
+	base := filepath.Join(dir, "state.db")
+
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		if err := os.WriteFile(base+suffix, []byte("planted"), 0644); err != nil {
+			t.Fatalf("plant %s: %v", base+suffix, err)
+		}
+	}
+
+	if err := RemoveWithSiblings(base); err != nil {
+		t.Fatalf("RemoveWithSiblings: %v", err)
+	}
+
+	for _, suffix := range []string{"", "-wal", "-shm", "-journal"} {
+		if _, err := os.Stat(base + suffix); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("expected %s%s to be absent, stat err = %v", base, suffix, err)
+		}
+	}
+}
+
+func TestRemoveWithSiblings_AllMissing(t *testing.T) {
+	dir := t.TempDir()
+	base := filepath.Join(dir, "absent.db")
+
+	if err := RemoveWithSiblings(base); err != nil {
+		t.Fatalf("RemoveWithSiblings on missing tree: %v", err)
 	}
 }
 
