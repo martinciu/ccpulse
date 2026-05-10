@@ -247,6 +247,24 @@ func TestProjectBucket(t *testing.T) {
 				Confidence:          "low",
 			},
 		},
+		{
+			// Pin the negative-Inf branch too. The guard uses
+			// math.IsInf(utilization, 0) which matches either sign; a future
+			// refactor to math.IsInf(utilization, 1) would silently regress.
+			// This row prevents that.
+			name:        "-Inf utilization → zeroed low-confidence projection",
+			utilization: math.Inf(-1),
+			elapsed:     60 * time.Minute,
+			window:      fiveHour,
+			lowCutoff:   fiveHourLow,
+			want: Projection{
+				ElapsedMinutes:      0,
+				SlopePctPerHour:     0,
+				ProjectedPctAtReset: 0,
+				WillOverreach:       false,
+				Confidence:          "low",
+			},
+		},
 	}
 
 	for _, tc := range cases {
