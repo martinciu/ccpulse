@@ -140,9 +140,7 @@ func (m Model) View() string {
 	if m.w == 0 {
 		return ""
 	}
-	header := renderHeader(m.window, m.w, IndexProgress{
-		Done: m.indexDone, Total: m.indexTotal, Active: m.indexActive,
-	}, m.quotaBars(), m.deps.IsDev)
+	header := renderHeader(m.w, m.quotaBars())
 	zoom := ZoomLevels[m.zoomIdx]
 	label := lipgloss.NewStyle().Foreground(Base01).Render(
 		fmt.Sprintf("  %s per bar  ·  [z] zoom", zoom.Label),
@@ -154,8 +152,27 @@ func (m Model) View() string {
 	} else {
 		body = m.viewport.View()
 	}
-	footer := m.help.View(m.keys)
+	footer := m.renderFooter()
 	return lipgloss.JoinVertical(lipgloss.Left, header, label, sep, body, sep, footer)
+}
+
+// renderFooter composes the bottom line: keybinding help on the left,
+// status indicators right-aligned. When no indicators are active, the
+// line is just the keybindings. Overflow on narrow terminals truncates
+// terminal-side; indicators are transient so the user can widen.
+func (m Model) renderFooter() string {
+	left := m.help.View(m.keys)
+	right := renderIndicators(m.deps.IsDev, IndexProgress{
+		Done: m.indexDone, Total: m.indexTotal, Active: m.indexActive,
+	}, m.window)
+	if right == "" {
+		return left
+	}
+	pad := m.w - lipgloss.Width(left) - lipgloss.Width(right)
+	if pad < 1 {
+		pad = 1
+	}
+	return left + strings.Repeat(" ", pad) + right
 }
 
 // renderIndicators builds the right-aligned status block for the footer.
@@ -284,13 +301,11 @@ func (m Model) chartWidth() int {
 }
 
 // chartHeight returns the available rows for the chart, leaving room for
-// the bordered header box (which contains both quota bars on its second
-// row), the zoom label, two separators, and the help footer.
+// the bordered header box (3 rows: top border, bars row, bottom border),
+// the zoom label (1 row), two separators (2 rows), and the help footer
+// (1 row). Total non-body overhead = 7 rows.
 func (m Model) chartHeight() int {
-	// Bordered header box = 4 rows (top border, title, bars row, bottom
-	// border). Label 1, top sep 1, bottom sep 1, footer 1. Total
-	// non-body overhead = 8 rows.
-	h := m.h - 8
+	h := m.h - 7
 	if h < 5 {
 		return 5
 	}

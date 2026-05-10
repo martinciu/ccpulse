@@ -14,12 +14,12 @@ import (
 	"github.com/martinciu/ccpulse/pkg/status"
 )
 
-func TestInitialView_ContainsCcpulse(t *testing.T) {
+func TestInitialView_RendersHeader(t *testing.T) {
 	m := New(Deps{})
 	m.w, m.h = 120, 40
 	v := m.View()
-	if !strings.Contains(v, "ccpulse") {
-		t.Errorf("expected 'ccpulse' in view, got:\n%s", v)
+	if !strings.Contains(v, "╭") {
+		t.Errorf("expected box border '╭' in view, got:\n%s", v)
 	}
 }
 
@@ -345,6 +345,42 @@ func TestHeaderShowsDevChip(t *testing.T) {
 	got := m.View()
 	if !strings.Contains(got, "[DEV]") {
 		t.Errorf("expected [DEV] chip in dev header, got:\n%s", got)
+	}
+	// [DEV] now lives on the footer line, side-by-side with keybindings.
+	for _, line := range strings.Split(got, "\n") {
+		if strings.Contains(line, "[DEV]") && strings.Contains(line, "q quit") {
+			return
+		}
+	}
+	t.Errorf("expected [DEV] on the same line as 'q quit' (footer); got:\n%s", got)
+}
+
+func TestFooterRightAlignsIndicators(t *testing.T) {
+	m := New(Deps{IsDev: true})
+	m.w, m.h = 120, 40
+	m.window = status.Window{Percent: 5, MinutesToReset: 60}
+	updated, _ := m.Update(IndexProgressMsg{Done: 12, Total: 30, Active: true})
+	m = updated.(Model)
+	v := m.View()
+
+	var footer string
+	for _, line := range strings.Split(v, "\n") {
+		if strings.Contains(line, "q quit") {
+			footer = line
+			break
+		}
+	}
+	if footer == "" {
+		t.Fatalf("footer line (containing 'q quit') not found in:\n%s", v)
+	}
+	if !strings.Contains(footer, "indexing 12/30") {
+		t.Errorf("footer missing 'indexing 12/30': %q", footer)
+	}
+	if !strings.Contains(footer, "[DEV]") {
+		t.Errorf("footer missing '[DEV]': %q", footer)
+	}
+	if strings.Index(footer, "indexing") >= strings.Index(footer, "[DEV]") {
+		t.Errorf("expected 'indexing' before '[DEV]' (DEV rightmost): %q", footer)
 	}
 }
 
