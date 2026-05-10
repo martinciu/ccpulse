@@ -21,6 +21,25 @@ type Window struct {
 	Quota            *anthro.Usage `json:"quota,omitempty"`
 	QuotaSource      string        `json:"quota_source,omitempty"`
 	QuotaUpdatedAt   time.Time     `json:"quota_updated_at,omitzero"`
+	Projection       *Projections  `json:"projection,omitempty"`
+}
+
+// Projections carries the per-bucket burn-rate predictions.
+// Each field is omitted when the corresponding Usage bucket is nil.
+type Projections struct {
+	FiveHour *Projection `json:"five_hour,omitempty"`
+	SevenDay *Projection `json:"seven_day,omitempty"`
+}
+
+// Projection is the predicted trajectory for a single quota bucket.
+// Numbers are always populated; consumers can branch on Confidence.
+type Projection struct {
+	ElapsedMinutes      int     `json:"elapsed_minutes"`
+	SlopePctPerHour     float64 `json:"slope_pct_per_hour"`
+	ProjectedPctAtReset int     `json:"projected_pct_at_reset"`
+	WillOverreach       bool    `json:"will_overreach"`
+	MinutesTo100Pct     *int    `json:"minutes_to_100_pct"`
+	Confidence          string  `json:"confidence"`
 }
 
 func JSON(w Window) (string, error) {
