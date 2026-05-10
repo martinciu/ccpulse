@@ -52,7 +52,7 @@ func Open(path string) (*Cache, error) {
 	}
 	if err == nil && version != SchemaVersion {
 		db.Close()
-		if rmErr := os.Remove(path); rmErr != nil {
+		if rmErr := RemoveWithSiblings(path); rmErr != nil {
 			return nil, fmt.Errorf("wipe stale schema: %w", rmErr)
 		}
 		return Open(path)
