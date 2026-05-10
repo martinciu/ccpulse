@@ -4,6 +4,8 @@ package parse
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"time"
 )
@@ -48,12 +50,29 @@ type ParseError struct {
 	Err  error
 }
 
+// ErrOversizedLineSkipped is wrapped into the synthesised ParseError
+// produced when a line exceeds ScannerMaxBytes. Callers can inspect
+// the recovery class with errors.Is rather than substring-matching
+// the formatted message. The wrapped chain also contains
+// bufio.ErrTooLong so callers can disambiguate the underlying scanner
+// failure if needed.
+var ErrOversizedLineSkipped = errors.New("oversized line skipped")
+
+// ParseWithErrors parses every line and returns successfully-parsed
+// messages plus per-line parse errors. On bufio.ErrTooLong the scanner
+// is unrecoverable (no seek on io.Reader), so the oversized line is
+// reported as a synthesised ParseError, the function returns nil
+// error, and any lines after the oversized one are not yielded.
+// Callers that need to skip past the oversized line and continue
+// parsing must use the file-based ParseFromOffsetWithErrors.
 func ParseWithErrors(r io.Reader, projectSlug string) ([]Message, []ParseError, error) {
 	var msgs []Message
 	var errs []ParseError
 	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 1<<20), 16<<20)
-	for line := 1; sc.Scan(); line++ {
+	sc.Buffer(make([]byte, 0, scannerInitialCap()), ScannerMaxBytes)
+	line := 0
+	for sc.Scan() {
+		line++
 		var raw rawLine
 		if err := json.Unmarshal(sc.Bytes(), &raw); err != nil {
 			errs = append(errs, ParseError{Line: line, Err: err})
@@ -64,7 +83,15 @@ func ParseWithErrors(r io.Reader, projectSlug string) ([]Message, []ParseError, 
 		}
 		msgs = append(msgs, toMessage(raw, projectSlug))
 	}
-	return msgs, errs, sc.Err()
+	err := sc.Err()
+	if err != nil && errors.Is(err, bufio.ErrTooLong) {
+		errs = append(errs, ParseError{
+			Line: line + 1,
+			Err:  fmt.Errorf("%w; cannot recover from io.Reader: %w", ErrOversizedLineSkipped, bufio.ErrTooLong),
+		})
+		return msgs, errs, nil
+	}
+	return msgs, errs, err
 }
 
 // toMessage converts a parsed JSONL line into a Message.
