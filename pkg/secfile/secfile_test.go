@@ -186,16 +186,16 @@ func TestWriteFileAtomic_Concurrent(t *testing.T) {
 	path := filepath.Join(dir, "f")
 
 	const (
-		N         = 16          // writers
-		R         = 8           // readers
-		Iters     = 20          // writes per writer
-		PayloadSz = 8 * 1024    // larger than typical fs block — defeats single-syscall atomicity
+		N         = 16       // writers
+		R         = 8        // readers
+		Iters     = 20       // writes per writer
+		PayloadSz = 8 * 1024 // larger than typical fs block — defeats single-syscall atomicity
 	)
 
 	payloads := make([][]byte, N)
 	for i := range payloads {
 		marker := fmt.Sprintf("|writer-%02d|", i)
-		fill := byte('a' + i%26)
+		fill := byte('a' + i)
 		buf := bytes.Repeat([]byte{fill}, PayloadSz-len(marker))
 		payloads[i] = append(buf, marker...)
 	}
