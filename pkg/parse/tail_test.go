@@ -152,6 +152,47 @@ func TestParseFromOffsetWithErrors_SkipsOversizedLine(t *testing.T) {
 	_ = preOff
 }
 
+func TestParseFromOffsetWithErrors_IdempotentReparse(t *testing.T) {
+	withScannerMaxBytes(t, 4096)
+
+	dir := t.TempDir()
+	p := filepath.Join(dir, "t.jsonl")
+
+	var b []byte
+	for range 5 {
+		b = append(b, []byte(validAssistantLine(""))...)
+	}
+	b = append(b, []byte(validAssistantLine(strings.Repeat("x", 5000)))...)
+	for range 5 {
+		b = append(b, []byte(validAssistantLine(""))...)
+	}
+	if err := os.WriteFile(p, b, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, newOff, newLine, err := ParseFromOffsetWithErrors(p, "slug", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	msgs2, errs2, newOff2, newLine2, err := ParseFromOffsetWithErrors(p, "slug", newOff, newLine)
+	if err != nil {
+		t.Fatalf("second pass err = %v", err)
+	}
+	if len(msgs2) != 0 {
+		t.Errorf("second pass len(msgs) = %d, want 0", len(msgs2))
+	}
+	if len(errs2) != 0 {
+		t.Errorf("second pass len(errs) = %d, want 0", len(errs2))
+	}
+	if newOff2 != newOff {
+		t.Errorf("second pass newOff = %d, want unchanged %d", newOff2, newOff)
+	}
+	if newLine2 != newLine {
+		t.Errorf("second pass newLine = %d, want unchanged %d", newLine2, newLine)
+	}
+}
+
 func TestParseFromOffset(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "t.jsonl")
