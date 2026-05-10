@@ -64,10 +64,10 @@ func runStatus(cmd *cobra.Command, asJSON bool) error {
 		j, _ := status.JSON(w)
 		fmt.Fprintln(cmd.OutOrStdout(), j)
 	default:
-		if w.Percent > 0 {
+		if w.Quota != nil {
 			fmt.Fprintf(cmd.OutOrStdout(), "5h window: %d%% used, resets in %dm\n", w.Percent, w.MinutesToReset)
 		} else {
-			fmt.Fprintf(cmd.OutOrStdout(), "5h window: $%.2f, resets in %dm\n", w.Cost5hUSD, w.MinutesToReset)
+			fmt.Fprintln(cmd.OutOrStdout(), "5h window: no quota data — run `claude /login` for percent display, or use --json for tokens/cost.")
 		}
 	}
 	return nil
@@ -101,5 +101,3 @@ func buildQuotaInput(cacheDir string, now time.Time) status.QuotaInput {
 	q.UpdatedAt = res.UpdatedAt
 	return q
 }
-
-

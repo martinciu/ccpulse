@@ -202,6 +202,82 @@ func TestStatusSkipsRecordOnCacheFresh(t *testing.T) {
 	}
 }
 
+// TestStatusPercentDisplayWithOAuthAtZero pins the intent of "auto" display
+// mode: when an OAuth credential is present, output uses the percent format
+// regardless of current utilization. The previous heuristic gated on
+// `q.Usage != nil`; the current `if w.Percent > 0` check incorrectly falls
+// into the cost branch for fresh windows. Failing this test signals the
+// regression — fix is in cmd/ccpulse/status.go runStatus.
+func TestStatusPercentDisplayWithOAuthAtZero(t *testing.T) {
+	cacheDir := t.TempDir()
+	credDir := t.TempDir()
+	t.Setenv("CCPULSE_CACHE_DIR", cacheDir)
+	t.Setenv("HOME", credDir)
+	writeTempCredential(t, credDir)
+
+	zeroBody := `{"v":1,"updated_at":"` + time.Now().UTC().Add(-30*time.Second).Format(time.RFC3339Nano) + `","data":{
+		"five_hour":            {"utilization": 0.0, "resets_at": "2126-01-01T00:00:00.000+00:00"},
+		"seven_day":            {"utilization": 0.0, "resets_at": "2126-01-02T00:00:00.000+00:00"},
+		"seven_day_oauth_apps": null,
+		"seven_day_opus":       null,
+		"seven_day_sonnet":     null,
+		"seven_day_cowork":     null,
+		"seven_day_omelette":   null,
+		"tangelo":              null,
+		"iguana_necktie":       null,
+		"omelette_promotional": null,
+		"extra_usage":          {"is_enabled": false, "monthly_limit": 0, "used_credits": 0.0, "utilization": null, "currency": "USD"}
+	}}`
+	if err := os.WriteFile(filepath.Join(cacheDir, "usage.json"), []byte(zeroBody), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newStatusCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "0%") {
+		t.Errorf("OAuth user at 0%% should see percent format, got: %q", out)
+	}
+	if strings.Contains(out, "$") {
+		t.Errorf("OAuth user at 0%% should not see cost format, got: %q", out)
+	}
+}
+
+// TestStatusNoOAuthShowsNoQuotaNotice pins the API/no-OAuth branch:
+// without a credential, plain `ccpulse status` (no flags) prints a notice
+// pointing the user at `--json` and `claude /login` rather than a meaningless
+// 0% or $0.00 line.
+func TestStatusNoOAuthShowsNoQuotaNotice(t *testing.T) {
+	if runtime.GOOS == "darwin" {
+		t.Skip("Keychain may have a real credential on dev machines; skipping no-cred test on darwin")
+	}
+	cacheDir := t.TempDir()
+	credDir := t.TempDir() // no .credentials.json inside
+	t.Setenv("CCPULSE_CACHE_DIR", cacheDir)
+	t.Setenv("HOME", credDir)
+
+	cmd := newStatusCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "no quota data") {
+		t.Errorf("missing 'no quota data' notice: %q", out)
+	}
+	if !strings.Contains(out, "--json") {
+		t.Errorf("notice should suggest --json: %q", out)
+	}
+	if strings.Contains(out, "%") || strings.Contains(out, "$") {
+		t.Errorf("notice should not include percent/cost numbers: %q", out)
+	}
+}
+
 func TestStatusTmuxFlagRemoved(t *testing.T) {
 	cmd := newStatusCmd()
 	cmd.SetArgs([]string{"--tmux"})
