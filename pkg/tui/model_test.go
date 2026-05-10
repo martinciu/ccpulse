@@ -228,24 +228,24 @@ func TestSevenDayBarRendered(t *testing.T) {
 	m.progress = newProgressBar(0.01, m.progressWidth())
 	m.progress7d = newProgressBar(0.12, m.progressWidth())
 	v := m.View()
-	if !strings.Contains(v, "5h") {
-		t.Errorf("expected '5h' label in:\n%s", v)
-	}
-	if !strings.Contains(v, "7d") {
-		t.Errorf("expected '7d' label in:\n%s", v)
+	if !strings.Contains(v, "  1%") {
+		t.Errorf("expected 5h percent '  1%%' in:\n%s", v)
 	}
 	if !strings.Contains(v, " 12%") {
-		t.Errorf("expected '12%%' for 7d in:\n%s", v)
+		t.Errorf("expected 7d percent ' 12%%' in:\n%s", v)
+	}
+	if !strings.Contains(v, " │ ") {
+		t.Errorf("expected dim divider ' │ ' in:\n%s", v)
 	}
 
-	// Both labels must appear on the same line — they sit side-by-side
-	// inside the header box rather than stacked.
+	// Both percents and the divider must appear on the same line — bars
+	// sit side-by-side inside the header box rather than stacked.
 	for _, line := range strings.Split(v, "\n") {
-		if strings.Contains(line, "5h") && strings.Contains(line, "7d") {
+		if strings.Contains(line, "  1%") && strings.Contains(line, " 12%") && strings.Contains(line, " │ ") {
 			return
 		}
 	}
-	t.Errorf("expected '5h' and '7d' on the same line; got:\n%s", v)
+	t.Errorf("expected both percents and the divider on the same line; got:\n%s", v)
 }
 
 func TestSevenDayBarPlaceholderWhenAbsent(t *testing.T) {
@@ -254,9 +254,6 @@ func TestSevenDayBarPlaceholderWhenAbsent(t *testing.T) {
 	m.window = status.Window{Percent: 1, Has7d: false}
 	m.progress = newProgressBar(0.01, m.progressWidth())
 	v := m.View()
-	if !strings.Contains(v, "7d") {
-		t.Errorf("expected '7d' label even when absent: %s", v)
-	}
 	if !strings.Contains(v, "no data") {
 		t.Errorf("expected 'no data' placeholder in:\n%s", v)
 	}

@@ -190,27 +190,23 @@ func renderIndicators(isDev bool, idx IndexProgress, w status.Window) string {
 }
 
 // quotaBars renders the 5h and 7d quota bars as a single line, designed
-// to live as the second row of the bordered header box. The two bars are
-// separated by a dim '│' divider; when 7d data is unavailable that side
-// shows a 'no data' placeholder so the row width stays stable across the
-// lifecycle of a quota fetch.
+// to live as the sole content row of the bordered header box. The two
+// bars are separated by a dim '│' divider; when 7d data is unavailable
+// that side shows a 'no data' placeholder padded to match the live-bar
+// slot width so the box right edge stays stable across has-data ↔
+// no-data transitions.
 func (m Model) quotaBars() string {
-	labelStyle := lipgloss.NewStyle().Foreground(Base01).Bold(true)
 	dimStyle := lipgloss.NewStyle().Foreground(Base01)
 
-	left := labelStyle.Render("5h ") +
-		m.progress.ViewAs(float64(m.window.Percent)/100.0) +
-		fmt.Sprintf(" %3d%%  %s",
-			m.window.Percent, durString(m.window.MinutesToReset))
+	left := m.progress.ViewAs(float64(m.window.Percent)/100.0) +
+		fmt.Sprintf(" %3d%%  %s", m.window.Percent, durString(m.window.MinutesToReset))
 
 	var right string
 	if m.window.Has7d {
-		right = labelStyle.Render("7d ") +
-			m.progress7d.ViewAs(float64(m.window.Percent7d)/100.0) +
-			fmt.Sprintf(" %3d%%  %s",
-				m.window.Percent7d, durString(m.window.MinutesToReset7d))
+		right = m.progress7d.ViewAs(float64(m.window.Percent7d)/100.0) +
+			fmt.Sprintf(" %3d%%  %s", m.window.Percent7d, formatReset7d(m.window.MinutesToReset7d))
 	} else {
-		right = labelStyle.Render("7d ") + dimStyle.Render("(no data)")
+		right = dimStyle.Width(m.progressWidth() + 12).Render("(no data)")
 	}
 
 	divider := dimStyle.Render(" │ ")
@@ -302,16 +298,16 @@ func (m Model) chartHeight() int {
 }
 
 // progressWidth returns the rendered width of each of the two quota bars,
-// which sit side-by-side inside the header box. Per-side chrome includes:
-//   - 3 cols label prefix ("5h ")
+// which sit side-by-side inside the header box. Per-side chrome:
 //   - 5 cols percent suffix (" 100%")
-//   - up to 9 cols reset time ("  23h 59m")
+//   - 5h reset slot: up to 8 cols ("  4h 59m" via durString)
+//   - 7d reset slot: up to 7 cols ("  23:59" via formatReset7d, or "  Xd")
 //
 // The header box itself reserves 4 cols (border + padding), and a 3-col
-// '│' divider sits between the two halves. So total chrome ≈ 4 + 3 +
-// 2*(3+5+9) = 41, split across two bars.
+// '│' divider sits between the two halves. So total chrome = 4 + 3 +
+// (5+8) + (5+7) = 32, split across two bars.
 func (m Model) progressWidth() int {
-	w := (m.w - 41) / 2
+	w := (m.w - 32) / 2
 	if w < 6 {
 		return 6
 	}
