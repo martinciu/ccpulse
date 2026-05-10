@@ -7,6 +7,16 @@ import (
 	"os"
 )
 
+// ScannerMaxBytes is the upper bound passed to bufio.Scanner.Buffer at
+// every scanning site in this package. Set to 64 MiB in production —
+// large enough to absorb any plausible single JSONL line (giant tool
+// results, base64-embedded screenshots, full-file Read outputs). The
+// recovery path for ErrTooLong is the backstop above this ceiling.
+//
+// Exposed as a var (not a const) so tests can shrink it cheaply to
+// trigger ErrTooLong without synthesising 64 MiB lines.
+var ScannerMaxBytes = 64 << 20
+
 // ParseFromOffsetWithErrors is ParseFromOffset that also returns
 // per-line ParseError records for malformed JSON. Each error's Line
 // field is the absolute line number in the source file.
@@ -24,7 +34,7 @@ func ParseFromOffsetWithErrors(path, slug string, startOffset int64, startLine i
 	var msgs []Message
 	var errs []ParseError
 	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 1<<20), 16<<20)
+	sc.Buffer(make([]byte, 0, 1<<20), ScannerMaxBytes)
 	off := startOffset
 	line := startLine
 	for sc.Scan() {
