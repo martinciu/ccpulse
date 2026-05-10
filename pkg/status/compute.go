@@ -76,6 +76,31 @@ FROM messages WHERE ts >= ?`, cutoff)
 		w.Quota = q.Usage
 		w.QuotaSource = q.Source
 		w.QuotaUpdatedAt = q.UpdatedAt
+
+		var p Projections
+		if q.Usage.FiveHour != nil {
+			fh := projectBucket(
+				q.Usage.FiveHour.Utilization,
+				q.Usage.FiveHour.ResetsAt,
+				now,
+				fiveHourWindow,
+				fiveHourLowConfidenceCutoff,
+			)
+			p.FiveHour = &fh
+		}
+		if q.Usage.SevenDay != nil {
+			sd := projectBucket(
+				q.Usage.SevenDay.Utilization,
+				q.Usage.SevenDay.ResetsAt,
+				now,
+				sevenDayWindow,
+				sevenDayLowConfidenceCutoff,
+			)
+			p.SevenDay = &sd
+		}
+		if p.FiveHour != nil || p.SevenDay != nil {
+			w.Projection = &p
+		}
 	}
 	return w, nil
 }
