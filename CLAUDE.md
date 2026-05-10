@@ -54,8 +54,7 @@ These env vars override `config.toml` at runtime — useful for testing against 
 | `pkg/ingest` | Cold-walk indexer used by `runTUI` startup backfill and `ccpulse index`; reports progress via `IndexProgressMsg` |
 | `pkg/tui` | Bubble Tea model: bordered header (5h+7d quota bars), horizontally-scrollable token histogram, full-help overlay, lipgloss styling, `bubbles/{help,key,progress,viewport}` + `ntcharts/barchart` |
 | `pkg/config` | TOML config at `~/.config/ccpulse/config.toml` (respects `XDG_CONFIG_HOME`); `config.Load("")` returns safe defaults |
-| `pkg/tmux` | Thin wrapper around `tmux` CLI for current-session pane paths. **Vestigial after #34** — the multi-tab TUI used this for tmux-aware Live scope filtering; no longer referenced from production code, retained for the time being so removal can land in a focused cleanup PR. |
-| `pkg/state` | JSON sidecar at `~/.local/state/ccpulse/state.json` for last-used tab + live-scope. **Vestigial after #34** — same status as `pkg/tmux` above. |
+| `pkg/state` | JSON sidecar at `~/.local/state/ccpulse/state.json` for last-used tab + live-scope. **Vestigial after #34** — the multi-tab TUI used this for session state; no longer referenced from production code, retained for the time being so removal can land in a focused cleanup PR. |
 
 ### SQLite schema
 
