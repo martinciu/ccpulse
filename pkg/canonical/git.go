@@ -41,15 +41,35 @@ func hardenedArgs(dir string, args ...string) []string {
 	return append(hardened, args...)
 }
 
+// hardenedEnv returns the env that hardened git invocations run with:
+// the parent process env plus GIT_OPTIONAL_LOCKS=0, which suppresses
+// lockfile churn on the read-only ops we run and keeps any planted
+// lock files from being relevant.
+//
+// Exposed (package-private) so tests can verify the env surface.
+func hardenedEnv() []string {
+	return append(os.Environ(), "GIT_OPTIONAL_LOCKS=0")
+}
+
 func git(dir string, args ...string) (string, error) {
 	cmd := exec.Command("git", hardenedArgs(dir, args...)...)
-	// GIT_OPTIONAL_LOCKS=0 suppresses lockfile churn on the read-only
-	// ops we run. Defence-in-depth: also keeps planted lock files from
-	// being relevant.
-	cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0")
+	cmd.Env = hardenedEnv()
 	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("git %s: %w", args[0], err)
+		subcmd := "(unknown)"
+		if len(args) > 0 {
+			subcmd = args[0]
+		}
+		// cmd.Output() captures stderr on *exec.ExitError when cmd.Stderr
+		// is nil, which is our case. Surfacing it makes the wrap actually
+		// useful for diagnosis instead of just "exit status 128".
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			if stderr := strings.TrimSpace(string(ee.Stderr)); stderr != "" {
+				return "", fmt.Errorf("git %s: %w: %s", subcmd, err, stderr)
+			}
+		}
+		return "", fmt.Errorf("git %s: %w", subcmd, err)
 	}
 	return strings.TrimSpace(string(out)), nil
 }

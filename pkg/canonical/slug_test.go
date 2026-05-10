@@ -99,9 +99,12 @@ func FuzzDecodeSlugIn(f *testing.F) {
 			return
 		}
 		// Successful decodes must:
-		//   1. live under the test root, and
+		//   1. live under the test root (or BE the test root), and
 		//   2. contain no `..` segment.
-		if !strings.HasPrefix(got, root) {
+		// The trailing-slash check on the prefix matters: it rejects a
+		// sibling like `/tmpfoo` against root `/tmp` that plain HasPrefix
+		// would accept.
+		if got != root && !strings.HasPrefix(got, root+"/") {
 			t.Errorf("slug=%q: returned path %q escapes root %q", slug, got, root)
 		}
 		rel := strings.TrimPrefix(got, root)
