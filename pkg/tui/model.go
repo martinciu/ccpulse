@@ -140,13 +140,7 @@ func (m Model) View() string {
 	if m.w == 0 {
 		return ""
 	}
-	header := renderHeader(m.window, m.w, IndexProgress{
-		Done: m.indexDone, Total: m.indexTotal, Active: m.indexActive,
-	}, m.quotaBars(), m.deps.IsDev)
-	zoom := ZoomLevels[m.zoomIdx]
-	label := lipgloss.NewStyle().Foreground(Base01).Render(
-		fmt.Sprintf("  %s per bar  ·  [z] zoom", zoom.Label),
-	)
+	header := renderHeader(m.w, m.quotaBars())
 	sep := lipgloss.NewStyle().Foreground(Base02).Render(strings.Repeat("─", m.w))
 	var body string
 	if m.showHelp {
@@ -154,32 +148,78 @@ func (m Model) View() string {
 	} else {
 		body = m.viewport.View()
 	}
-	footer := m.help.View(m.keys)
-	return lipgloss.JoinVertical(lipgloss.Left, header, label, sep, body, sep, footer)
+	footer := m.renderFooter()
+	return lipgloss.JoinVertical(lipgloss.Left, header, sep, body, sep, footer)
+}
+
+// renderFooter composes the bottom line: keybinding help on the left,
+// status indicators right-aligned. When no indicators are active, the
+// line is just the keybindings. Overflow on narrow terminals truncates
+// terminal-side; indicators are transient so the user can widen.
+func (m Model) renderFooter() string {
+	left := m.help.View(m.keys)
+	right := renderIndicators(m.deps.IsDev, IndexProgress{
+		Done: m.indexDone, Total: m.indexTotal, Active: m.indexActive,
+	}, m.window)
+	if right == "" {
+		return left
+	}
+	pad := m.w - lipgloss.Width(left) - lipgloss.Width(right)
+	if pad < 1 {
+		pad = 1
+	}
+	return left + strings.Repeat(" ", pad) + right
+}
+
+// renderIndicators builds the right-aligned status block for the footer.
+// Indicators are ordered stale → indexing → [DEV] (dev rightmost), joined
+// by dim ' · ' separators, and only included when active. Returns "" when
+// nothing's active so the footer is just keybindings.
+//
+// Styling note: stale-quota uses the default foreground (intentionally
+// undimmed — it's a warning meant to draw the eye); indexing and [DEV]
+// are dim. The separator is dim.
+func renderIndicators(isDev bool, idx IndexProgress, w status.Window) string {
+	dim := lipgloss.NewStyle().Foreground(Base01)
+	var parts []string
+	if w.QuotaSource == "cache_stale" {
+		mins := int(time.Since(w.QuotaUpdatedAt).Minutes())
+		if mins < 1 {
+			mins = 1
+		}
+		parts = append(parts, fmt.Sprintf("⚠ %dm old", mins))
+	}
+	if idx.Active {
+		parts = append(parts, dim.Render(fmt.Sprintf("indexing %d/%d", idx.Done, idx.Total)))
+	}
+	if isDev {
+		parts = append(parts, dim.Render("[DEV]"))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	sep := dim.Render(" · ")
+	return strings.Join(parts, sep)
 }
 
 // quotaBars renders the 5h and 7d quota bars as a single line, designed
-// to live as the second row of the bordered header box. The two bars are
-// separated by a dim '│' divider; when 7d data is unavailable that side
-// shows a 'no data' placeholder so the row width stays stable across the
-// lifecycle of a quota fetch.
+// to live as the sole content row of the bordered header box. The two
+// bars are separated by a dim '│' divider; when 7d data is unavailable
+// that side shows a 'no data' placeholder padded to match the live-bar
+// slot width so the box right edge stays stable across has-data ↔
+// no-data transitions.
 func (m Model) quotaBars() string {
-	labelStyle := lipgloss.NewStyle().Foreground(Base01).Bold(true)
 	dimStyle := lipgloss.NewStyle().Foreground(Base01)
 
-	left := labelStyle.Render("5h ") +
-		m.progress.ViewAs(float64(m.window.Percent)/100.0) +
-		fmt.Sprintf(" %3d%%  %s",
-			m.window.Percent, durString(m.window.MinutesToReset))
+	left := m.progress.ViewAs(float64(m.window.Percent)/100.0) +
+		fmt.Sprintf(" %3d%%  %s", m.window.Percent, durString(m.window.MinutesToReset))
 
 	var right string
 	if m.window.Has7d {
-		right = labelStyle.Render("7d ") +
-			m.progress7d.ViewAs(float64(m.window.Percent7d)/100.0) +
-			fmt.Sprintf(" %3d%%  %s",
-				m.window.Percent7d, durString(m.window.MinutesToReset7d))
+		right = m.progress7d.ViewAs(float64(m.window.Percent7d)/100.0) +
+			fmt.Sprintf(" %3d%%  %s", m.window.Percent7d, formatReset7d(m.window.MinutesToReset7d))
 	} else {
-		right = labelStyle.Render("7d ") + dimStyle.Render("(no data)")
+		right = dimStyle.Width(m.progressWidth() + 12).Render("(no data)")
 	}
 
 	divider := dimStyle.Render(" │ ")
@@ -278,13 +318,11 @@ func (m Model) chartWidth() int {
 }
 
 // chartHeight returns the available rows for the chart, leaving room for
-// the bordered header box (which contains both quota bars on its second
-// row), the zoom label, two separators, and the help footer.
+// the bordered header box (3 rows: top border, bars row, bottom border),
+// two separators (2 rows), and the help footer (1 row). Total non-body
+// overhead = 6 rows.
 func (m Model) chartHeight() int {
-	// Bordered header box = 4 rows (top border, title, bars row, bottom
-	// border). Label 1, top sep 1, bottom sep 1, footer 1. Total
-	// non-body overhead = 8 rows.
-	h := m.h - 8
+	h := m.h - 6
 	if h < 5 {
 		return 5
 	}
@@ -292,16 +330,16 @@ func (m Model) chartHeight() int {
 }
 
 // progressWidth returns the rendered width of each of the two quota bars,
-// which sit side-by-side inside the header box. Per-side chrome includes:
-//   - 3 cols label prefix ("5h ")
+// which sit side-by-side inside the header box. Per-side chrome:
 //   - 5 cols percent suffix (" 100%")
-//   - up to 9 cols reset time ("  23h 59m")
+//   - 5h reset slot: up to 8 cols ("  4h 59m" via durString)
+//   - 7d reset slot: up to 7 cols ("  23:59" via formatReset7d, or "  Xd")
 //
 // The header box itself reserves 4 cols (border + padding), and a 3-col
-// '│' divider sits between the two halves. So total chrome ≈ 4 + 3 +
-// 2*(3+5+9) = 41, split across two bars.
+// '│' divider sits between the two halves. So total chrome = 4 + 3 +
+// (5+8) + (5+7) = 32, split across two bars.
 func (m Model) progressWidth() int {
-	w := (m.w - 41) / 2
+	w := (m.w - 32) / 2
 	if w < 6 {
 		return 6
 	}
