@@ -162,7 +162,7 @@ func (m Model) View() string {
 	footer := m.renderFooter()
 	out := lipgloss.JoinVertical(lipgloss.Left, header, sep, body, sep, footer)
 	if d := time.Since(start); d >= viewLogThreshold {
-		slog.Debug("tui.view",
+		slog.Debug("tui.View",
 			"dur_ms", d.Milliseconds(),
 			"zoom", ZoomLevels[m.zoomIdx].Label,
 			"chartW", m.chartWidth(),
