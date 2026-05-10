@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/martinciu/ccpulse/pkg/secfile"
 )
 
 // Bucket is one quota dimension (e.g. five_hour, seven_day_sonnet).
@@ -90,10 +92,10 @@ func writeCache(path string, u Usage, when time.Time) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	if err := secfile.MkdirAll(filepath.Dir(path)); err != nil {
 		return err
 	}
-	return os.WriteFile(path, out, 0644)
+	return secfile.WriteFile(path, out)
 }
 
 // Tunable knobs. Vars (not consts) so tests can override apiURL.
