@@ -48,7 +48,7 @@ These env vars override `config.toml` at runtime — useful for testing against 
 | `pkg/cache` | SQLite via `modernc.org/sqlite`; schema embedded in `schema.sql`; tracks file cursors (`files` table), slug→canonical mapping (`slug_canonical` table), and time-bucketed token aggregates (`TokenBuckets`) |
 | `pkg/watcher` | fsnotify wrapper with 100 ms debounce; auto-subscribes new subdirectories |
 | `pkg/canonical` | Slug decode (`-` → `/`, `--` → `/.`); git-based canonical project root resolution |
-| `pkg/pricing` | Embeds `pricing.json`; `Table.CostFor(Message)` returns USD cost; override via config |
+| `pkg/pricing` | Embeds `pricing.json`; `Table.CostFor(Message)` returns USD cost |
 | `pkg/status` | 5-hour rolling window + 7-day window computation; tier → token ceiling mapping; consumed by TUI header and `status --json` |
 | `pkg/anthro` | Anthropic credential loading (`LoadCredential`), tier slug/pretty mapping (`TierSlug`, `TierPretty`), and the usage-API client / cache used by `runTUI` |
 | `pkg/ingest` | Cold-walk indexer used by `runTUI` startup backfill and `ccpulse index`; reports progress via `IndexProgressMsg` |
