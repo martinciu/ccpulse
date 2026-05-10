@@ -13,6 +13,7 @@ import (
 	"github.com/martinciu/ccpulse/pkg/devlog"
 	"github.com/martinciu/ccpulse/pkg/ingest"
 	"github.com/martinciu/ccpulse/pkg/pricing"
+	"github.com/martinciu/ccpulse/pkg/secfile"
 	"github.com/spf13/cobra"
 )
 
@@ -41,7 +42,7 @@ func runIndex(rebuild bool) error {
 
 	projectsRoot := envOr("CCPULSE_PROJECTS_ROOT", expand(cfg.Paths.ProjectsRoot))
 	cacheDir := envOr("CCPULSE_CACHE_DIR", expand(cfg.Paths.CacheDir))
-	if err := os.MkdirAll(cacheDir, 0755); err != nil {
+	if err := secfile.MkdirAll(cacheDir); err != nil {
 		return err
 	}
 	if logCloser, err := devlog.Init(channel.IsDev(), cacheDir); err == nil && logCloser != nil {
