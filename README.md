@@ -2,21 +2,19 @@
 
 A native Go TUI dashboard for Claude Code usage. Reads
 `~/.claude/projects/*/*.jsonl` transcripts, computes token / cost /
-5-hour-window breakdowns, and integrates with tmux. Local-only — no
-network calls during normal operation.
+5-hour-window breakdowns. Local-only — no network calls during normal
+operation.
 
 ![ccpulse — Live tab](docs/screenshots/live.png)
 
 ## Features
 
 - **Live tab** — active sessions across all your projects, with `⚡`
-  recency markers and `◆` for sessions in your current tmux session.
+  recency markers.
 - **Today / History / Projects / Models tabs** — drill-downs by date,
   project, and model.
 - **5-hour plan-window gauge** — rolling window over the Claude Max
   rate-limit period, color-bucketed (violet / yellow / red).
-- **tmux statusline export** — `ccpulse status --tmux` returns a
-  one-liner suitable for `status-right`.
 - **Worktree-aware project grouping** — collapses session slugs back
   to the canonical project via git.
 - **fsnotify live updates** — file watcher (not polling) keeps the TUI
@@ -69,13 +67,10 @@ Prints the current 5-hour rolling window without opening the TUI.
 
 ```sh
 ccpulse status            # human-readable summary
-ccpulse status --tmux     # single line with tmux #[fg=…] color escapes
 ccpulse status --json     # JSON: percent, tokens_5h, cost_5h_usd, minutes_to_reset
 ```
 
-`--tmux` is designed for `status-right` in `tmux.conf` (see tmux
-integration below). `--json` is useful for scripting or status bars that
-consume structured data.
+`--json` is useful for scripting or status bars that consume structured data.
 
 ### `ccpulse config`
 
@@ -95,7 +90,7 @@ Runs a health-check checklist and prints a pass/fail report:
 - Config file loads and `projects_root` is readable
 - SQLite cache opens and `PRAGMA integrity_check` passes
 - Pricing table version
-- `git` and `tmux` are on `PATH`
+- `git` is on `PATH`
 
 Run this first when something looks wrong.
 
@@ -117,7 +112,7 @@ custom_ceiling_tokens = 0    # used when tier = "custom"
 [ui]
 accent = "#6c71c4"           # any hex; default Solarized violet
 default_tab = "live"
-default_scope = "global"     # global | this_tmux
+default_scope = "global"
 tick_ms = 1000
 
 [history]
@@ -139,18 +134,6 @@ Plan-tier ceilings are rough estimates (Anthropic doesn't publish exact
 caps). For precision, use `tier = "custom"` and tune
 `custom_ceiling_tokens` from your observed rate-limit warnings.
 
-## tmux integration
-
-Add to `status-right` in `tmux.conf`:
-
-```tmux
-set -g status-right "#(/Users/<you>/.local/bin/ccpulse status --tmux) ..."
-```
-
-The chip emits `#[fg=...]` color escapes inline (no separate color
-config needed). Refresh interval and chip placement are up to your
-status-right layout.
-
 ## Troubleshooting
 
 `ccpulse doctor` runs a checklist:
@@ -158,7 +141,7 @@ status-right layout.
 - Config loads / projects_root readable
 - SQLite cache opens, integrity_check passes
 - Pricing version
-- `git` and `tmux` on PATH
+- `git` on PATH
 
 If the TUI launches with empty tabs, run `ccpulse index` to do a cold
 scan of `~/.claude/projects/`.

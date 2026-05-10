@@ -11,14 +11,6 @@ import (
 //go:embed default.toml
 var defaultTOML []byte
 
-// Display controls the tmux/TUI presentation. Mode is one of "auto", "percent",
-// "cost". "auto" picks based on whether an OAuth credential is found.
-type Display struct {
-	Mode        string  `toml:"mode"`
-	CostWarnUSD float64 `toml:"cost_warn_usd"`
-	CostHotUSD  float64 `toml:"cost_hot_usd"`
-}
-
 type UI struct {
 	Accent       string `toml:"accent"`
 	DefaultTab   string `toml:"default_tab"`
@@ -41,31 +33,16 @@ type Pricing struct {
 	Override string `toml:"override"`
 }
 
-// legacyPlan is the old [plan] section. We still parse it so existing
-// config files load without errors, then map relevant fields into Display.
-type legacyPlan struct {
-	Tier                string  `toml:"tier"`
-	CustomCeilingTokens int64   `toml:"custom_ceiling_tokens"`
-	APIWarnUSD          float64 `toml:"api_warn_usd"`
-	APIHotUSD           float64 `toml:"api_hot_usd"`
-}
-
 type Config struct {
-	Display Display `toml:"display"`
 	UI      UI      `toml:"ui"`
 	History History `toml:"history"`
 	Paths   Paths   `toml:"paths"`
 	Pricing Pricing `toml:"pricing"`
-
-	// LegacyPlan is populated when loading an old-format config; surfaced
-	// so callers can warn the user. Not exported via toml encode since we
-	// drop it from output.
-	LegacyPlan legacyPlan `toml:"plan"`
 }
 
-// Load reads cfg from path, falling back to embedded defaults if path
-// is empty. Defaults always apply for unset fields. Legacy [plan] keys
-// migrate into [display] when the new keys are at their zero values.
+// Load reads cfg from path, falling back to embedded defaults if path is empty.
+// Defaults always apply for unset fields. Unknown top-level sections (including
+// the dropped [display] and the legacy [plan]) are silently ignored.
 //
 // An empty cache_dir (the default) resolves to the channel-appropriate
 // path: "~/.cache/ccpulse" on the release channel, "~/.cache/ccpulse-dev"
@@ -79,12 +56,11 @@ func Load(path string) (Config, error) {
 	if cfg.Paths.CacheDir == "" {
 		cfg.Paths.CacheDir = defaultCacheDir()
 	}
-	migrateLegacy(&cfg)
 	return cfg, err
 }
 
 // decode handles only the embedded-default + user-file decoding.
-// Channel-aware defaults and legacy migration are applied by Load.
+// Channel-aware defaults are applied by Load.
 func decode(path string) (Config, error) {
 	var cfg Config
 	if _, err := toml.Decode(string(defaultTOML), &cfg); err != nil {
@@ -112,22 +88,6 @@ func defaultCacheDir() string {
 	return "~/.cache/ccpulse"
 }
 
-// migrateLegacy maps old [plan] fields into [display]. Idempotent — calling
-// twice has the same effect as once. We only fill new keys that are still at
-// their default (zero / "auto") so explicit user values always win.
-func migrateLegacy(cfg *Config) {
-	lp := cfg.LegacyPlan
-	if cfg.Display.CostWarnUSD == 0 && lp.APIWarnUSD > 0 {
-		cfg.Display.CostWarnUSD = lp.APIWarnUSD
-	}
-	if cfg.Display.CostHotUSD == 0 && lp.APIHotUSD > 0 {
-		cfg.Display.CostHotUSD = lp.APIHotUSD
-	}
-	if cfg.Display.Mode == "auto" && lp.Tier == "api" {
-		cfg.Display.Mode = "cost"
-	}
-}
-
 // DefaultPath returns the OS-appropriate config path, honoring XDG_CONFIG_HOME.
 // On the dev channel the project segment becomes "ccpulse-dev" so dev runs
 // never read or overwrite the released config file.
@@ -141,11 +101,4 @@ func DefaultPath() string {
 	}
 	home, _ := os.UserHomeDir()
 	return home + "/.config/" + project + "/config.toml"
-}
-
-// HasLegacyPlan reports whether the loaded config used the deprecated
-// [plan] section. Callers can warn once and continue.
-func (c Config) HasLegacyPlan() bool {
-	lp := c.LegacyPlan
-	return lp.Tier != "" || lp.CustomCeilingTokens != 0 || lp.APIWarnUSD != 0 || lp.APIHotUSD != 0
 }

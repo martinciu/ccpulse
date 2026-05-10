@@ -108,33 +108,6 @@ func TestJSONOutputOmitsQuotaWhenAbsent(t *testing.T) {
 	}
 }
 
-func TestTmuxLinePercent(t *testing.T) {
-	w := Window{Percent: 61, MinutesToReset: 107, CeilingLabel: "max_20x"}
-	got := TmuxLine(w, DisplayPercent, DisplayBudget{})
-	if !strings.Contains(got, "61%") {
-		t.Errorf("missing percent in %q", got)
-	}
-	if !strings.Contains(got, "1h47m") {
-		t.Errorf("missing duration in %q", got)
-	}
-}
-
-func TestTmuxLineCost(t *testing.T) {
-	w := Window{Cost5hUSD: 4.21, MinutesToReset: 107, CeilingLabel: "api"}
-	got := TmuxLine(w, DisplayCost, DisplayBudget{WarnUSD: 5, HotUSD: 10})
-	if !strings.Contains(got, "$4.21") {
-		t.Errorf("missing dollars in %q", got)
-	}
-}
-
-func TestTmuxLineHot(t *testing.T) {
-	w := Window{Percent: 95, MinutesToReset: 10, CeilingLabel: "max_20x"}
-	got := TmuxLine(w, DisplayPercent, DisplayBudget{})
-	if !strings.Contains(got, "#dc322f") {
-		t.Errorf("expected red fg in %q", got)
-	}
-}
-
 func TestCompute_PopulatesSevenDay(t *testing.T) {
 	db := freshDB(t)
 	now := time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)

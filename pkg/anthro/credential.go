@@ -13,7 +13,7 @@ import (
 )
 
 // ErrNoCredential signals "no usable credential found" — not a parse error.
-// Callers should treat this as the OAuth-less mode (API user / cost display).
+// Callers should treat this as the OAuth-less mode (API user).
 var ErrNoCredential = errors.New("anthro: no credential")
 
 // Credential is the parsed OAuth credential as exposed by `claude` CLI.
