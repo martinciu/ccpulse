@@ -158,6 +158,32 @@ func TestBuildChartEmitsBars(t *testing.T) {
 	}
 }
 
+func TestBuildChart_BaselineRow(t *testing.T) {
+	// Mixed buckets: some empty (gap) and some non-empty (data).
+	now := time.Now()
+	buckets := make([]cache.TokenBucket, 20)
+	for i := range buckets {
+		buckets[i] = cache.TokenBucket{BucketStart: now.Add(time.Duration(i) * 5 * time.Minute)}
+	}
+	// Indices 5..9 carry data; everything else is a gap.
+	for i := 5; i < 10; i++ {
+		buckets[i].Tokens = int64((i + 1) * 1000)
+	}
+	out := buildChart(buckets, 20, 10)
+
+	if !strings.Contains(out, "▒") {
+		t.Errorf("baseline row missing data marker '▒' in:\n%s", out)
+	}
+	if !strings.Contains(out, "░") {
+		t.Errorf("baseline row missing gap marker '░' in:\n%s", out)
+	}
+
+	// Bars must still render — Task 4 must not regress TestBuildChartEmitsBars.
+	if !strings.ContainsAny(out, "█▇▆▅▄▃▂▁") {
+		t.Errorf("buildChart produced no bar block characters; got:\n%s", out)
+	}
+}
+
 func TestHeatColor(t *testing.T) {
 	tests := []struct {
 		ratio float64
