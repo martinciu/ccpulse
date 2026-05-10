@@ -95,7 +95,7 @@ func writeCache(path string, u Usage, when time.Time) error {
 	if err := secfile.MkdirAll(filepath.Dir(path)); err != nil {
 		return err
 	}
-	return secfile.WriteFile(path, out)
+	return secfile.WriteFileAtomic(path, out)
 }
 
 // Tunable knobs. Vars (not consts) so tests can override apiURL.
