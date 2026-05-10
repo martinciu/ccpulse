@@ -9,7 +9,10 @@
 // so callers must own the entire path tree.
 package secfile
 
-import "os"
+import (
+	"os"
+	"path/filepath"
+)
 
 const (
 	DirMode  os.FileMode = 0o700
@@ -55,4 +58,35 @@ func OpenFile(path string, flag int) (*os.File, error) {
 		return nil, err
 	}
 	return f, nil
+}
+
+// WriteFileAtomic writes data to path via a unique temp file in the same
+// directory followed by os.Rename. POSIX rename is atomic on the same
+// filesystem, so concurrent readers always see either the previous
+// complete file or the new complete file — never a partial one.
+//
+// On Unix os.CreateTemp creates the temp at FileMode (0600); rename
+// replaces the destination inode with the temp's inode, so the
+// destination ends up at FileMode without a post-rename chmod.
+//
+// If marshalling/writing/renaming fails, the temp is removed
+// best-effort. After a successful rename the temp path no longer
+// exists, so the deferred Remove is a harmless no-op.
+func WriteFileAtomic(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	f, err := os.CreateTemp(dir, ".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp)
+
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }

@@ -104,3 +104,24 @@ func TestOpenFile_TightensExisting(t *testing.T) {
 		t.Fatalf("file mode: got %o want %o", got, want)
 	}
 }
+
+func TestWriteFileAtomic_Fresh(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "f")
+	if err := secfile.WriteFileAtomic(path, []byte("hello")); err != nil {
+		t.Fatalf("WriteFileAtomic: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(got) != "hello" {
+		t.Errorf("contents = %q, want %q", got, "hello")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if g, w := info.Mode().Perm(), os.FileMode(0o600); g != w {
+		t.Errorf("file mode: got %o want %o", g, w)
+	}
+}
