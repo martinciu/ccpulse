@@ -11,17 +11,8 @@ import (
 //go:embed default.toml
 var defaultTOML []byte
 
-type UI struct {
-	Accent       string `toml:"accent"`
-	DefaultTab   string `toml:"default_tab"`
-	DefaultScope string `toml:"default_scope"`
-	TickMs       int    `toml:"tick_ms"`
-}
-
 type History struct {
-	DefaultWindowDays int  `toml:"default_window_days"`
-	IncludeSubagents  bool `toml:"include_subagents"`
-	RetentionDays     int  `toml:"retention_days"`
+	RetentionDays int `toml:"retention_days"`
 }
 
 type Paths struct {
@@ -34,15 +25,16 @@ type Pricing struct {
 }
 
 type Config struct {
-	UI      UI      `toml:"ui"`
 	History History `toml:"history"`
 	Paths   Paths   `toml:"paths"`
 	Pricing Pricing `toml:"pricing"`
 }
 
 // Load reads cfg from path, falling back to embedded defaults if path is empty.
-// Defaults always apply for unset fields. Unknown top-level sections (including
-// the dropped [display] and the legacy [plan]) are silently ignored.
+// Defaults always apply for unset fields. Unknown top-level sections and keys —
+// including the dropped [ui] / [display] sections, the legacy [plan] section,
+// and the dropped history.default_window_days / history.include_subagents keys —
+// are silently ignored, so older user configs keep loading without errors.
 //
 // An empty cache_dir (the default) resolves to the channel-appropriate
 // path: "~/.cache/ccpulse" on the release channel, "~/.cache/ccpulse-dev"
