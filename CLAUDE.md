@@ -65,4 +65,4 @@ Claude encodes project paths as directory slugs: `/` → `-`, `.` → `--`. `can
 
 ### Plan tiers and the 5-hour window
 
-`status.CeilingFor` maps tier names (`max_5x`, `max_20x`, `pro`, `api`, `custom`) to token budgets. The rolling window is computed over the 5-hour period that precedes the current time, matching Claude Max's rate-limit window. Color buckets: violet (<70%), yellow (70–89%), red (≥90%).
+`status.CeilingFor` maps tier names (`max_5x`, `max_20x`, `pro`, `api`, `custom`) to token budgets. The rolling window is computed over the 5-hour period that precedes the current time, matching Claude Max's rate-limit window. The quota bar uses the bubbles/progress default gradient at every fill level — there are no threshold-based color flips.

@@ -84,8 +84,8 @@ func New(d Deps) Model {
 		help:    help.New(),
 		zoomIdx: 1, // default: 15m
 	}
-	m.progress = newProgressBar(0, 40)
-	m.progress7d = newProgressBar(0, 40)
+	m.progress = newProgressBar(40)
+	m.progress7d = newProgressBar(40)
 	m.viewport = viewport.New(80, 20)
 	m.viewport.SetHorizontalStep(horizontalScrollStep)
 	return m
@@ -102,8 +102,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// help.Width controls when ShortHelp ellipsizes; if left at 0
 		// the footer can wrap onto the body row and break chartHeight().
 		m.help.Width = m.w
-		m.progress = newProgressBar(float64(m.window.Percent)/100.0, m.progressWidth())
-		m.progress7d = newProgressBar(float64(m.window.Percent7d)/100.0, m.progressWidth())
+		m.progress = newProgressBar(m.progressWidth())
+		m.progress7d = newProgressBar(m.progressWidth())
 		m.refreshChart()
 	case IndexProgressMsg:
 		m.indexActive = msg.Active
@@ -322,10 +322,8 @@ func (m *Model) recomputeWindow() {
 	if w, err := status.Compute(m.deps.Cache.DB(), time.Now(), in); err == nil {
 		m.window = w
 	}
-	pct := float64(m.window.Percent) / 100.0
-	m.progress = newProgressBar(pct, m.progressWidth())
-	pct7d := float64(m.window.Percent7d) / 100.0
-	m.progress7d = newProgressBar(pct7d, m.progressWidth())
+	m.progress = newProgressBar(m.progressWidth())
+	m.progress7d = newProgressBar(m.progressWidth())
 }
 
 // chartWidth returns the available width for the viewport.
@@ -366,24 +364,16 @@ func (m Model) progressWidth() int {
 	return w
 }
 
-// newProgressBar builds a quota bar styled by percent threshold (the bar's
-// solid fill is fixed at construction, so the color only changes when this
-// is rebuilt). The actual fill amount is supplied at render time via
-// progress.ViewAs.
-func newProgressBar(pct float64, w int) progress.Model {
-	color := Violet
-	switch {
-	case pct >= 0.90:
-		color = Red
-	case pct >= 0.70:
-		color = Yellow
-	}
+// newProgressBar builds a quota bar with the bubbles/progress default
+// gradient (#5A56E0 → #EE6FF8). The actual fill amount is supplied at
+// render time via progress.ViewAs.
+func newProgressBar(w int) progress.Model {
 	if w < 10 {
 		w = 10
 	}
 	return progress.New(
-		progress.WithSolidFill(string(color)),
 		progress.WithWidth(w),
 		progress.WithoutPercentage(),
+		progress.WithDefaultGradient(),
 	)
 }
