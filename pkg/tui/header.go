@@ -16,7 +16,7 @@ type IndexProgress struct {
 	Active bool
 }
 
-func renderHeader(w status.Window, width int, idx IndexProgress) string {
+func renderHeader(w status.Window, width int, idx IndexProgress, subtitle string) string {
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(Base01).
@@ -43,8 +43,6 @@ func renderHeader(w status.Window, width int, idx IndexProgress) string {
 		title += fmt.Sprintf(" · ⚠ %dm old", mins)
 	}
 
-	dur := durString(w.MinutesToReset)
-	subtitle := fmt.Sprintf("%d%%   %s to reset", w.Percent, dur)
 	return box.Render(strings.TrimSpace(title) + "\n" + subtitle)
 }
 

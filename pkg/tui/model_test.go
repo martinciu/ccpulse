@@ -116,6 +116,15 @@ func TestSevenDayBarRendered(t *testing.T) {
 	if !strings.Contains(v, " 12%") {
 		t.Errorf("expected '12%%' for 7d in:\n%s", v)
 	}
+
+	// Both labels must appear on the same line — they sit side-by-side
+	// inside the header box rather than stacked.
+	for _, line := range strings.Split(v, "\n") {
+		if strings.Contains(line, "5h") && strings.Contains(line, "7d") {
+			return
+		}
+	}
+	t.Errorf("expected '5h' and '7d' on the same line; got:\n%s", v)
 }
 
 func TestSevenDayBarPlaceholderWhenAbsent(t *testing.T) {

@@ -134,8 +134,7 @@ func (m Model) View() string {
 	}
 	header := renderHeader(m.window, m.w, IndexProgress{
 		Done: m.indexDone, Total: m.indexTotal, Active: m.indexActive,
-	})
-	bars := m.quotaBars()
+	}, m.quotaBars())
 	zoom := ZoomLevels[m.zoomIdx]
 	label := lipgloss.NewStyle().Foreground(Base01).Render(
 		fmt.Sprintf("  %s per bar  ·  [z] zoom", zoom.Label),
@@ -148,32 +147,35 @@ func (m Model) View() string {
 		body = m.viewport.View()
 	}
 	footer := m.help.View(m.keys)
-	return lipgloss.JoinVertical(lipgloss.Left, header, bars, label, sep, body, sep, footer)
+	return lipgloss.JoinVertical(lipgloss.Left, header, label, sep, body, sep, footer)
 }
 
-// quotaBars renders the 5h and 7d quota progress bars as a two-row block.
-// When 7d data is unavailable the second row shows a placeholder so the
-// chart layout below stays stable across the lifecycle of a quota fetch.
+// quotaBars renders the 5h and 7d quota bars as a single line, designed
+// to live as the second row of the bordered header box. The two bars are
+// separated by a dim '│' divider; when 7d data is unavailable that side
+// shows a 'no data' placeholder so the row width stays stable across the
+// lifecycle of a quota fetch.
 func (m Model) quotaBars() string {
 	labelStyle := lipgloss.NewStyle().Foreground(Base01).Bold(true)
+	dimStyle := lipgloss.NewStyle().Foreground(Base01)
 
-	bar5h := labelStyle.Render("5h ") +
+	left := labelStyle.Render("5h ") +
 		m.progress.ViewAs(float64(m.window.Percent)/100.0) +
-		fmt.Sprintf(" %3d%%", m.window.Percent)
+		fmt.Sprintf(" %3d%%  %s",
+			m.window.Percent, durString(m.window.MinutesToReset))
 
-	var bar7d string
+	var right string
 	if m.window.Has7d {
-		bar7d = labelStyle.Render("7d ") +
+		right = labelStyle.Render("7d ") +
 			m.progress7d.ViewAs(float64(m.window.Percent7d)/100.0) +
-			fmt.Sprintf(" %3d%%", m.window.Percent7d)
+			fmt.Sprintf(" %3d%%  %s",
+				m.window.Percent7d, durString(m.window.MinutesToReset7d))
 	} else {
-		bar7d = labelStyle.Render("7d ") +
-			lipgloss.NewStyle().Foreground(Base01).Render("(no data)")
+		right = labelStyle.Render("7d ") + dimStyle.Render("(no data)")
 	}
 
-	return lipgloss.NewStyle().Padding(0, 2).Render(
-		lipgloss.JoinVertical(lipgloss.Left, bar5h, bar7d),
-	)
+	divider := dimStyle.Render(" │ ")
+	return left + divider + right
 }
 
 // refreshChart queries the cache and updates the viewport content.
@@ -231,26 +233,32 @@ func (m Model) chartWidth() int {
 }
 
 // chartHeight returns the available rows for the chart, leaving room for
-// header, two-row quota bar block, zoom label, two separators, and footer.
+// the bordered header box (which contains both quota bars on its second
+// row), the zoom label, two separators, and the help footer.
 func (m Model) chartHeight() int {
-	// Bordered header box = 4 rows. Quota bars 2 (5h + 7d), label 1,
-	// top sep 1, bottom sep 1, footer 1. Total non-body overhead = 10.
-	h := m.h - 10
+	// Bordered header box = 4 rows (top border, title, bars row, bottom
+	// border). Label 1, top sep 1, bottom sep 1, footer 1. Total
+	// non-body overhead = 8 rows.
+	h := m.h - 8
 	if h < 5 {
 		return 5
 	}
 	return h
 }
 
-// progressWidth returns the rendered width of each quota bar, leaving
-// room for the surrounding chrome on the bar row:
-//   - 4 cols horizontal padding (Padding(0, 2) on the outer block)
+// progressWidth returns the rendered width of each of the two quota bars,
+// which sit side-by-side inside the header box. Per-side chrome includes:
 //   - 3 cols label prefix ("5h ")
 //   - 5 cols percent suffix (" 100%")
+//   - up to 9 cols reset time ("  23h 59m")
+//
+// The header box itself reserves 4 cols (border + padding), and a 3-col
+// '│' divider sits between the two halves. So total chrome ≈ 4 + 3 +
+// 2*(3+5+9) = 41, split across two bars.
 func (m Model) progressWidth() int {
-	w := m.w - 12
-	if w < 10 {
-		return 10
+	w := (m.w - 41) / 2
+	if w < 6 {
+		return 6
 	}
 	return w
 }
