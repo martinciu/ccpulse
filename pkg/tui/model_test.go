@@ -314,7 +314,7 @@ func TestRefreshChart_FixedWidth(t *testing.T) {
 	for _, tc := range cases {
 		zoom := ZoomLevels[tc.zoomIdx]
 		// Mirror refreshChart's derivation exactly.
-		to := cache.BucketAlign(time.Now(), zoom.Duration)
+		to := cache.BucketAlign(time.Now(), zoom.Duration).Add(zoom.Duration)
 		from := to.Add(-zoom.Lookback)
 		buckets, err := c.TokenBuckets(zoom.Duration, from, to)
 		if err != nil {

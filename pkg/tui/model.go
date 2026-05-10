@@ -193,7 +193,11 @@ func (m *Model) refreshChart() {
 		return
 	}
 	zoom := ZoomLevels[m.zoomIdx]
-	to := cache.BucketAlign(time.Now(), zoom.Duration)
+	// Right edge = the END of the bucket containing now, so the bucket
+	// itself is included in the half-open [from, to) window. Without
+	// the +Duration shift the in-flight bucket is silently dropped
+	// until the next boundary tick.
+	to := cache.BucketAlign(time.Now(), zoom.Duration).Add(zoom.Duration)
 	from := to.Add(-zoom.Lookback)
 	buckets, err := m.deps.Cache.TokenBuckets(zoom.Duration, from, to)
 	if err != nil || len(buckets) == 0 {

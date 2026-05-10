@@ -507,6 +507,52 @@ func TestTokenBuckets_BoundsSnap(t *testing.T) {
 	}
 }
 
+func TestTokenBuckets_IncludesInFlightBucket(t *testing.T) {
+	// Regression: when callers anchor at to = BucketAlign(now) + dur, the
+	// in-flight bucket containing now must be included as the rightmost
+	// bucket in the [from, to) range — otherwise a freshly-recorded
+	// message stays invisible until the bucket boundary ticks over.
+	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	tab, _ := pricing.Load()
+
+	// Production messages come from JSONL parsing — always UTC. Use UTC
+	// here so the stored ts text starts with "...Z", matching the
+	// UTC-formatted query bounds; lexicographic comparison only works
+	// when both sides share the same offset.
+	now := time.Now().UTC()
+	msgs := []parse.Message{
+		{SessionID: "s1", ProjectSlug: "p", Model: "claude-sonnet-4-6",
+			Timestamp: now, InputTokens: 1000, OutputTokens: 500},
+	}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatal(err)
+	}
+
+	dur := 5 * time.Minute
+	to := BucketAlign(now, dur).Add(dur)
+	from := to.Add(-time.Hour)
+	buckets, err := c.TokenBuckets(dur, from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(buckets) == 0 {
+		t.Fatalf("got 0 buckets")
+	}
+	last := buckets[len(buckets)-1]
+	if !last.BucketStart.Equal(BucketAlign(now, dur)) {
+		t.Errorf("rightmost BucketStart = %v, want %v (bucket containing now)",
+			last.BucketStart, BucketAlign(now, dur))
+	}
+	if last.Tokens != 1500 {
+		t.Errorf("rightmost Tokens = %d, want 1500 (in-flight message)", last.Tokens)
+	}
+}
+
 func TestBucketAlign(t *testing.T) {
 	// 14:23:45 UTC, snapped down at 5m → 14:20:00 UTC
 	in := time.Date(2026, 5, 10, 14, 23, 45, 0, time.UTC)
