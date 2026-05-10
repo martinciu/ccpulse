@@ -141,10 +141,6 @@ func (m Model) View() string {
 		return ""
 	}
 	header := renderHeader(m.w, m.quotaBars())
-	zoom := ZoomLevels[m.zoomIdx]
-	label := lipgloss.NewStyle().Foreground(Base01).Render(
-		fmt.Sprintf("  %s per bar  ·  [z] zoom", zoom.Label),
-	)
 	sep := lipgloss.NewStyle().Foreground(Base02).Render(strings.Repeat("─", m.w))
 	var body string
 	if m.showHelp {
@@ -153,7 +149,7 @@ func (m Model) View() string {
 		body = m.viewport.View()
 	}
 	footer := m.renderFooter()
-	return lipgloss.JoinVertical(lipgloss.Left, header, label, sep, body, sep, footer)
+	return lipgloss.JoinVertical(lipgloss.Left, header, sep, body, sep, footer)
 }
 
 // renderFooter composes the bottom line: keybinding help on the left,
@@ -302,10 +298,10 @@ func (m Model) chartWidth() int {
 
 // chartHeight returns the available rows for the chart, leaving room for
 // the bordered header box (3 rows: top border, bars row, bottom border),
-// the zoom label (1 row), two separators (2 rows), and the help footer
-// (1 row). Total non-body overhead = 7 rows.
+// two separators (2 rows), and the help footer (1 row). Total non-body
+// overhead = 6 rows.
 func (m Model) chartHeight() int {
-	h := m.h - 7
+	h := m.h - 6
 	if h < 5 {
 		return 5
 	}
