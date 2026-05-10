@@ -3,6 +3,8 @@ package parse
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"os"
 )
@@ -16,6 +18,18 @@ import (
 // Exposed as a var (not a const) so tests can shrink it cheaply to
 // trigger ErrTooLong without synthesising 64 MiB lines.
 var ScannerMaxBytes = 64 << 20
+
+// scannerInitialCap is the initial buffer capacity used at every
+// Scanner.Buffer site in this package. Capped by ScannerMaxBytes so
+// the test seam genuinely lowers the ceiling: bufio.Scanner uses
+// max(max, cap(buf)) as the effective ceiling, so cap(buf) must not
+// exceed ScannerMaxBytes for tests to trigger ErrTooLong.
+func scannerInitialCap() int {
+	if 1<<20 < ScannerMaxBytes {
+		return 1 << 20
+	}
+	return ScannerMaxBytes
+}
 
 // ParseFromOffsetWithErrors is ParseFromOffset that also returns
 // per-line ParseError records for malformed JSON. Each error's Line
@@ -33,24 +47,55 @@ func ParseFromOffsetWithErrors(path, slug string, startOffset int64, startLine i
 
 	var msgs []Message
 	var errs []ParseError
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 1<<20), ScannerMaxBytes)
 	off := startOffset
 	line := startLine
-	for sc.Scan() {
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, scannerInitialCap()), ScannerMaxBytes)
+
+	for {
+		for sc.Scan() {
+			line++
+			raw := sc.Bytes()
+			off += int64(len(raw)) + 1
+			var r rawLine
+			if err := json.Unmarshal(raw, &r); err != nil {
+				errs = append(errs, ParseError{Line: line, Err: err})
+				continue
+			}
+			if r.Type == "assistant" {
+				msgs = append(msgs, toMessage(r, slug))
+			}
+		}
+		serr := sc.Err()
+		if serr == nil {
+			return msgs, errs, off, line, nil
+		}
+		if !errors.Is(serr, bufio.ErrTooLong) {
+			return msgs, errs, off, line, serr
+		}
+		// Oversized line begins at `off`. Find the next '\n' from there.
+		oversizedStart := off
+		skipped, found, sErr := skipPastNewline(f, off)
+		if sErr != nil {
+			return msgs, errs, off, line, sErr
+		}
+		if !found {
+			// Oversized line is the in-progress tail of the file. Leave
+			// `off` where it is; next fs event retries.
+			return msgs, errs, off, line, nil
+		}
 		line++
-		raw := sc.Bytes()
-		off += int64(len(raw)) + 1
-		var r rawLine
-		if err := json.Unmarshal(raw, &r); err != nil {
-			errs = append(errs, ParseError{Line: line, Err: err})
-			continue
+		errs = append(errs, ParseError{
+			Line: line,
+			Err:  fmt.Errorf("oversized line skipped at offset %d (%d bytes)", oversizedStart, skipped),
+		})
+		off += int64(skipped) + 1 // +1 for the trailing '\n'
+		if _, err := f.Seek(off, io.SeekStart); err != nil {
+			return msgs, errs, off, line, err
 		}
-		if r.Type == "assistant" {
-			msgs = append(msgs, toMessage(r, slug))
-		}
+		sc = bufio.NewScanner(f)
+		sc.Buffer(make([]byte, 0, scannerInitialCap()), ScannerMaxBytes)
 	}
-	return msgs, errs, off, line, sc.Err()
 }
 
 // skipPastNewline reads from f starting at startOff in 64 KiB chunks

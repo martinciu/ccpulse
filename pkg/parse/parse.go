@@ -52,7 +52,7 @@ func ParseWithErrors(r io.Reader, projectSlug string) ([]Message, []ParseError, 
 	var msgs []Message
 	var errs []ParseError
 	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 1<<20), ScannerMaxBytes)
+	sc.Buffer(make([]byte, 0, scannerInitialCap()), ScannerMaxBytes)
 	for line := 1; sc.Scan(); line++ {
 		var raw rawLine
 		if err := json.Unmarshal(sc.Bytes(), &raw); err != nil {

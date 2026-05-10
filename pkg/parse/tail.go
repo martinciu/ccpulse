@@ -23,7 +23,7 @@ func ParseFromOffset(path, slug string, startOffset int64, startLine int) ([]Mes
 
 	var msgs []Message
 	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 1<<20), ScannerMaxBytes)
+	sc.Buffer(make([]byte, 0, scannerInitialCap()), ScannerMaxBytes)
 	off := startOffset
 	line := startLine
 	for sc.Scan() {
