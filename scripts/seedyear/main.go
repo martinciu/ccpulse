@@ -11,7 +11,9 @@ package main
 
 import (
 	"errors"
+	"flag"
 	"fmt"
+	"log"
 	"math/rand/v2"
 	"os"
 	"path/filepath"
@@ -19,6 +21,7 @@ import (
 	"time"
 
 	"github.com/martinciu/ccpulse/pkg/cache"
+	"github.com/martinciu/ccpulse/pkg/config"
 	"github.com/martinciu/ccpulse/pkg/parse"
 	"github.com/martinciu/ccpulse/pkg/pricing"
 )
@@ -152,6 +155,17 @@ func countSeedRows(c *cache.Cache) (int64, error) {
 	return n, nil
 }
 
+// expandPath replaces a leading "~" with $HOME. Mirrors the unexported
+// expand() in cmd/ccpulse/index.go — kept local to keep the seeder a
+// self-contained script that doesn't depend on cmd/ internals.
+func expandPath(p string) string {
+	if p == "" || p[0] != '~' {
+		return p
+	}
+	home, _ := os.UserHomeDir()
+	return home + p[1:]
+}
+
 // validateCacheDir is the belt-and-braces guard that prevents the seeder
 // from writing to a release cache. The basename of cacheDir must end in
 // "-dev" — otherwise we reject before opening anything. Channel routing
@@ -245,5 +259,34 @@ func generate(profileName string, p profileParams, days int, rng *rand.Rand) []p
 }
 
 func main() {
-	// Wired in Task 6.
+	profile := flag.String("profile", "light", "synthetic data profile: light or heavy")
+	cacheDir := flag.String("cache-dir", "", "override the dev cache dir (must end in '-dev'); default: resolve from pkg/config")
+	seed := flag.Int64("seed", 1, "RNG seed; same value reproduces the same rows for idempotent re-runs")
+	days := flag.Int("days", 365, "window length back from today, in days")
+	flag.Parse()
+
+	resolved := *cacheDir
+	if resolved == "" {
+		cfg, err := config.Load("")
+		if err != nil {
+			// pkg/config returns a usable default even when the file is
+			// missing; only a parse error is fatal.
+			log.Fatalf("seedyear: load config: %v", err)
+		}
+		resolved = expandPath(cfg.Paths.CacheDir)
+	} else {
+		resolved = expandPath(resolved)
+	}
+
+	inserted, total, err := runSeed(seedOpts{
+		profile:  *profile,
+		cacheDir: resolved,
+		seed:     *seed,
+		days:     *days,
+	})
+	if err != nil {
+		log.Fatalf("seedyear: %v", err)
+	}
+	fmt.Printf("seeded %s/state.db: %d new rows this run, %d total seed-year rows\n",
+		resolved, inserted, total)
 }
