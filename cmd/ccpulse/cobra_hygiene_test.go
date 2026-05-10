@@ -57,7 +57,7 @@ func TestRootDoesNotDoublePrintErrors(t *testing.T) {
 }
 
 func TestLeafCommandsRejectExtraArgs(t *testing.T) {
-	for _, cmd := range []string{"version", "doctor"} {
+	for _, cmd := range []string{"version", "doctor", "index", "status"} {
 		t.Run(cmd, func(t *testing.T) {
 			root := newRootCmd()
 			var out, errOut bytes.Buffer
