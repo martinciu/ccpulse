@@ -103,9 +103,9 @@ func TestRunTUIQuitsCleanly(t *testing.T) {
 	http.DefaultClient.CloseIdleConnections()
 	srv.Close()
 
-	// Give fsnotify's kqueue/inotify reader and any sqlite background
-	// goroutine a moment to drain after Close before we measure.
-	time.Sleep(500 * time.Millisecond)
-
+	// goleak.VerifyNone retries internally (~1s of exponential backoff),
+	// so we don't need an explicit sleep to let fsnotify's kqueue/inotify
+	// reader or sqlite background helpers drain — the retry loop covers
+	// it.
 	goleak.VerifyNone(t, leakOpts...)
 }
