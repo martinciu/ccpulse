@@ -95,3 +95,35 @@ func TestSeedYear_HeavyProfile_RowCountInRange(t *testing.T) {
 		t.Errorf("heavy 30d: inserted=%d, want [25000, 40000]", inserted)
 	}
 }
+
+func TestSeedYear_Idempotent(t *testing.T) {
+	cacheDir := filepath.Join(t.TempDir(), "ccpulse-dev")
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	opts := seedOpts{
+		profile:  "light",
+		cacheDir: cacheDir,
+		seed:     1,
+		days:     30,
+	}
+
+	inserted1, total1, err := runSeed(opts)
+	if err != nil {
+		t.Fatalf("first runSeed: %v", err)
+	}
+	if inserted1 == 0 {
+		t.Fatalf("first run inserted 0 rows; nothing to test idempotency against")
+	}
+
+	inserted2, total2, err := runSeed(opts)
+	if err != nil {
+		t.Fatalf("second runSeed: %v", err)
+	}
+	if inserted2 != 0 {
+		t.Errorf("idempotent: second run inserted=%d, want 0", inserted2)
+	}
+	if total1 != total2 {
+		t.Errorf("idempotent: total changed %d -> %d", total1, total2)
+	}
+}
