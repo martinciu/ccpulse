@@ -10,6 +10,7 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/spf13/cobra v1.10.2
+	go.uber.org/goleak v1.3.0
 	modernc.org/sqlite v1.50.0
 )
 

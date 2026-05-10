@@ -21,6 +21,7 @@ func newDoctorCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "doctor",
 		Short: "Health-check checklist",
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			out := cmd.OutOrStdout()
 			fmt.Fprintf(out, "ℹ build channel: %s\n", channel.Channel())
