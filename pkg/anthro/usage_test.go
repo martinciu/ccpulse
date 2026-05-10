@@ -295,3 +295,47 @@ func TestFetchEmptyTokenErrors(t *testing.T) {
 		t.Errorf("expected error for empty token")
 	}
 }
+
+func TestUsageCache_FreshModes(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "cache")
+	path := filepath.Join(dir, "usage.json")
+	if err := writeCache(path, Usage{}, time.Now()); err != nil {
+		t.Fatalf("writeCache: %v", err)
+	}
+	dirInfo, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat dir: %v", err)
+	}
+	if got, want := dirInfo.Mode().Perm(), os.FileMode(0o700); got != want {
+		t.Fatalf("dir mode: got %o want %o", got, want)
+	}
+	fileInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat file: %v", err)
+	}
+	if got, want := fileInfo.Mode().Perm(), os.FileMode(0o600); got != want {
+		t.Fatalf("file mode: got %o want %o", got, want)
+	}
+}
+
+func TestUsageCache_TightensExisting(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "cache")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("seed dir: %v", err)
+	}
+	path := filepath.Join(dir, "usage.json")
+	if err := os.WriteFile(path, []byte("{}"), 0o644); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+	if err := writeCache(path, Usage{}, time.Now()); err != nil {
+		t.Fatalf("writeCache: %v", err)
+	}
+	dirInfo, _ := os.Stat(dir)
+	if got, want := dirInfo.Mode().Perm(), os.FileMode(0o700); got != want {
+		t.Fatalf("dir mode: got %o want %o", got, want)
+	}
+	fileInfo, _ := os.Stat(path)
+	if got, want := fileInfo.Mode().Perm(), os.FileMode(0o600); got != want {
+		t.Fatalf("file mode: got %o want %o", got, want)
+	}
+}

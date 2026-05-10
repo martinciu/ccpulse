@@ -22,6 +22,7 @@ import (
 	"github.com/martinciu/ccpulse/pkg/devlog"
 	"github.com/martinciu/ccpulse/pkg/ingest"
 	"github.com/martinciu/ccpulse/pkg/pricing"
+	"github.com/martinciu/ccpulse/pkg/secfile"
 	"github.com/martinciu/ccpulse/pkg/tui"
 	"github.com/martinciu/ccpulse/pkg/watcher"
 )
@@ -94,11 +95,8 @@ func newConfigCmd() *cobra.Command {
 		Use: "edit",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path := config.DefaultPath()
-			if _, err := os.Stat(path); os.IsNotExist(err) {
-				_ = os.MkdirAll(filepath.Dir(path), 0755)
-				if err := os.WriteFile(path, defaultTOMLBytes(), 0644); err != nil {
-					return err
-				}
+			if err := ensureConfigFile(path); err != nil {
+				return err
 			}
 			editor := os.Getenv("EDITOR")
 			if editor == "" {
@@ -118,13 +116,28 @@ func defaultTOMLBytes() []byte {
 # See "ccpulse config show" for the live values (defaults + your overrides).
 `)
 }
+
+// ensureConfigFile creates path with the default scaffold if missing,
+// at FileMode under a DirMode parent. If the file exists already, only
+// its mode is tightened.
+func ensureConfigFile(path string) error {
+	if err := secfile.MkdirAll(filepath.Dir(path)); err != nil {
+		return err
+	}
+	if _, err := os.Stat(path); err == nil {
+		return os.Chmod(path, secfile.FileMode)
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	return secfile.WriteFile(path, defaultTOMLBytes())
+}
 // runTUI launches the Bubble Tea program with the TUI model. The `out`
 // parameter is reserved for future use (currently the TUI manages its
 // own terminal IO via the alt screen).
 func runTUI(_ interface{}) error {
 	cfg, _ := config.Load(config.DefaultPath())
 	cacheDir := envOr("CCPULSE_CACHE_DIR", expand(cfg.Paths.CacheDir))
-	if err := os.MkdirAll(cacheDir, 0755); err != nil {
+	if err := secfile.MkdirAll(cacheDir); err != nil {
 		return err
 	}
 	if logCloser, err := devlog.Init(channel.IsDev(), cacheDir); err == nil && logCloser != nil {

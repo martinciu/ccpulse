@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+
+	"github.com/martinciu/ccpulse/pkg/secfile"
 )
 
 type State struct {
@@ -31,9 +33,9 @@ func Load() State {
 }
 
 func Save(s State) error {
-	if err := os.MkdirAll(filepath.Dir(Path()), 0755); err != nil {
+	if err := secfile.MkdirAll(filepath.Dir(Path())); err != nil {
 		return err
 	}
 	data, _ := json.Marshal(s)
-	return os.WriteFile(Path(), data, 0644)
+	return secfile.WriteFile(Path(), data)
 }

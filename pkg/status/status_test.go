@@ -161,3 +161,117 @@ func TestCompute_OmitsSevenDayWhenUsageNil(t *testing.T) {
 		t.Errorf("Has7d = true, want false")
 	}
 }
+
+func TestCompute_PopulatesProjection(t *testing.T) {
+	db := freshDB(t)
+	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	// 5h: 1h elapsed, 12% used → projects 60% at reset, ok confidence.
+	resets5h := now.Add(4 * time.Hour)
+	// 7d: 3 days elapsed, 30% used → projects 70% at reset, ok confidence.
+	resets7d := now.Add(4 * 24 * time.Hour)
+	usage := &anthro.Usage{
+		FiveHour: &anthro.Bucket{Utilization: 12.0, ResetsAt: resets5h},
+		SevenDay: &anthro.Bucket{Utilization: 30.0, ResetsAt: resets7d},
+	}
+	w, err := Compute(db, now, QuotaInput{Usage: usage, Source: "api", UpdatedAt: now})
+	if err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+	if w.Projection == nil {
+		t.Fatal("Window.Projection = nil, want populated")
+	}
+	if w.Projection.FiveHour == nil {
+		t.Fatal("Projection.FiveHour = nil, want populated")
+	}
+	if got := w.Projection.FiveHour.ProjectedPctAtReset; got != 60 {
+		t.Errorf("FiveHour.ProjectedPctAtReset = %d, want 60", got)
+	}
+	if got := w.Projection.FiveHour.Confidence; got != "ok" {
+		t.Errorf("FiveHour.Confidence = %q, want ok", got)
+	}
+	if w.Projection.SevenDay == nil {
+		t.Fatal("Projection.SevenDay = nil, want populated")
+	}
+	if got := w.Projection.SevenDay.ProjectedPctAtReset; got != 70 {
+		t.Errorf("SevenDay.ProjectedPctAtReset = %d, want 70", got)
+	}
+}
+
+func TestCompute_OmitsProjectionWhenQuotaNil(t *testing.T) {
+	db := freshDB(t)
+	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	w, err := Compute(db, now, QuotaInput{Usage: nil, Source: "cache_stale", UpdatedAt: now})
+	if err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+	if w.Projection != nil {
+		t.Errorf("Window.Projection = %+v, want nil when Usage is nil", w.Projection)
+	}
+}
+
+func TestCompute_OmitsSevenDayProjectionWhenSevenDayNil(t *testing.T) {
+	db := freshDB(t)
+	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	resets5h := now.Add(4 * time.Hour)
+	usage := &anthro.Usage{
+		FiveHour: &anthro.Bucket{Utilization: 12.0, ResetsAt: resets5h},
+	}
+	w, err := Compute(db, now, QuotaInput{Usage: usage, Source: "api", UpdatedAt: now})
+	if err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+	if w.Projection == nil {
+		t.Fatal("Window.Projection = nil, want populated when 5h is set")
+	}
+	if w.Projection.FiveHour == nil {
+		t.Errorf("Projection.FiveHour = nil, want populated")
+	}
+	if w.Projection.SevenDay != nil {
+		t.Errorf("Projection.SevenDay = %+v, want nil when SevenDay is nil", w.Projection.SevenDay)
+	}
+}
+
+func TestJSONOutputIncludesProjection(t *testing.T) {
+	mins := 165
+	w := Window{
+		Percent:      13,
+		CeilingLabel: "max_20x",
+		Projection: &Projections{
+			FiveHour: &Projection{
+				ElapsedMinutes:      120,
+				SlopePctPerHour:     21.00,
+				ProjectedPctAtReset: 105,
+				WillOverreach:       true,
+				MinutesTo100Pct:     &mins,
+				Confidence:          "ok",
+			},
+		},
+	}
+	out, err := JSON(w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`"projection":`,
+		`"five_hour":`,
+		`"slope_pct_per_hour":21`,
+		`"will_overreach":true`,
+		`"minutes_to_100_pct":165`,
+		`"confidence":"ok"`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("JSON missing %s in %s", want, out)
+		}
+	}
+}
+
+func TestJSONOutputOmitsProjectionWhenNil(t *testing.T) {
+	w := Window{Percent: 0, CeilingLabel: "unknown"}
+	out, err := JSON(w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "projection") {
+		t.Errorf("JSON should omit projection when Projection is nil: %s", out)
+	}
+}
