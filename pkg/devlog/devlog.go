@@ -13,6 +13,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+
+	"github.com/martinciu/ccpulse/pkg/secfile"
 )
 
 // Init configures slog.Default() based on isDev. Returns the opened log
@@ -27,14 +29,13 @@ func Init(isDev bool, cacheDir string) (io.Closer, error) {
 		slog.SetDefault(discard)
 		return nil, nil
 	}
-	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+	if err := secfile.MkdirAll(cacheDir); err != nil {
 		slog.SetDefault(discard)
 		return nil, err
 	}
-	f, err := os.OpenFile(
+	f, err := secfile.OpenFile(
 		filepath.Join(cacheDir, "debug.log"),
 		os.O_CREATE|os.O_WRONLY|os.O_APPEND,
-		0o644,
 	)
 	if err != nil {
 		slog.SetDefault(discard)
