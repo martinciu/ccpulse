@@ -227,43 +227,64 @@ func (m Model) quotaBars() string {
 }
 
 // refreshChart queries the cache and updates the viewport content.
-// Safe to call when deps.Cache is nil (no-op). The chart always renders
-// at the full per-zoom width: an empty cache produces a flat baseline.
+// Safe to call when deps.Cache is nil (no-op). Loads the full history
+// present in the cache, from the earliest message up to "now". On an
+// empty cache or a DB error, renders a placeholder.
 func (m *Model) refreshChart() {
 	if m.deps.Cache == nil {
 		return
 	}
 	zoom := ZoomLevels[m.zoomIdx]
 	// Right edge = the END of the bucket containing now, so the bucket
-	// itself is included in the half-open [from, to) window. Without
-	// the +Duration shift the in-flight bucket is silently dropped
-	// until the next boundary tick.
+	// itself is included in the half-open [from, to) window.
 	to := cache.BucketAlign(time.Now(), zoom.Duration).Add(zoom.Duration)
-	from := to.Add(-zoom.Lookback)
-	buckets, err := m.deps.Cache.TokenBuckets(zoom.Duration, from, to)
-	if err != nil || len(buckets) == 0 {
-		// Defensive: cache error or unaligned bounds. Render an empty
-		// gap baseline of the expected width rather than leaving stale
-		// viewport content.
-		n := int(zoom.Lookback / zoom.Duration)
-		empty := make([]cache.TokenBucket, n)
-		for i := range empty {
-			empty[i] = cache.TokenBucket{BucketStart: from.Add(time.Duration(i) * zoom.Duration)}
-		}
-		m.viewport.SetContent(buildChart(empty, n, m.chartHeight()))
-		m.viewport.SetXOffset(n)
+
+	earliest, ok, err := m.deps.Cache.EarliestMessageTime()
+	if err != nil || !ok {
+		m.viewport.SetContent(emptyPlaceholder(m.chartWidth(), m.chartHeight()))
+		m.viewport.SetXOffset(0)
 		return
 	}
+
+	from := cache.BucketAlign(earliest, zoom.Duration)
+	buckets, err := m.deps.Cache.TokenBuckets(zoom.Duration, from, to)
+	if err != nil || len(buckets) == 0 {
+		m.viewport.SetContent(emptyPlaceholder(m.chartWidth(), m.chartHeight()))
+		m.viewport.SetXOffset(0)
+		return
+	}
+
 	chartW := len(buckets)
 	chartH := m.chartHeight()
 	if chartH < 1 {
 		chartH = 10
 	}
-	content := buildChart(buckets, chartW, chartH)
-	m.viewport.SetContent(content)
+	m.viewport.SetContent(buildChart(buckets, chartW, chartH))
 	// Anchor the view at "now" on each refresh — the rightmost column.
-	// SetXOffset is clamped internally by the viewport.
 	m.viewport.SetXOffset(chartW)
+}
+
+// emptyPlaceholder returns content sized w×h showing a centered
+// "no Claude sessions yet" line styled in the dim Base01 colour.
+// Padded with blank lines so a previous non-empty refresh's content
+// is fully wiped from the viewport.
+func emptyPlaceholder(w, h int) string {
+	if h < 1 {
+		h = 1
+	}
+	if w < 1 {
+		w = 1
+	}
+	msg := lipgloss.NewStyle().Foreground(Base01).Render("no Claude sessions yet")
+	mid := h / 2
+	lines := make([]string, h)
+	for i := range lines {
+		if i == mid {
+			pad := max((w-lipgloss.Width(msg))/2, 0)
+			lines[i] = strings.Repeat(" ", pad) + msg
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // recomputeWindow updates the status.Window from the DB + quota data.

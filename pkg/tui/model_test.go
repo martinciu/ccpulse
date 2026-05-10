@@ -11,6 +11,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/martinciu/ccpulse/pkg/anthro"
 	"github.com/martinciu/ccpulse/pkg/cache"
+	"github.com/martinciu/ccpulse/pkg/parse"
+	"github.com/martinciu/ccpulse/pkg/pricing"
 	"github.com/martinciu/ccpulse/pkg/status"
 )
 
@@ -136,13 +138,10 @@ func TestRefreshChart_AllEmptyShowsBaseline(t *testing.T) {
 	if strings.Contains(got, "STALE CHART CONTENT") {
 		t.Errorf("refreshChart left stale content in viewport:\n%s", got)
 	}
-	// New behaviour: a cache with no rows renders as a flat baseline of
-	// '░' gap markers, not the old "(no usage data)" placeholder.
-	if strings.Contains(got, "no usage data") {
-		t.Errorf("placeholder text still present after empty-state refactor:\n%s", got)
-	}
-	if !strings.Contains(got, "░") {
-		t.Errorf("expected gap-baseline character '░' on empty cache, got:\n%s", got)
+	// New behaviour (issue #53): an empty cache renders the placeholder
+	// text rather than a fake baseline.
+	if !strings.Contains(got, "no Claude sessions yet") {
+		t.Errorf("expected placeholder text 'no Claude sessions yet' in:\n%s", got)
 	}
 }
 
@@ -293,34 +292,55 @@ func TestViewFitsTerminal(t *testing.T) {
 	}
 }
 
-func TestRefreshChart_FixedWidth(t *testing.T) {
-	// Each zoom has a fixed column count: 288 / 288 / 168.
-	cases := []struct {
-		zoomIdx  int
-		wantCols int
-	}{
-		{0, 288}, // 5m  × 24h
-		{1, 288}, // 15m × 72h
-		{2, 168}, // 1h  × 7d
-	}
+func TestRefreshChart_FromEarliest(t *testing.T) {
+	// After issue #53, refreshChart must load from the earliest cached
+	// message (aligned to the active zoom's bucket boundary) up to "now".
+	// We verify this by inserting a single message ~3 hours ago and
+	// confirming TokenBuckets returns at least the matching number of
+	// 15m buckets at zoom index 1 (15m bucket / no Lookback).
 	c, err := cache.Open(filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer c.Close()
 
-	for _, tc := range cases {
-		zoom := ZoomLevels[tc.zoomIdx]
-		// Mirror refreshChart's derivation exactly.
-		to := cache.BucketAlign(time.Now(), zoom.Duration).Add(zoom.Duration)
-		from := to.Add(-zoom.Lookback)
-		buckets, err := c.TokenBuckets(zoom.Duration, from, to)
-		if err != nil {
-			t.Fatalf("zoom %d: TokenBuckets: %v", tc.zoomIdx, err)
-		}
-		if len(buckets) != tc.wantCols {
-			t.Errorf("zoom %d: %d buckets, want %d", tc.zoomIdx, len(buckets), tc.wantCols)
-		}
+	tab, _ := pricing.Load()
+	now := time.Now()
+	earliest := now.Add(-3 * time.Hour)
+	if err := c.InsertMessages([]parse.Message{{
+		SessionID:   "s1",
+		ProjectSlug: "slug-a",
+		Model:       "claude-opus-4-7",
+		Timestamp:   earliest,
+		InputTokens: 10,
+	}}, tab); err != nil {
+		t.Fatal(err)
+	}
+
+	zoom := ZoomLevels[1] // 15m
+	to := cache.BucketAlign(now, zoom.Duration).Add(zoom.Duration)
+	from := cache.BucketAlign(earliest, zoom.Duration)
+	wantMin := int(to.Sub(from)/zoom.Duration) - 1 // tolerate ±1 bucket on boundary
+
+	buckets, err := c.TokenBuckets(zoom.Duration, from, to)
+	if err != nil {
+		t.Fatalf("TokenBuckets: %v", err)
+	}
+	if len(buckets) < wantMin {
+		t.Errorf("got %d buckets, want at least %d (≈3h at 15m)", len(buckets), wantMin)
+	}
+
+	// And refreshChart on the model must not panic and must populate
+	// the viewport with bar content (not the empty-cache placeholder).
+	m := New(Deps{Cache: c})
+	m.w, m.h = 120, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	m.zoomIdx = 1
+	m.refreshChart()
+	got := m.viewport.View()
+	if strings.Contains(got, "no Claude sessions yet") {
+		t.Errorf("refreshChart rendered empty-state placeholder for non-empty cache:\n%s", got)
 	}
 }
 

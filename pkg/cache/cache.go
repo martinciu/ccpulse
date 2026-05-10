@@ -490,6 +490,24 @@ ORDER BY bucket_epoch ASC
 	return out, nil
 }
 
+// EarliestMessageTime returns the timestamp of the oldest row in
+// messages. ok == false when the table is empty (a routine first-launch
+// state, not an error). On non-empty caches the returned time is in UTC.
+func (c *Cache) EarliestMessageTime() (time.Time, bool, error) {
+	var s sql.NullString
+	if err := c.db.QueryRow(`SELECT MIN(ts) FROM messages`).Scan(&s); err != nil {
+		return time.Time{}, false, err
+	}
+	if !s.Valid {
+		return time.Time{}, false, nil
+	}
+	t, err := time.Parse("2006-01-02T15:04:05.000Z07:00", s.String)
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("parse earliest ts %q: %w", s.String, err)
+	}
+	return t.UTC(), true, nil
+}
+
 func (c *Cache) LiveSessions(now time.Time, since time.Duration) ([]LiveSession, error) {
 	cutoff := now.UTC().Add(-since).Format("2006-01-02T15:04:05.000Z07:00")
 	rows, err := c.db.Query(`

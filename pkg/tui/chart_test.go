@@ -1,0 +1,69 @@
+package tui
+
+import (
+	"runtime"
+	"testing"
+	"time"
+
+	"github.com/martinciu/ccpulse/pkg/cache"
+)
+
+// sinkString prevents the compiler from eliding the buildChart call
+// in BenchmarkBuildChart when its return value is otherwise unused.
+var sinkString string
+
+// syntheticBuckets returns n contiguous 5-minute TokenBucket entries
+// with deterministic, varied Tokens values so heatColor exercises all
+// three colour bands.
+func syntheticBuckets(n int) []cache.TokenBucket {
+	now := time.Now().UTC()
+	out := make([]cache.TokenBucket, n)
+	for i := range out {
+		out[i] = cache.TokenBucket{
+			BucketStart: now.Add(time.Duration(i) * 5 * time.Minute),
+			// Sweep across the heat range; a few zero buckets for gaps.
+			Tokens: int64((i * 137) % 1000),
+		}
+	}
+	return out
+}
+
+func BenchmarkBuildChart(b *testing.B) {
+	for _, n := range []int{10_000, 25_000, 50_000} {
+		buckets := syntheticBuckets(n)
+		b.Run(formatN(n), func(b *testing.B) {
+			b.ReportAllocs()
+			// Drain GC pressure from the syntheticBuckets allocation so it
+			// doesn't bleed into the first iteration's measurement.
+			runtime.GC()
+			b.ResetTimer()
+			for b.Loop() {
+				sinkString = buildChart(buckets, n, 20)
+			}
+		})
+	}
+}
+
+func formatN(n int) string {
+	switch {
+	case n >= 1000:
+		return itoa3(n/1000) + "k"
+	default:
+		return itoa3(n)
+	}
+}
+
+// itoa3 avoids strconv import noise — keeps the bench's deps minimal.
+func itoa3(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var buf [16]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(buf[i:])
+}
