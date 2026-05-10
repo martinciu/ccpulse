@@ -36,6 +36,13 @@ var (
 	buildChannel = "dev"
 )
 
+// newTeaProgram is the constructor for the TUI program. Tests
+// override this to inject WithoutRenderer / WithInput / WithOutput
+// options and exercise the full runTUI lifecycle without a real TTY.
+var newTeaProgram = func(m tea.Model) *tea.Program {
+	return tea.NewProgram(m, tea.WithAltScreen())
+}
+
 func versionString() string {
 	if commit == "none" && date == "unknown" {
 		return fmt.Sprintf("ccpulse %s (channel %s)", version, channel.Channel())
@@ -51,7 +58,7 @@ func newRootCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runTUI(cmd.OutOrStdout())
+			return runTUI(cmd)
 		},
 	}
 	root.AddCommand(newStatusCmd())
@@ -139,10 +146,10 @@ func ensureConfigFile(path string) error {
 	}
 	return secfile.WriteFile(path, defaultTOMLBytes())
 }
-// runTUI launches the Bubble Tea program with the TUI model. The `out`
-// parameter is reserved for future use (currently the TUI manages its
-// own terminal IO via the alt screen).
-func runTUI(_ interface{}) error {
+// runTUI launches the Bubble Tea program with the TUI model.
+// Takes the cobra command so it can derive a signal-aware context
+// from cmd.Context(); the *cobra.Command itself isn't otherwise used.
+func runTUI(cmd *cobra.Command) error {
 	cfg, _ := config.Load(config.DefaultPath())
 	cacheDir := envOr("CCPULSE_CACHE_DIR", expand(cfg.Paths.CacheDir))
 	if err := secfile.MkdirAll(cacheDir); err != nil {
@@ -206,9 +213,9 @@ func runTUI(_ interface{}) error {
 		CacheDir:     cacheDir,
 		IsDev:        channel.IsDev(),
 	})
-	p := tea.NewProgram(m, tea.WithAltScreen())
+	p := newTeaProgram(m)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(cmd.Context())
 	defer cancel()
 
 	if hasOAuth {
