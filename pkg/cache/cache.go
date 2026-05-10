@@ -520,10 +520,28 @@ ORDER BY bucket_epoch ASC
 	}
 	slog.Debug("cache.TokenBuckets",
 		"dur_ms", time.Since(start).Milliseconds(),
-		"zoom", dur.String(),
+		"zoom", zoomLabel(dur),
 		"buckets", n,
 		"rows_aggregated", len(totals))
 	return out, nil
+}
+
+// zoomLabel returns the compact human label that matches pkg/tui's
+// ZoomLevels labels ("5m", "15m", "1h") for the three known zoom
+// durations. Falls back to time.Duration.String() (e.g. "5m0s") for
+// any other value. Keeps the slog "zoom" field consistent across
+// pkg/cache and pkg/tui so a single grep correlates all four perf
+// timing sites.
+func zoomLabel(d time.Duration) string {
+	switch d {
+	case 5 * time.Minute:
+		return "5m"
+	case 15 * time.Minute:
+		return "15m"
+	case time.Hour:
+		return "1h"
+	}
+	return d.String()
 }
 
 // EarliestMessageTime returns the timestamp of the oldest row in
