@@ -187,20 +187,31 @@ func (m Model) quotaBars() string {
 }
 
 // refreshChart queries the cache and updates the viewport content.
-// Safe to call when deps.Cache is nil (no-op). When the query fails or
-// returns no buckets, the viewport is replaced with a centered "no data"
-// placeholder so prior chart content does not linger after the data
-// underneath has cleared (fresh cache, retention rollover, etc.).
+// Safe to call when deps.Cache is nil (no-op). The chart always renders
+// at the full per-zoom width: an empty cache produces a flat baseline.
 func (m *Model) refreshChart() {
 	if m.deps.Cache == nil {
 		return
 	}
 	zoom := ZoomLevels[m.zoomIdx]
-	since := time.Now().Add(-7 * 24 * time.Hour)
-	buckets, err := m.deps.Cache.TokenBuckets(zoom.Duration, since)
+	// Right edge = the END of the bucket containing now, so the bucket
+	// itself is included in the half-open [from, to) window. Without
+	// the +Duration shift the in-flight bucket is silently dropped
+	// until the next boundary tick.
+	to := cache.BucketAlign(time.Now(), zoom.Duration).Add(zoom.Duration)
+	from := to.Add(-zoom.Lookback)
+	buckets, err := m.deps.Cache.TokenBuckets(zoom.Duration, from, to)
 	if err != nil || len(buckets) == 0 {
-		m.viewport.SetContent(emptyChartView(m.chartWidth(), m.chartHeight()))
-		m.viewport.SetXOffset(0)
+		// Defensive: cache error or unaligned bounds. Render an empty
+		// gap baseline of the expected width rather than leaving stale
+		// viewport content.
+		n := int(zoom.Lookback / zoom.Duration)
+		empty := make([]cache.TokenBucket, n)
+		for i := range empty {
+			empty[i] = cache.TokenBucket{BucketStart: from.Add(time.Duration(i) * zoom.Duration)}
+		}
+		m.viewport.SetContent(buildChart(empty, n, m.chartHeight()))
+		m.viewport.SetXOffset(n)
 		return
 	}
 	chartW := len(buckets)
@@ -213,15 +224,6 @@ func (m *Model) refreshChart() {
 	// Anchor the view at "now" on each refresh — the rightmost column.
 	// SetXOffset is clamped internally by the viewport.
 	m.viewport.SetXOffset(chartW)
-}
-
-// emptyChartView returns a placeholder string filling width × height with
-// a centered "no usage data" message. Used when the cache has no rows in
-// the chart's lookback window.
-func emptyChartView(width, height int) string {
-	msg := lipgloss.NewStyle().Foreground(Base01).Italic(true).
-		Render("(no usage data in the last 7 days)")
-	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, msg)
 }
 
 // recomputeWindow updates the status.Window from the DB + quota data.

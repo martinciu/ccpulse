@@ -114,7 +114,7 @@ func TestQuitKey(t *testing.T) {
 	}
 }
 
-func TestRefreshChartClearsOnEmptyData(t *testing.T) {
+func TestRefreshChart_AllEmptyShowsBaseline(t *testing.T) {
 	c, err := cache.Open(filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -126,18 +126,22 @@ func TestRefreshChartClearsOnEmptyData(t *testing.T) {
 	m.viewport.Width = m.chartWidth()
 	m.viewport.Height = m.chartHeight()
 
-	// Seed the viewport with a non-placeholder chart string to simulate
-	// stale content from a prior refresh.
+	// Seed stale content to confirm refresh clears it.
 	m.viewport.SetContent("STALE CHART CONTENT")
 
 	m.refreshChart()
 
 	got := m.viewport.View()
 	if strings.Contains(got, "STALE CHART CONTENT") {
-		t.Errorf("refreshChart left stale content in viewport when cache empty:\n%s", got)
+		t.Errorf("refreshChart left stale content in viewport:\n%s", got)
 	}
-	if !strings.Contains(got, "no usage data") {
-		t.Errorf("refreshChart did not render empty-state placeholder:\n%s", got)
+	// New behaviour: a cache with no rows renders as a flat baseline of
+	// '░' gap markers, not the old "(no usage data)" placeholder.
+	if strings.Contains(got, "no usage data") {
+		t.Errorf("placeholder text still present after empty-state refactor:\n%s", got)
+	}
+	if !strings.Contains(got, "░") {
+		t.Errorf("expected gap-baseline character '░' on empty cache, got:\n%s", got)
 	}
 }
 
@@ -156,6 +160,32 @@ func TestBuildChartEmitsBars(t *testing.T) {
 		}
 	}
 	out := buildChart(buckets, 30, 10)
+	if !strings.ContainsAny(out, "█▇▆▅▄▃▂▁") {
+		t.Errorf("buildChart produced no bar block characters; got:\n%s", out)
+	}
+}
+
+func TestBuildChart_BaselineRow(t *testing.T) {
+	// Mixed buckets: some empty (gap) and some non-empty (data).
+	now := time.Now()
+	buckets := make([]cache.TokenBucket, 20)
+	for i := range buckets {
+		buckets[i] = cache.TokenBucket{BucketStart: now.Add(time.Duration(i) * 5 * time.Minute)}
+	}
+	// Indices 5..9 carry data; everything else is a gap.
+	for i := 5; i < 10; i++ {
+		buckets[i].Tokens = int64((i + 1) * 1000)
+	}
+	out := buildChart(buckets, 20, 10)
+
+	if !strings.Contains(out, "▒") {
+		t.Errorf("baseline row missing data marker '▒' in:\n%s", out)
+	}
+	if !strings.Contains(out, "░") {
+		t.Errorf("baseline row missing gap marker '░' in:\n%s", out)
+	}
+
+	// Bars must still render — Task 4 must not regress TestBuildChartEmitsBars.
 	if !strings.ContainsAny(out, "█▇▆▅▄▃▂▁") {
 		t.Errorf("buildChart produced no bar block characters; got:\n%s", out)
 	}
@@ -261,6 +291,37 @@ func TestViewFitsTerminal(t *testing.T) {
 		got := strings.Count(v, "\n") + 1
 		if got > h {
 			t.Errorf("h=%d: rendered %d lines, exceeds terminal height", h, got)
+		}
+	}
+}
+
+func TestRefreshChart_FixedWidth(t *testing.T) {
+	// Each zoom has a fixed column count: 288 / 288 / 168.
+	cases := []struct {
+		zoomIdx  int
+		wantCols int
+	}{
+		{0, 288}, // 5m  × 24h
+		{1, 288}, // 15m × 72h
+		{2, 168}, // 1h  × 7d
+	}
+	c, err := cache.Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	for _, tc := range cases {
+		zoom := ZoomLevels[tc.zoomIdx]
+		// Mirror refreshChart's derivation exactly.
+		to := cache.BucketAlign(time.Now(), zoom.Duration).Add(zoom.Duration)
+		from := to.Add(-zoom.Lookback)
+		buckets, err := c.TokenBuckets(zoom.Duration, from, to)
+		if err != nil {
+			t.Fatalf("zoom %d: TokenBuckets: %v", tc.zoomIdx, err)
+		}
+		if len(buckets) != tc.wantCols {
+			t.Errorf("zoom %d: %d buckets, want %d", tc.zoomIdx, len(buckets), tc.wantCols)
 		}
 	}
 }

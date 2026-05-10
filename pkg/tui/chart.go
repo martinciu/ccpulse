@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"time"
 
 	"github.com/NimbleMarkets/ntcharts/barchart"
@@ -13,13 +14,15 @@ import (
 type ZoomLevel struct {
 	Label    string
 	Duration time.Duration
+	Lookback time.Duration // total wall-clock span of the chart at this zoom
 }
 
 // ZoomLevels are the available zoom steps, cycled with the z key.
+// Lookback / Duration is the column count at each zoom: 288 / 288 / 168.
 var ZoomLevels = []ZoomLevel{
-	{"5m", 5 * time.Minute},
-	{"15m", 15 * time.Minute},
-	{"1h", time.Hour},
+	{"5m", 5 * time.Minute, 24 * time.Hour},
+	{"15m", 15 * time.Minute, 72 * time.Hour},
+	{"1h", time.Hour, 7 * 24 * time.Hour},
 }
 
 // heatColor returns a lipgloss color on a green→yellow→red ramp
@@ -37,10 +40,12 @@ func heatColor(ratio float64) lipgloss.Color {
 
 // buildChart renders a bar chart from buckets and returns the string
 // to be passed to viewport.SetContent. chartW is the total chart width
-// in columns (= number of buckets); chartH is the height in rows.
+// in columns (= number of buckets); chartH is the height in rows
+// (bars + baseline). The bottom row is always a baseline strip:
+// '▒' over data columns, '░' over gap columns.
 func buildChart(buckets []cache.TokenBucket, chartW, chartH int) string {
-	if chartH < 1 {
-		chartH = 1
+	if chartH < 2 {
+		chartH = 2 // need at least one bar row + one baseline row
 	}
 
 	var peak int64
@@ -70,11 +75,25 @@ func buildChart(buckets []cache.TokenBucket, chartW, chartH int) string {
 		}
 	}
 
+	// Bars take all but the bottom row; the bottom row is the baseline.
 	// barGap=0 is required when chartW == numBars: the default gap of 1
 	// consumes (numBars-1) cols, leaving (graphSize-gaps)/numBars = 0
 	// width per bar — i.e. bars are not drawn at all.
-	bc := barchart.New(chartW, chartH, barchart.WithBarGap(0))
+	bc := barchart.New(chartW, chartH-1, barchart.WithBarGap(0))
 	bc.PushAll(bars)
 	bc.Draw()
-	return bc.View()
+
+	dataStyle := lipgloss.NewStyle().Foreground(Base01)
+	gapStyle := lipgloss.NewStyle().Foreground(Base02)
+	var sb strings.Builder
+	sb.Grow(len(buckets) * 4) // styled rune is several bytes
+	for _, b := range buckets {
+		if b.Tokens > 0 {
+			sb.WriteString(dataStyle.Render("▒"))
+		} else {
+			sb.WriteString(gapStyle.Render("░"))
+		}
+	}
+
+	return lipgloss.JoinVertical(lipgloss.Left, bc.View(), sb.String())
 }
