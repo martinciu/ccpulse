@@ -240,10 +240,7 @@ func emptyPlaceholder(w, h int) string {
 	lines := make([]string, h)
 	for i := range lines {
 		if i == mid {
-			pad := (w - lipgloss.Width(msg)) / 2
-			if pad < 0 {
-				pad = 0
-			}
+			pad := max((w-lipgloss.Width(msg))/2, 0)
 			lines[i] = strings.Repeat(" ", pad) + msg
 		}
 	}
