@@ -430,3 +430,33 @@ func TestTokenBuckets(t *testing.T) {
 		t.Errorf("bucket[0].BucketStart not on 5-min boundary: %v", buckets[0].BucketStart)
 	}
 }
+
+func TestBucketAlign(t *testing.T) {
+	// 14:23:45 UTC, snapped down at 5m → 14:20:00 UTC
+	in := time.Date(2026, 5, 10, 14, 23, 45, 0, time.UTC)
+	got := BucketAlign(in, 5*time.Minute)
+	want := time.Date(2026, 5, 10, 14, 20, 0, 0, time.UTC)
+	if !got.Equal(want) {
+		t.Errorf("BucketAlign(%v, 5m) = %v, want %v", in, got, want)
+	}
+
+	// Already-aligned input is idempotent
+	if BucketAlign(want, 5*time.Minute) != want {
+		t.Errorf("BucketAlign not idempotent on aligned input")
+	}
+
+	// 1h zoom snaps down to the hour
+	got2 := BucketAlign(in, time.Hour)
+	want2 := time.Date(2026, 5, 10, 14, 0, 0, 0, time.UTC)
+	if !got2.Equal(want2) {
+		t.Errorf("BucketAlign(%v, 1h) = %v, want %v", in, got2, want2)
+	}
+
+	// Output is in UTC even when input is non-UTC
+	loc, _ := time.LoadLocation("America/New_York")
+	in3 := time.Date(2026, 5, 10, 14, 23, 45, 0, loc)
+	got3 := BucketAlign(in3, 15*time.Minute)
+	if got3.Location() != time.UTC {
+		t.Errorf("BucketAlign output location = %v, want UTC", got3.Location())
+	}
+}

@@ -422,6 +422,15 @@ func (c *Cache) IntegrityOK() bool {
 	return s == "ok"
 }
 
+// BucketAlign snaps t down to the nearest multiple of dur in unix
+// seconds and returns the result in UTC. It is the canonical helper for
+// computing bucket-boundary times shared between cache and TUI; the
+// cache also re-applies it defensively on TokenBuckets bounds.
+func BucketAlign(t time.Time, dur time.Duration) time.Time {
+	s := int64(dur.Seconds())
+	return time.Unix((t.Unix()/s)*s, 0).UTC()
+}
+
 // TokenBucket is one time-bucketed total of token usage.
 type TokenBucket struct {
 	BucketStart time.Time
