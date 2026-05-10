@@ -4,7 +4,7 @@ import "testing"
 
 func TestVersionString(t *testing.T) {
 	got := versionString()
-	want := "ccpulse dev"
+	want := "ccpulse dev (channel dev)"
 	if got != want {
 		t.Fatalf("versionString() = %q, want %q", got, want)
 	}
