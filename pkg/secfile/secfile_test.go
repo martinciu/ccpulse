@@ -171,40 +171,104 @@ func TestWriteFileAtomic_NoTempLeftBehind(t *testing.T) {
 	}
 }
 
+// TestWriteFileAtomic_Concurrent stresses WriteFileAtomic under contention
+// from N writers and R readers running simultaneously. Writers each loop,
+// repeatedly writing their own distinct 8 KiB payload; readers continuously
+// re-read the file and assert it always matches *some* writer's payload.
+// A non-atomic write of an 8 KiB payload would tear across multiple syscalls
+// on many filesystems and a reader would see partial bytes — catching the
+// regression this PR guards against.
+//
+// Also asserts the 0600 mode invariant holds under contention and that the
+// final file equals one of the payloads byte-for-byte.
 func TestWriteFileAtomic_Concurrent(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "f")
 
-	const N = 16
+	const (
+		N         = 16          // writers
+		R         = 8           // readers
+		Iters     = 20          // writes per writer
+		PayloadSz = 8 * 1024    // larger than typical fs block — defeats single-syscall atomicity
+	)
+
 	payloads := make([][]byte, N)
 	for i := range payloads {
-		payloads[i] = []byte(strings.Repeat("x", 1024) + fmt.Sprintf("|%d", i))
+		marker := fmt.Sprintf("|writer-%02d|", i)
+		fill := byte('a' + i%26)
+		buf := bytes.Repeat([]byte{fill}, PayloadSz-len(marker))
+		payloads[i] = append(buf, marker...)
+	}
+	payloadSet := make(map[string]struct{}, N)
+	for _, p := range payloads {
+		payloadSet[string(p)] = struct{}{}
 	}
 
-	var wg sync.WaitGroup
-	wg.Add(N)
+	// Seed so readers always see a valid file from t=0.
+	if err := secfile.WriteFileAtomic(path, payloads[0]); err != nil {
+		t.Fatalf("seed WriteFileAtomic: %v", err)
+	}
+
+	start := make(chan struct{})
+	stop := make(chan struct{})
+
+	var writers sync.WaitGroup
+	writers.Add(N)
 	for i := range N {
 		go func(p []byte) {
-			defer wg.Done()
-			if err := secfile.WriteFileAtomic(path, p); err != nil {
-				t.Errorf("WriteFileAtomic: %v", err)
+			defer writers.Done()
+			<-start
+			for range Iters {
+				if err := secfile.WriteFileAtomic(path, p); err != nil {
+					t.Errorf("WriteFileAtomic: %v", err)
+					return
+				}
 			}
 		}(payloads[i])
 	}
-	wg.Wait()
+
+	var readers sync.WaitGroup
+	readers.Add(R)
+	for range R {
+		go func() {
+			defer readers.Done()
+			<-start
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				got, err := os.ReadFile(path)
+				if err != nil {
+					t.Errorf("torn read: ReadFile: %v", err)
+					return
+				}
+				if _, ok := payloadSet[string(got)]; !ok {
+					t.Errorf("torn read: %d bytes not in payload set", len(got))
+					return
+				}
+			}
+		}()
+	}
+
+	close(start) // release all goroutines simultaneously
+	writers.Wait()
+	close(stop) // readers exit on next loop iteration
+	readers.Wait()
 
 	got, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("ReadFile after concurrent writes: %v", err)
+		t.Fatalf("final ReadFile: %v", err)
 	}
-	matched := false
-	for _, p := range payloads {
-		if bytes.Equal(got, p) {
-			matched = true
-			break
-		}
+	if _, ok := payloadSet[string(got)]; !ok {
+		t.Errorf("final bytes matched none of the %d input payloads (len=%d)", N, len(got))
 	}
-	if !matched {
-		t.Errorf("file bytes matched none of the %d input payloads (len=%d)", N, len(got))
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if g, w := info.Mode().Perm(), os.FileMode(0o600); g != w {
+		t.Errorf("file mode under contention: got %o want %o", g, w)
 	}
 }

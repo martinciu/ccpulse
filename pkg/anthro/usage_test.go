@@ -320,6 +320,11 @@ func TestUsageCache_FreshModes(t *testing.T) {
 	}
 }
 
+// TestWriteCacheConcurrent stresses writeCache + readCache under contention.
+// N writers each loop calling writeCache with their own distinct timestamp;
+// R readers continuously re-parse the cache and assert each successful read
+// returns one of the N input timestamps. A torn JSON file would surface as
+// a readCache error; a missing-file window would too.
 func TestWriteCacheConcurrent(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "usage.json")
@@ -329,31 +334,77 @@ func TestWriteCacheConcurrent(t *testing.T) {
 		t.Fatalf("seed unmarshal: %v", err)
 	}
 
-	const N = 16
+	const (
+		N     = 16 // writers
+		R     = 8  // readers
+		Iters = 20 // writes per writer
+	)
+
 	timestamps := make([]time.Time, N)
 	base := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
 	for i := range timestamps {
 		timestamps[i] = base.Add(time.Duration(i) * time.Second)
 	}
 
-	var wg sync.WaitGroup
-	wg.Add(N)
+	// Seed so readers always see a valid file from t=0.
+	if err := writeCache(path, u, timestamps[0]); err != nil {
+		t.Fatalf("seed writeCache: %v", err)
+	}
+
+	start := make(chan struct{})
+	stop := make(chan struct{})
+
+	var writers sync.WaitGroup
+	writers.Add(N)
 	for i := range N {
 		go func(when time.Time) {
-			defer wg.Done()
-			if err := writeCache(path, u, when); err != nil {
-				t.Errorf("writeCache: %v", err)
+			defer writers.Done()
+			<-start
+			for range Iters {
+				if err := writeCache(path, u, when); err != nil {
+					t.Errorf("writeCache: %v", err)
+					return
+				}
 			}
 		}(timestamps[i])
 	}
-	wg.Wait()
+
+	var readers sync.WaitGroup
+	readers.Add(R)
+	for range R {
+		go func() {
+			defer readers.Done()
+			<-start
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				got, err := readCache(path)
+				if err != nil {
+					t.Errorf("torn read: readCache: %v", err)
+					return
+				}
+				if !slices.ContainsFunc(timestamps, got.UpdatedAt.Equal) {
+					t.Errorf("torn read: UpdatedAt %v not in input set", got.UpdatedAt)
+					return
+				}
+			}
+		}()
+	}
+
+	close(start)
+	writers.Wait()
+	close(stop)
+	readers.Wait()
 
 	got, err := readCache(path)
 	if err != nil {
-		t.Fatalf("readCache after concurrent writes: %v", err)
+		t.Fatalf("final readCache: %v", err)
 	}
 	if !slices.ContainsFunc(timestamps, got.UpdatedAt.Equal) {
-		t.Errorf("UpdatedAt %v matched none of the N input timestamps", got.UpdatedAt)
+		t.Errorf("final UpdatedAt %v matched none of the N input timestamps", got.UpdatedAt)
 	}
 }
 
