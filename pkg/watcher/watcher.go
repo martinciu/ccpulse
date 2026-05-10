@@ -43,12 +43,20 @@ func New(root string) (*Watcher, error) {
 // onChange calls fire (in-flight timers drop their event via the
 // non-blocking send on `fire`).
 //
-// onChange is invoked sequentially from the Run loop's goroutine;
-// long-running callbacks delay subsequent events and may cause
-// drops past the 16-event fire buffer.
+// onChange is invoked sequentially from the Run loop's goroutine.
+// If onChange is slow and many distinct files fire at once, events
+// past the fireBufferSize cap are dropped silently — the buffer is
+// sized generously (256) so in practice this never fires; a slow
+// onChange is the more likely first symptom.
 func (w *Watcher) Run(onChange func(path string)) {
+	const fireBufferSize = 256
+	// pending grows monotonically with the set of distinct files seen
+	// during this Run — entries are not deleted on fire (Stop on a
+	// fired timer is a no-op, and the next event for the same path
+	// overwrites the entry). For ccpulse's expected file count this
+	// is a non-issue; the deferred Stop loop cleans up on shutdown.
 	pending := map[string]*time.Timer{}
-	fire := make(chan string, 16) // buffered so the timer goroutine never blocks
+	fire := make(chan string, fireBufferSize)
 	defer func() {
 		for _, t := range pending {
 			t.Stop()
@@ -79,8 +87,8 @@ func (w *Watcher) Run(onChange func(path string)) {
 				t.Stop()
 			}
 			pending[name] = time.AfterFunc(w.deb, func() {
-				// Non-blocking: if Run has returned and `fire` is full
-				// or unreceived, drop the event.
+				// Non-blocking: drops on shutdown (no receiver) and
+				// on full buffer (slow onChange overwhelmed by burst).
 				select {
 				case fire <- name:
 				default:
