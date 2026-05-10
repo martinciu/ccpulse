@@ -103,21 +103,7 @@ Prints the build version, commit hash, and build date.
 `~/.config/ccpulse/config.toml` (created on first `config edit`):
 
 ```toml
-[plan]
-tier = "max_20x"             # max_5x | max_20x | pro | api | custom
-custom_ceiling_tokens = 0    # used when tier = "custom"
-# api_warn_usd = 5.0         # tier = "api" only
-# api_hot_usd  = 10.0        # tier = "api" only
-
-[ui]
-accent = "#6c71c4"           # any hex; default Solarized violet
-default_tab = "live"
-default_scope = "global"
-tick_ms = 1000
-
 [history]
-default_window_days = 30
-include_subagents = true
 retention_days = 0           # 0 = keep usage history forever; positive int prunes older rows
 
 [paths]
@@ -130,9 +116,7 @@ override = ""                # path to a custom pricing.json
 
 - `[history] retention_days` — drop usage history rows older than N days on each insert. Default `0` keeps history forever. Usage history is recorded once per ~3 minutes whenever ccpulse is running and successfully reaches the Anthropic usage API.
 
-Plan-tier ceilings are rough estimates (Anthropic doesn't publish exact
-caps). For precision, use `tier = "custom"` and tune
-`custom_ceiling_tokens` from your observed rate-limit warnings.
+The plan tier (used to compute the 5h / 7d quota ceilings) is read from your Claude Code OAuth credential — there is no config knob for it.
 
 ## Troubleshooting
 
