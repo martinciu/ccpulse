@@ -52,3 +52,32 @@ func ParseFromOffsetWithErrors(path, slug string, startOffset int64, startLine i
 	}
 	return msgs, errs, off, line, sc.Err()
 }
+
+// skipPastNewline reads from f starting at startOff in 64 KiB chunks
+// until a '\n' byte is seen. Returns the number of bytes scanned
+// before the terminator (or total bytes scanned if EOF was reached
+// without finding one), whether a terminator was found, and any read
+// error other than io.EOF.
+func skipPastNewline(f *os.File, startOff int64) (int, bool, error) {
+	if _, err := f.Seek(startOff, io.SeekStart); err != nil {
+		return 0, false, err
+	}
+	const chunkSize = 64 * 1024
+	buf := make([]byte, chunkSize)
+	scanned := 0
+	for {
+		n, err := f.Read(buf)
+		for i := range n {
+			if buf[i] == '\n' {
+				return scanned + i, true, nil
+			}
+		}
+		scanned += n
+		if err == io.EOF {
+			return scanned, false, nil
+		}
+		if err != nil {
+			return scanned, false, err
+		}
+	}
+}
