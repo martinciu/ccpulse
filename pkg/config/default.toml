@@ -19,7 +19,10 @@ retention_days = 0
 
 [paths]
 projects_root = "~/.claude/projects"
-cache_dir = "~/.cache/ccpulse"
+# cache_dir is left empty so pkg/config can fill the channel-appropriate
+# default at runtime ("~/.cache/ccpulse" for release, "~/.cache/ccpulse-dev"
+# for dev). User-explicit values in your own config.toml always win.
+cache_dir = ""
 
 [pricing]
 override = ""

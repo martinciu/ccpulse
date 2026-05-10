@@ -139,3 +139,48 @@ func TestDefaultPath_HonorsXDG(t *testing.T) {
 		t.Errorf("DefaultPath() = %q, want %q", got, want)
 	}
 }
+
+func TestLoad_CacheDirDefaultDev(t *testing.T) {
+	channel.Set("dev")
+	t.Cleanup(func() { channel.Set("dev") })
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Paths.CacheDir != "~/.cache/ccpulse-dev" {
+		t.Errorf("dev CacheDir = %q, want %q", cfg.Paths.CacheDir, "~/.cache/ccpulse-dev")
+	}
+}
+
+func TestLoad_CacheDirDefaultRelease(t *testing.T) {
+	channel.Set("release")
+	t.Cleanup(func() { channel.Set("dev") })
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Paths.CacheDir != "~/.cache/ccpulse" {
+		t.Errorf("release CacheDir = %q, want %q", cfg.Paths.CacheDir, "~/.cache/ccpulse")
+	}
+}
+
+func TestLoad_ExplicitCacheDirOverridesChannel(t *testing.T) {
+	channel.Set("dev")
+	t.Cleanup(func() { channel.Set("dev") })
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.toml")
+	body := `
+[paths]
+cache_dir = "/explicit/path"
+`
+	if err := os.WriteFile(p, []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Paths.CacheDir != "/explicit/path" {
+		t.Errorf("explicit CacheDir lost: got %q", cfg.Paths.CacheDir)
+	}
+}

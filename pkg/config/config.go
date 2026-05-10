@@ -66,23 +66,38 @@ type Config struct {
 // Load reads cfg from path, falling back to embedded defaults if path
 // is empty. Defaults always apply for unset fields. Legacy [plan] keys
 // migrate into [display] when the new keys are at their zero values.
+//
+// An empty cache_dir (the default) resolves to the channel-appropriate
+// path: "~/.cache/ccpulse" on the release channel, "~/.cache/ccpulse-dev"
+// on the dev channel. User-explicit values override this resolution.
 func Load(path string) (Config, error) {
 	var cfg Config
 	if _, err := toml.Decode(string(defaultTOML), &cfg); err != nil {
 		return cfg, err
 	}
-	if path == "" {
-		return cfg, nil
+	if path != "" {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return cfg, err
+		}
+		if _, err := toml.Decode(string(data), &cfg); err != nil {
+			return cfg, err
+		}
 	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return cfg, err
-	}
-	if _, err := toml.Decode(string(data), &cfg); err != nil {
-		return cfg, err
+	if cfg.Paths.CacheDir == "" {
+		cfg.Paths.CacheDir = defaultCacheDir()
 	}
 	migrateLegacy(&cfg)
 	return cfg, nil
+}
+
+// defaultCacheDir is the channel-aware fallback for an empty cache_dir.
+// Tilde expansion happens at the call site (cmd/ccpulse uses `expand`).
+func defaultCacheDir() string {
+	if channel.IsDev() {
+		return "~/.cache/ccpulse-dev"
+	}
+	return "~/.cache/ccpulse"
 }
 
 // migrateLegacy maps old [plan] fields into [display]. Idempotent — calling
