@@ -197,7 +197,6 @@ func runTUI(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	defer w.Close()
 
 	cred, credErr := anthro.LoadCredential()
 	if credErr != nil && !errors.Is(credErr, anthro.ErrNoCredential) {
@@ -215,29 +214,44 @@ func runTUI(cmd *cobra.Command) error {
 	})
 	p := newTeaProgram(m)
 
+	// Shutdown discipline: every long-running background goroutine
+	// spawned below joins this WaitGroup. Defers below are ordered
+	// (registration is reverse of execution) so that on return:
+	//
+	//   1. bfCancel signals the backfill ctx.
+	//   2. bfDone.Wait blocks until the backfill goroutine returns.
+	//   3. cancel signals the poller ctx (in-flight HTTP aborts).
+	//   4. w.Close closes fsnotify, signalling the watcher goroutine.
+	//   5. bg.Wait blocks until the watcher, poller, and initial-refresh
+	//      goroutines all return — including any in-flight db.Exec from
+	//      runQuotaPoller.push.
+	//   6. c.Close closes the cache (registered earlier; runs last among
+	//      the cache-touching defers).
+	//
+	// The backfill keeps a separate WaitGroup (bfDone) because it has a
+	// distinct lifecycle (one-shot) and a private context (bfCtx).
+	var bg sync.WaitGroup
+
 	ctx, cancel := context.WithCancel(cmd.Context())
-	defer cancel()
 
 	if hasOAuth {
 		retention := time.Duration(cfg.History.RetentionDays) * 24 * time.Hour
-		go runQuotaPoller(ctx, p, cred, cacheDir, c, retention)
+		bg.Add(1)
+		go func() {
+			defer bg.Done()
+			runQuotaPoller(ctx, p, cred, cacheDir, c, retention)
+		}()
 	}
 
-	go w.Run(func(path string) {
-		_, _ = ing.ProcessFile(path)
-		p.Send(tui.RefreshMsg{})
-	})
+	bg.Add(1)
+	go func() {
+		defer bg.Done()
+		w.Run(func(path string) {
+			_, _ = ing.ProcessFile(path)
+			p.Send(tui.RefreshMsg{})
+		})
+	}()
 
-	// Startup backfill: catch the cache up to EOF for every .jsonl
-	// under projectsRoot. Runs concurrently with the watcher;
-	// SQLite serialises writes, InsertMessages is idempotent, so
-	// the worst case of overlap is wasted parse work.
-	//
-	// On shutdown the goroutine must finish before c.Close runs, or
-	// an in-flight ProcessFile would write to a closed SQLite handle.
-	// Defer order is LIFO, so registering Wait *after* Cancel makes
-	// Cancel fire first (signal the goroutine), then Wait blocks
-	// until the goroutine returns, then w.Close and c.Close run.
 	bfCtx, bfCancel := context.WithCancel(context.Background())
 	var bfDone sync.WaitGroup
 	bfDone.Add(1)
@@ -249,13 +263,21 @@ func runTUI(cmd *cobra.Command) error {
 			p.Send(tui.RefreshMsg{})
 		})
 	}()
-	defer bfDone.Wait()
-	defer bfCancel()
 
 	// Kick off an initial refresh so the TUI shows current data on launch.
+	bg.Add(1)
 	go func() {
+		defer bg.Done()
 		p.Send(tui.RefreshMsg{})
 	}()
+
+	// Defer registration order matters — see the block comment above.
+	// Registered LAST → runs FIRST; registered FIRST (further up) → runs LAST.
+	defer bg.Wait()
+	defer w.Close()
+	defer cancel()
+	defer bfDone.Wait()
+	defer bfCancel()
 
 	_, err = p.Run()
 	return err
