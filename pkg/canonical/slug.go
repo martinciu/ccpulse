@@ -4,6 +4,7 @@ package canonical
 
 import (
 	"os"
+	"slices"
 	"strings"
 )
 
@@ -27,6 +28,18 @@ func DecodeSlugIn(slug, root string) (string, bool) {
 	candidate := strings.TrimPrefix(slug, "-")
 	candidate = strings.ReplaceAll(candidate, "--", "/.")
 	candidate = strings.ReplaceAll(candidate, "-", "/")
+
+	// Reject path-traversal slugs before any os.Stat. The slug
+	// encoding (`/` → `-`, `.` → `--`) never produces `..` on its
+	// own, so a `..` segment in the decoded candidate can only come
+	// from a literal `..` in the slug directory name and is
+	// unambiguously hostile or malformed input. The shrink-loop
+	// fallback below rejoins these same segments, so checking once
+	// here covers both code paths.
+	if slices.Contains(strings.Split(candidate, "/"), "..") {
+		return "", false
+	}
+
 	joinPath := func(r, p string) string {
 		if r == "/" {
 			return "/" + p
