@@ -10,6 +10,7 @@ builds:
       - -X main.version={{ .Version }}
       - -X main.commit={{ .ShortCommit }}
       - -X main.date={{ .Date }}
+      - -X main.buildChannel=release
 archives:
   - format: tar.gz
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
