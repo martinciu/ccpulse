@@ -193,6 +193,42 @@ func TestParseFromOffsetWithErrors_IdempotentReparse(t *testing.T) {
 	}
 }
 
+func TestParseFromOffsetWithErrors_OversizedTailNoNewline(t *testing.T) {
+	withScannerMaxBytes(t, 4096)
+
+	dir := t.TempDir()
+	p := filepath.Join(dir, "t.jsonl")
+
+	var b []byte
+	for range 5 {
+		b = append(b, []byte(validAssistantLine(""))...)
+	}
+	preTailOff := int64(len(b))
+	// Oversized bytes still being written (no terminating '\n').
+	b = append(b, []byte(`{"type":"assistant","padding":"`)...)
+	b = append(b, []byte(strings.Repeat("x", 5000))...)
+	if err := os.WriteFile(p, b, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	msgs, errs, newOff, newLine, err := ParseFromOffsetWithErrors(p, "slug", 0, 0)
+	if err != nil {
+		t.Fatalf("parseErr = %v, want nil", err)
+	}
+	if len(msgs) != 5 {
+		t.Errorf("len(msgs) = %d, want 5", len(msgs))
+	}
+	if len(errs) != 0 {
+		t.Errorf("len(errs) = %d, want 0 (no synthesised entry yet — line in progress)", len(errs))
+	}
+	if newOff != preTailOff {
+		t.Errorf("newOff = %d, want %d (right before oversized tail)", newOff, preTailOff)
+	}
+	if newLine != 5 {
+		t.Errorf("newLine = %d, want 5", newLine)
+	}
+}
+
 func TestParseFromOffset(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "t.jsonl")
