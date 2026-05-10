@@ -4,7 +4,9 @@
 //
 // Callers must pass paths that ccpulse owns (e.g. ~/.cache/ccpulse,
 // not ~/.cache). Pre-existing parent dirs created by the user or
-// the OS are not chmod'd.
+// the OS are not chmod'd. The chmod step uses os.Chmod, which follows
+// symlinks; a hostile symlink at the leaf path would chmod its target,
+// so callers must own the entire path tree.
 package secfile
 
 import "os"
@@ -36,6 +38,10 @@ func WriteFile(path string, data []byte) error {
 
 // OpenFile is os.OpenFile with FileMode, followed by os.Chmod after
 // open to tighten a pre-existing file. The caller owns closing.
+//
+// If chmod fails after a successful open, the file may remain on disk
+// (created by O_CREATE at FileMode); the caller sees only the chmod
+// error.
 func OpenFile(path string, flag int) (*os.File, error) {
 	f, err := os.OpenFile(path, flag, FileMode)
 	if err != nil {
