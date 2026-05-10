@@ -312,8 +312,10 @@ func TestProcessFile_MalformedLineLoggedValidLinesInserted(t *testing.T) {
 	}
 
 	logBytes, _ := os.ReadFile(ing.ParseErrorsLog)
-	if !strings.Contains(string(logBytes), "mixed.jsonl:2") {
-		t.Errorf("expected log to mention mixed.jsonl:2 (the bad line), got: %s", logBytes)
+	// Source path is wrapped in quotes by strconv.QuoteToASCII, so the
+	// "<file>":<line> token is what survives in the log.
+	if !strings.Contains(string(logBytes), `mixed.jsonl":2`) {
+		t.Errorf(`expected log to mention mixed.jsonl":2 (the bad line), got: %s`, logBytes)
 	}
 }
 
