@@ -37,7 +37,7 @@ These env vars override `config.toml` at runtime — useful for testing against 
    - On each event: `parse.ParseFromOffsetWithErrors` tails the file from the last byte offset → `cache.InsertMessages` → `canonical.Resolver.Resolve` back-fills `project_canonical` → sends `tui.RefreshMsg` to the Bubble Tea program.
    - `ccpulse index` does a full cold walk via `parse.Walk`.
 
-2. The TUI (`pkg/tui`) is a pure Bubble Tea model. On `RefreshMsg` it re-queries the cache for all five tabs (Live, Today, History, Projects, Models) and redraws. It never writes to the cache itself.
+2. The TUI (`pkg/tui`) is a pure Bubble Tea model. It renders a single view: a bordered header with side-by-side 5h and 7d quota bars (`bubbles/progress`), followed by a horizontally-scrollable bar chart (`ntcharts/barchart`) of token usage per time bucket, heat-coloured relative to the peak bucket. On `RefreshMsg` it calls `status.Compute` (for the quota window) and `cache.TokenBuckets` (for the histogram at the current zoom level) and redraws. The `z` key cycles zoom (5m / 15m / 1h); `←`/`→` scroll the chart; `?` toggles a full-help overlay. The TUI never writes to the cache.
 
 ### Package map
 
@@ -45,15 +45,17 @@ These env vars override `config.toml` at runtime — useful for testing against 
 |---|---|
 | `cmd/ccpulse` | Cobra CLI wiring: `runTUI`, `status`, `index`, `config`, `doctor`, `version` |
 | `pkg/parse` | JSONL transcript → `[]Message`; `ParseFromOffsetWithErrors` for incremental tail |
-| `pkg/cache` | SQLite via `modernc.org/sqlite`; schema embedded in `schema.sql`; tracks file cursors (`files` table) and slug→canonical mapping (`slug_canonical` table) |
+| `pkg/cache` | SQLite via `modernc.org/sqlite`; schema embedded in `schema.sql`; tracks file cursors (`files` table), slug→canonical mapping (`slug_canonical` table), and time-bucketed token aggregates (`TokenBuckets`) |
 | `pkg/watcher` | fsnotify wrapper with 100 ms debounce; auto-subscribes new subdirectories |
 | `pkg/canonical` | Slug decode (`-` → `/`, `--` → `/.`); git-based canonical project root resolution |
 | `pkg/pricing` | Embeds `pricing.json`; `Table.CostFor(Message)` returns USD cost; override via config |
-| `pkg/status` | 5-hour rolling window computation; tier → token ceiling mapping; `TmuxLine` for status-right |
-| `pkg/tui` | Bubble Tea model, 5 tabs, tmux-aware Live scope filtering, lipgloss styling |
-| `pkg/tmux` | Thin wrapper around `tmux` CLI for current-session pane paths |
+| `pkg/status` | 5-hour rolling window + 7-day window computation; tier → token ceiling mapping; `TmuxLine` for status-right |
+| `pkg/anthro` | Anthropic credential loading (`LoadCredential`), tier slug/pretty mapping (`TierSlug`, `TierPretty`), and the usage-API client / cache used by `runTUI` |
+| `pkg/ingest` | Cold-walk indexer used by `runTUI` startup backfill and `ccpulse index`; reports progress via `IndexProgressMsg` |
+| `pkg/tui` | Bubble Tea model: bordered header (5h+7d quota bars), horizontally-scrollable token histogram, full-help overlay, lipgloss styling, `bubbles/{help,key,progress,viewport}` + `ntcharts/barchart` |
 | `pkg/config` | TOML config at `~/.config/ccpulse/config.toml` (respects `XDG_CONFIG_HOME`); `config.Load("")` returns safe defaults |
-| `pkg/state` | JSON sidecar at `~/.local/state/ccpulse/state.json` (respects `XDG_STATE_HOME`) persisting tab and live-scope across restarts |
+| `pkg/tmux` | Thin wrapper around `tmux` CLI for current-session pane paths. **Vestigial after #34** — the multi-tab TUI used this for tmux-aware Live scope filtering; no longer referenced from production code, retained for the time being so removal can land in a focused cleanup PR. |
+| `pkg/state` | JSON sidecar at `~/.local/state/ccpulse/state.json` for last-used tab + live-scope. **Vestigial after #34** — same status as `pkg/tmux` above. |
 
 ### SQLite schema
 
