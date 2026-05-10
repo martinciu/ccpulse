@@ -161,3 +161,48 @@ func TestCompute_OmitsSevenDayWhenUsageNil(t *testing.T) {
 		t.Errorf("Has7d = true, want false")
 	}
 }
+
+func TestJSONOutputIncludesProjection(t *testing.T) {
+	mins := 165
+	w := Window{
+		Percent:      13,
+		CeilingLabel: "max_20x",
+		Projection: &Projections{
+			FiveHour: &Projection{
+				ElapsedMinutes:      120,
+				SlopePctPerHour:     21.00,
+				ProjectedPctAtReset: 105,
+				WillOverreach:       true,
+				MinutesTo100Pct:     &mins,
+				Confidence:          "ok",
+			},
+		},
+	}
+	out, err := JSON(w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`"projection":`,
+		`"five_hour":`,
+		`"slope_pct_per_hour":21`,
+		`"will_overreach":true`,
+		`"minutes_to_100_pct":165`,
+		`"confidence":"ok"`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("JSON missing %s in %s", want, out)
+		}
+	}
+}
+
+func TestJSONOutputOmitsProjectionWhenNil(t *testing.T) {
+	w := Window{Percent: 0, CeilingLabel: "unknown"}
+	out, err := JSON(w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "projection") {
+		t.Errorf("JSON should omit projection when Projection is nil: %s", out)
+	}
+}
