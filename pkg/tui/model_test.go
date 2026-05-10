@@ -100,6 +100,25 @@ func TestIndexProgressMsg(t *testing.T) {
 	}
 }
 
+func TestQuotaBarRendered(t *testing.T) {
+	// progress.ViewAs at a non-zero percent emits the solid-fill ANSI
+	// background sequence for at least one block. View() at 0% emits only
+	// the unfilled track; at 80% it must emit filled blocks. Compare.
+	low := New(Deps{})
+	low.w, low.h = 120, 40
+	low.window = status.Window{Percent: 0}
+	low.progress = newProgressBar(0, low.progressWidth())
+
+	hi := New(Deps{})
+	hi.w, hi.h = 120, 40
+	hi.window = status.Window{Percent: 80}
+	hi.progress = newProgressBar(0.8, hi.progressWidth())
+
+	if low.View() == hi.View() {
+		t.Errorf("quota bar must render differently at 0%% vs 80%%; got identical View output")
+	}
+}
+
 func TestViewFitsTerminal(t *testing.T) {
 	for _, h := range []int{20, 40, 60} {
 		m := New(Deps{})

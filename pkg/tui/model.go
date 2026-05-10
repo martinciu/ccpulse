@@ -90,6 +90,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.w, m.h = msg.Width, msg.Height
 		m.viewport.Width = m.chartWidth()
 		m.viewport.Height = m.chartHeight()
+		m.progress = newProgressBar(float64(m.window.Percent)/100.0, m.progressWidth())
 		m.refreshChart()
 	case IndexProgressMsg:
 		m.indexActive = msg.Active
@@ -131,6 +132,9 @@ func (m Model) View() string {
 	header := renderHeader(m.window, m.w, IndexProgress{
 		Done: m.indexDone, Total: m.indexTotal, Active: m.indexActive,
 	})
+	bar := lipgloss.NewStyle().Padding(0, 2).Render(
+		m.progress.ViewAs(float64(m.window.Percent) / 100.0),
+	)
 	zoom := ZoomLevels[m.zoomIdx]
 	label := lipgloss.NewStyle().Foreground(Base01).Render(
 		fmt.Sprintf("  %s per bar  ·  [z] zoom", zoom.Label),
@@ -143,7 +147,7 @@ func (m Model) View() string {
 		body = m.viewport.View()
 	}
 	footer := m.help.View(m.keys)
-	return lipgloss.JoinVertical(lipgloss.Left, header, label, sep, body, sep, footer)
+	return lipgloss.JoinVertical(lipgloss.Left, header, bar, label, sep, body, sep, footer)
 }
 
 // refreshChart queries the cache and updates the viewport content.
@@ -186,7 +190,7 @@ func (m *Model) recomputeWindow() {
 		m.window = w
 	}
 	pct := float64(m.window.Percent) / 100.0
-	m.progress = newProgressBar(pct, m.w-4)
+	m.progress = newProgressBar(pct, m.progressWidth())
 }
 
 // chartWidth returns the available width for the viewport.
@@ -199,19 +203,31 @@ func (m Model) chartWidth() int {
 }
 
 // chartHeight returns the available rows for the chart, leaving room for
-// header, label, two separators, and the help footer.
+// header, quota bar, zoom label, two separators, and the help footer.
 func (m Model) chartHeight() int {
-	// Bordered header box = 4 rows (top border + title + subtitle + bottom
-	// border). Label, top sep, bottom sep, footer = 1 row each. Total
-	// non-body overhead = 8 rows.
-	h := m.h - 8
+	// Bordered header box = 4 rows. Quota bar 1, label 1, top sep 1,
+	// bottom sep 1, footer 1. Total non-body overhead = 9 rows.
+	h := m.h - 9
 	if h < 5 {
 		return 5
 	}
 	return h
 }
 
-// newProgressBar creates a styled progress bar at the given percentage.
+// progressWidth returns the rendered width of the quota bar, accounting
+// for the 2-column horizontal padding applied to it in View.
+func (m Model) progressWidth() int {
+	w := m.w - 4
+	if w < 10 {
+		return 10
+	}
+	return w
+}
+
+// newProgressBar builds a quota bar styled by percent threshold (the bar's
+// solid fill is fixed at construction, so the color only changes when this
+// is rebuilt). The actual fill amount is supplied at render time via
+// progress.ViewAs.
 func newProgressBar(pct float64, w int) progress.Model {
 	color := Violet
 	switch {
@@ -223,11 +239,9 @@ func newProgressBar(pct float64, w int) progress.Model {
 	if w < 10 {
 		w = 10
 	}
-	p := progress.New(
+	return progress.New(
 		progress.WithSolidFill(string(color)),
 		progress.WithWidth(w),
 		progress.WithoutPercentage(),
 	)
-	_ = p.SetPercent(pct)
-	return p
 }
