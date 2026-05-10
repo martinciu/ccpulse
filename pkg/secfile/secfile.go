@@ -29,6 +29,9 @@ func MkdirAll(dir string) error {
 
 // WriteFile is os.WriteFile with FileMode, followed by os.Chmod to
 // tighten a pre-existing file.
+//
+// If chmod fails after a successful write, the new contents are
+// already on disk; the caller sees only the chmod error.
 func WriteFile(path string, data []byte) error {
 	if err := os.WriteFile(path, data, FileMode); err != nil {
 		return err
