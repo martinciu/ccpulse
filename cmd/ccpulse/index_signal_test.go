@@ -93,7 +93,7 @@ func mkFakeProjectsTree(t *testing.T, root string, nFiles, nLines int) {
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < nFiles; i++ {
+	for i := range nFiles {
 		dir := filepath.Join(root, fmt.Sprintf("proj-%03d", i/20))
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
@@ -103,7 +103,7 @@ func mkFakeProjectsTree(t *testing.T, root string, nFiles, nLines int) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for j := 0; j < nLines; j++ {
+		for j := range nLines {
 			fmt.Fprintf(f, `{"type":"placeholder","i":%d,"j":%d}`+"\n", i, j)
 		}
 		f.Close()
