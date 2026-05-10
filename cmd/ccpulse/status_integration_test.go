@@ -202,6 +202,21 @@ func TestStatusSkipsRecordOnCacheFresh(t *testing.T) {
 	}
 }
 
+func TestStatusTmuxFlagRemoved(t *testing.T) {
+	cmd := newStatusCmd()
+	cmd.SetArgs([]string{"--tmux"})
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for --tmux flag, got nil")
+	}
+	if !strings.Contains(err.Error(), "unknown flag") && !strings.Contains(buf.String(), "unknown flag") {
+		t.Errorf("error should mention 'unknown flag': %v / %s", err, buf.String())
+	}
+}
+
 func TestStatusPrunesWhenRetentionConfigured(t *testing.T) {
 	cacheDir := t.TempDir()
 	credDir := t.TempDir()
