@@ -12,6 +12,9 @@
 .autonomo/
 .claude/worktrees/
 
+# personal/machine-local Claude instructions (alongside the committed CLAUDE.md)
+CLAUDE.local.md
+
 # skills (installed via `npx skills`, personal tooling)
 .agents/
 .claude/skills/
