@@ -8,7 +8,9 @@ import (
 
 	"github.com/martinciu/ccpulse/pkg/cache"
 	"github.com/martinciu/ccpulse/pkg/canonical"
+	"github.com/martinciu/ccpulse/pkg/channel"
 	"github.com/martinciu/ccpulse/pkg/config"
+	"github.com/martinciu/ccpulse/pkg/devlog"
 	"github.com/martinciu/ccpulse/pkg/ingest"
 	"github.com/martinciu/ccpulse/pkg/pricing"
 	"github.com/spf13/cobra"
@@ -41,6 +43,9 @@ func runIndex(rebuild bool) error {
 	cacheDir := envOr("CCPULSE_CACHE_DIR", expand(cfg.Paths.CacheDir))
 	if err := os.MkdirAll(cacheDir, 0755); err != nil {
 		return err
+	}
+	if logCloser, err := devlog.Init(channel.IsDev(), cacheDir); err == nil && logCloser != nil {
+		defer logCloser.Close()
 	}
 	dbPath := filepath.Join(cacheDir, "state.db")
 

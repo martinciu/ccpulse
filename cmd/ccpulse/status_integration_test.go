@@ -15,6 +15,7 @@ import (
 
 	"github.com/martinciu/ccpulse/pkg/anthro"
 	"github.com/martinciu/ccpulse/pkg/cache"
+	"github.com/martinciu/ccpulse/pkg/channel"
 )
 
 const sampleAPIBody = `{
@@ -300,6 +301,11 @@ func TestStatusPrunesWhenRetentionConfigured(t *testing.T) {
 	t.Setenv("CCPULSE_CACHE_DIR", cacheDir)
 	t.Setenv("HOME", credDir)
 	t.Setenv("XDG_CONFIG_HOME", cfgDir)
+	// This test writes to the release-channel config path. Pin the channel
+	// to release for the duration so DefaultPath resolves there regardless
+	// of the test process's default channel state.
+	channel.Set("release")
+	t.Cleanup(func() { channel.Set("dev") })
 	writeTempCredential(t, credDir)
 
 	// Write a config that prunes anything older than 1 day.

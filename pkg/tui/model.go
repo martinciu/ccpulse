@@ -44,6 +44,7 @@ type Deps struct {
 	Credential   anthro.Credential
 	HasOAuth     bool
 	CacheDir     string
+	IsDev        bool
 }
 
 // Model is the root Bubble Tea model for the chart view.
@@ -141,7 +142,7 @@ func (m Model) View() string {
 	}
 	header := renderHeader(m.window, m.w, IndexProgress{
 		Done: m.indexDone, Total: m.indexTotal, Active: m.indexActive,
-	}, m.quotaBars())
+	}, m.quotaBars(), m.deps.IsDev)
 	zoom := ZoomLevels[m.zoomIdx]
 	label := lipgloss.NewStyle().Foreground(Base01).Render(
 		fmt.Sprintf("  %s per bar  ·  [z] zoom", zoom.Label),

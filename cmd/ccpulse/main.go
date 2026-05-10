@@ -17,7 +17,9 @@ import (
 	"github.com/martinciu/ccpulse/pkg/anthro"
 	"github.com/martinciu/ccpulse/pkg/cache"
 	"github.com/martinciu/ccpulse/pkg/canonical"
+	"github.com/martinciu/ccpulse/pkg/channel"
 	"github.com/martinciu/ccpulse/pkg/config"
+	"github.com/martinciu/ccpulse/pkg/devlog"
 	"github.com/martinciu/ccpulse/pkg/ingest"
 	"github.com/martinciu/ccpulse/pkg/pricing"
 	"github.com/martinciu/ccpulse/pkg/tui"
@@ -25,16 +27,18 @@ import (
 )
 
 var (
-	version = "dev"
-	commit  = "none"
-	date    = "unknown"
+	version      = "dev"
+	commit       = "none"
+	date         = "unknown"
+	buildChannel = "dev"
 )
 
 func versionString() string {
 	if commit == "none" && date == "unknown" {
-		return "ccpulse " + version
+		return fmt.Sprintf("ccpulse %s (channel %s)", version, channel.Channel())
 	}
-	return fmt.Sprintf("ccpulse %s (commit %s, built %s)", version, commit, date)
+	return fmt.Sprintf("ccpulse %s (commit %s, built %s, channel %s)",
+		version, commit, date, channel.Channel())
 }
 
 func newRootCmd() *cobra.Command {
@@ -123,6 +127,9 @@ func runTUI(_ interface{}) error {
 	if err := os.MkdirAll(cacheDir, 0755); err != nil {
 		return err
 	}
+	if logCloser, err := devlog.Init(channel.IsDev(), cacheDir); err == nil && logCloser != nil {
+		defer logCloser.Close()
+	}
 	dbPath := filepath.Join(cacheDir, "state.db")
 	c, err := cache.Open(dbPath)
 	if err != nil {
@@ -176,6 +183,7 @@ func runTUI(_ interface{}) error {
 		Credential:   cred,
 		HasOAuth:     hasOAuth,
 		CacheDir:     cacheDir,
+		IsDev:        channel.IsDev(),
 	})
 	p := tea.NewProgram(m, tea.WithAltScreen())
 
@@ -270,6 +278,7 @@ func runQuotaPoller(
 }
 
 func main() {
+	channel.Set(buildChannel)
 	if err := newRootCmd().Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
