@@ -3,7 +3,10 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/martinciu/ccpulse/pkg/channel"
 )
 
 func TestLoadDefaults(t *testing.T) {
@@ -102,5 +105,37 @@ tier = "api"
 	}
 	if cfg.Display.Mode != "cost" {
 		t.Errorf("legacy tier=api should migrate to display.mode=cost, got %q", cfg.Display.Mode)
+	}
+}
+
+func TestDefaultPath_DevSuffix(t *testing.T) {
+	channel.Set("dev")
+	t.Cleanup(func() { channel.Set("dev") })
+	got := DefaultPath()
+	if !strings.Contains(got, "ccpulse-dev/config.toml") {
+		t.Errorf("dev DefaultPath() = %q, want suffix %q", got, "ccpulse-dev/config.toml")
+	}
+}
+
+func TestDefaultPath_ReleaseNoSuffix(t *testing.T) {
+	channel.Set("release")
+	t.Cleanup(func() { channel.Set("dev") })
+	got := DefaultPath()
+	if !strings.Contains(got, "ccpulse/config.toml") {
+		t.Errorf("release DefaultPath() = %q, want suffix %q", got, "ccpulse/config.toml")
+	}
+	if strings.Contains(got, "ccpulse-dev") {
+		t.Errorf("release DefaultPath() leaked dev suffix: %q", got)
+	}
+}
+
+func TestDefaultPath_HonorsXDG(t *testing.T) {
+	channel.Set("dev")
+	t.Cleanup(func() { channel.Set("dev") })
+	t.Setenv("XDG_CONFIG_HOME", "/tmp/xdg-config")
+	got := DefaultPath()
+	want := "/tmp/xdg-config/ccpulse-dev/config.toml"
+	if got != want {
+		t.Errorf("DefaultPath() = %q, want %q", got, want)
 	}
 }

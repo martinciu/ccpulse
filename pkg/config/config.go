@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/BurntSushi/toml"
+	"github.com/martinciu/ccpulse/pkg/channel"
 )
 
 //go:embed default.toml
@@ -101,12 +102,18 @@ func migrateLegacy(cfg *Config) {
 }
 
 // DefaultPath returns the OS-appropriate config path, honoring XDG_CONFIG_HOME.
+// On the dev channel the project segment becomes "ccpulse-dev" so dev runs
+// never read or overwrite the released config file.
 func DefaultPath() string {
+	project := "ccpulse"
+	if channel.IsDev() {
+		project = "ccpulse-dev"
+	}
 	if x := os.Getenv("XDG_CONFIG_HOME"); x != "" {
-		return x + "/ccpulse/config.toml"
+		return x + "/" + project + "/config.toml"
 	}
 	home, _ := os.UserHomeDir()
-	return home + "/.config/ccpulse/config.toml"
+	return home + "/.config/" + project + "/config.toml"
 }
 
 // HasLegacyPlan reports whether the loaded config used the deprecated
