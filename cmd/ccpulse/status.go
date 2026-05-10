@@ -20,6 +20,7 @@ func newStatusCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "status",
 		Short: "Print 5-hour window status",
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runStatus(cmd, asJSON)
 		},
@@ -38,7 +39,7 @@ func runStatus(cmd *cobra.Command, asJSON bool) error {
 	}
 	defer c.Close()
 
-	q := buildQuotaInput(cacheDir, time.Now())
+	q := buildQuotaInput(cmd.Context(), cacheDir, time.Now())
 
 	// Record a usage sample whenever Fetch returned genuinely fresh data.
 	// Best-effort — failure to record never blocks the visible quota number.
@@ -77,7 +78,7 @@ func runStatus(cmd *cobra.Command, asJSON bool) error {
 // Any failure → empty QuotaInput with TierSlug="unknown" so Compute falls back
 // to the JSONL heuristic. Errors are silently swallowed except for diagnostics
 // to stderr (visible from the status command).
-func buildQuotaInput(cacheDir string, now time.Time) status.QuotaInput {
+func buildQuotaInput(ctx context.Context, cacheDir string, now time.Time) status.QuotaInput {
 	cred, err := anthro.LoadCredential()
 	if err != nil {
 		if !errors.Is(err, anthro.ErrNoCredential) {
@@ -92,7 +93,7 @@ func buildQuotaInput(cacheDir string, now time.Time) status.QuotaInput {
 	if cred.Expired(now) {
 		fmt.Fprintln(os.Stderr, "ccpulse: OAuth credential expired — run /login in claude")
 	}
-	res, err := anthro.Fetch(context.Background(), cred, cacheDir)
+	res, err := anthro.Fetch(ctx, cred, cacheDir)
 	if err != nil {
 		return q // fall back; quota nil
 	}

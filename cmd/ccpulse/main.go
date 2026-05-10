@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -34,6 +36,13 @@ var (
 	buildChannel = "dev"
 )
 
+// newTeaProgram is the constructor for the TUI program. Tests
+// override this to inject WithoutRenderer / WithInput / WithOutput
+// options and exercise the full runTUI lifecycle without a real TTY.
+var newTeaProgram = func(m tea.Model) *tea.Program {
+	return tea.NewProgram(m, tea.WithAltScreen())
+}
+
 func versionString() string {
 	if commit == "none" && date == "unknown" {
 		return fmt.Sprintf("ccpulse %s (channel %s)", version, channel.Channel())
@@ -44,10 +53,12 @@ func versionString() string {
 
 func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
-		Use:   "ccpulse",
-		Short: "Claude Code usage TUI dashboard",
+		Use:           "ccpulse",
+		Short:         "Claude Code usage TUI dashboard",
+		SilenceUsage:  true,
+		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runTUI(cmd.OutOrStdout())
+			return runTUI(cmd.Context())
 		},
 	}
 	root.AddCommand(newStatusCmd())
@@ -62,6 +73,7 @@ func newVersionCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
 		Short: "Print version",
+		Args:  cobra.NoArgs,
 		Run: func(cmd *cobra.Command, args []string) {
 			fmt.Fprintln(cmd.OutOrStdout(), versionString())
 		},
@@ -71,13 +83,15 @@ func newVersionCmd() *cobra.Command {
 func newConfigCmd() *cobra.Command {
 	c := &cobra.Command{Use: "config", Short: "Inspect / edit config"}
 	c.AddCommand(&cobra.Command{
-		Use: "path",
+		Use:  "path",
+		Args: cobra.NoArgs,
 		Run: func(cmd *cobra.Command, args []string) {
 			fmt.Fprintln(cmd.OutOrStdout(), config.DefaultPath())
 		},
 	})
 	c.AddCommand(&cobra.Command{
-		Use: "show",
+		Use:  "show",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path := config.DefaultPath()
 			if _, err := os.Stat(path); os.IsNotExist(err) {
@@ -92,7 +106,8 @@ func newConfigCmd() *cobra.Command {
 		},
 	})
 	c.AddCommand(&cobra.Command{
-		Use: "edit",
+		Use:  "edit",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path := config.DefaultPath()
 			if err := ensureConfigFile(path); err != nil {
@@ -131,10 +146,12 @@ func ensureConfigFile(path string) error {
 	}
 	return secfile.WriteFile(path, defaultTOMLBytes())
 }
-// runTUI launches the Bubble Tea program with the TUI model. The `out`
-// parameter is reserved for future use (currently the TUI manages its
-// own terminal IO via the alt screen).
-func runTUI(_ interface{}) error {
+// runTUI launches the Bubble Tea program with the TUI model. The
+// passed ctx is the signal-aware root context — used as the parent
+// for the quota poller's context and for the startup backfill, so
+// SIGINT/SIGTERM cancels in-flight work even before the user quits
+// the TUI itself.
+func runTUI(ctx context.Context) error {
 	cfg, _ := config.Load(config.DefaultPath())
 	cacheDir := envOr("CCPULSE_CACHE_DIR", expand(cfg.Paths.CacheDir))
 	if err := secfile.MkdirAll(cacheDir); err != nil {
@@ -182,7 +199,6 @@ func runTUI(_ interface{}) error {
 	if err != nil {
 		return err
 	}
-	defer w.Close()
 
 	cred, credErr := anthro.LoadCredential()
 	if credErr != nil && !errors.Is(credErr, anthro.ErrNoCredential) {
@@ -198,32 +214,45 @@ func runTUI(_ interface{}) error {
 		CacheDir:     cacheDir,
 		IsDev:        channel.IsDev(),
 	})
-	p := tea.NewProgram(m, tea.WithAltScreen())
+	p := newTeaProgram(m)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	// Shutdown discipline: every long-running background goroutine
+	// spawned below joins this WaitGroup. Defers below are ordered
+	// (registration is reverse of execution) so that on return:
+	//
+	//   1. bfCancel signals the backfill ctx.
+	//   2. bfDone.Wait blocks until the backfill goroutine returns.
+	//   3. cancel signals the poller ctx (in-flight HTTP aborts).
+	//   4. w.Close closes fsnotify, signalling the watcher goroutine.
+	//   5. bg.Wait blocks until the watcher, poller, and initial-refresh
+	//      goroutines all return — including any in-flight db.Exec from
+	//      runQuotaPoller.push.
+	//   6. c.Close closes the cache (registered earlier; runs last among
+	//      the cache-touching defers).
+	//
+	// The backfill keeps a separate WaitGroup (bfDone) because it has
+	// a distinct lifecycle (one-shot). Both bfCtx and the poller ctx
+	// derive from the signal-aware root, so SIGINT/SIGTERM cancels
+	// in-flight work immediately, not only after p.Run returns.
+	var bg sync.WaitGroup
+
+	pollerCtx, cancel := context.WithCancel(ctx)
 
 	if hasOAuth {
 		retention := time.Duration(cfg.History.RetentionDays) * 24 * time.Hour
-		go runQuotaPoller(ctx, p, cred, cacheDir, c, retention)
+		bg.Go(func() {
+			runQuotaPoller(pollerCtx, p, cred, cacheDir, c, retention)
+		})
 	}
 
-	go w.Run(func(path string) {
-		_, _ = ing.ProcessFile(path)
-		p.Send(tui.RefreshMsg{})
+	bg.Go(func() {
+		w.Run(func(path string) {
+			_, _ = ing.ProcessFile(path)
+			p.Send(tui.RefreshMsg{})
+		})
 	})
 
-	// Startup backfill: catch the cache up to EOF for every .jsonl
-	// under projectsRoot. Runs concurrently with the watcher;
-	// SQLite serialises writes, InsertMessages is idempotent, so
-	// the worst case of overlap is wasted parse work.
-	//
-	// On shutdown the goroutine must finish before c.Close runs, or
-	// an in-flight ProcessFile would write to a closed SQLite handle.
-	// Defer order is LIFO, so registering Wait *after* Cancel makes
-	// Cancel fire first (signal the goroutine), then Wait blocks
-	// until the goroutine returns, then w.Close and c.Close run.
-	bfCtx, bfCancel := context.WithCancel(context.Background())
+	bfCtx, bfCancel := context.WithCancel(ctx)
 	var bfDone sync.WaitGroup
 	bfDone.Add(1)
 	bf := &ingest.Backfill{Ingester: ing}
@@ -234,13 +263,19 @@ func runTUI(_ interface{}) error {
 			p.Send(tui.RefreshMsg{})
 		})
 	}()
-	defer bfDone.Wait()
-	defer bfCancel()
 
 	// Kick off an initial refresh so the TUI shows current data on launch.
-	go func() {
+	bg.Go(func() {
 		p.Send(tui.RefreshMsg{})
-	}()
+	})
+
+	// Defer registration order matters — see the block comment above.
+	// Registered LAST → runs FIRST; registered FIRST (further up) → runs LAST.
+	defer bg.Wait()
+	defer w.Close()
+	defer cancel()
+	defer bfDone.Wait()
+	defer bfCancel()
 
 	_, err = p.Run()
 	return err
@@ -292,7 +327,10 @@ func runQuotaPoller(
 
 func main() {
 	channel.Set(buildChannel)
-	if err := newRootCmd().Execute(); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(),
+		os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := newRootCmd().ExecuteContext(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

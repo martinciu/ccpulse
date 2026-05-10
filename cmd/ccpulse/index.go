@@ -22,15 +22,16 @@ func newIndexCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "index",
 		Short: "Rebuild SQLite cache from JSONL",
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runIndex(rebuild)
+			return runIndex(cmd.Context(), rebuild)
 		},
 	}
 	c.Flags().BoolVar(&rebuild, "rebuild", false, "Drop the cache before scanning")
 	return c
 }
 
-func runIndex(rebuild bool) error {
+func runIndex(ctx context.Context, rebuild bool) error {
 	if !rebuild {
 		return fmt.Errorf("`ccpulse index` (no flag) was removed; the TUI now backfills on launch. Use `ccpulse index --rebuild` to drop and rebuild the cache from JSONL")
 	}
@@ -78,7 +79,13 @@ func runIndex(rebuild bool) error {
 	}
 	bf := &ingest.Backfill{Ingester: ing}
 
-	if err := bf.Run(context.Background(), nil); err != nil {
+	if err := bf.Run(ctx, nil); err != nil {
+		return err
+	}
+
+	// Surface SIGINT/SIGTERM as a non-zero exit. Backfill.Run returns
+	// nil on context cancel, so we check ctx ourselves.
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 
