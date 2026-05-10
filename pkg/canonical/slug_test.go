@@ -3,6 +3,7 @@ package canonical
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -53,4 +54,61 @@ func TestDecodeSlug(t *testing.T) {
 			t.Errorf("%s = %s, want %s", c.slug, got, want)
 		}
 	}
+}
+
+func FuzzDecodeSlugIn(f *testing.F) {
+	// Seed corpus: traversal shapes, edge cases, and round-trip-able legit slugs.
+	seeds := []string{
+		// Traversal — must all return false.
+		"-..-etc-passwd",
+		"-Users-x-..-etc-passwd",
+		"-x-..-y",
+		"-Users-x-code-..",
+		"-..",
+		// Lookalikes that are NOT `..` and should be treated as ordinary segments.
+		"-x-...-y",
+		"-x-....-y",
+		// Legitimate Claude-style slugs.
+		"-Users-x-code-dotfiles",
+		"-Users-x-code-dotfiles--claude-worktrees-156-zsh-cleanup",
+		// Pathological shapes.
+		"",
+		"-",
+		"--",
+		"---",
+		"-\x00",
+		"-x\x00y",
+		// Long input.
+		"-" + strings.Repeat("a-", 600),
+	}
+	for _, s := range seeds {
+		f.Add(s)
+	}
+
+	// Use a single tmpdir as the fuzz root. Most fuzz inputs won't
+	// resolve to anything real under the tmpdir; that's fine — we
+	// only assert non-panic and the structural invariants below.
+	root := f.TempDir()
+
+	f.Fuzz(func(t *testing.T, slug string) {
+		got, ok := DecodeSlugIn(slug, root)
+		if !ok {
+			if got != "" {
+				t.Errorf("slug=%q: !ok but path=%q (want empty)", slug, got)
+			}
+			return
+		}
+		// Successful decodes must:
+		//   1. live under the test root, and
+		//   2. contain no `..` segment.
+		if !strings.HasPrefix(got, root) {
+			t.Errorf("slug=%q: returned path %q escapes root %q", slug, got, root)
+		}
+		rel := strings.TrimPrefix(got, root)
+		for seg := range strings.SplitSeq(rel, "/") {
+			if seg == ".." {
+				t.Errorf("slug=%q: returned path %q has `..` segment", slug, got)
+			}
+		}
+	})
 }
