@@ -16,28 +16,24 @@ import (
 )
 
 func newStatusCmd() *cobra.Command {
-	var asJSON, asTmux bool
+	var asJSON bool
 	c := &cobra.Command{
 		Use:   "status",
 		Short: "Print 5-hour window status",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runStatus(cmd, asJSON, asTmux)
+			return runStatus(cmd, asJSON)
 		},
 	}
 	c.Flags().BoolVar(&asJSON, "json", false, "emit JSON")
-	c.Flags().BoolVar(&asTmux, "tmux", false, "tmux-formatted single line")
 	return c
 }
 
-func runStatus(cmd *cobra.Command, asJSON, asTmux bool) error {
+func runStatus(cmd *cobra.Command, asJSON bool) error {
 	cfg, _ := config.Load(config.DefaultPath())
 	cacheDir := envOr("CCPULSE_CACHE_DIR", expand(cfg.Paths.CacheDir))
 	dbPath := filepath.Join(cacheDir, "state.db")
 	c, err := cache.Open(dbPath)
 	if err != nil {
-		if asTmux {
-			return nil
-		}
 		return err
 	}
 	defer c.Close()
@@ -60,26 +56,18 @@ func runStatus(cmd *cobra.Command, asJSON, asTmux bool) error {
 
 	w, err := status.Compute(c.DB(), time.Now(), q)
 	if err != nil {
-		if asTmux {
-			return nil
-		}
 		return err
 	}
-
-	mode := resolveDisplayMode(cfg.Display.Mode, q.Usage != nil)
-	budget := status.DisplayBudget{WarnUSD: cfg.Display.CostWarnUSD, HotUSD: cfg.Display.CostHotUSD}
 
 	switch {
 	case asJSON:
 		j, _ := status.JSON(w)
 		fmt.Fprintln(cmd.OutOrStdout(), j)
-	case asTmux:
-		fmt.Fprint(cmd.OutOrStdout(), status.TmuxLine(w, mode, budget))
 	default:
-		if mode == status.DisplayCost {
-			fmt.Fprintf(cmd.OutOrStdout(), "5h window: $%.2f, resets in %dm\n", w.Cost5hUSD, w.MinutesToReset)
-		} else {
+		if w.Percent > 0 {
 			fmt.Fprintf(cmd.OutOrStdout(), "5h window: %d%% used, resets in %dm\n", w.Percent, w.MinutesToReset)
+		} else {
+			fmt.Fprintf(cmd.OutOrStdout(), "5h window: $%.2f, resets in %dm\n", w.Cost5hUSD, w.MinutesToReset)
 		}
 	}
 	return nil
@@ -114,18 +102,4 @@ func buildQuotaInput(cacheDir string, now time.Time) status.QuotaInput {
 	return q
 }
 
-// resolveDisplayMode picks between percent and cost.
-// "auto" → percent if we have OAuth quota, cost otherwise.
-func resolveDisplayMode(cfgMode string, hasQuota bool) status.DisplayMode {
-	switch cfgMode {
-	case "cost":
-		return status.DisplayCost
-	case "percent":
-		return status.DisplayPercent
-	}
-	// "auto" or unrecognized
-	if hasQuota {
-		return status.DisplayPercent
-	}
-	return status.DisplayCost
-}
+
