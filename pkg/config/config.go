@@ -70,24 +70,36 @@ type Config struct {
 // An empty cache_dir (the default) resolves to the channel-appropriate
 // path: "~/.cache/ccpulse" on the release channel, "~/.cache/ccpulse-dev"
 // on the dev channel. User-explicit values override this resolution.
+//
+// The channel-aware fallback applies even when the user's config file
+// is missing — callers that ignore the returned error (doctor, runTUI,
+// runIndex) still get a usable cache_dir.
 func Load(path string) (Config, error) {
-	var cfg Config
-	if _, err := toml.Decode(string(defaultTOML), &cfg); err != nil {
-		return cfg, err
-	}
-	if path != "" {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return cfg, err
-		}
-		if _, err := toml.Decode(string(data), &cfg); err != nil {
-			return cfg, err
-		}
-	}
+	cfg, err := decode(path)
 	if cfg.Paths.CacheDir == "" {
 		cfg.Paths.CacheDir = defaultCacheDir()
 	}
 	migrateLegacy(&cfg)
+	return cfg, err
+}
+
+// decode handles only the embedded-default + user-file decoding.
+// Channel-aware defaults and legacy migration are applied by Load.
+func decode(path string) (Config, error) {
+	var cfg Config
+	if _, err := toml.Decode(string(defaultTOML), &cfg); err != nil {
+		return cfg, err
+	}
+	if path == "" {
+		return cfg, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return cfg, err
+	}
+	if _, err := toml.Decode(string(data), &cfg); err != nil {
+		return cfg, err
+	}
 	return cfg, nil
 }
 

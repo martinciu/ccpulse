@@ -11,6 +11,7 @@ import (
 
 	"github.com/martinciu/ccpulse/pkg/anthro"
 	"github.com/martinciu/ccpulse/pkg/cache"
+	"github.com/martinciu/ccpulse/pkg/channel"
 	"github.com/martinciu/ccpulse/pkg/config"
 	"github.com/martinciu/ccpulse/pkg/pricing"
 	"github.com/spf13/cobra"
@@ -22,6 +23,7 @@ func newDoctorCmd() *cobra.Command {
 		Short: "Health-check checklist",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			out := cmd.OutOrStdout()
+			fmt.Fprintf(out, "ℹ build channel: %s\n", channel.Channel())
 			cfg, err := config.Load(config.DefaultPath())
 			check(out, "config loads", err == nil, err)
 			if cfg.HasLegacyPlan() {
@@ -33,6 +35,8 @@ func newDoctorCmd() *cobra.Command {
 			check(out, "projects_root readable: "+projects, statErr == nil, statErr)
 
 			cacheDir := envOr("CCPULSE_CACHE_DIR", expand(cfg.Paths.CacheDir))
+			fmt.Fprintf(out, "ℹ config path: %s\n", config.DefaultPath())
+			fmt.Fprintf(out, "ℹ cache dir:   %s\n", cacheDir)
 			dbPath := filepath.Join(cacheDir, "state.db")
 			c, err := cache.Open(dbPath)
 			check(out, "cache db opens: "+dbPath, err == nil, err)
@@ -70,6 +74,24 @@ func newDoctorCmd() *cobra.Command {
 				check(out, fmt.Sprintf("usage cache: %s old", age), true, nil)
 			} else {
 				check(out, "usage cache: not present", true, nil)
+			}
+
+			parseErrPath := filepath.Join(cacheDir, "parse-errors.log")
+			if info, err := os.Stat(parseErrPath); err == nil {
+				check(out, fmt.Sprintf("parse-errors.log: %d bytes (%s old)",
+					info.Size(), time.Since(info.ModTime()).Truncate(time.Second)), true, nil)
+			} else {
+				check(out, "parse-errors.log: not present", true, nil)
+			}
+
+			if channel.IsDev() {
+				debugPath := filepath.Join(cacheDir, "debug.log")
+				if info, err := os.Stat(debugPath); err == nil {
+					check(out, fmt.Sprintf("debug.log: %d bytes (%s old)",
+						info.Size(), time.Since(info.ModTime()).Truncate(time.Second)), true, nil)
+				} else {
+					check(out, "debug.log: not present", true, nil)
+				}
 			}
 
 			return nil

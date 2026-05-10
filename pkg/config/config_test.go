@@ -184,3 +184,15 @@ cache_dir = "/explicit/path"
 		t.Errorf("explicit CacheDir lost: got %q", cfg.Paths.CacheDir)
 	}
 }
+
+func TestLoad_MissingFileStillResolvesChannelDefault(t *testing.T) {
+	channel.Set("dev")
+	t.Cleanup(func() { channel.Set("dev") })
+	cfg, err := Load("/nonexistent/config.toml")
+	if err == nil {
+		t.Fatalf("Load on missing file should return error, got nil")
+	}
+	if cfg.Paths.CacheDir != "~/.cache/ccpulse-dev" {
+		t.Errorf("missing-file CacheDir = %q, want %q (regression: channel-aware fallback must run even on file-read error)", cfg.Paths.CacheDir, "~/.cache/ccpulse-dev")
+	}
+}
