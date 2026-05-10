@@ -236,21 +236,17 @@ func runTUI(cmd *cobra.Command) error {
 
 	if hasOAuth {
 		retention := time.Duration(cfg.History.RetentionDays) * 24 * time.Hour
-		bg.Add(1)
-		go func() {
-			defer bg.Done()
+		bg.Go(func() {
 			runQuotaPoller(ctx, p, cred, cacheDir, c, retention)
-		}()
+		})
 	}
 
-	bg.Add(1)
-	go func() {
-		defer bg.Done()
+	bg.Go(func() {
 		w.Run(func(path string) {
 			_, _ = ing.ProcessFile(path)
 			p.Send(tui.RefreshMsg{})
 		})
-	}()
+	})
 
 	bfCtx, bfCancel := context.WithCancel(context.Background())
 	var bfDone sync.WaitGroup
@@ -265,11 +261,9 @@ func runTUI(cmd *cobra.Command) error {
 	}()
 
 	// Kick off an initial refresh so the TUI shows current data on launch.
-	bg.Add(1)
-	go func() {
-		defer bg.Done()
+	bg.Go(func() {
 		p.Send(tui.RefreshMsg{})
-	}()
+	})
 
 	// Defer registration order matters — see the block comment above.
 	// Registered LAST → runs FIRST; registered FIRST (further up) → runs LAST.
