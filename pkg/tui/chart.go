@@ -56,17 +56,24 @@ func buildChart(buckets []cache.TokenBucket, chartW, chartH int) string {
 		if peak > 0 {
 			ratio = float64(b.Tokens) / float64(peak)
 		}
+		c := heatColor(ratio)
+		// ntcharts paints bar cells using both fg + bg of the same color
+		// so the cell renders as a solid block (the example sets both).
+		// Foreground alone leaves the cell empty.
 		bars[i] = barchart.BarData{
 			Values: []barchart.BarValue{
 				{
 					Value: float64(b.Tokens),
-					Style: lipgloss.NewStyle().Foreground(heatColor(ratio)),
+					Style: lipgloss.NewStyle().Foreground(c).Background(c),
 				},
 			},
 		}
 	}
 
-	bc := barchart.New(chartW, chartH)
+	// barGap=0 is required when chartW == numBars: the default gap of 1
+	// consumes (numBars-1) cols, leaving (graphSize-gaps)/numBars = 0
+	// width per bar — i.e. bars are not drawn at all.
+	bc := barchart.New(chartW, chartH, barchart.WithBarGap(0))
 	bc.PushAll(bars)
 	bc.Draw()
 	return bc.View()

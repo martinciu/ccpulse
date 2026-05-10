@@ -8,6 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/martinciu/ccpulse/pkg/anthro"
+	"github.com/martinciu/ccpulse/pkg/cache"
 	"github.com/martinciu/ccpulse/pkg/status"
 )
 
@@ -68,6 +69,26 @@ func TestQuitKey(t *testing.T) {
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
 	if cmd == nil {
 		t.Error("expected quit cmd, got nil")
+	}
+}
+
+func TestBuildChartEmitsBars(t *testing.T) {
+	// Regression: when chartW == len(buckets), the default ntcharts BarGap
+	// of 1 forces bar width to (graphSize - gaps) / numBars = 0, so no bars
+	// render. buildChart must pass WithBarGap(0) and a Style that has both
+	// Foreground and Background set, otherwise the chart is just blank
+	// canvas + axis line.
+	now := time.Now()
+	buckets := make([]cache.TokenBucket, 30)
+	for i := range buckets {
+		buckets[i] = cache.TokenBucket{
+			BucketStart: now.Add(time.Duration(i) * 15 * time.Minute),
+			Tokens:      int64((i*7 + 1000) * (1 + i%3)),
+		}
+	}
+	out := buildChart(buckets, 30, 10)
+	if !strings.ContainsAny(out, "█▇▆▅▄▃▂▁") {
+		t.Errorf("buildChart produced no bar block characters; got:\n%s", out)
 	}
 }
 
