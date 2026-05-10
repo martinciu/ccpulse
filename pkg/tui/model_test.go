@@ -262,6 +262,37 @@ func TestViewFitsTerminal(t *testing.T) {
 	}
 }
 
+func TestRefreshChart_FixedWidth(t *testing.T) {
+	// Each zoom has a fixed column count: 288 / 288 / 168.
+	cases := []struct {
+		zoomIdx  int
+		wantCols int
+	}{
+		{0, 288}, // 5m  × 24h
+		{1, 288}, // 15m × 72h
+		{2, 168}, // 1h  × 7d
+	}
+	c, err := cache.Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	for _, tc := range cases {
+		zoom := ZoomLevels[tc.zoomIdx]
+		// Mirror refreshChart's derivation exactly.
+		to := cache.BucketAlign(time.Now(), zoom.Duration)
+		from := to.Add(-zoom.Lookback)
+		buckets, err := c.TokenBuckets(zoom.Duration, from, to)
+		if err != nil {
+			t.Fatalf("zoom %d: TokenBuckets: %v", tc.zoomIdx, err)
+		}
+		if len(buckets) != tc.wantCols {
+			t.Errorf("zoom %d: %d buckets, want %d", tc.zoomIdx, len(buckets), tc.wantCols)
+		}
+	}
+}
+
 func TestQuotaMsgApplied(t *testing.T) {
 	m := New(Deps{Cache: nil})
 	msg := QuotaMsg{

@@ -196,7 +196,7 @@ func (m *Model) refreshChart() {
 	}
 	zoom := ZoomLevels[m.zoomIdx]
 	to := cache.BucketAlign(time.Now(), zoom.Duration)
-	from := to.Add(-7 * 24 * time.Hour)
+	from := to.Add(-zoom.Lookback)
 	buckets, err := m.deps.Cache.TokenBuckets(zoom.Duration, from, to)
 	if err != nil || len(buckets) == 0 {
 		m.viewport.SetContent(emptyChartView(m.chartWidth(), m.chartHeight()))

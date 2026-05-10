@@ -13,13 +13,15 @@ import (
 type ZoomLevel struct {
 	Label    string
 	Duration time.Duration
+	Lookback time.Duration // total wall-clock span of the chart at this zoom
 }
 
 // ZoomLevels are the available zoom steps, cycled with the z key.
+// Lookback / Duration is the column count at each zoom: 288 / 288 / 168.
 var ZoomLevels = []ZoomLevel{
-	{"5m", 5 * time.Minute},
-	{"15m", 15 * time.Minute},
-	{"1h", time.Hour},
+	{"5m", 5 * time.Minute, 24 * time.Hour},
+	{"15m", 15 * time.Minute, 72 * time.Hour},
+	{"1h", time.Hour, 7 * 24 * time.Hour},
 }
 
 // heatColor returns a lipgloss color on a green→yellow→red ramp
