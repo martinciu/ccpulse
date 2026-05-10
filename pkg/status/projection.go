@@ -25,6 +25,13 @@ const (
 // When elapsed <= 0 (clock skew) the function returns a zeroed projection
 // with Confidence "low" rather than dividing by zero.
 func projectBucket(utilization float64, resetsAt, now time.Time, window, lowCutoff time.Duration) Projection {
+	// Defend the JSON output: a corrupt usage.json cache or future API
+	// change could surface NaN / ±Inf in Utilization, which would propagate
+	// into SlopePctPerHour and make encoding/json reject the whole Window
+	// ("json: unsupported value: NaN"). Surface as low-confidence instead.
+	if math.IsNaN(utilization) || math.IsInf(utilization, 0) {
+		return Projection{Confidence: "low"}
+	}
 	windowStart := resetsAt.Add(-window)
 	elapsed := now.Sub(windowStart)
 	if elapsed <= 0 {

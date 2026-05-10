@@ -1,6 +1,7 @@
 package status
 
 import (
+	"math"
 	"testing"
 	"time"
 )
@@ -193,6 +194,58 @@ func TestProjectBucket(t *testing.T) {
 				Confidence:          "ok",
 			},
 			// wantMinutesTo100Set defaults to false → expect nil.
+		},
+		{
+			// Boundary: utilization == 100 exactly. The MinutesTo100Pct guard
+			// uses strict `utilization < 100` — at exactly 100 the ETA is nil
+			// because we're at the threshold (zero minutes is more confusing
+			// than "no ETA needed").
+			name:        "5h utilization exactly 100, no ETA",
+			utilization: 100,
+			elapsed:     60 * time.Minute,
+			window:      fiveHour,
+			lowCutoff:   fiveHourLow,
+			want: Projection{
+				ElapsedMinutes:      60,
+				SlopePctPerHour:     100.00,
+				ProjectedPctAtReset: 500,
+				WillOverreach:       true,
+				Confidence:          "ok",
+			},
+			// wantMinutesTo100Set defaults to false → expect nil.
+		},
+		{
+			// Defense-in-depth: a corrupt usage.json with NaN utilization must
+			// not crash JSON marshalling. projectBucket short-circuits to a
+			// zeroed Projection so Window.Projection serializes cleanly.
+			name:        "NaN utilization → zeroed low-confidence projection",
+			utilization: math.NaN(),
+			elapsed:     60 * time.Minute,
+			window:      fiveHour,
+			lowCutoff:   fiveHourLow,
+			want: Projection{
+				ElapsedMinutes:      0,
+				SlopePctPerHour:     0,
+				ProjectedPctAtReset: 0,
+				WillOverreach:       false,
+				Confidence:          "low",
+			},
+		},
+		{
+			// Same defense for +Inf — surfaces e.g. when an upstream JSON
+			// number overflows float64. Result is finite zeros + low confidence.
+			name:        "+Inf utilization → zeroed low-confidence projection",
+			utilization: math.Inf(1),
+			elapsed:     60 * time.Minute,
+			window:      fiveHour,
+			lowCutoff:   fiveHourLow,
+			want: Projection{
+				ElapsedMinutes:      0,
+				SlopePctPerHour:     0,
+				ProjectedPctAtReset: 0,
+				WillOverreach:       false,
+				Confidence:          "low",
+			},
 		},
 	}
 

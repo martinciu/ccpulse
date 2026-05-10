@@ -371,10 +371,15 @@ func TestStatusJSONProjectionOverreach(t *testing.T) {
 	if conf, _ := fh["confidence"].(string); conf != "ok" {
 		t.Errorf("five_hour.confidence = %q, want \"ok\" (out=%s)", conf, out)
 	}
-	// minutes_to_100_pct must be a number, not null, when overreaching.
-	if _, isNum := fh["minutes_to_100_pct"].(float64); !isNum {
+	// minutes_to_100_pct must be a positive number when overreaching:
+	// negative or zero would mean we've already crossed the threshold, in
+	// which case the field should be nil (see "already over 100" unit case).
+	mins, isNum := fh["minutes_to_100_pct"].(float64)
+	if !isNum {
 		t.Errorf("five_hour.minutes_to_100_pct expected number, got %T (out=%s)",
 			fh["minutes_to_100_pct"], out)
+	} else if mins <= 0 {
+		t.Errorf("five_hour.minutes_to_100_pct = %v, want > 0 (out=%s)", mins, out)
 	}
 	// 7d at 10% with ~1d elapsed projects ~70 — no overreach.
 	if sd, ok := proj["seven_day"].(map[string]any); ok {
