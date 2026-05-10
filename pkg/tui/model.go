@@ -201,8 +201,10 @@ func (m Model) chartWidth() int {
 // chartHeight returns the available rows for the chart, leaving room for
 // header, label, two separators, and the help footer.
 func (m Model) chartHeight() int {
-	// header ~3 rows, label 1, sep 1, sep 1, help 1 = 7 overhead
-	h := m.h - 7
+	// Bordered header box = 4 rows (top border + title + subtitle + bottom
+	// border). Label, top sep, bottom sep, footer = 1 row each. Total
+	// non-body overhead = 8 rows.
+	h := m.h - 8
 	if h < 5 {
 		return 5
 	}
