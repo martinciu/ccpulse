@@ -50,6 +50,14 @@ type ParseError struct {
 	Err  error
 }
 
+// ErrOversizedLineSkipped is wrapped into the synthesised ParseError
+// produced when a line exceeds ScannerMaxBytes. Callers can inspect
+// the recovery class with errors.Is rather than substring-matching
+// the formatted message. The wrapped chain also contains
+// bufio.ErrTooLong so callers can disambiguate the underlying scanner
+// failure if needed.
+var ErrOversizedLineSkipped = errors.New("oversized line skipped")
+
 // ParseWithErrors parses every line and returns successfully-parsed
 // messages plus per-line parse errors. On bufio.ErrTooLong the scanner
 // is unrecoverable (no seek on io.Reader), so the oversized line is

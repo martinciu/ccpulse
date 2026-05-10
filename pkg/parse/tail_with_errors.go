@@ -20,12 +20,6 @@ import (
 // not run in parallel — there is no synchronisation around access.
 var ScannerMaxBytes = 64 << 20
 
-// ErrOversizedLineSkipped is wrapped into the synthesised ParseError
-// produced when a line exceeds ScannerMaxBytes. Callers can inspect
-// the recovery class with errors.Is rather than substring-matching
-// the formatted message.
-var ErrOversizedLineSkipped = errors.New("oversized line skipped")
-
 // scannerInitialCap is the initial buffer capacity used at every
 // Scanner.Buffer site in this package. Capped by ScannerMaxBytes so
 // the test seam genuinely lowers the ceiling: bufio.Scanner uses
