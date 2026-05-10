@@ -8,6 +8,3 @@ projects_root = "~/.claude/projects"
 # default at runtime ("~/.cache/ccpulse" for release, "~/.cache/ccpulse-dev"
 # for dev). User-explicit values in your own config.toml always win.
 cache_dir = ""
-
-[pricing]
-override = ""

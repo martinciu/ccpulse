@@ -178,11 +178,6 @@ func runTUI(ctx context.Context) error {
 	defer c.Close()
 
 	tab, _ := pricing.Load()
-	if cfg.Pricing.Override != "" {
-		if t, err := pricing.LoadFrom(expand(cfg.Pricing.Override)); err == nil {
-			tab = t
-		}
-	}
 	res := canonical.NewResolver(c, "/")
 
 	projectsRoot := envOr("CCPULSE_PROJECTS_ROOT", expand(cfg.Paths.ProjectsRoot))

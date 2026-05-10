@@ -63,11 +63,6 @@ func runIndex(ctx context.Context, rebuild bool) error {
 	if err != nil {
 		return err
 	}
-	if cfg.Pricing.Override != "" {
-		if t, err := pricing.LoadFrom(expand(cfg.Pricing.Override)); err == nil {
-			tab = t
-		}
-	}
 
 	res := canonical.NewResolver(c, "/")
 	ing := &ingest.Ingester{
