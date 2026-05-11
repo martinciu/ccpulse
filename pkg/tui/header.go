@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 
+	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -55,4 +56,27 @@ func formatReset7d(mins int) string {
 		return fmt.Sprintf("%-6s", fmt.Sprintf("%dd", mins/1440))
 	}
 	return fmt.Sprintf("%-6s", fmt.Sprintf("%02d:%02d", mins/60, mins%60))
+}
+
+// renderQuotaSide composes one side of the quota bars row:
+//   [dim label] [bar] [percent block] [padded time]
+//
+// Wrapped in lipgloss.NewStyle().Width(slotW) as a safety net so the
+// rendered output is exactly slotW cols wide regardless of subtle
+// terminal/font width disagreements about the bar's styled output.
+//
+// label is rendered in Base01 (Solarized comment-grey) to match the
+// divider's dim style. paddedTime is expected to be a fixed-width
+// string (6 cols) produced by formatReset5h or formatReset7d.
+func renderQuotaSide(label string, bar progress.Model, fillRatio float64, percent int, paddedTime string, slotW int) string {
+	dim := lipgloss.NewStyle().Foreground(Base01)
+	parts := lipgloss.JoinHorizontal(
+		lipgloss.Top,
+		dim.Render(label),
+		bar.ViewAs(fillRatio),
+		fmt.Sprintf(" %3d%%", percent),
+		"  ",
+		paddedTime,
+	)
+	return lipgloss.NewStyle().Width(slotW).Render(parts)
 }

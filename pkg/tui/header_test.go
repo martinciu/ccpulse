@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -57,6 +58,26 @@ func TestFormatReset7d_Content(t *testing.T) {
 			got := strings.TrimRight(formatReset7d(tt.mins), " ")
 			if got != tt.want {
 				t.Errorf("formatReset7d(%d) = %q (trimmed), want %q", tt.mins, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRenderQuotaSide_ProducesExactSlotWidth(t *testing.T) {
+	// renderQuotaSide must produce output exactly slotW cols wide for any
+	// well-formed inputs, regardless of bar width or percent. This is the
+	// safety-net property of the lipgloss.NewStyle().Width(slotW) wrapper.
+	bar := progress.New(
+		progress.WithWidth(10),
+		progress.WithoutPercentage(),
+		progress.WithScaledGradient(QuotaGradientStart, QuotaGradientEnd),
+	)
+	const slotW = 26 // 3 (label) + 10 (bar) + 5 (percent) + 2 (sep) + 6 (time)
+	for _, percent := range []int{0, 1, 50, 99, 100} {
+		t.Run(fmt.Sprintf("p=%d", percent), func(t *testing.T) {
+			got := renderQuotaSide("5h ", bar, float64(percent)/100.0, percent, "  4h 59m", slotW)
+			if w := lipgloss.Width(got); w != slotW {
+				t.Errorf("renderQuotaSide percent=%d: width %d, want %d", percent, w, slotW)
 			}
 		})
 	}
