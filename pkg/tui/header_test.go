@@ -68,6 +68,33 @@ func TestDurString(t *testing.T) {
 	}
 }
 
+func TestFormatBurnRate(t *testing.T) {
+	// formatBurnRate is the slope formatter for the burn-rate row.
+	// Rule: %.1f then strip trailing ".0" so integer rates read clean
+	// while sub-1 rates keep their fractional digit.
+	tests := []struct {
+		slope float64
+		want  string
+	}{
+		{0, "0%/h"},
+		{0.4, "0.4%/h"},
+		{1.0, "1%/h"},
+		{12.0, "12%/h"},
+		{12.5, "12.5%/h"},
+		{23.0, "23%/h"},
+		{100.0, "100%/h"},
+		{105.7, "105.7%/h"},
+	}
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("%g", tt.slope), func(t *testing.T) {
+			got := formatBurnRate(tt.slope)
+			if got != tt.want {
+				t.Errorf("formatBurnRate(%g) = %q, want %q", tt.slope, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRenderQuotaSide_ProducesExactSlotWidth(t *testing.T) {
 	// renderQuotaSide's output width is determined entirely by its inputs:
 	// lipgloss.Width(label) + bar.Width + statusBlockMaxW. Property under

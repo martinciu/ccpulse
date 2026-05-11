@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/lipgloss"
@@ -86,4 +87,14 @@ func renderQuotaSide(label string, bar progress.Model, fillRatio float64, percen
 		bar.ViewAs(fillRatio),
 		statusSlot,
 	)
+}
+
+// formatBurnRate renders a percent-per-hour slope for the burn-rate row.
+// Uses %.1f then strips a trailing ".0" so integer rates display as "12%/h"
+// while sub-1 fractional rates keep their digit ("0.4%/h"). This keeps the
+// header line compact without losing information on slow-burn windows.
+func formatBurnRate(slope float64) string {
+	s := fmt.Sprintf("%.1f", slope)
+	s = strings.TrimSuffix(s, ".0")
+	return s + "%/h"
 }
