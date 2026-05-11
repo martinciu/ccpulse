@@ -283,6 +283,44 @@ func TestQuotaBarsSymmetric(t *testing.T) {
 		{"80cols_long_times", 80, status.Window{Percent: 95, MinutesToReset: 299, Has7d: true, Percent7d: 80, MinutesToReset7d: 1439}},
 		{"120cols_zero_times", 120, status.Window{Percent: 0, MinutesToReset: 0, Has7d: true, Percent7d: 0, MinutesToReset7d: 0}},
 		{"80cols_no_7d", 80, status.Window{Percent: 5, MinutesToReset: 52, Has7d: false}},
+		// Asymmetric Projection cases: one bucket has a Projection, the
+		// other is nil. The burn-rate row renders styled rate text on the
+		// populated side and "(no data)" on the nil side. Both sides must
+		// still produce the same visual width through their respective
+		// codepaths (`renderBurnRateSide` for the populated case vs the
+		// noData branch for nil).
+		{
+			"100cols_proj5h_only",
+			100,
+			status.Window{
+				Percent: 43, MinutesToReset: 137,
+				Has7d: true, Percent7d: 17, MinutesToReset7d: 7200,
+				Projection: &status.Projections{
+					FiveHour: &status.Projection{
+						SlopePctPerHour:     12,
+						ProjectedPctAtReset: 54,
+						Confidence:          "ok",
+					},
+					SevenDay: nil,
+				},
+			},
+		},
+		{
+			"100cols_proj7d_only",
+			100,
+			status.Window{
+				Percent: 43, MinutesToReset: 137,
+				Has7d: true, Percent7d: 17, MinutesToReset7d: 7200,
+				Projection: &status.Projections{
+					FiveHour: nil,
+					SevenDay: &status.Projection{
+						SlopePctPerHour:     0.4,
+						ProjectedPctAtReset: 70,
+						Confidence:          "ok",
+					},
+				},
+			},
+		},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {

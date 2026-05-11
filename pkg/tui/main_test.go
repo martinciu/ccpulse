@@ -33,6 +33,15 @@ func TestMain(m *testing.M) {
 // Restoring is essential: a leaked TrueColor profile breaks other tests
 // in this package that match on plain substrings ("q quit", "[DEV]")
 // which become split across escape spans under TrueColor.
+//
+// NOT SAFE WITH t.Parallel(): lipgloss.SetColorProfile mutates the
+// process-global DefaultRenderer. If two parallel tests both call this
+// helper, their Cleanups will race against each other's assertions and
+// the second restore can flip the profile mid-render of the first.
+// No test in this package currently calls t.Parallel(), so this is a
+// latent footgun rather than an active bug. If adding t.Parallel() to
+// any tui test, refactor this helper to use a private
+// lipgloss.NewRenderer instead of mutating the global.
 func withForcedColor(t *testing.T) {
 	t.Helper()
 	prev := lipgloss.DefaultRenderer().ColorProfile()

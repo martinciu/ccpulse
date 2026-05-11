@@ -201,22 +201,21 @@ func (m Model) renderFooter() string {
 // undimmed — it's a warning meant to draw the eye); indexing and [DEV]
 // are dim. The separator is dim.
 func renderIndicators(isDev bool, idx IndexProgress, w status.Window) string {
-	dim := lipgloss.NewStyle().Foreground(Base01)
 	var parts []string
 	if w.QuotaSource == "cache_stale" {
 		mins := max(int(time.Since(w.QuotaUpdatedAt).Minutes()), 1)
 		parts = append(parts, fmt.Sprintf("⚠ %dm old", mins))
 	}
 	if idx.Active {
-		parts = append(parts, dim.Render(fmt.Sprintf("indexing %d/%d", idx.Done, idx.Total)))
+		parts = append(parts, dimStyle.Render(fmt.Sprintf("indexing %d/%d", idx.Done, idx.Total)))
 	}
 	if isDev {
-		parts = append(parts, dim.Render("[DEV]"))
+		parts = append(parts, dimStyle.Render("[DEV]"))
 	}
 	if len(parts) == 0 {
 		return ""
 	}
-	sep := dim.Render(" · ")
+	sep := dimStyle.Render(" · ")
 	return strings.Join(parts, sep)
 }
 
@@ -275,7 +274,6 @@ func (m Model) quotaBars() string {
 		fiveHourProj = m.window.Projection.FiveHour
 		sevenDayProj = m.window.Projection.SevenDay
 	}
-	burnPad := strings.Repeat(" ", lipgloss.Width("5h "))
 	burnLeft := renderBurnRateSide(burnPad, fiveHourProj, slotW, 5*time.Hour)
 	burnRight := renderBurnRateSide(burnPad, sevenDayProj, slotW, 7*24*time.Hour)
 	burnRow := lipgloss.JoinHorizontal(lipgloss.Top, burnLeft, divider, burnRight)

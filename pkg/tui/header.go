@@ -70,6 +70,11 @@ const statusBlockMaxW = 6
 // right-align adds further padding on top of this guaranteed minimum.
 const barTimeGap = " "
 
+// burnPad is the leading blank that replaces the "5h "/"7d " label on
+// the burn-rate row, so the projection text starts at the same column
+// as the progress bar above it. Three spaces match lipgloss.Width("5h ").
+const burnPad = "   "
+
 // renderQuotaSide composes one side of the quota bars row:
 //
 //	[dim label] [bar] [1-col gap] [right-aligned time slot]
@@ -203,6 +208,11 @@ func renderBurnRateSide(label string, p *status.Projection, slotW int, window ti
 				formatBurnRate(p.SlopePctPerHour), p.ProjectedPctAtReset, durString(*p.MinutesTo100Pct))
 		}
 		return render(text, burnDangerStyle)
+	default:
+		// Unreachable today — severityFor returns one of the five constants
+		// above, all handled. Fail loudly if a new burnSeverity is added
+		// without updating this switch, rather than rendering a silent
+		// empty string into the header.
+		panic(fmt.Sprintf("renderBurnRateSide: unhandled burnSeverity %d", severityFor(p, window)))
 	}
-	return ""
 }

@@ -148,6 +148,20 @@ func TestSeverityFor(t *testing.T) {
 			want:   burnSeveritySafe,
 		},
 		{
+			// Pins the contract: only the literal "low" string triggers
+			// warming-up — Go zero value or any other Confidence string
+			// falls through to the projection-based dispatch.
+			name: "empty Confidence (zero value) + no overreach → safe (not warming up)",
+			p: &status.Projection{
+				SlopePctPerHour:     12,
+				ProjectedPctAtReset: 54,
+				WillOverreach:       false,
+				Confidence:          "",
+			},
+			window: 5 * time.Hour,
+			want:   burnSeveritySafe,
+		},
+		{
 			name: "5h overreach + eta > 30m → watch",
 			p: &status.Projection{
 				SlopePctPerHour:     23,
