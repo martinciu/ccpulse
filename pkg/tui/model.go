@@ -221,10 +221,10 @@ func renderIndicators(isDev bool, idx IndexProgress, w status.Window) string {
 }
 
 // sideChromeFixedCols is the per-side fixed chrome width (label +
-// percent + separator + padded time). See progressWidth for the
-// breakdown. Both 5h and 7d use the same value — symmetric chrome
-// is the prerequisite for centring the │ divider.
-const sideChromeFixedCols = 16
+// status block). See progressWidth for the breakdown. Both 5h and 7d
+// use the same value — symmetric chrome is the prerequisite for
+// centring the │ divider.
+const sideChromeFixedCols = 3 + statusBlockMaxW // 14
 
 // quotaBars renders the 5h and 7d quota bars as a single line, designed
 // to live as the sole content row of the bordered header box. The two
@@ -243,7 +243,7 @@ func (m Model) quotaBars() string {
 		m.progress,
 		float64(m.window.Percent)/100.0,
 		m.window.Percent,
-		formatReset5h(m.window.MinutesToReset),
+		durString(m.window.MinutesToReset),
 		slotW,
 	)
 
@@ -361,21 +361,19 @@ func (m Model) chartHeight() int {
 // (matched across both sides for symmetry — the prerequisite for centring
 // the │ divider exactly):
 //   - 3 cols dim label prefix ("5h " or "7d ")
-//   - 5 cols percent suffix (" 100%")
-//   - 2 cols separator ("  ")
-//   - 6 cols padded time slot (formatReset5h / formatReset7d both pad to 6)
+//   - 11 cols right-aligned status block ("100% 4h 59m" worst case)
 //
-// Per-side fixed chrome total: 3 + 5 + 2 + 6 = 16 cols. The header box
+// Per-side fixed chrome total: 3 + 11 = 14 cols. The header box
 // itself reserves 4 cols (border + padding), and a 3-col " │ " divider
-// sits between the two halves. Total fixed chrome = 4 + 16 + 3 + 16 = 39,
+// sits between the two halves. Total fixed chrome = 4 + 14 + 3 + 14 = 35,
 // split across two bars.
 //
-// At odd parities of (W - 39), integer division gives a 1-col residual
+// At odd parities of (W - 35), integer division gives a 1-col residual
 // that lipgloss absorbs as a trailing pad inside the box. Doesn't affect
 // divider centring because the divider is positioned relative to the
 // symmetric chrome, not derived from total width.
 func (m Model) progressWidth() int {
-	w := (m.w - 39) / 2
+	w := (m.w - 35) / 2
 	if w < 6 {
 		return 6
 	}
