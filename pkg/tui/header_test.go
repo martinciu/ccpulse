@@ -37,6 +37,37 @@ func TestFormatReset7d_Content(t *testing.T) {
 	}
 }
 
+func TestDurString(t *testing.T) {
+	// durString formats minute counts as "Xm" (< 60), "Xh Ym" (60-1439), or
+	// "Xd Yh" (>= 1440). The day branch is dormant for the existing
+	// MinutesToReset caller (5h cap) but is exercised by 7d burn-rate
+	// ETAs that can exceed multiple days.
+	tests := []struct {
+		mins int
+		want string
+	}{
+		{0, "0m"},
+		{30, "30m"},
+		{59, "59m"},
+		{60, "1h 0m"},
+		{90, "1h 30m"},
+		{299, "4h 59m"},
+		{1439, "23h 59m"},
+		{1440, "1d 0h"},
+		{1500, "1d 1h"},
+		{4500, "3d 3h"},
+		{10080, "7d 0h"},
+	}
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("%dmins", tt.mins), func(t *testing.T) {
+			got := durString(tt.mins)
+			if got != tt.want {
+				t.Errorf("durString(%d) = %q, want %q", tt.mins, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRenderQuotaSide_ProducesExactSlotWidth(t *testing.T) {
 	// renderQuotaSide's output width is determined entirely by its inputs:
 	// lipgloss.Width(label) + bar.Width + statusBlockMaxW. Property under

@@ -29,6 +29,9 @@ func renderHeader(width int, bars string) string {
 }
 
 func durString(mins int) string {
+	if mins >= 1440 {
+		return fmt.Sprintf("%dd %dh", mins/1440, (mins%1440)/60)
+	}
 	if mins >= 60 {
 		return fmt.Sprintf("%dh %dm", mins/60, mins%60)
 	}
