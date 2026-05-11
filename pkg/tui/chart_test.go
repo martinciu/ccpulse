@@ -16,9 +16,13 @@ var sinkString string
 
 // syntheticBuckets returns n contiguous 5-minute TokenBucket entries
 // with deterministic, varied Tokens values so heatColor exercises all
-// three colour bands.
+// three colour bands. Anchored to a 3-hour clock boundary so the 15m
+// zoom (used by BenchmarkBuildChart and BenchmarkRenderXLabels) hits a
+// label tick every 36th bucket — exercising renderXLabels' label-write
+// loop. Without this anchor, formatXLabel would return "" for nearly
+// every bucket and the label-write path would be under-measured.
 func syntheticBuckets(n int) []cache.TokenBucket {
-	now := time.Now().UTC()
+	now := time.Now().UTC().Truncate(3 * time.Hour)
 	out := make([]cache.TokenBucket, n)
 	for i := range out {
 		out[i] = cache.TokenBucket{
@@ -85,6 +89,7 @@ func BenchmarkNiceCeiling(b *testing.B) {
 		name string
 		v    int64
 	}{
+		{"zero", 0}, // exercises the early-return branch
 		{"small", 12},
 		{"k", 45_300},
 		{"M_low", 1_200_000},

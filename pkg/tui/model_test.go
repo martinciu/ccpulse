@@ -21,8 +21,10 @@ import (
 // composition: header + sep + JoinHorizontal(yAxis, viewport) + sep +
 // footer. View() runs on every keypress and tick — regressions here
 // (e.g. an extra lipgloss style allocation) bleed into perceived input
-// latency. The benchmark seeds enough buckets to exercise the X labels
-// row + 6-col Y axis prepend in the wide-terminal hot path.
+// latency. Sub-benches cover both the wide path (Y axis shown, ~m.w-8
+// chart cols) and the narrow path (Y axis dropped, falls back to m.w-2
+// today's layout) — a regression that only manifests in one branch
+// would slip past a single-dimension bench.
 func BenchmarkModelView(b *testing.B) {
 	dir := b.TempDir()
 	dbPath := filepath.Join(dir, "state.db")
@@ -51,17 +53,28 @@ func BenchmarkModelView(b *testing.B) {
 		b.Fatalf("InsertMessages: %v", err)
 	}
 
-	m := New(Deps{Cache: c})
-	m.w, m.h = 120, 40
-	m.viewport.Width = m.chartWidth()
-	m.viewport.Height = m.chartHeight()
-	m.refreshChart()
+	cases := []struct {
+		name string
+		w, h int
+	}{
+		{"wide", 120, 40},   // shouldShowYAxis == true
+		{"narrow", 20, 40},  // shouldShowYAxis == false (Y axis dropped)
+	}
+	for _, tt := range cases {
+		b.Run(tt.name, func(b *testing.B) {
+			m := New(Deps{Cache: c})
+			m.w, m.h = tt.w, tt.h
+			m.viewport.Width = m.chartWidth()
+			m.viewport.Height = m.chartHeight()
+			m.refreshChart()
 
-	b.ReportAllocs()
-	runtime.GC()
-	b.ResetTimer()
-	for b.Loop() {
-		sinkView = m.View()
+			b.ReportAllocs()
+			runtime.GC()
+			b.ResetTimer()
+			for b.Loop() {
+				sinkView = m.View()
+			}
+		})
 	}
 }
 
