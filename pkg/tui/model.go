@@ -237,7 +237,6 @@ func (m Model) quotaBars() string {
 		"5h ",
 		m.progress,
 		float64(m.window.Percent)/100.0,
-		m.window.Percent,
 		durString(m.window.MinutesToReset),
 	)
 	// Derive the per-side slot from the actual rendered bars-row left,
@@ -254,7 +253,6 @@ func (m Model) quotaBars() string {
 			"7d ",
 			m.progress7d,
 			float64(m.window.Percent7d)/100.0,
-			m.window.Percent7d,
 			formatReset7d(m.window.MinutesToReset7d),
 		)
 	} else {
@@ -380,19 +378,21 @@ func (m Model) chartHeight() int {
 // (matched across both sides for symmetry — the prerequisite for centring
 // the │ divider exactly):
 //   - 3 cols dim label prefix ("5h " or "7d ")
-//   - 11 cols right-aligned status block ("100% 4h 59m" worst case)
+//   - 1 col bar→time margin (barTimeGap)
+//   - 6 cols right-aligned time slot ("4h 59m" worst case; 7d's "23:59"
+//     fits in 5 cols and gets 1 col of leading pad to stay symmetric)
 //
-// Per-side fixed chrome total: 3 + 11 = 14 cols. The header box
+// Per-side fixed chrome total: 3 + 1 + 6 = 10 cols. The header box
 // itself reserves 4 cols (border + padding), and a 3-col " │ " divider
-// sits between the two halves. Total fixed chrome = 4 + 14 + 3 + 14 = 35,
+// sits between the two halves. Total fixed chrome = 4 + 10 + 3 + 10 = 27,
 // split across two bars.
 //
-// At odd parities of (W - 35), integer division gives a 1-col residual
+// At odd parities of (W - 27), integer division gives a 1-col residual
 // that lipgloss absorbs as a trailing pad inside the box. Doesn't affect
 // divider centring because the divider is positioned relative to the
 // symmetric chrome, not derived from total width.
 func (m Model) progressWidth() int {
-	w := (m.w - 35) / 2
+	w := (m.w - 27) / 2
 	if w < 6 {
 		return 6
 	}

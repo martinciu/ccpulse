@@ -328,8 +328,8 @@ func splitANSIEnvelope(styled string) (open, close string, ok bool) {
 func TestRenderQuotaSide_ProducesExactSlotWidth(t *testing.T) {
 	// renderQuotaSide's output width is determined entirely by its inputs:
 	// lipgloss.Width(label) + bar.Width + statusBlockMaxW. Property under
-	// test: the function returns exactly that width regardless of percent
-	// or reset-string width — short statuses get right-align pad inside
+	// test: the function returns exactly that width regardless of fill
+	// ratio or reset-string width — short times get right-align pad inside
 	// the fixed statusBlockMaxW slot, so the total stays constant.
 	const labelStr = "5h "
 	const barW = 10
@@ -338,24 +338,24 @@ func TestRenderQuotaSide_ProducesExactSlotWidth(t *testing.T) {
 		progress.WithoutPercentage(),
 		progress.WithGradient(QuotaGradientStart, QuotaGradientEnd),
 	)
-	expectedW := lipgloss.Width(labelStr) + barW + statusBlockMaxW
+	expectedW := lipgloss.Width(labelStr) + barW + 1 + statusBlockMaxW // +1 for barTimeGap
 	cases := []struct {
-		name    string
-		percent int
-		reset   string
+		name      string
+		fillRatio float64
+		reset     string
 	}{
-		{"min", 0, "0m"},
-		{"low_short_time", 5, "52m"},
-		{"mid_short_time", 33, "5d"},
-		{"mid_hhmm", 50, "12:34"},
-		{"high_long_time", 95, "4h 59m"},
-		{"max", 100, "4h 59m"},
+		{"min", 0.0, "0m"},
+		{"low_short_time", 0.05, "52m"},
+		{"mid_short_time", 0.33, "5d"},
+		{"mid_hhmm", 0.50, "12:34"},
+		{"high_long_time", 0.95, "4h 59m"},
+		{"max", 1.0, "4h 59m"},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
-			got := renderQuotaSide(labelStr, bar, float64(tt.percent)/100.0, tt.percent, tt.reset)
+			got := renderQuotaSide(labelStr, bar, tt.fillRatio, tt.reset)
 			if w := lipgloss.Width(got); w != expectedW {
-				t.Errorf("renderQuotaSide percent=%d reset=%q: width %d, want %d", tt.percent, tt.reset, w, expectedW)
+				t.Errorf("renderQuotaSide fillRatio=%v reset=%q: width %d, want %d", tt.fillRatio, tt.reset, w, expectedW)
 			}
 		})
 	}
