@@ -43,13 +43,16 @@ func formatReset5h(mins int) string {
 	return fmt.Sprintf("%-6s", durString(mins))
 }
 
-// formatReset7d renders the 7d quota reset time. For >= 24h remaining,
-// it returns whole days ("1d", "7d") — the rounding loss is harmless for
-// a multi-day horizon. For < 24h, it switches to zero-padded HH:MM
-// duration ("23:59", "00:30") so the eventual reset reads at a glance.
+// formatReset7d renders the 7d quota reset time, right-padded to a
+// fixed 6 cols so the 7d-side chrome matches the 5h-side chrome —
+// this symmetry is what lets the │ divider sit at the true midpoint
+// of the bars row. For >= 24h remaining, it returns whole days ("1d",
+// "7d") — the rounding loss is harmless for a multi-day horizon. For
+// < 24h it switches to zero-padded HH:MM ("23:59", "00:30") so the
+// eventual reset reads at a glance. Both forms are padded to 6 cols.
 func formatReset7d(mins int) string {
 	if mins >= 1440 {
-		return fmt.Sprintf("%dd", mins/1440)
+		return fmt.Sprintf("%-6s", fmt.Sprintf("%dd", mins/1440))
 	}
-	return fmt.Sprintf("%02d:%02d", mins/60, mins%60)
+	return fmt.Sprintf("%-6s", fmt.Sprintf("%02d:%02d", mins/60, mins%60))
 }
