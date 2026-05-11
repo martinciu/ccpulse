@@ -182,4 +182,11 @@ func TestProgram_EmptyToFirstChart(t *testing.T) {
 	if strings.Contains(final, "no Claude sessions yet") {
 		t.Errorf("final frame still shows empty placeholder, expected chart:\n%s", final)
 	}
+	// Positive companion: confirm the program rendered SOMETHING — guards
+	// against a degenerate empty-buffer pass of the negative assertion.
+	// "z zoom" is the short-help footer text, present in every rendered
+	// frame once the terminal has a valid size.
+	if !strings.Contains(final, "z zoom") {
+		t.Errorf("final frame missing footer text 'z zoom' — program may not have rendered:\n%s", final)
+	}
 }
