@@ -87,6 +87,13 @@ type Model struct {
 	indexLastActive bool
 	indexFadeStop   int
 
+	// Cached on refreshChart so View() doesn't re-iterate buckets per
+	// frame. peak is the max bucket value in the current chart range;
+	// ceiling is niceCeiling(peak), also the Y axis top label and the
+	// barchart's WithMaxValue.
+	peak    int64
+	ceiling int64
+
 	w, h int
 }
 
@@ -358,6 +365,15 @@ func (m *Model) refreshChart() {
 
 	chartW := len(buckets)
 	chartH := m.chartHeight()
+
+	m.peak = 0
+	for _, b := range buckets {
+		if b.Tokens > m.peak {
+			m.peak = b.Tokens
+		}
+	}
+	m.ceiling = niceCeiling(m.peak)
+
 	m.viewport.SetContent(buildChart(buckets, chartW, chartH))
 	// Anchor the view at "now" on each refresh — the rightmost column.
 	m.viewport.SetXOffset(chartW)

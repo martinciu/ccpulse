@@ -16,6 +16,44 @@ import (
 	"github.com/martinciu/ccpulse/pkg/status"
 )
 
+func TestRefreshChart_CachesPeakAndCeiling(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "state.db")
+	c, err := cache.Open(dbPath)
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	defer c.Close()
+
+	tab, err := pricing.Load()
+	if err != nil {
+		t.Fatalf("pricing.Load: %v", err)
+	}
+	now := time.Now().UTC()
+	msgs := []parse.Message{
+		{SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7", Timestamp: now.Add(-30 * time.Minute), InputTokens: 10000, OutputTokens: 5000},
+		{SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7", Timestamp: now.Add(-10 * time.Minute), InputTokens: 30000, OutputTokens: 15000}, // peak bucket ≈ 45000
+	}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	m := New(Deps{Cache: c})
+	m.w, m.h = 120, 40
+	m.refreshChart()
+
+	if m.peak == 0 {
+		t.Errorf("expected non-zero peak after insert, got 0")
+	}
+	if m.ceiling < m.peak {
+		t.Errorf("ceiling (%d) must be >= peak (%d)", m.ceiling, m.peak)
+	}
+	// niceCeiling of ~45k rounds to 50k from {1, 1.5, 2, 2.5, 5} × 10^k.
+	if m.ceiling != 50_000 {
+		t.Errorf("expected ceiling 50000 for peak ~45000, got %d", m.ceiling)
+	}
+}
+
 func TestInitialView_RendersHeader(t *testing.T) {
 	m := New(Deps{})
 	m.w, m.h = 120, 40
