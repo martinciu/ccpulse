@@ -18,7 +18,7 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
-const SchemaVersion = "4"
+const SchemaVersion = "5"
 
 // cachePragmas is appended to the DSN so modernc.org/sqlite applies them
 // on every new pool connection, not just the first one. Issuing pragmas
@@ -180,9 +180,9 @@ INSERT OR IGNORE INTO messages
 (session_id, project_slug, ts, role, model,
  input_tokens, output_tokens, cache_read_tokens,
  cache_write_5m_tokens, cache_write_1h_tokens,
- cost_usd_estimate, pricing_unknown,
+ cost_usd_estimate, pricing_version, pricing_unknown,
  is_subagent, parent_session_id)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 	if err != nil {
 		return err
 	}
@@ -203,7 +203,7 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 			m.Role, m.Model,
 			m.InputTokens, m.OutputTokens, m.CacheReadTokens,
 			m.CacheWrite5mTokens, m.CacheWrite1hTokens,
-			cost, unk, sub, m.ParentSessionID,
+			cost, tab.Version, unk, sub, m.ParentSessionID,
 		); err != nil {
 			return err
 		}

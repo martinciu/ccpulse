@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS messages (
   cache_write_5m_tokens INTEGER NOT NULL,
   cache_write_1h_tokens INTEGER NOT NULL,
   cost_usd_estimate REAL NOT NULL,
+  pricing_version TEXT NOT NULL,
   pricing_unknown INTEGER NOT NULL DEFAULT 0,
   is_subagent INTEGER NOT NULL DEFAULT 0,
   parent_session_id TEXT,
