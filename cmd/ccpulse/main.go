@@ -170,7 +170,7 @@ func runTUI(ctx context.Context) error {
 	if err := secfile.MkdirAll(cacheDir); err != nil {
 		return err
 	}
-	if logCloser, err := devlog.Init(channel.IsDev(), cacheDir); err == nil && logCloser != nil {
+	if logCloser := initDevlog(channel.IsDev(), cacheDir, os.Stderr); logCloser != nil {
 		defer logCloser.Close()
 	}
 	dbPath := filepath.Join(cacheDir, "state.db")
