@@ -35,27 +35,30 @@ func durString(mins int) string {
 	return fmt.Sprintf("%dm", mins)
 }
 
-// formatReset5h wraps durString and right-pads its output to a fixed
-// 6 cols so the surrounding chrome stays anchored as minutes-to-reset
-// changes (e.g. "52m" → "4h 59m" doesn't shift the percent column).
-// 6 is the worst-case visual width of durString inside a 5h window —
-// "4h 59m" is 6 chars; values like "0m" or "52m" get trailing pad.
+// formatReset5h wraps durString and right-aligns its output inside a
+// fixed 6-col slot so the time always sits flush against the divider
+// (or right edge). Padding falls between the percent block and the
+// time digits — the natural separator zone — rather than between the
+// time and the divider, which would leave a visible gap. 6 is the
+// worst-case visual width of durString inside a 5h window: "4h 59m"
+// is 6 chars; values like "0m" or "52m" get leading pad.
 func formatReset5h(mins int) string {
-	return fmt.Sprintf("%-6s", durString(mins))
+	return fmt.Sprintf("%6s", durString(mins))
 }
 
-// formatReset7d renders the 7d quota reset time, right-padded to a
-// fixed 6 cols so the 7d-side chrome matches the 5h-side chrome —
-// this symmetry is what lets the │ divider sit at the true midpoint
-// of the bars row. For >= 24h remaining, it returns whole days ("1d",
-// "7d") — the rounding loss is harmless for a multi-day horizon. For
-// < 24h it switches to zero-padded HH:MM ("23:59", "00:30") so the
-// eventual reset reads at a glance. Both forms are padded to 6 cols.
+// formatReset7d renders the 7d quota reset time, right-aligned inside
+// a fixed 6-col slot so the value sits flush against the divider and
+// the 7d-side chrome matches the 5h-side chrome — this symmetry is
+// what lets the │ divider sit at the true midpoint of the bars row.
+// For >= 24h remaining, it returns whole days ("1d", "7d") — the
+// rounding loss is harmless for a multi-day horizon. For < 24h it
+// switches to zero-padded HH:MM ("23:59", "00:30") so the eventual
+// reset reads at a glance. Both forms are right-aligned to 6 cols.
 func formatReset7d(mins int) string {
 	if mins >= 1440 {
-		return fmt.Sprintf("%-6s", fmt.Sprintf("%dd", mins/1440))
+		return fmt.Sprintf("%6s", fmt.Sprintf("%dd", mins/1440))
 	}
-	return fmt.Sprintf("%-6s", fmt.Sprintf("%02d:%02d", mins/60, mins%60))
+	return fmt.Sprintf("%6s", fmt.Sprintf("%02d:%02d", mins/60, mins%60))
 }
 
 // renderQuotaSide composes one side of the quota bars row:

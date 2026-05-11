@@ -39,12 +39,12 @@ func TestFormatReset7d_PadsToFixedWidth(t *testing.T) {
 }
 
 func TestFormatReset7d_Content(t *testing.T) {
-	// Asserts the visible (non-padding) prefix of formatReset7d. Trailing
-	// whitespace is handled by TestFormatReset7d_PadsToFixedWidth — here
-	// we only care that the visible content matches expected formatting.
+	// Asserts the visible (non-padding) content of formatReset7d. Padding
+	// alignment (leading vs trailing) is a layout choice handled separately;
+	// here we only care that the visible content matches expected formatting.
 	tests := []struct {
 		mins int
-		want string // visible content; trailing padding stripped
+		want string // visible content; padding stripped
 	}{
 		{30, "00:30"},
 		{90, "01:30"},
@@ -55,7 +55,7 @@ func TestFormatReset7d_Content(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(fmt.Sprintf("%dmins", tt.mins), func(t *testing.T) {
-			got := strings.TrimRight(formatReset7d(tt.mins), " ")
+			got := strings.TrimSpace(formatReset7d(tt.mins))
 			if got != tt.want {
 				t.Errorf("formatReset7d(%d) = %q (trimmed), want %q", tt.mins, got, tt.want)
 			}
