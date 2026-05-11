@@ -271,7 +271,13 @@ func runTUI(ctx context.Context) error {
 		defer bfDone.Done()
 		_ = bf.Run(bfCtx, func(pr ingest.Progress) {
 			p.Send(tui.IndexProgressMsg{Done: pr.Done, Total: pr.Total, Active: pr.Active})
-			p.Send(tui.RefreshMsg{})
+			if !pr.Active {
+				// Coalesce backfill-driven repaints into a single
+				// RefreshMsg at completion. Watcher writes during
+				// backfill still drive their own refreshes via the
+				// goroutine above. See issue #94 for context.
+				p.Send(tui.RefreshMsg{})
+			}
 		})
 	}()
 
