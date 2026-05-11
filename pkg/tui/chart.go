@@ -207,11 +207,12 @@ func heatColor(ratio float64) lipgloss.Color {
 	}
 }
 
-// buildChart renders a bar chart from buckets and returns the string
-// to be passed to viewport.SetContent. chartW is the total chart width
-// in columns (= number of buckets); chartH is the height in rows,
-// fully consumed by bars.
-func buildChart(buckets []cache.TokenBucket, chartW, chartH int) string {
+// buildChart renders the viewport content from buckets at the given zoom:
+// bars in the top chartH-1 rows (or all chartH if chartH < 6, the same
+// threshold renderYAxis uses), plus an X-axis tick label row at the
+// bottom. Bars are scaled to niceCeiling(peak) via barchart.WithMaxValue
+// so the Y-axis labels stay truthful about where the tallest bar lands.
+func buildChart(buckets []cache.TokenBucket, chartW, chartH int, now time.Time, zoom ZoomLevel) string {
 	start := time.Now()
 	if chartH < 1 {
 		chartH = 1 // barchart.New panics with a zero height
@@ -222,6 +223,13 @@ func buildChart(buckets []cache.TokenBucket, chartW, chartH int) string {
 		if b.Tokens > peak {
 			peak = b.Tokens
 		}
+	}
+	ceiling := niceCeiling(peak)
+
+	barsH := chartH
+	showXLabels := chartH >= 6
+	if showXLabels {
+		barsH = chartH - 1
 	}
 
 	bars := make([]barchart.BarData, len(buckets))
@@ -247,15 +255,26 @@ func buildChart(buckets []cache.TokenBucket, chartW, chartH int) string {
 	// barGap=0 is required when chartW == numBars: the default gap of 1
 	// consumes (numBars-1) cols, leaving (graphSize-gaps)/numBars = 0
 	// width per bar — i.e. bars are not drawn at all.
-	bc := barchart.New(chartW, chartH, barchart.WithBarGap(0))
+	// WithMaxValue overrides auto-scaling so the tallest bar reaches
+	// peak/ceiling × barsH (with visible headroom matching the Y label).
+	bc := barchart.New(chartW, barsH,
+		barchart.WithBarGap(0),
+		barchart.WithMaxValue(float64(ceiling)),
+	)
 	bc.PushAll(bars)
 	bc.Draw()
+	body := bc.View()
 
-	out := bc.View()
+	if showXLabels {
+		body = lipgloss.JoinVertical(lipgloss.Left, body, renderXLabels(buckets, chartW, zoom, now))
+	}
+
 	slog.Debug("tui.buildChart",
 		"dur_ms", time.Since(start).Milliseconds(),
 		"buckets", len(buckets),
 		"chartW", chartW,
-		"chartH", chartH)
-	return out
+		"chartH", chartH,
+		"peak", peak,
+		"ceiling", ceiling)
+	return body
 }

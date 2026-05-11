@@ -39,8 +39,9 @@ func BenchmarkBuildChart(b *testing.B) {
 			// doesn't bleed into the first iteration's measurement.
 			runtime.GC()
 			b.ResetTimer()
+			now := time.Now().UTC()
 			for b.Loop() {
-				sinkString = buildChart(buckets, n, 20)
+				sinkString = buildChart(buckets, n, 20, now, ZoomLevels[1])
 			}
 		})
 	}
@@ -68,6 +69,31 @@ func itoa3(n int) string {
 		n /= 10
 	}
 	return string(buf[i:])
+}
+
+func TestBuildChart_ContainsXLabelsAndNowMarker(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Hour)
+	bs := []cache.TokenBucket{
+		{BucketStart: now.Add(-30 * time.Minute), Tokens: 1000},
+		{BucketStart: now.Add(-25 * time.Minute), Tokens: 2000},
+		{BucketStart: now.Add(-20 * time.Minute), Tokens: 1500},
+		{BucketStart: now.Add(-15 * time.Minute), Tokens: 3000},
+		{BucketStart: now.Add(-10 * time.Minute), Tokens: 2500},
+		{BucketStart: now.Add(-5 * time.Minute), Tokens: 4500},
+		{BucketStart: now, Tokens: 3500},
+	}
+	out := buildChart(bs, len(bs), 10, now, ZoomLevels[0])
+	if !strings.Contains(out, "▼ now") {
+		t.Errorf("expected '▼ now' marker in chart output:\n%s", out)
+	}
+	rows := strings.Split(out, "\n")
+	if len(rows) != 10 {
+		t.Errorf("expected 10 rows (chartH), got %d", len(rows))
+	}
+	if !strings.Contains(rows[len(rows)-1], "▼ now") {
+		t.Errorf("▼ now should be on the last row:\nlast row: %q\nfull:\n%s",
+			rows[len(rows)-1], out)
+	}
 }
 
 func TestRenderXLabels(t *testing.T) {

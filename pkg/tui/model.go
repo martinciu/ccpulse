@@ -374,7 +374,7 @@ func (m *Model) refreshChart() {
 	}
 	m.ceiling = niceCeiling(m.peak)
 
-	m.viewport.SetContent(buildChart(buckets, chartW, chartH))
+	m.viewport.SetContent(buildChart(buckets, chartW, chartH, time.Now(), zoom))
 	// Anchor the view at "now" on each refresh — the rightmost column.
 	m.viewport.SetXOffset(chartW)
 }
