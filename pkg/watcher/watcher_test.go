@@ -14,10 +14,17 @@ func TestWatcherEmitsOnWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer w.Close()
 
 	events := make(chan string, 10)
-	go w.Run(func(path string) { events <- path })
+	done := make(chan struct{})
+	go func() {
+		w.Run(func(path string) { events <- path })
+		close(done)
+	}()
+	defer func() {
+		_ = w.Close()
+		<-done
+	}()
 
 	target := filepath.Join(dir, "x.jsonl")
 	if err := os.WriteFile(target, []byte("hi"), 0644); err != nil {
@@ -46,9 +53,13 @@ func TestWatcherNoCallbackAfterClose(t *testing.T) {
 	w.deb = 500 * time.Millisecond
 
 	var called int32
-	go w.Run(func(path string) {
-		atomic.AddInt32(&called, 1)
-	})
+	done := make(chan struct{})
+	go func() {
+		w.Run(func(path string) {
+			atomic.AddInt32(&called, 1)
+		})
+		close(done)
+	}()
 
 	// Trigger a WRITE — schedules a debounced callback.
 	target := filepath.Join(dir, "x.jsonl")
@@ -62,9 +73,10 @@ func TestWatcherNoCallbackAfterClose(t *testing.T) {
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
 	}
-
-	// Wait well past the debounce window (500ms + slack).
-	time.Sleep(800 * time.Millisecond)
+	// Once <-done returns, Run's deferred Stop() loop has cancelled
+	// every pending debounce timer, so no late callback can reach the
+	// fire channel — no sleep-past-debounce needed.
+	<-done
 
 	if got := atomic.LoadInt32(&called); got != 0 {
 		t.Errorf("onChange fired %d times after Close; want 0", got)
