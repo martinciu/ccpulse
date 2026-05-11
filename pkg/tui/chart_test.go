@@ -144,6 +144,54 @@ func TestBuildChart_ContainsXLabelsAndNowMarker(t *testing.T) {
 	}
 }
 
+func TestBuildChart_ChartHTooShortDropsXLabels(t *testing.T) {
+	now := time.Now().UTC().Truncate(15 * time.Minute)
+	bs := []cache.TokenBucket{
+		{BucketStart: now.Add(-30 * time.Minute), Tokens: 1000},
+		{BucketStart: now.Add(-15 * time.Minute), Tokens: 3000},
+		{BucketStart: now, Tokens: 2000},
+	}
+	// chartH=5 is below the chartH>=6 threshold; the X labels row should
+	// be dropped and bars should take all 5 rows.
+	out := buildChart(bs, len(bs), 5, now, ZoomLevels[0])
+	if strings.Contains(out, "▼ now") {
+		t.Errorf("expected no '▼ now' marker when chartH=5; X labels should be dropped:\n%s", out)
+	}
+	rows := strings.Split(out, "\n")
+	if len(rows) != 5 {
+		t.Errorf("expected 5 rows (chartH), got %d", len(rows))
+	}
+}
+
+func TestRenderXLabels_NowTruncatesAtTinyChartW(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	buckets := []cache.TokenBucket{{BucketStart: now}}
+	// chartW=1 can't fit "▼ now" (5 cols); only ▼ should appear.
+	got := renderXLabels(buckets, 1, ZoomLevels[0], now)
+	if !strings.Contains(got, "▼") {
+		t.Errorf("expected ▼ at chartW=1, got %q", got)
+	}
+	if strings.Contains(got, "▼ now") {
+		t.Errorf("expected truncated ▼ at chartW=1, not full '▼ now', got %q", got)
+	}
+}
+
+func TestRenderXLabels_OverflowingLabelDropped(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 5, 12, 14, 0, 0, 0, time.UTC)
+	buckets := []cache.TokenBucket{
+		{BucketStart: time.Date(2026, 5, 12, 13, 0, 0, 0, time.UTC)}, // would emit "13:00"
+		{BucketStart: time.Date(2026, 5, 12, 13, 5, 0, 0, time.UTC)},
+		{BucketStart: time.Date(2026, 5, 12, 13, 10, 0, 0, time.UTC)},
+	}
+	// chartW=3: "13:00" at col 0 needs cols 0-4, overflows. Dropped.
+	got := renderXLabels(buckets, 3, ZoomLevels[0], now)
+	if strings.Contains(got, "13:00") {
+		t.Errorf("'13:00' label should have been dropped (would overflow chartW=3), got %q", got)
+	}
+}
+
 func TestRenderXLabels(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 5, 12, 14, 30, 0, 0, time.UTC)

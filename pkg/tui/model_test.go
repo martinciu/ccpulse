@@ -73,6 +73,43 @@ func TestView_YAxisFixedAcrossScroll(t *testing.T) {
 	}
 }
 
+func TestView_NarrowTerminalSkipsYAxis(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "state.db")
+	c, err := cache.Open(dbPath)
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	defer c.Close()
+
+	tab, err := pricing.Load()
+	if err != nil {
+		t.Fatalf("pricing.Load: %v", err)
+	}
+	now := time.Now().UTC().Truncate(15 * time.Minute)
+	msgs := []parse.Message{
+		{SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7", Timestamp: now.Add(-30 * time.Minute), InputTokens: 30000, OutputTokens: 15000},
+	}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	m := New(Deps{Cache: c})
+	m.w, m.h = 20, 40 // narrow: m.w - 8 = 12 < 20 → Y axis dropped
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	m.refreshChart()
+
+	if m.shouldShowYAxis() {
+		t.Fatalf("test setup: expected shouldShowYAxis()=false at w=20")
+	}
+	expected := formatTokenCount(m.ceiling)
+	view := m.View()
+	if strings.Contains(view, expected) {
+		t.Errorf("Y axis label %q should NOT appear in View at narrow terminal:\n%s", expected, view)
+	}
+}
+
 func TestShouldShowYAxis(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
