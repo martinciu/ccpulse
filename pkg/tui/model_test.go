@@ -670,15 +670,15 @@ func TestTickFadeMsg(t *testing.T) {
 func TestIndexFadeStyle(t *testing.T) {
 	// Verifies the three fade stops map to the expected foregrounds.
 	// Stop 1 is the default fg (no Foreground set, which lipgloss reports
-	// as NoColor{}); stops 2 and 3 step down through the dim Solarized
-	// palette already used elsewhere in the TUI.
+	// as NoColor{}); stops 2 and 3 step down through Dim (ANSI 8) and
+	// ANSI 0 — the indicator's final near-invisible step before disappearing.
 	cases := []struct {
 		stop int
 		want lipgloss.TerminalColor
 	}{
 		{1, lipgloss.NoColor{}},
-		{2, Base01},
-		{3, Base02},
+		{2, Dim},
+		{3, lipgloss.Color("0")},
 	}
 	for _, c := range cases {
 		t.Run(fmt.Sprintf("stop_%d", c.stop), func(t *testing.T) {

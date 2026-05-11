@@ -193,7 +193,7 @@ func (m Model) View() string {
 	}
 	start := time.Now()
 	header := renderHeader(m.w, m.quotaBars())
-	sep := lipgloss.NewStyle().Foreground(Base02).Render(strings.Repeat("─", m.w))
+	sep := lipgloss.NewStyle().Foreground(Dim).Render(strings.Repeat("─", m.w))
 	var body string
 	if m.showHelp {
 		body = m.help.FullHelpView(m.keys.FullHelp())
@@ -364,7 +364,7 @@ func (m *Model) refreshChart() {
 }
 
 // emptyPlaceholder returns a w×h block with "no Claude sessions yet"
-// centered in dim Base01 — the empty-cache state of the chart viewport.
+// centered in Dim (ANSI 8) — the empty-cache state of the chart viewport.
 func emptyPlaceholder(w, h int) string {
 	if h < 1 {
 		h = 1
@@ -372,7 +372,7 @@ func emptyPlaceholder(w, h int) string {
 	if w < 1 {
 		w = 1
 	}
-	msg := lipgloss.NewStyle().Foreground(Base01).Render("no Claude sessions yet")
+	msg := lipgloss.NewStyle().Foreground(Dim).Render("no Claude sessions yet")
 	return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, msg)
 }
 
@@ -443,7 +443,7 @@ func (m Model) progressWidth() int {
 }
 
 // newProgressBar builds a quota bar using the project's green → red
-// gradient (Solarized #859900 → #dc322f). WithGradient — not
+// gradient (Material 500 #4caf50 → #f44336). WithGradient — not
 // WithScaledGradient — keeps each cell's colour fixed by its position
 // on the bar's full width, so a 5%-filled bar shows only the leftmost
 // (green) cells and red only surfaces as fill approaches 100%. That's

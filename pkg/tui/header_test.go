@@ -304,7 +304,7 @@ func TestRenderBurnRateSide(t *testing.T) {
 	// envelope appears in the output).
 	withForcedColor(t)
 	const slotW = 60
-	dim := lipgloss.NewStyle().Foreground(Base01)
+	dim := lipgloss.NewStyle().Foreground(Dim)
 	safe := lipgloss.NewStyle().Foreground(Green)
 	watch := lipgloss.NewStyle().Foreground(Yellow)
 	danger := lipgloss.NewStyle().Foreground(Red)
