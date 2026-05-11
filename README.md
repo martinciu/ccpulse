@@ -5,20 +5,18 @@ A native Go TUI dashboard for Claude Code usage. Reads
 5-hour-window breakdowns. Local-only — no network calls during normal
 operation.
 
-![ccpulse — Live tab](docs/screenshots/live.png)
-
 ## Features
 
-- **Live tab** — active sessions across all your projects, with `⚡`
-  recency markers.
-- **Today / History / Projects / Models tabs** — drill-downs by date,
-  project, and model.
-- **5-hour plan-window gauge** — rolling window over the Claude Max
-  rate-limit period, rendered with the bubbles/progress default gradient.
+- **5h + 7d quota bars** — rolling-window gauges in the header, fed by
+  the Anthropic usage API where available with a JSONL fallback.
+- **Token histogram** — horizontally-scrollable bar chart of usage per
+  time bucket, heat-coloured relative to the peak bucket. Zoom cycles
+  between 5m / 15m / 1h granularity.
 - **Worktree-aware project grouping** — collapses session slugs back
   to the canonical project via git.
-- **fsnotify live updates** — file watcher (not polling) keeps the TUI
-  in sync as Claude writes new turns.
+- **fsnotify live updates** — file watcher (not polling) keeps the
+  cache in sync as Claude writes new turns; the TUI redraws on each
+  refresh.
 
 ## Quickstart
 
@@ -31,35 +29,35 @@ mise install        # fetches Go 1.25 into the project-scoped toolchain
 make install        # builds → ~/.local/bin/ccpulse
 ```
 
-The binary lives in `~/.local/bin/ccpulse`. On first run, populate the
-cache from your existing transcripts before opening the TUI:
+The binary lives in `~/.local/bin/ccpulse`. Launch the TUI:
 
 ```sh
-ccpulse index        # one-time scan of all existing JSONL history
-ccpulse              # opens the TUI
+ccpulse
 ```
 
-After that, the watcher keeps the cache up to date automatically.
+On first launch the TUI cold-walks `~/.claude/projects/` and backfills
+the cache (progress shown in the header). After that, the fsnotify
+watcher keeps the cache up to date automatically.
 
 ## Commands
 
 ### `ccpulse`
 
-Opens the interactive TUI. Five tabs, navigated with `tab` / `shift+tab`
-or number keys `1`–`5`. Press `?` for the full keybinding list.
+Opens the interactive TUI: 5h + 7d quota bars and a horizontally-scrollable
+token-usage histogram. `←` / `→` scroll the chart, `z` cycles bucket zoom
+(5m / 15m / 1h), `?` toggles full help, `q` quits.
 
 ### `ccpulse index`
 
-Scans all `.jsonl` files under `projects_root` and populates the SQLite
-cache. Run once after install to load existing history. Safe to re-run
-— already-indexed turns are skipped.
+Drops the SQLite cache and rebuilds it from a full scan of `projects_root`.
 
 ```sh
-ccpulse index             # incremental scan (adds new data)
-ccpulse index --rebuild   # drop the cache first, then do a full scan
+ccpulse index --rebuild   # drop the cache, then do a full scan
 ```
 
-Use `--rebuild` if the cache gets out of sync or you want a clean slate.
+The TUI backfills automatically on launch, so this is only needed if
+the cache gets out of sync or you want a clean slate. The bare
+`ccpulse index` (no `--rebuild`) is intentionally an error.
 
 ### `ccpulse status`
 
@@ -67,7 +65,8 @@ Prints the current 5-hour rolling window without opening the TUI.
 
 ```sh
 ccpulse status            # human-readable summary
-ccpulse status --json     # JSON: percent, tokens_5h, cost_5h_usd, minutes_to_reset
+ccpulse status --json     # JSON: 5h + 7d percent/reset, tokens_5h, cost_5h_usd,
+                          #       ceiling, optional projection block
 ```
 
 `--json` is useful for scripting or status bars that consume structured data.

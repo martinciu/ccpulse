@@ -8,15 +8,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 mise install          # fetch Go 1.25 (first-time setup)
 
 make build            # go build -o ccpulse ./cmd/ccpulse
-make install          # build → ~/.local/bin/ccpulse
+make install          # build → ~/.local/bin/ccpulse (release channel)
 make test             # go test ./...
 make lint             # go vet ./...
+
+make seed-dev         # populate fixture config + cache for TUI probes
+make reset-dev        # blow away seeded dev state
 
 go test ./pkg/cache/... -run TestIntegrity   # single package / single test
 go test ./...                                # all packages
 ```
 
 Release artifacts are produced by GoReleaser (`goreleaser release --clean`). The `version`, `commit`, and `date` vars in `cmd/ccpulse/main.go` are injected via ldflags at release time.
+
+`make install` and GoReleaser both inject `-X main.buildChannel=release`, which `pkg/channel` reads at startup. Anything else (including `make build`) is a dev build: `pkg/devlog` writes DEBUG-level slog output to `~/.cache/ccpulse/debug.log`.
 
 ### Environment overrides
 
@@ -54,6 +59,9 @@ These env vars override `config.toml` at runtime — useful for testing against 
 | `pkg/ingest` | Cold-walk indexer used by `runTUI` startup backfill and `ccpulse index`; reports progress via `IndexProgressMsg` |
 | `pkg/tui` | Bubble Tea model: bordered header (5h+7d quota bars), horizontally-scrollable token histogram, full-help overlay, lipgloss styling, `bubbles/{help,key,progress,viewport}` + `ntcharts/barchart` |
 | `pkg/config` | TOML config at `~/.config/ccpulse/config.toml` (respects `XDG_CONFIG_HOME`); `config.Load("")` returns safe defaults |
+| `pkg/channel` | Build-channel flag (`dev` / `release`) set once at startup from `main.buildChannel` via ldflag; unknown values normalise to `dev` |
+| `pkg/devlog` | Wires `slog.Default()` to `<cacheDir>/debug.log` in dev, `io.Discard` in release; best-effort (falls back to discard on any setup error) |
+| `pkg/secfile` | Filesystem helpers enforcing 0700 dirs / 0600 files; chmods pre-existing entries tighter on access |
 
 ### SQLite schema
 
