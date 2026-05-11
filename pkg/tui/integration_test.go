@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,4 +29,28 @@ func TestProgram_QuitPropagation(t *testing.T) {
 	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
 
 	tm.WaitFinished(t, teatest.WithFinalTimeout(1*time.Second))
+}
+
+// TestProgram_HelpOverlayRender verifies that pressing '?' renders the
+// help overlay through a real program loop (not just the unit-level
+// Update check in TestHelpToggle). Asserts on the rendered key-binding
+// description text — full layout-position assertions are deliberately
+// out of scope; goldens are the future tool for that (see spec).
+func TestProgram_HelpOverlayRender(t *testing.T) {
+	tm := setupTestModel(t)
+
+	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+
+	// Trigger quit so we can capture FinalOutput cleanly.
+	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	tm.WaitFinished(t, teatest.WithFinalTimeout(1*time.Second))
+
+	out, err := io.ReadAll(tm.FinalOutput(t))
+	if err != nil {
+		t.Fatalf("FinalOutput read: %v", err)
+	}
+	final := string(out)
+	if !strings.Contains(final, "scroll") {
+		t.Errorf("expected help overlay text 'scroll' in final output, got:\n%s", final)
+	}
 }
