@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -62,6 +63,9 @@ func TestEnsureConfigFile_TightensExisting(t *testing.T) {
 }
 
 func TestInitDevlog_WarnsOnError(t *testing.T) {
+	prev := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
 	parent := t.TempDir()
 	if err := os.Chmod(parent, 0o500); err != nil {
 		t.Fatalf("chmod parent: %v", err)
@@ -69,8 +73,9 @@ func TestInitDevlog_WarnsOnError(t *testing.T) {
 	// Restore perms in cleanup so t.TempDir's own RemoveAll can recurse.
 	t.Cleanup(func() { _ = os.Chmod(parent, 0o700) })
 
+	cacheDir := filepath.Join(parent, "denied")
 	var buf bytes.Buffer
-	closer := initDevlog(true, filepath.Join(parent, "denied"), &buf)
+	closer := initDevlog(true, cacheDir, &buf)
 	if closer != nil {
 		closer.Close()
 	}
@@ -82,9 +87,15 @@ func TestInitDevlog_WarnsOnError(t *testing.T) {
 	if !strings.Contains(out, "debug log disabled") {
 		t.Errorf("missing remediation hint in %q", out)
 	}
+	if !strings.Contains(out, cacheDir) {
+		t.Errorf("missing cacheDir path in %q", out)
+	}
 }
 
 func TestInitDevlog_QuietOnSuccess(t *testing.T) {
+	prev := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
 	var buf bytes.Buffer
 	closer := initDevlog(true, t.TempDir(), &buf)
 	if closer != nil {
@@ -96,6 +107,9 @@ func TestInitDevlog_QuietOnSuccess(t *testing.T) {
 }
 
 func TestInitDevlog_ReleaseQuiet(t *testing.T) {
+	prev := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
 	var buf bytes.Buffer
 	closer := initDevlog(false, t.TempDir(), &buf)
 	if closer != nil {
