@@ -2,7 +2,6 @@ package tui
 
 import (
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/NimbleMarkets/ntcharts/barchart"
@@ -41,13 +40,12 @@ func heatColor(ratio float64) lipgloss.Color {
 
 // buildChart renders a bar chart from buckets and returns the string
 // to be passed to viewport.SetContent. chartW is the total chart width
-// in columns (= number of buckets); chartH is the height in rows
-// (bars + baseline). The bottom row is always a baseline strip:
-// '▒' over data columns, '░' over gap columns.
+// in columns (= number of buckets); chartH is the height in rows,
+// fully consumed by bars.
 func buildChart(buckets []cache.TokenBucket, chartW, chartH int) string {
 	start := time.Now()
-	if chartH < 2 {
-		chartH = 2 // need at least one bar row + one baseline row
+	if chartH < 1 {
+		chartH = 1 // barchart.New panics with a zero height
 	}
 
 	var peak int64
@@ -77,27 +75,14 @@ func buildChart(buckets []cache.TokenBucket, chartW, chartH int) string {
 		}
 	}
 
-	// Bars take all but the bottom row; the bottom row is the baseline.
 	// barGap=0 is required when chartW == numBars: the default gap of 1
 	// consumes (numBars-1) cols, leaving (graphSize-gaps)/numBars = 0
 	// width per bar — i.e. bars are not drawn at all.
-	bc := barchart.New(chartW, chartH-1, barchart.WithBarGap(0))
+	bc := barchart.New(chartW, chartH, barchart.WithBarGap(0))
 	bc.PushAll(bars)
 	bc.Draw()
 
-	dataStyle := lipgloss.NewStyle().Foreground(Base01)
-	gapStyle := lipgloss.NewStyle().Foreground(Base02)
-	var sb strings.Builder
-	sb.Grow(len(buckets) * 4) // styled rune is several bytes
-	for _, b := range buckets {
-		if b.Tokens > 0 {
-			sb.WriteString(dataStyle.Render("▒"))
-		} else {
-			sb.WriteString(gapStyle.Render("░"))
-		}
-	}
-
-	out := lipgloss.JoinVertical(lipgloss.Left, bc.View(), sb.String())
+	out := bc.View()
 	slog.Debug("tui.buildChart",
 		"dur_ms", time.Since(start).Milliseconds(),
 		"buckets", len(buckets),

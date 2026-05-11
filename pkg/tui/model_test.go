@@ -164,8 +164,11 @@ func TestBuildChartEmitsBars(t *testing.T) {
 	}
 }
 
-func TestBuildChart_BaselineRow(t *testing.T) {
-	// Mixed buckets: some empty (gap) and some non-empty (data).
+func TestBuildChart_NoBaselineStrip(t *testing.T) {
+	// Regression for #102: the per-cell ▒/░ baseline strip below the bars
+	// was removed; bars fill the full chart height instead. The output
+	// must contain neither glyph, and its total row count must equal
+	// chartH (no extra row of chrome).
 	now := time.Now()
 	buckets := make([]cache.TokenBucket, 20)
 	for i := range buckets {
@@ -177,16 +180,14 @@ func TestBuildChart_BaselineRow(t *testing.T) {
 	}
 	out := buildChart(buckets, 20, 10)
 
-	if !strings.Contains(out, "▒") {
-		t.Errorf("baseline row missing data marker '▒' in:\n%s", out)
+	if strings.Contains(out, "▒") {
+		t.Errorf("baseline data marker '▒' should be gone after #102; got:\n%s", out)
 	}
-	if !strings.Contains(out, "░") {
-		t.Errorf("baseline row missing gap marker '░' in:\n%s", out)
+	if strings.Contains(out, "░") {
+		t.Errorf("baseline gap marker '░' should be gone after #102; got:\n%s", out)
 	}
-
-	// Bars must still render — Task 4 must not regress TestBuildChartEmitsBars.
-	if !strings.ContainsAny(out, "█▇▆▅▄▃▂▁") {
-		t.Errorf("buildChart produced no bar block characters; got:\n%s", out)
+	if h := lipgloss.Height(out); h != 10 {
+		t.Errorf("buildChart(_, _, 10) should be 10 rows tall; got %d:\n%s", h, out)
 	}
 }
 
