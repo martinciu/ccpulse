@@ -92,13 +92,12 @@ const burnPad = "   "
 // divider's dim style. reset is variable-width output from durString
 // or formatReset7d.
 func renderQuotaSide(label string, bar progress.Model, fillRatio float64, reset string) string {
-	timeSlot := lipgloss.NewStyle().Width(statusBlockMaxW).Align(lipgloss.Right).Render(reset)
 	return lipgloss.JoinHorizontal(
 		lipgloss.Top,
 		dimStyle.Render(label),
 		bar.ViewAs(fillRatio),
 		barTimeGap,
-		timeSlot,
+		timeSlotStyle.Render(reset),
 	)
 }
 
@@ -124,14 +123,16 @@ const (
 	burnSeverityDanger                        // WillOverreach && eta <= 10% of window (or eta nil)
 )
 
-// Package-level lipgloss styles for the burn-rate row. Hoisted out of
-// renderBurnRateSide so a fresh Style isn't allocated on every View()
-// frame (this code runs in the per-frame hot path).
+// Package-level lipgloss styles for the bars/burn-rate header rows.
+// Hoisted out of renderQuotaSide / renderBurnRateSide so a fresh Style
+// isn't allocated on every View() frame (this code runs in the per-frame
+// hot path).
 var (
 	dimStyle        = lipgloss.NewStyle().Foreground(Base01)
 	burnSafeStyle   = lipgloss.NewStyle().Foreground(Green)
 	burnWatchStyle  = lipgloss.NewStyle().Foreground(Yellow)
 	burnDangerStyle = lipgloss.NewStyle().Foreground(Red)
+	timeSlotStyle   = lipgloss.NewStyle().Width(statusBlockMaxW).Align(lipgloss.Right)
 )
 
 // burnImminentRatio is the fraction of a bucket's window below which an

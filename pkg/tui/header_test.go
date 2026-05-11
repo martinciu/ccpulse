@@ -148,9 +148,11 @@ func TestSeverityFor(t *testing.T) {
 			want:   burnSeveritySafe,
 		},
 		{
-			// Pins the contract: only the literal "low" string triggers
-			// warming-up — Go zero value or any other Confidence string
-			// falls through to the projection-based dispatch.
+			// First half of the contract pin: only the literal "low"
+			// string triggers warming-up. With !WillOverreach this would
+			// pass even if "" matched "low" (the safe branch short-
+			// circuits earlier) — paired with the next case to fully
+			// prove the fall-through.
 			name: "empty Confidence (zero value) + no overreach → safe (not warming up)",
 			p: &status.Projection{
 				SlopePctPerHour:     12,
@@ -160,6 +162,23 @@ func TestSeverityFor(t *testing.T) {
 			},
 			window: 5 * time.Hour,
 			want:   burnSeveritySafe,
+		},
+		{
+			// Second half: forces dispatch through the Confidence=="low"
+			// check (WillOverreach=true defeats the safe short-circuit).
+			// If "" were treated as "low", this would return warmingUp;
+			// expecting watch proves "" falls through to projection-based
+			// classification as intended.
+			name: "empty Confidence + overreach + eta > threshold → watch (proves fall-through past low check)",
+			p: &status.Projection{
+				SlopePctPerHour:     23,
+				ProjectedPctAtReset: 117,
+				WillOverreach:       true,
+				MinutesTo100Pct:     &min41,
+				Confidence:          "",
+			},
+			window: 5 * time.Hour,
+			want:   burnSeverityWatch,
 		},
 		{
 			name: "5h overreach + eta > 30m → watch",
