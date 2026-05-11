@@ -34,6 +34,15 @@ func durString(mins int) string {
 	return fmt.Sprintf("%dm", mins)
 }
 
+// formatReset5h wraps durString and right-pads its output to a fixed
+// 6 cols so the surrounding chrome stays anchored as minutes-to-reset
+// changes (e.g. "52m" → "4h 59m" doesn't shift the percent column).
+// 6 is the worst-case visual width of durString inside a 5h window —
+// "4h 59m" is 6 chars; values like "0m" or "52m" get trailing pad.
+func formatReset5h(mins int) string {
+	return fmt.Sprintf("%-6s", durString(mins))
+}
+
 // formatReset7d renders the 7d quota reset time. For >= 24h remaining,
 // it returns whole days ("1d", "7d") — the rounding loss is harmless for
 // a multi-day horizon. For < 24h, it switches to zero-padded HH:MM
