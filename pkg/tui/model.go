@@ -267,16 +267,21 @@ func (m Model) quotaBars() string {
 	barsRow := lipgloss.JoinHorizontal(lipgloss.Top, left, divider, right)
 
 	// Burn-rate row mirrors the bars layout: same per-side slotW, same
-	// divider, same 5h / 7d labels. Both projection pointers can be nil
-	// (no quota loaded yet, or 7d not exposed by the server) — the side
-	// renderer handles that by emitting a dim "(no data)" placeholder.
+	// divider. The "5h "/"7d " label slot is replaced with same-width
+	// blank padding so the burn-rate text starts at the same column as
+	// the progress bar above — spatial association already identifies
+	// each side; repeating the labels would be redundant.
+	// Both projection pointers can be nil (no quota loaded yet, or 7d
+	// not exposed by the server) — the side renderer handles that by
+	// emitting a dim "(no data)" placeholder.
 	var fiveHourProj, sevenDayProj *status.Projection
 	if m.window.Projection != nil {
 		fiveHourProj = m.window.Projection.FiveHour
 		sevenDayProj = m.window.Projection.SevenDay
 	}
-	burnLeft := renderBurnRateSide("5h ", fiveHourProj, slotW)
-	burnRight := renderBurnRateSide("7d ", sevenDayProj, slotW)
+	burnPad := strings.Repeat(" ", lipgloss.Width("5h "))
+	burnLeft := renderBurnRateSide(burnPad, fiveHourProj, slotW)
+	burnRight := renderBurnRateSide(burnPad, sevenDayProj, slotW)
 	burnRow := lipgloss.JoinHorizontal(lipgloss.Top, burnLeft, divider, burnRight)
 
 	return lipgloss.JoinVertical(lipgloss.Left, barsRow, burnRow)
