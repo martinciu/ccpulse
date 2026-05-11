@@ -68,6 +68,41 @@ func itoa3(n int) string {
 	return string(buf[i:])
 }
 
+func TestNiceCeiling(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		peak int64
+		want int64
+	}{
+		{"zero returns 1", 0, 1},
+		{"negative returns 1", -10, 1},
+		{"one", 1, 1},
+		{"two", 2, 2},
+		{"three rounds to 5", 3, 5},
+		{"five", 5, 5},
+		{"six rounds to 10", 6, 10},
+		{"twelve rounds to 15", 12, 15},
+		{"1200 rounds to 1500", 1200, 1500},
+		{"12000 rounds to 15000", 12_000, 15_000},
+		{"45300 rounds to 50000", 45_300, 50_000},
+		{"1.2M rounds to 1.5M", 1_200_000, 1_500_000},
+		{"1.6M rounds to 2M", 1_600_000, 2_000_000},
+		{"2.3M rounds to 2.5M", 2_300_000, 2_500_000},
+		{"999999 rounds to 1M", 999_999, 1_000_000},
+		{"exactly 1M", 1_000_000, 1_000_000},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := niceCeiling(tt.peak)
+			if got != tt.want {
+				t.Errorf("niceCeiling(%d) = %d, want %d", tt.peak, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestFormatTokenCount(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

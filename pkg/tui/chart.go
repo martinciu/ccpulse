@@ -2,6 +2,7 @@ package tui
 
 import (
 	"log/slog"
+	"math"
 	"strconv"
 	"time"
 
@@ -24,6 +25,34 @@ var ZoomLevels = []ZoomLevel{
 	{"5m", 5 * time.Minute},
 	{"15m", 15 * time.Minute},
 	{"1h", time.Hour},
+}
+
+// niceCeiling returns the smallest "nice" value >= peak from the sequence
+// {1, 1.5, 2, 2.5, 5} × 10^k. Used to pick a clean Y axis top label and
+// to override the barchart's auto-scaling (via WithMaxValue) so labels
+// stay truthful about where the tallest bar actually lands.
+func niceCeiling(peak int64) int64 {
+	if peak <= 0 {
+		return 1
+	}
+	mag := math.Pow10(int(math.Floor(math.Log10(float64(peak)))))
+	norm := float64(peak) / mag
+	var nice float64
+	switch {
+	case norm <= 1.0:
+		nice = 1.0
+	case norm <= 1.5:
+		nice = 1.5
+	case norm <= 2.0:
+		nice = 2.0
+	case norm <= 2.5:
+		nice = 2.5
+	case norm <= 5.0:
+		nice = 5.0
+	default:
+		nice = 10.0
+	}
+	return int64(math.Round(nice * mag))
 }
 
 // formatTokenCount renders an int64 token count compactly with a k/M
