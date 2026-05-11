@@ -253,20 +253,22 @@ func TestSevenDayBarRendered(t *testing.T) {
 }
 
 func TestQuotaBarsLayout_Symmetric(t *testing.T) {
-	// At any terminal width ≥ 60 cols, the bars-row produced by quotaBars()
-	// must be symmetric across the dim │ divider: lipgloss.Width(left) ==
-	// lipgloss.Width(right). This is the centring property — equivalent
-	// to "divider visually centred" but more testable than checking an
-	// integer-rounded column index.
+	// The bars-row produced by quotaBars() must be symmetric across the
+	// dim " │ " divider: lipgloss.Width(left) == lipgloss.Width(right).
+	// This is the centring property — equivalent to "divider visually
+	// centred" but more testable than checking an integer-rounded column
+	// index.
 	//
-	// The dim divider is " │ " (space + middle-bar + space, 3 cols). We
-	// split on the middle-bar rune (U+2502) and check the left and right
-	// halves include their adjacent spaces.
+	// Cases span the linear regime (60–120 cols, where progressWidth =
+	// (W-35)/2) and the clamp regime (40 cols, where progressWidth pins
+	// at 6 and the bars-row overflows the box — the symmetry property
+	// must still hold inside the overflow).
 	cases := []struct {
 		name string
 		w    int
 		win  status.Window
 	}{
+		{"40cols_clamp", 40, status.Window{Percent: 5, MinutesToReset: 52, Has7d: true, Percent7d: 24, MinutesToReset7d: 8640}},
 		{"60cols_short_times", 60, status.Window{Percent: 5, MinutesToReset: 52, Has7d: true, Percent7d: 24, MinutesToReset7d: 8640}},   // 6d
 		{"60cols_long_times", 60, status.Window{Percent: 95, MinutesToReset: 299, Has7d: true, Percent7d: 80, MinutesToReset7d: 1439}}, // 4h 59m / 23:59
 		{"80cols_short_times", 80, status.Window{Percent: 5, MinutesToReset: 52, Has7d: true, Percent7d: 24, MinutesToReset7d: 8640}},
@@ -283,13 +285,15 @@ func TestQuotaBarsLayout_Symmetric(t *testing.T) {
 			m.progress7d = newProgressBar(m.progressWidth())
 
 			bars := m.quotaBars()
-			left, right, ok := strings.Cut(bars, "│")
+			// Split on the full " │ " divider rather than the bare │ rune,
+			// so the adjacent spaces (part of the divider styling, not the
+			// side chrome) are excluded from both halves. Robust across
+			// layout refactors that change how JoinHorizontal composes the
+			// spaces.
+			left, right, ok := strings.Cut(bars, " │ ")
 			if !ok {
-				t.Fatalf("no │ divider found in quotaBars output: %q", bars)
+				t.Fatalf("no ' │ ' divider found in quotaBars output: %q", bars)
 			}
-			// strings.Cut splits exactly at │; the leading/trailing space of
-			// the dim " │ " divider go to left/right respectively, so both
-			// halves are width-comparable as-is.
 			lw, rw := lipgloss.Width(left), lipgloss.Width(right)
 			if lw != rw {
 				t.Errorf("asymmetric quotaBars at w=%d: left width %d, right width %d\nbars: %q", tt.w, lw, rw, bars)
