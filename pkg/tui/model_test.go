@@ -133,7 +133,10 @@ func TestRefreshChart_CachesPeakAndCeiling(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pricing.Load: %v", err)
 	}
-	now := time.Now().UTC()
+	// Pin to a 15-minute boundary so both messages fall into deterministic
+	// buckets regardless of wall-clock time at test runtime. Default zoom is
+	// 15m (zoomIdx: 1) so refreshChart bucketises at 15-minute granularity.
+	now := time.Now().UTC().Truncate(15 * time.Minute)
 	msgs := []parse.Message{
 		{SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7", Timestamp: now.Add(-30 * time.Minute), InputTokens: 10000, OutputTokens: 5000},
 		{SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7", Timestamp: now.Add(-10 * time.Minute), InputTokens: 30000, OutputTokens: 15000}, // peak bucket ≈ 45000
