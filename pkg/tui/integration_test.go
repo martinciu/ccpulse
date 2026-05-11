@@ -203,7 +203,7 @@ func TestProgram_BurnRateOverreach(t *testing.T) {
 	// Red style marker — produce the same envelope the renderer would use
 	// and check it appears somewhere in the frame. Avoids hard-coding
 	// escape bytes; survives lipgloss version bumps.
-	redMarker := lipgloss.NewStyle().Foreground(Red).Render("X")
+	redMarker := lipgloss.NewStyle().Foreground(Red).Render(probeMarker)
 	openSeq, _, ok := splitANSIEnvelope(redMarker)
 	if !ok {
 		t.Fatalf("could not split red marker envelope from %q", redMarker)

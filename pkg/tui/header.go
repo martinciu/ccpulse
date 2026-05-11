@@ -87,11 +87,10 @@ const barTimeGap = " "
 // divider's dim style. reset is variable-width output from durString
 // or formatReset7d.
 func renderQuotaSide(label string, bar progress.Model, fillRatio float64, reset string) string {
-	dim := lipgloss.NewStyle().Foreground(Base01)
 	timeSlot := lipgloss.NewStyle().Width(statusBlockMaxW).Align(lipgloss.Right).Render(reset)
 	return lipgloss.JoinHorizontal(
 		lipgloss.Top,
-		dim.Render(label),
+		dimStyle.Render(label),
 		bar.ViewAs(fillRatio),
 		barTimeGap,
 		timeSlot,
@@ -116,8 +115,18 @@ const (
 	burnSeverityNoData    burnSeverity = iota // p == nil
 	burnSeverityWarmingUp                     // Confidence == "low"
 	burnSeveritySafe                          // !WillOverreach
-	burnSeverityWatch                         // WillOverreach && eta > 30m
-	burnSeverityDanger                        // WillOverreach && eta <= 30m (or eta nil)
+	burnSeverityWatch                         // WillOverreach && eta > 10% of window
+	burnSeverityDanger                        // WillOverreach && eta <= 10% of window (or eta nil)
+)
+
+// Package-level lipgloss styles for the burn-rate row. Hoisted out of
+// renderBurnRateSide so a fresh Style isn't allocated on every View()
+// frame (this code runs in the per-frame hot path).
+var (
+	dimStyle        = lipgloss.NewStyle().Foreground(Base01)
+	burnSafeStyle   = lipgloss.NewStyle().Foreground(Green)
+	burnWatchStyle  = lipgloss.NewStyle().Foreground(Yellow)
+	burnDangerStyle = lipgloss.NewStyle().Foreground(Red)
 )
 
 // burnImminentRatio is the fraction of a bucket's window below which an
@@ -168,24 +177,23 @@ func severityFor(p *status.Projection, window time.Duration) burnSeverity {
 // window is the bucket's full duration (5h or 7d), forwarded to
 // severityFor so the imminent threshold scales per bucket.
 func renderBurnRateSide(label string, p *status.Projection, slotW int, window time.Duration) string {
-	dim := lipgloss.NewStyle().Foreground(Base01)
 	labelW := lipgloss.Width(label)
 	textSlot := max(slotW-labelW, 1)
 	render := func(text string, style lipgloss.Style) string {
-		return dim.Render(label) + style.Width(textSlot).Render(text)
+		return dimStyle.Render(label) + style.Width(textSlot).Render(text)
 	}
 	switch severityFor(p, window) {
 	case burnSeverityNoData:
-		return render("(no data)", dim)
+		return render("(no data)", dimStyle)
 	case burnSeverityWarmingUp:
-		return render("warming up", dim)
+		return render("warming up", dimStyle)
 	case burnSeveritySafe:
 		text := fmt.Sprintf("%s • projecting %d%%", formatBurnRate(p.SlopePctPerHour), p.ProjectedPctAtReset)
-		return render(text, lipgloss.NewStyle().Foreground(Green))
+		return render(text, burnSafeStyle)
 	case burnSeverityWatch:
 		text := fmt.Sprintf("%s • projecting %d%% • limit in %s",
 			formatBurnRate(p.SlopePctPerHour), p.ProjectedPctAtReset, durString(*p.MinutesTo100Pct))
-		return render(text, lipgloss.NewStyle().Foreground(Yellow))
+		return render(text, burnWatchStyle)
 	case burnSeverityDanger:
 		var text string
 		if p.MinutesTo100Pct == nil {
@@ -194,7 +202,7 @@ func renderBurnRateSide(label string, p *status.Projection, slotW int, window ti
 			text = fmt.Sprintf("%s • projecting %d%% • limit in %s",
 				formatBurnRate(p.SlopePctPerHour), p.ProjectedPctAtReset, durString(*p.MinutesTo100Pct))
 		}
-		return render(text, lipgloss.NewStyle().Foreground(Red))
+		return render(text, burnDangerStyle)
 	}
 	return ""
 }

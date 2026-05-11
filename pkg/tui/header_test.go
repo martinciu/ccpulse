@@ -235,10 +235,13 @@ func TestSeverityFor(t *testing.T) {
 			want:   burnSeverityDanger,
 		},
 		{
-			// Cross-bucket sanity: same eta=41m, different windows. On 5h
-			// it's well above the 30-min threshold (watch). On 7d it's
-			// way below 1008 (danger). Demonstrates the scaling.
-			name: "same eta=41m: watch on 5h, danger on 7d",
+			// Cross-bucket sanity, 7d half: this is the same projection
+			// (eta=41m) that the "5h overreach + eta > 30m → watch" case
+			// above classifies as watch on the 5h window. Here, with the
+			// 7d window (threshold = 1008 min), eta=41m is well below
+			// the threshold and classifies as danger. Demonstrates the
+			// 10%-of-window scaling.
+			name: "7d overreach + eta=41m (well below 1008m) → danger",
 			p: &status.Projection{
 				SlopePctPerHour:     23,
 				ProjectedPctAtReset: 117,
@@ -364,11 +367,13 @@ func TestRenderBurnRateSide(t *testing.T) {
 					t.Errorf("output unexpectedly contains substring %q\nfull output: %q", sub, got)
 				}
 			}
-			// Style probe: render a single-char marker through the expected
+			// Style probe: render a control-byte marker through the expected
 			// style and assert its escape envelope is present in the output.
 			// Survives lipgloss version bumps because we don't hard-code
 			// escape bytes — we compare what lipgloss itself produces today.
-			marker := tt.wantStyle.Render("X")
+			// Uses \x01 (SOH) rather than a printable char so the marker
+			// can never collide with content elsewhere in the rendered text.
+			marker := tt.wantStyle.Render(probeMarker)
 			openSeq, closeSeq, ok := splitANSIEnvelope(marker)
 			if !ok {
 				t.Fatalf("could not split ANSI envelope from marker %q", marker)
@@ -381,11 +386,18 @@ func TestRenderBurnRateSide(t *testing.T) {
 	}
 }
 
+// probeMarker is the byte rendered through a lipgloss style to extract
+// that style's open/close ANSI envelope for substring assertions in
+// TestRenderBurnRateSide. Uses \x01 (SOH, a control byte) rather than
+// a printable character so it can never collide with content elsewhere
+// in the rendered output.
+const probeMarker = "\x01"
+
 // splitANSIEnvelope splits a lipgloss-styled single-character string
-// "ESC[...mXESC[0m" into (open, close, true). Used to fingerprint the
-// styling applied without hard-coding escape sequences.
+// "ESC[...m<probeMarker>ESC[0m" into (open, close, true). Used to
+// fingerprint the styling applied without hard-coding escape sequences.
 func splitANSIEnvelope(styled string) (open, close string, ok bool) {
-	idx := strings.IndexByte(styled, 'X')
+	idx := strings.IndexByte(styled, probeMarker[0])
 	if idx <= 0 || idx >= len(styled)-1 {
 		return "", "", false
 	}

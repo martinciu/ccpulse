@@ -231,8 +231,6 @@ func renderIndicators(isDev bool, idx IndexProgress, w status.Window) string {
 // The burn-rate row pulls projection data from the same status.Window
 // the bars row uses — no separate compute path.
 func (m Model) quotaBars() string {
-	dimStyle := lipgloss.NewStyle().Foreground(Base01)
-
 	left := renderQuotaSide(
 		"5h ",
 		m.progress,
