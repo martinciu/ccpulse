@@ -68,6 +68,46 @@ func itoa3(n int) string {
 	return string(buf[i:])
 }
 
+func TestFormatXLabel(t *testing.T) {
+	t.Parallel()
+	// Tuesday 14:30 UTC. Tests use UTC throughout for determinism.
+	now := time.Date(2026, 5, 12, 14, 30, 0, 0, time.UTC)
+	d := func(h, m int) time.Time {
+		return time.Date(2026, 5, 12, h, m, 0, 0, time.UTC)
+	}
+	day := func(month, day int) time.Time {
+		return time.Date(2026, time.Month(month), day, 0, 0, 0, 0, time.UTC)
+	}
+	tests := []struct {
+		name string
+		t    time.Time
+		zoom ZoomLevel
+		want string
+	}{
+		{"5m on hour", d(13, 0), ZoomLevels[0], "13:00"},
+		{"5m mid-hour 15min", d(13, 15), ZoomLevels[0], ""},
+		{"5m mid-hour 5min", d(13, 5), ZoomLevels[0], ""},
+		{"15m on 3-hour", d(12, 0), ZoomLevels[1], "12:00"},
+		{"15m off-3-hour", d(13, 0), ZoomLevels[1], ""},
+		{"15m mid-window 09:00", d(9, 0), ZoomLevels[1], "09:00"},
+		{"1h today midnight Tue", day(5, 12), ZoomLevels[2], "Tue"},
+		{"1h yesterday Mon", day(5, 11), ZoomLevels[2], "Mon"},
+		{"1h 6 days ago Wed", day(5, 6), ZoomLevels[2], "Wed"},
+		{"1h 7 days ago falls to MM-DD", day(5, 5), ZoomLevels[2], "05-05"},
+		{"1h non-midnight returns empty", d(14, 0), ZoomLevels[2], ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := formatXLabel(tt.t, tt.zoom, now)
+			if got != tt.want {
+				t.Errorf("formatXLabel(%v, %s) = %q, want %q",
+					tt.t.Format(time.RFC3339), tt.zoom.Label, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestNiceCeiling(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

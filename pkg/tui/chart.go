@@ -27,6 +27,32 @@ var ZoomLevels = []ZoomLevel{
 	{"1h", time.Hour},
 }
 
+// formatXLabel returns the X-axis tick label for bucket time t at the
+// given zoom; "" if t is not on a label boundary. Cadence is clock-aligned
+// (anchored to hour / 3-hour / day marks) so positions are stable across
+// refreshes. 1h zoom uses hybrid weekday/MM-DD: weekday short ("Mon", ...)
+// for buckets within the past 7 days; "MM-DD" for older.
+func formatXLabel(t time.Time, zoom ZoomLevel, now time.Time) string {
+	switch zoom.Label {
+	case "5m":
+		if t.Minute() == 0 {
+			return t.Format("15:04")
+		}
+	case "15m":
+		if t.Hour()%3 == 0 && t.Minute() == 0 {
+			return t.Format("15:04")
+		}
+	case "1h":
+		if t.Hour() == 0 && t.Minute() == 0 {
+			if t.After(now.AddDate(0, 0, -7)) {
+				return t.Format("Mon")
+			}
+			return t.Format("01-02")
+		}
+	}
+	return ""
+}
+
 // niceCeiling returns the smallest "nice" value >= peak from the sequence
 // {1, 1.5, 2, 2.5, 5} × 10^k. Used to pick a clean Y axis top label and
 // to override the barchart's auto-scaling (via WithMaxValue) so labels
