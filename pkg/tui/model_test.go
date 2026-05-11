@@ -235,15 +235,67 @@ func TestSevenDayBarRendered(t *testing.T) {
 	if !strings.Contains(v, " │ ") {
 		t.Errorf("expected dim divider ' │ ' in:\n%s", v)
 	}
+	if !strings.Contains(v, "5h") {
+		t.Errorf("expected dim '5h' label prefix in:\n%s", v)
+	}
+	if !strings.Contains(v, "7d") {
+		t.Errorf("expected dim '7d' label prefix in:\n%s", v)
+	}
 
-	// Both percents and the divider must appear on the same line — bars
-	// sit side-by-side inside the header box rather than stacked.
+	// Both percents, the divider, and both labels must appear on the same
+	// line — bars sit side-by-side inside the header box rather than stacked.
 	for _, line := range strings.Split(v, "\n") {
-		if strings.Contains(line, "  1%") && strings.Contains(line, " 12%") && strings.Contains(line, " │ ") {
+		if strings.Contains(line, "  1%") && strings.Contains(line, " 12%") && strings.Contains(line, " │ ") && strings.Contains(line, "5h") && strings.Contains(line, "7d") {
 			return
 		}
 	}
-	t.Errorf("expected both percents and the divider on the same line; got:\n%s", v)
+	t.Errorf("expected both percents, both labels, and the divider on the same line; got:\n%s", v)
+}
+
+func TestQuotaBarsLayout(t *testing.T) {
+	// At any terminal width ≥ 60 cols, the bars-row produced by quotaBars()
+	// must be symmetric across the dim │ divider: lipgloss.Width(left) ==
+	// lipgloss.Width(right). This is the centring property — equivalent
+	// to "divider visually centred" but more testable than checking an
+	// integer-rounded column index.
+	//
+	// The dim divider is " │ " (space + middle-bar + space, 3 cols). We
+	// split on the middle-bar rune (U+2502) and check the left and right
+	// halves include their adjacent spaces.
+	cases := []struct {
+		name string
+		w    int
+		win  status.Window
+	}{
+		{"60cols_short_times", 60, status.Window{Percent: 5, MinutesToReset: 52, Has7d: true, Percent7d: 24, MinutesToReset7d: 8640}},   // 6d
+		{"60cols_long_times", 60, status.Window{Percent: 95, MinutesToReset: 299, Has7d: true, Percent7d: 80, MinutesToReset7d: 1439}}, // 4h 59m / 23:59
+		{"80cols_short_times", 80, status.Window{Percent: 5, MinutesToReset: 52, Has7d: true, Percent7d: 24, MinutesToReset7d: 8640}},
+		{"80cols_long_times", 80, status.Window{Percent: 95, MinutesToReset: 299, Has7d: true, Percent7d: 80, MinutesToReset7d: 1439}},
+		{"120cols_zero_times", 120, status.Window{Percent: 0, MinutesToReset: 0, Has7d: true, Percent7d: 0, MinutesToReset7d: 0}},
+		{"80cols_no_7d", 80, status.Window{Percent: 5, MinutesToReset: 52, Has7d: false}},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			m := New(Deps{})
+			m.w, m.h = tt.w, 40
+			m.window = tt.win
+			m.progress = newProgressBar(m.progressWidth())
+			m.progress7d = newProgressBar(m.progressWidth())
+
+			bars := m.quotaBars()
+			left, right, ok := strings.Cut(bars, "│")
+			if !ok {
+				t.Fatalf("no │ divider found in quotaBars output: %q", bars)
+			}
+			// strings.Cut splits exactly at │; the leading/trailing space of
+			// the dim " │ " divider go to left/right respectively, so both
+			// halves are width-comparable as-is.
+			lw, rw := lipgloss.Width(left), lipgloss.Width(right)
+			if lw != rw {
+				t.Errorf("asymmetric quotaBars at w=%d: left width %d, right width %d\nbars: %q", tt.w, lw, rw, bars)
+			}
+		})
+	}
 }
 
 func TestSevenDayBarPlaceholderWhenAbsent(t *testing.T) {
