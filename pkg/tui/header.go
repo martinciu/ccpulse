@@ -138,3 +138,49 @@ func severityFor(p *status.Projection) burnSeverity {
 	}
 	return burnSeverityWatch
 }
+
+// renderBurnRateSide builds one half of the burn-rate row inside the
+// header box, mirroring the layout contract of renderQuotaSide:
+//
+//	[dim label][padded burn-rate text within slotW]
+//
+// The slotW cap ensures lipgloss truncates rather than overflows at
+// narrow terminals; layout above (model.quotaBars) sizes slotW to match
+// the bars row above it for visual symmetry.
+//
+// State dispatch is delegated to severityFor; this function owns only
+// the copy strings and the style mapping. A nil projection or
+// low-confidence projection renders dim; the three projection-driven
+// states share the same "X%/h • projecting Y%[ • limit in Zm]" template,
+// with the trailing limit-in clause appearing only when overreaching.
+func renderBurnRateSide(label string, p *status.Projection, slotW int) string {
+	dim := lipgloss.NewStyle().Foreground(Base01)
+	labelW := lipgloss.Width(label)
+	textSlot := max(slotW-labelW, 1)
+	render := func(text string, style lipgloss.Style) string {
+		return dim.Render(label) + style.Width(textSlot).Render(text)
+	}
+	switch severityFor(p) {
+	case burnSeverityNoData:
+		return render("(no data)", dim)
+	case burnSeverityWarmingUp:
+		return render("🌀 warming up", dim)
+	case burnSeveritySafe:
+		text := fmt.Sprintf("🟢 %s • projecting %d%%", formatBurnRate(p.SlopePctPerHour), p.ProjectedPctAtReset)
+		return render(text, lipgloss.NewStyle().Foreground(Green))
+	case burnSeverityWatch:
+		text := fmt.Sprintf("🟡 %s • projecting %d%% • limit in %s",
+			formatBurnRate(p.SlopePctPerHour), p.ProjectedPctAtReset, durString(*p.MinutesTo100Pct))
+		return render(text, lipgloss.NewStyle().Foreground(Yellow))
+	case burnSeverityDanger:
+		var text string
+		if p.MinutesTo100Pct == nil {
+			text = fmt.Sprintf("🔴 %s • already at limit", formatBurnRate(p.SlopePctPerHour))
+		} else {
+			text = fmt.Sprintf("🔴 %s • projecting %d%% • limit in %s",
+				formatBurnRate(p.SlopePctPerHour), p.ProjectedPctAtReset, durString(*p.MinutesTo100Pct))
+		}
+		return render(text, lipgloss.NewStyle().Foreground(Red))
+	}
+	return ""
+}

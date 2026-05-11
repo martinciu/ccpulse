@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/charmbracelet/bubbles/progress"
@@ -190,6 +191,138 @@ func TestSeverityFor(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRenderBurnRateSide(t *testing.T) {
+	// renderBurnRateSide builds the per-side burn-rate string for the
+	// header's second row. Tests assert substring content and that the
+	// chosen lipgloss style was applied (verified by rendering a known
+	// marker through the expected style and checking the marker's escape
+	// envelope appears in the output).
+	withForcedColor(t)
+	const slotW = 60
+	dim := lipgloss.NewStyle().Foreground(Base01)
+	safe := lipgloss.NewStyle().Foreground(Green)
+	watch := lipgloss.NewStyle().Foreground(Yellow)
+	danger := lipgloss.NewStyle().Foreground(Red)
+
+	min9 := 9
+	min41 := 41
+	tests := []struct {
+		name        string
+		p           *status.Projection
+		wantSubstrs []string // all must appear
+		notSubstrs  []string // none may appear
+		wantStyle   lipgloss.Style
+	}{
+		{
+			name:        "nil projection renders dim no-data",
+			p:           nil,
+			wantSubstrs: []string{"(no data)"},
+			notSubstrs:  []string{"%/h", "limit in", "projecting"},
+			wantStyle:   dim,
+		},
+		{
+			name: "warming up dims and hides numbers",
+			p: &status.Projection{
+				SlopePctPerHour:     30,
+				ProjectedPctAtReset: 150,
+				WillOverreach:       true,
+				Confidence:          "low",
+			},
+			wantSubstrs: []string{"warming up"},
+			notSubstrs:  []string{"30%/h", "150", "limit in"},
+			wantStyle:   dim,
+		},
+		{
+			name: "safe shows rate + projection in green, no limit-in",
+			p: &status.Projection{
+				SlopePctPerHour:     12,
+				ProjectedPctAtReset: 54,
+				WillOverreach:       false,
+				Confidence:          "ok",
+			},
+			wantSubstrs: []string{"12%/h", "projecting 54%"},
+			notSubstrs:  []string{"limit in", "already at limit"},
+			wantStyle:   safe,
+		},
+		{
+			name: "watch shows limit-in in yellow",
+			p: &status.Projection{
+				SlopePctPerHour:     23,
+				ProjectedPctAtReset: 117,
+				WillOverreach:       true,
+				MinutesTo100Pct:     &min41,
+				Confidence:          "ok",
+			},
+			wantSubstrs: []string{"23%/h", "projecting 117%", "limit in 41m"},
+			wantStyle:   watch,
+		},
+		{
+			name: "danger shows limit-in in red",
+			p: &status.Projection{
+				SlopePctPerHour:     45,
+				ProjectedPctAtReset: 200,
+				WillOverreach:       true,
+				MinutesTo100Pct:     &min9,
+				Confidence:          "ok",
+			},
+			wantSubstrs: []string{"45%/h", "projecting 200%", "limit in 9m"},
+			wantStyle:   danger,
+		},
+		{
+			name: "danger with nil eta degrades to 'already at limit'",
+			p: &status.Projection{
+				SlopePctPerHour:     100,
+				ProjectedPctAtReset: 500,
+				WillOverreach:       true,
+				MinutesTo100Pct:     nil,
+				Confidence:          "ok",
+			},
+			wantSubstrs: []string{"already at limit"},
+			notSubstrs:  []string{"limit in"},
+			wantStyle:   danger,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := renderBurnRateSide("5h ", tt.p, slotW)
+			for _, sub := range tt.wantSubstrs {
+				if !strings.Contains(got, sub) {
+					t.Errorf("output missing substring %q\nfull output: %q", sub, got)
+				}
+			}
+			for _, sub := range tt.notSubstrs {
+				if strings.Contains(got, sub) {
+					t.Errorf("output unexpectedly contains substring %q\nfull output: %q", sub, got)
+				}
+			}
+			// Style probe: render a single-char marker through the expected
+			// style and assert its escape envelope is present in the output.
+			// Survives lipgloss version bumps because we don't hard-code
+			// escape bytes — we compare what lipgloss itself produces today.
+			marker := tt.wantStyle.Render("X")
+			openSeq, closeSeq, ok := splitANSIEnvelope(marker)
+			if !ok {
+				t.Fatalf("could not split ANSI envelope from marker %q", marker)
+			}
+			if !strings.Contains(got, openSeq) || !strings.Contains(got, closeSeq) {
+				t.Errorf("output missing expected style envelope (open=%q, close=%q)\nfull output: %q",
+					openSeq, closeSeq, got)
+			}
+		})
+	}
+}
+
+// splitANSIEnvelope splits a lipgloss-styled single-character string
+// "ESC[...mXESC[0m" into (open, close, true). Used to fingerprint the
+// styling applied without hard-coding escape sequences.
+func splitANSIEnvelope(styled string) (open, close string, ok bool) {
+	idx := strings.IndexByte(styled, 'X')
+	if idx <= 0 || idx >= len(styled)-1 {
+		return "", "", false
+	}
+	return styled[:idx], styled[idx+1:], true
 }
 
 func TestRenderQuotaSide_ProducesExactSlotWidth(t *testing.T) {

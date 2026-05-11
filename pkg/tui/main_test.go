@@ -3,6 +3,8 @@ package tui
 import (
 	"testing"
 
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 	"go.uber.org/goleak"
 )
 
@@ -21,4 +23,19 @@ func TestMain(m *testing.M) {
 	goleak.VerifyTestMain(m,
 		goleak.IgnoreTopFunction("github.com/charmbracelet/x/exp/teatest.NewTestModel.func2"),
 	)
+}
+
+// withForcedColor sets the lipgloss color profile to TrueColor for the
+// duration of a test, restoring it on cleanup. Use in tests that assert
+// on rendered ANSI escapes — `go test` runs without a TTY, so lipgloss
+// auto-detects and strips colors by default.
+//
+// Restoring is essential: a leaked TrueColor profile breaks other tests
+// in this package that match on plain substrings ("q quit", "[DEV]")
+// which become split across escape spans under TrueColor.
+func withForcedColor(t *testing.T) {
+	t.Helper()
+	prev := lipgloss.DefaultRenderer().ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
 }
