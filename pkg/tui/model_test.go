@@ -166,9 +166,11 @@ func TestBuildChartEmitsBars(t *testing.T) {
 
 func TestBuildChart_NoBaselineStrip(t *testing.T) {
 	// Regression for #102: the per-cell ▒/░ baseline strip below the bars
-	// was removed; bars fill the full chart height instead. The output
-	// must contain neither glyph, and its total row count must equal
-	// chartH (no extra row of chrome).
+	// was removed; bars fill the full chart height instead. The output's
+	// bottom row must contain neither glyph, and its total row count must
+	// equal chartH (no extra row of chrome). Scoped to the bottom row so
+	// future use of ▒/░ elsewhere (e.g. #96 session-boundary markers)
+	// doesn't false-fire.
 	now := time.Now()
 	buckets := make([]cache.TokenBucket, 20)
 	for i := range buckets {
@@ -180,11 +182,13 @@ func TestBuildChart_NoBaselineStrip(t *testing.T) {
 	}
 	out := buildChart(buckets, 20, 10)
 
-	if strings.Contains(out, "▒") {
-		t.Errorf("baseline data marker '▒' should be gone after #102; got:\n%s", out)
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	bottom := lines[len(lines)-1]
+	if strings.Contains(bottom, "▒") {
+		t.Errorf("baseline data marker '▒' should be gone from chart bottom row after #102; bottom row was %q in full output:\n%s", bottom, out)
 	}
-	if strings.Contains(out, "░") {
-		t.Errorf("baseline gap marker '░' should be gone after #102; got:\n%s", out)
+	if strings.Contains(bottom, "░") {
+		t.Errorf("baseline gap marker '░' should be gone from chart bottom row after #102; bottom row was %q in full output:\n%s", bottom, out)
 	}
 	if h := lipgloss.Height(out); h != 10 {
 		t.Errorf("buildChart(_, _, 10) should be 10 rows tall; got %d:\n%s", h, out)
