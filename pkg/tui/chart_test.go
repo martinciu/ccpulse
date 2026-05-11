@@ -56,6 +56,54 @@ func formatN(n int) string {
 	}
 }
 
+func BenchmarkFormatTokenCount(b *testing.B) {
+	vals := []int64{0, 999, 1234, 45_300, 100_000, 999_999, 1_200_000, 100_000_000}
+	b.ReportAllocs()
+	for b.Loop() {
+		for _, v := range vals {
+			sinkString = formatTokenCount(v)
+		}
+	}
+}
+
+func BenchmarkNiceCeiling(b *testing.B) {
+	vals := []int64{1, 3, 12, 1200, 45_300, 1_200_000, 999_999}
+	b.ReportAllocs()
+	for b.Loop() {
+		for _, v := range vals {
+			_ = niceCeiling(v)
+		}
+	}
+}
+
+func BenchmarkRenderYAxis(b *testing.B) {
+	for _, h := range []int{10, 50, 100} {
+		b.Run(formatN(h), func(b *testing.B) {
+			b.ReportAllocs()
+			runtime.GC()
+			b.ResetTimer()
+			for b.Loop() {
+				sinkString = renderYAxis(50_000, h)
+			}
+		})
+	}
+}
+
+func BenchmarkRenderXLabels(b *testing.B) {
+	now := time.Now().UTC()
+	for _, n := range []int{100, 1000, 5000} {
+		buckets := syntheticBuckets(n)
+		b.Run(formatN(n), func(b *testing.B) {
+			b.ReportAllocs()
+			runtime.GC()
+			b.ResetTimer()
+			for b.Loop() {
+				sinkString = renderXLabels(buckets, n, ZoomLevels[1], now)
+			}
+		})
+	}
+}
+
 // itoa3 avoids strconv import noise — keeps the bench's deps minimal.
 func itoa3(n int) string {
 	if n == 0 {
