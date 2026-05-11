@@ -84,33 +84,22 @@ func TestProgram_HelpOverlayRender(t *testing.T) {
 func TestProgram_MultiStepInteraction(t *testing.T) {
 	tm := setupTestModel(t)
 
-	// Resize to a different size than the initial 120x40 to exercise
-	// the WindowSizeMsg handler.
+	// Resize different from the initial 120x40 to exercise the handler.
 	tm.Send(tea.WindowSizeMsg{Width: 100, Height: 30})
-
-	// Trigger a refresh — empty cache, so the placeholder renders.
 	tm.Send(RefreshMsg{})
-
-	// Zoom: 15m -> 1h.
 	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
 
-	// Wait for a frame to be rendered after the zoom press. "z zoom"
-	// is always in the short-help footer once the terminal has a valid
-	// size, confirming the program is alive and processing messages.
+	// Sync gate: wait for a frame after the zoom keypress before
+	// scrolling, so the test exercises post-zoom state, not pre-zoom.
 	teatest.WaitFor(t, tm.Output(),
 		func(bts []byte) bool { return bytes.Contains(bts, []byte("z zoom")) },
 		teatest.WithDuration(500*time.Millisecond),
 	)
 
-	// Scroll right.
 	tm.Send(tea.KeyMsg{Type: tea.KeyRight})
-
-	// Quit.
 	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
 	tm.WaitFinished(t, teatest.WithFinalTimeout(1*time.Second))
 
-	// FinalModel lets us inspect model state directly. The zoom label
-	// "1h" is not in View() output, so we assert on zoomIdx instead.
 	final := tm.FinalModel(t, teatest.WithFinalTimeout(1*time.Second))
 	m, ok := final.(Model)
 	if !ok {
