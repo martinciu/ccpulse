@@ -244,7 +244,6 @@ func (m Model) quotaBars() string {
 		float64(m.window.Percent)/100.0,
 		m.window.Percent,
 		durString(m.window.MinutesToReset),
-		slotW,
 	)
 
 	var right string
@@ -255,9 +254,10 @@ func (m Model) quotaBars() string {
 			float64(m.window.Percent7d)/100.0,
 			m.window.Percent7d,
 			formatReset7d(m.window.MinutesToReset7d),
-			slotW,
 		)
 	} else {
+		// The "(no data)" placeholder genuinely needs a fixed slot so the
+		// box right edge stays stable when 7d toggles between data ↔ no-data.
 		right = dimStyle.Width(slotW).Render("(no data)")
 	}
 

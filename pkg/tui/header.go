@@ -67,22 +67,24 @@ const statusBlockMaxW = 11
 // and the status — where it visually merges with the bar's unfilled
 // cells rather than leaving an awkward fixed gap.
 //
-// Wrapped in lipgloss.NewStyle().Width(slotW) as a safety net so the
-// rendered output is exactly slotW cols wide regardless of subtle
-// terminal/font width disagreements about the bar's styled output.
+// Rendered width is always lipgloss.Width(label) + bar.Width +
+// statusBlockMaxW — the three components composed via JoinHorizontal.
+// Callers that need a matching fixed slot for adjacent placeholder
+// content (e.g. the no-7d "(no data)" branch in quotaBars) compute
+// the same sum themselves; we don't pass it in here because that arg
+// would be a no-op the renderer can compute from its own inputs.
 //
 // label is rendered in Base01 (Solarized comment-grey) to match the
-// divider's dim style. time is variable-width output from durString or
-// formatReset7d.
-func renderQuotaSide(label string, bar progress.Model, fillRatio float64, percent int, time string, slotW int) string {
+// divider's dim style. timeStr is variable-width output from durString
+// or formatReset7d.
+func renderQuotaSide(label string, bar progress.Model, fillRatio float64, percent int, timeStr string) string {
 	dim := lipgloss.NewStyle().Foreground(Base01)
-	status := fmt.Sprintf("%d%% %s", percent, time)
+	status := fmt.Sprintf("%d%% %s", percent, timeStr)
 	statusSlot := lipgloss.NewStyle().Width(statusBlockMaxW).Align(lipgloss.Right).Render(status)
-	parts := lipgloss.JoinHorizontal(
+	return lipgloss.JoinHorizontal(
 		lipgloss.Top,
 		dim.Render(label),
 		bar.ViewAs(fillRatio),
 		statusSlot,
 	)
-	return lipgloss.NewStyle().Width(slotW).Render(parts)
 }

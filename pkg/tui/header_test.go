@@ -35,17 +35,19 @@ func TestFormatReset7d_Content(t *testing.T) {
 }
 
 func TestRenderQuotaSide_ProducesExactSlotWidth(t *testing.T) {
-	// renderQuotaSide must produce output exactly slotW cols wide for any
-	// well-formed inputs, regardless of bar width, percent, or time-string
-	// width. This is the safety-net property of the
-	// lipgloss.NewStyle().Width(slotW) wrapper combined with the
-	// right-aligned statusBlockMaxW status slot.
+	// renderQuotaSide's output width is determined entirely by its inputs:
+	// lipgloss.Width(label) + bar.Width + statusBlockMaxW. Property under
+	// test: the function returns exactly that width regardless of percent
+	// or time-string width — short statuses get right-align pad inside
+	// the fixed statusBlockMaxW slot, so the total stays constant.
+	const labelW = 3
+	const barW = 10
 	bar := progress.New(
-		progress.WithWidth(10),
+		progress.WithWidth(barW),
 		progress.WithoutPercentage(),
 		progress.WithGradient(QuotaGradientStart, QuotaGradientEnd),
 	)
-	const slotW = 3 + 10 + statusBlockMaxW // label + bar + status block = 24
+	const expectedW = labelW + barW + statusBlockMaxW
 	cases := []struct {
 		name    string
 		percent int
@@ -60,9 +62,9 @@ func TestRenderQuotaSide_ProducesExactSlotWidth(t *testing.T) {
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
-			got := renderQuotaSide("5h ", bar, float64(tt.percent)/100.0, tt.percent, tt.time, slotW)
-			if w := lipgloss.Width(got); w != slotW {
-				t.Errorf("renderQuotaSide percent=%d time=%q: width %d, want %d", tt.percent, tt.time, w, slotW)
+			got := renderQuotaSide("5h ", bar, float64(tt.percent)/100.0, tt.percent, tt.time)
+			if w := lipgloss.Width(got); w != expectedW {
+				t.Errorf("renderQuotaSide percent=%d time=%q: width %d, want %d", tt.percent, tt.time, w, expectedW)
 			}
 		})
 	}
