@@ -19,7 +19,13 @@ jobs:
       - run: go vet ./...
       - run: go test -race -coverprofile=coverage.out ./...
       - name: Check coverage threshold
+        env:
+          THRESHOLD: 70
         run: |
           pct=$(go tool cover -func=coverage.out | awk '/^total:/ {print $3}' | tr -d '%')
-          echo "Coverage: ${pct}% (threshold: 70%)"
-          awk -v p="$pct" -v t=70 'BEGIN { exit !(p+0 >= t) }'
+          if [ -z "$pct" ]; then
+            echo "::error::Could not parse coverage total from coverage.out"
+            exit 1
+          fi
+          echo "Coverage: ${pct}% (threshold: ${THRESHOLD}%)"
+          awk -v p="$pct" -v t="$THRESHOLD" 'BEGIN { exit !(p+0 >= t) }'
