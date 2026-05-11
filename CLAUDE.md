@@ -60,7 +60,7 @@ These env vars override `config.toml` at runtime — useful for testing against 
 | `pkg/tui` | Bubble Tea model: bordered header (5h+7d quota bars), horizontally-scrollable token histogram, full-help overlay, lipgloss styling, `bubbles/{help,key,progress,viewport}` + `ntcharts/barchart` |
 | `pkg/config` | TOML config at `~/.config/ccpulse/config.toml` (respects `XDG_CONFIG_HOME`); `config.Load("")` returns safe defaults |
 | `pkg/channel` | Build-channel flag (`dev` / `release`) set once at startup from `main.buildChannel` via ldflag; unknown values normalise to `dev` |
-| `pkg/devlog` | Wires `slog.Default()` to `<cacheDir>/debug.log` in dev, `io.Discard` in release; best-effort (falls back to discard on any setup error) |
+| `pkg/devlog` | Wires `slog.Default()` to `<cacheDir>/debug.log` in dev, `io.Discard` in release; uses `charmbracelet/log` for `HH:MM:SS DEBU <file:line>` formatted output with caller info; best-effort (falls back to discard on any setup error) |
 | `pkg/secfile` | Filesystem helpers enforcing 0700 dirs / 0600 files; chmods pre-existing entries tighter on access |
 
 ### SQLite schema
