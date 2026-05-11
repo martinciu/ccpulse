@@ -164,20 +164,20 @@ func renderBurnRateSide(label string, p *status.Projection, slotW int) string {
 	case burnSeverityNoData:
 		return render("(no data)", dim)
 	case burnSeverityWarmingUp:
-		return render("🌀 warming up", dim)
+		return render("warming up", dim)
 	case burnSeveritySafe:
-		text := fmt.Sprintf("🟢 %s • projecting %d%%", formatBurnRate(p.SlopePctPerHour), p.ProjectedPctAtReset)
+		text := fmt.Sprintf("%s • projecting %d%%", formatBurnRate(p.SlopePctPerHour), p.ProjectedPctAtReset)
 		return render(text, lipgloss.NewStyle().Foreground(Green))
 	case burnSeverityWatch:
-		text := fmt.Sprintf("🟡 %s • projecting %d%% • limit in %s",
+		text := fmt.Sprintf("%s • projecting %d%% • limit in %s",
 			formatBurnRate(p.SlopePctPerHour), p.ProjectedPctAtReset, durString(*p.MinutesTo100Pct))
 		return render(text, lipgloss.NewStyle().Foreground(Yellow))
 	case burnSeverityDanger:
 		var text string
 		if p.MinutesTo100Pct == nil {
-			text = fmt.Sprintf("🔴 %s • already at limit", formatBurnRate(p.SlopePctPerHour))
+			text = fmt.Sprintf("%s • already at limit", formatBurnRate(p.SlopePctPerHour))
 		} else {
-			text = fmt.Sprintf("🔴 %s • projecting %d%% • limit in %s",
+			text = fmt.Sprintf("%s • projecting %d%% • limit in %s",
 				formatBurnRate(p.SlopePctPerHour), p.ProjectedPctAtReset, durString(*p.MinutesTo100Pct))
 		}
 		return render(text, lipgloss.NewStyle().Foreground(Red))
