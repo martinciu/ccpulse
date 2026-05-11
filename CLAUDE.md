@@ -102,7 +102,7 @@ Reach for the library function first; manual width/padding arithmetic is the sme
 
 `lipgloss.Width()` — not `len()` or `utf8.RuneCountInString` — is the authority for visual width on styled strings; it accounts for ANSI sequences and wide runes.
 
-Hand-rolled rendering is fine when no primitive fits — e.g. the per-cell presence/absence baseline strip under the bar chart in `pkg/tui/chart.go`, which has no library equivalent. The rule is "primitive exists → use it", not "never write a `for` loop that builds a string".
+Hand-rolled rendering is fine when no primitive fits — e.g. a per-cell row built from a loop over data where no library has a 1:1 mapping. The rule is "primitive exists → use it", not "never write a `for` loop that builds a string".
 
 ### Animation — consider `harmonica` when motion conveys information
 
