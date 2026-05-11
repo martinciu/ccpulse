@@ -73,10 +73,10 @@ func TestWatcherNoCallbackAfterClose(t *testing.T) {
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
 	}
+	// Once <-done returns, Run's deferred Stop() loop has cancelled
+	// every pending debounce timer, so no late callback can reach the
+	// fire channel — no sleep-past-debounce needed.
 	<-done
-
-	// Wait past the debounce window to confirm no late callback fires.
-	time.Sleep(800 * time.Millisecond)
 
 	if got := atomic.LoadInt32(&called); got != 0 {
 		t.Errorf("onChange fired %d times after Close; want 0", got)
