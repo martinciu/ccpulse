@@ -74,6 +74,12 @@ type Model struct {
 	indexDone   int
 	indexTotal  int
 
+	// Fade state. indexLastActive is the edge detector; indexFadeStop
+	// is 0 when idle, 1–3 during the post-backfill fade window. See
+	// indexFadeStyle and indexFadeStepDuration in style.go.
+	indexLastActive bool
+	indexFadeStop   int
+
 	w, h int
 }
 
