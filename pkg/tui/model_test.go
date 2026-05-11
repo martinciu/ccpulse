@@ -225,15 +225,15 @@ func TestIndexProgressMsg(t *testing.T) {
 	// falling edge (true → false) is the only one that should schedule
 	// a tea.Tick and bump indexFadeStop to 1.
 	cases := []struct {
-		name           string
-		priorActive    bool
-		priorFadeStop  int
-		msg            IndexProgressMsg
-		wantActive     bool
-		wantFadeStop   int
-		wantDone       int
-		wantTotal      int
-		wantTickCmd    bool
+		name          string
+		priorActive   bool
+		priorFadeStop int
+		msg           IndexProgressMsg
+		wantActive    bool
+		wantFadeStop  int
+		wantDone      int
+		wantTotal     int
+		wantTickCmd   bool
 	}{
 		{
 			name:        "rising_edge_no_fade",
@@ -257,10 +257,10 @@ func TestIndexProgressMsg(t *testing.T) {
 			wantDone: 5, wantTotal: 5, wantTickCmd: true,
 		},
 		{
-			name:          "active_clears_existing_fade",
-			priorActive:   false, priorFadeStop: 2,
-			msg:           IndexProgressMsg{Done: 0, Total: 5, Active: true},
-			wantActive:    true, wantFadeStop: 0,
+			name:        "active_clears_existing_fade",
+			priorActive: false, priorFadeStop: 2,
+			msg:        IndexProgressMsg{Done: 0, Total: 5, Active: true},
+			wantActive: true, wantFadeStop: 0,
 			wantDone: 0, wantTotal: 5, wantTickCmd: false,
 		},
 	}
@@ -634,7 +634,6 @@ func TestRenderIndicators(t *testing.T) {
 		})
 	}
 }
-
 
 func TestTickFadeMsg(t *testing.T) {
 	// Drives the tick handler through the three stops, the final
