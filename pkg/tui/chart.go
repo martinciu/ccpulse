@@ -2,6 +2,7 @@ package tui
 
 import (
 	"log/slog"
+	"strconv"
 	"time"
 
 	"github.com/NimbleMarkets/ntcharts/barchart"
@@ -23,6 +24,39 @@ var ZoomLevels = []ZoomLevel{
 	{"5m", 5 * time.Minute},
 	{"15m", 15 * time.Minute},
 	{"1h", time.Hour},
+}
+
+// formatTokenCount renders an int64 token count compactly with a k/M
+// suffix, suitable for the Y axis and other in-chart annotations.
+// Threshold rules:
+//
+//	n <= 0       -> "0"
+//	n < 1000     -> raw integer
+//	n < 1e6      -> k suffix, 1 frac digit; drop frac when v >= 100
+//	n >= 1e6     -> M suffix, same precision rule
+//
+// Max output width: 5 cols. Fits the 6-col Y axis budget with breathing room.
+func formatTokenCount(n int64) string {
+	if n <= 0 {
+		return "0"
+	}
+	if n < 1000 {
+		return strconv.FormatInt(n, 10)
+	}
+	if n < 1_000_000 {
+		return formatSuffixed(float64(n)/1000, "k")
+	}
+	return formatSuffixed(float64(n)/1_000_000, "M")
+}
+
+// formatSuffixed prints v with 1 fractional digit when v < 100 and 0
+// fractional digits otherwise, then appends suffix. Keeps labels inside
+// the 5-col budget for any expected token magnitude.
+func formatSuffixed(v float64, suffix string) string {
+	if v >= 100 {
+		return strconv.FormatFloat(v, 'f', 0, 64) + suffix
+	}
+	return strconv.FormatFloat(v, 'f', 1, 64) + suffix
 }
 
 // heatColor returns a lipgloss color on a green→yellow→red ramp

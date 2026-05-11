@@ -67,3 +67,37 @@ func itoa3(n int) string {
 	}
 	return string(buf[i:])
 }
+
+func TestFormatTokenCount(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		in   int64
+		want string
+	}{
+		{"zero", 0, "0"},
+		{"negative", -5, "0"},
+		{"one", 1, "1"},
+		{"just below k", 999, "999"},
+		{"exactly k", 1000, "1.0k"},
+		{"k small frac", 1234, "1.2k"},
+		{"k mid", 45300, "45.3k"},
+		{"k rounds half-up", 99499, "99.5k"},
+		{"k drop frac at 100", 100000, "100k"},
+		{"k high", 999000, "999k"},
+		{"k just below M", 999999, "1000k"},
+		{"exactly M", 1_000_000, "1.0M"},
+		{"M small frac", 1_200_000, "1.2M"},
+		{"M mid", 45_300_000, "45.3M"},
+		{"M drop frac at 100", 100_000_000, "100M"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := formatTokenCount(tt.in)
+			if got != tt.want {
+				t.Errorf("formatTokenCount(%d) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
