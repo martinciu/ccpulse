@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -146,6 +147,18 @@ func ensureConfigFile(path string) error {
 	}
 	return secfile.WriteFile(path, defaultTOMLBytes())
 }
+// initDevlog wraps devlog.Init and surfaces failures to w (typically
+// os.Stderr) along with a remediation hint. Devlog is best-effort, so
+// errors are non-fatal — they only mean slog output is now going to
+// io.Discard for the rest of the run.
+func initDevlog(isDev bool, cacheDir string, w io.Writer) io.Closer {
+	closer, err := devlog.Init(isDev, cacheDir)
+	if err != nil {
+		fmt.Fprintf(w, "devlog init failed: %v (debug log disabled; check %s permissions)\n", err, cacheDir)
+	}
+	return closer
+}
+
 // runTUI launches the Bubble Tea program with the TUI model. The
 // passed ctx is the signal-aware root context — used as the parent
 // for the quota poller's context and for the startup backfill, so
@@ -157,7 +170,7 @@ func runTUI(ctx context.Context) error {
 	if err := secfile.MkdirAll(cacheDir); err != nil {
 		return err
 	}
-	if logCloser, err := devlog.Init(channel.IsDev(), cacheDir); err == nil && logCloser != nil {
+	if logCloser := initDevlog(channel.IsDev(), cacheDir, os.Stderr); logCloser != nil {
 		defer logCloser.Close()
 	}
 	dbPath := filepath.Join(cacheDir, "state.db")
