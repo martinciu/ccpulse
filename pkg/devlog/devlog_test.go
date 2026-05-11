@@ -32,6 +32,9 @@ func TestInit_DevWritesDebugLog(t *testing.T) {
 	if !strings.Contains(string(got), "hello dev") {
 		t.Errorf("debug.log missing slog output: %q", got)
 	}
+	if !strings.Contains(string(got), "devlog_test.go") {
+		t.Errorf("debug.log missing caller info: %q", got)
+	}
 }
 
 func TestInit_ReleaseDoesNotCreateDebugLog(t *testing.T) {
