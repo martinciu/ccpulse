@@ -204,10 +204,7 @@ func renderIndicators(isDev bool, idx IndexProgress, w status.Window) string {
 	dim := lipgloss.NewStyle().Foreground(Base01)
 	var parts []string
 	if w.QuotaSource == "cache_stale" {
-		mins := int(time.Since(w.QuotaUpdatedAt).Minutes())
-		if mins < 1 {
-			mins = 1
-		}
+		mins := max(int(time.Since(w.QuotaUpdatedAt).Minutes()), 1)
 		parts = append(parts, fmt.Sprintf("⚠ %dm old", mins))
 	}
 	if idx.Active {
@@ -285,10 +282,8 @@ func (m *Model) refreshChart() {
 	m.viewport.SetXOffset(chartW)
 }
 
-// emptyPlaceholder returns content sized w×h showing a centered
-// "no Claude sessions yet" line styled in the dim Base01 colour.
-// lipgloss.Place pads the surrounding rows with spaces so a previous
-// non-empty refresh's content is fully wiped from the viewport.
+// emptyPlaceholder returns a w×h block with "no Claude sessions yet"
+// centered in dim Base01 — the empty-cache state of the chart viewport.
 func emptyPlaceholder(w, h int) string {
 	if h < 1 {
 		h = 1
