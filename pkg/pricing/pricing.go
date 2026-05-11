@@ -3,6 +3,7 @@ package pricing
 import (
 	_ "embed"
 	"encoding/json"
+	"fmt"
 
 	"github.com/martinciu/ccpulse/pkg/parse"
 )
@@ -19,14 +20,33 @@ type ModelRate struct {
 }
 
 type Table struct {
-	Version string               `json:"version"`
-	Models  map[string]ModelRate `json:"models"`
+	Version  string               `json:"version"`
+	Currency string               `json:"currency"`
+	Models   map[string]ModelRate `json:"models"`
 }
 
-func Load() (Table, error) {
+func Load() (Table, error) { return parseTable(embedded) }
+
+// parseTable unmarshals raw pricing JSON and validates the contract:
+// currency must be USD and version must be non-empty. Returns a zero-value
+// Table alongside any error. Tested via crafted bytes; production callers
+// go through Load() which feeds the embedded pricing.json.
+//
+// Named parseTable rather than parse because this file imports pkg/parse —
+// Go's file-block import shadows same-named package-level functions, so
+// `parse(b)` would resolve to the imported package and fail to compile.
+func parseTable(b []byte) (Table, error) {
 	var t Table
-	err := json.Unmarshal(embedded, &t)
-	return t, err
+	if err := json.Unmarshal(b, &t); err != nil {
+		return t, fmt.Errorf("pricing.json: %w", err)
+	}
+	if t.Currency != "USD" {
+		return t, fmt.Errorf("pricing.json: unsupported currency %q (expected USD)", t.Currency)
+	}
+	if t.Version == "" {
+		return t, fmt.Errorf("pricing.json: missing version field")
+	}
+	return t, nil
 }
 
 // CostFor returns USD estimate for the message and whether the model

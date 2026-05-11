@@ -1022,3 +1022,40 @@ func TestZoomLabel_DefaultFallback(t *testing.T) {
 		t.Errorf("zoomLabel(30m) = %q, want %q (default fallback)", got, "30m0s")
 	}
 }
+
+func TestInsertMessages_StampsPricingVersion(t *testing.T) {
+	c, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	tab := pricing.Table{
+		Version:  "test-version-2026-05-11",
+		Currency: "USD",
+		Models: map[string]pricing.ModelRate{
+			"claude-opus-4-7": {InputPerMtok: 5.00},
+		},
+	}
+	msg := parse.Message{
+		SessionID:   "s1",
+		ProjectSlug: "slug-a",
+		Model:       "claude-opus-4-7",
+		Timestamp:   time.Now(),
+		InputTokens: 1000,
+	}
+	if err := c.InsertMessages([]parse.Message{msg}, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	var got string
+	if err := c.DB().QueryRow(
+		`SELECT pricing_version FROM messages WHERE session_id = ?`,
+		"s1",
+	).Scan(&got); err != nil {
+		t.Fatalf("query pricing_version: %v", err)
+	}
+	if got != tab.Version {
+		t.Errorf("pricing_version = %q, want %q", got, tab.Version)
+	}
+}
