@@ -290,18 +290,20 @@ func TestQuotaBarsSymmetric(t *testing.T) {
 			m.progress7d = newProgressBar(m.progressWidth())
 
 			bars := m.quotaBars()
-			// Split on the full " │ " divider rather than the bare │ rune,
-			// so the adjacent spaces (part of the divider styling, not the
-			// side chrome) are excluded from both halves. Robust across
-			// layout refactors that change how JoinHorizontal composes the
-			// spaces.
-			left, right, ok := strings.Cut(bars, " │ ")
-			if !ok {
-				t.Fatalf("no ' │ ' divider found in quotaBars output: %q", bars)
-			}
-			lw, rw := lipgloss.Width(left), lipgloss.Width(right)
-			if lw != rw {
-				t.Errorf("asymmetric quotaBars at w=%d: left width %d, right width %d\nbars: %q", tt.w, lw, rw, bars)
+			// quotaBars stacks two rows (bars + burn-rate) via JoinVertical
+			// — check symmetry on each row independently. Both share the
+			// same chrome math, so a width drift in either is a real bug.
+			// Split on the full " │ " divider per row rather than the bare
+			// │ rune, so the adjacent spaces are excluded from both halves.
+			for i, row := range strings.Split(bars, "\n") {
+				left, right, ok := strings.Cut(row, " │ ")
+				if !ok {
+					t.Fatalf("no ' │ ' divider found in quotaBars row %d: %q", i, row)
+				}
+				lw, rw := lipgloss.Width(left), lipgloss.Width(right)
+				if lw != rw {
+					t.Errorf("asymmetric quotaBars row %d at w=%d: left width %d, right width %d\nrow: %q", i, tt.w, lw, rw, row)
+				}
 			}
 		})
 	}
