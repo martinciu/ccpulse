@@ -352,9 +352,13 @@ func (m Model) progressWidth() int {
 	return w
 }
 
-// newProgressBar builds a quota bar with the bubbles/progress default
-// gradient (#5A56E0 → #EE6FF8). The actual fill amount is supplied at
-// render time via progress.ViewAs.
+// newProgressBar builds a quota bar using the project's green → red
+// gradient (Solarized #859900 → #dc322f). WithScaledGradient — not
+// WithGradient — scales the colour stops to the bar's current fill
+// ratio, so the visible portion always traverses the full ramp; with
+// WithGradient a 10%-filled bar would only show green and hide the
+// red-headroom signal. The actual fill amount is supplied at render
+// time via progress.ViewAs.
 func newProgressBar(w int) progress.Model {
 	if w < 10 {
 		w = 10
@@ -362,6 +366,6 @@ func newProgressBar(w int) progress.Model {
 	return progress.New(
 		progress.WithWidth(w),
 		progress.WithoutPercentage(),
-		progress.WithDefaultGradient(),
+		progress.WithScaledGradient(QuotaGradientStart, QuotaGradientEnd),
 	)
 }
