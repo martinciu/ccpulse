@@ -1,9 +1,11 @@
 package tui
 
 import (
+	"fmt"
 	"log/slog"
 	"math"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/NimbleMarkets/ntcharts/barchart"
@@ -25,6 +27,33 @@ var ZoomLevels = []ZoomLevel{
 	{"5m", 5 * time.Minute},
 	{"15m", 15 * time.Minute},
 	{"1h", time.Hour},
+}
+
+// yAxisWidth is the column budget for the fixed-left Y axis. 5 cols are
+// enough for the widest expected label ("99.9k", "1.5M"); the 6th col is
+// breathing room between the axis and the leftmost bar.
+const yAxisWidth = 6
+
+// renderYAxis returns a yAxisWidth-col × height string with the ceiling
+// label at row 0 and "0" at row height-2 (the row above the X labels row
+// in the viewport). Other rows are 6 spaces. ceiling <= 0 returns a 6×H
+// blank column (no spurious "1" over empty bars). height < 6 returns ""
+// (the caller should also have already decided not to show the Y axis
+// via Model.shouldShowYAxis()).
+func renderYAxis(ceiling int64, height int) string {
+	if height < 6 {
+		return ""
+	}
+	blank := strings.Repeat(" ", yAxisWidth)
+	rows := make([]string, height)
+	for i := range rows {
+		rows[i] = blank
+	}
+	if ceiling > 0 {
+		rows[0] = fmt.Sprintf("%*s", yAxisWidth, formatTokenCount(ceiling))
+		rows[height-2] = fmt.Sprintf("%*s", yAxisWidth, "0")
+	}
+	return strings.Join(rows, "\n")
 }
 
 // formatXLabel returns the X-axis tick label for bucket time t at the

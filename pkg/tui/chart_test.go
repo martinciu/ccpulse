@@ -2,9 +2,11 @@ package tui
 
 import (
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/martinciu/ccpulse/pkg/cache"
 )
 
@@ -66,6 +68,81 @@ func itoa3(n int) string {
 		n /= 10
 	}
 	return string(buf[i:])
+}
+
+func TestRenderYAxis(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		ceiling  int64
+		height   int
+		wantRows []string // nil means expect empty output
+	}{
+		{
+			name:    "ceiling 50k height 6",
+			ceiling: 50_000,
+			height:  6,
+			wantRows: []string{
+				" 50.0k",
+				"      ",
+				"      ",
+				"      ",
+				"     0",
+				"      ",
+			},
+		},
+		{
+			name:    "ceiling 1.5M height 8",
+			ceiling: 1_500_000,
+			height:  8,
+			wantRows: []string{
+				"  1.5M",
+				"      ",
+				"      ",
+				"      ",
+				"      ",
+				"      ",
+				"     0",
+				"      ",
+			},
+		},
+		{
+			name:     "ceiling 0 returns blank column",
+			ceiling:  0,
+			height:   6,
+			wantRows: []string{"      ", "      ", "      ", "      ", "      ", "      "},
+		},
+		{
+			name:     "height too small returns empty",
+			ceiling:  50_000,
+			height:   5,
+			wantRows: nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := renderYAxis(tt.ceiling, tt.height)
+			if tt.wantRows == nil {
+				if got != "" {
+					t.Errorf("expected empty, got %q", got)
+				}
+				return
+			}
+			rows := strings.Split(got, "\n")
+			if len(rows) != len(tt.wantRows) {
+				t.Fatalf("got %d rows, want %d:\n%q", len(rows), len(tt.wantRows), got)
+			}
+			for i, want := range tt.wantRows {
+				if rows[i] != want {
+					t.Errorf("row %d: got %q, want %q", i, rows[i], want)
+				}
+			}
+			if w := lipgloss.Width(rows[0]); w != yAxisWidth {
+				t.Errorf("row 0 width = %d, want %d", w, yAxisWidth)
+			}
+		})
+	}
 }
 
 func TestFormatXLabel(t *testing.T) {
