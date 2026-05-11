@@ -691,3 +691,18 @@ func TestIndexFadeStyle(t *testing.T) {
 		})
 	}
 }
+
+func TestViewRendersFadeIndicator(t *testing.T) {
+	// Integration check that Model.View() pipes indexFadeStop through
+	// to renderIndicators. Without the wiring, the indicator block
+	// would render empty even though indexFadeStop is non-zero.
+	m := New(Deps{})
+	m.w, m.h = 120, 40
+	m.indexFadeStop = 2
+	m.indexDone = 42
+
+	got := m.View()
+	if !strings.Contains(got, "✓ indexed 42") {
+		t.Errorf("expected '✓ indexed 42' in View() output; got:\n%s", got)
+	}
+}

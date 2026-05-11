@@ -224,7 +224,10 @@ func (m Model) View() string {
 func (m Model) renderFooter() string {
 	left := m.help.View(m.keys)
 	right := renderIndicators(m.deps.IsDev, IndexProgress{
-		Done: m.indexDone, Total: m.indexTotal, Active: m.indexActive,
+		Done:     m.indexDone,
+		Total:    m.indexTotal,
+		Active:   m.indexActive,
+		FadeStop: m.indexFadeStop,
 	}, m.window)
 	if right == "" {
 		return left
