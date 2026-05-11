@@ -880,11 +880,23 @@ func TestIntegrityOK_Healthy(t *testing.T) {
 func TestIntegrityOK_Corrupt(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "s.db")
 
-	// Phase 1: open, seed, close. Close checkpoints the WAL into the
-	// main file so subsequent byte edits actually land in the database.
+	// Phase 1: open, assert default page_size, seed, force a WAL
+	// checkpoint, close. The page_size assertion guards against a
+	// future driver default change that would otherwise silently
+	// corrupt page 1 (schema) instead of the intended B-tree data
+	// page. The explicit wal_checkpoint(TRUNCATE) makes the WAL → main
+	// flush a hard contract instead of leaning on SQLite's default
+	// last-connection-close PASSIVE checkpoint.
 	c, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
+	}
+	var pageSize int
+	if err := c.DB().QueryRow(`PRAGMA page_size`).Scan(&pageSize); err != nil {
+		t.Fatal(err)
+	}
+	if pageSize != 4096 {
+		t.Fatalf("page_size = %d, want 4096 (test corruption offset assumes default)", pageSize)
 	}
 	tab, _ := pricing.Load()
 	if err := c.InsertMessages([]parse.Message{{
@@ -896,14 +908,16 @@ func TestIntegrityOK_Corrupt(t *testing.T) {
 	}}, tab); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := c.DB().Exec(`PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
+		t.Fatal(err)
+	}
 	if err := c.Close(); err != nil {
 		t.Fatal(err)
 	}
 
-	// Phase 2: corrupt page 2. Default SQLite page_size = 4096; page 1
-	// holds the schema, page 2 is the first B-tree data page. Overwriting
-	// 64 bytes at offset 4096 (the page-2 header) reliably trips
-	// PRAGMA integrity_check.
+	// Phase 2: corrupt page 2. Page 1 holds the schema; page 2 is the
+	// first B-tree data page. Overwriting 64 bytes at offset 4096 (the
+	// page-2 header) reliably trips PRAGMA integrity_check.
 	f, err := os.OpenFile(path, os.O_RDWR, 0)
 	if err != nil {
 		t.Fatal(err)
