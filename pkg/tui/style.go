@@ -11,3 +11,12 @@ var (
 	Red    = lipgloss.Color("#dc322f")
 	Green  = lipgloss.Color("#859900")
 )
+
+// Quota gradient stops, used by pkg/tui/model.go's newProgressBar. Hex
+// strings (not lipgloss.Color) because bubbles/progress.WithGradient
+// takes hex strings. Mirrors the Green / Red lipgloss.Color constants
+// above so the chart and quota bar share the same heat ramp endpoints.
+const (
+	QuotaGradientStart = "#859900" // Solarized green
+	QuotaGradientEnd   = "#dc322f" // Solarized red
+)
