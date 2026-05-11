@@ -87,6 +87,13 @@ type Model struct {
 	indexLastActive bool
 	indexFadeStop   int
 
+	// Cached on refreshChart so View() doesn't re-iterate buckets per
+	// frame. peak is the max bucket value in the current chart range;
+	// ceiling is niceCeiling(peak), also the Y axis top label and the
+	// barchart's WithMaxValue.
+	peak    int64
+	ceiling int64
+
 	w, h int
 }
 
@@ -199,6 +206,10 @@ func (m Model) View() string {
 		body = m.help.FullHelpView(m.keys.FullHelp())
 	} else {
 		body = m.viewport.View()
+		if m.shouldShowYAxis() {
+			yAxis := renderYAxis(m.ceiling, m.chartHeight())
+			body = lipgloss.JoinHorizontal(lipgloss.Top, yAxis, body)
+		}
 	}
 	footer := m.renderFooter()
 	out := lipgloss.JoinVertical(lipgloss.Left, header, sep, body, sep, footer)
@@ -358,7 +369,16 @@ func (m *Model) refreshChart() {
 
 	chartW := len(buckets)
 	chartH := m.chartHeight()
-	m.viewport.SetContent(buildChart(buckets, chartW, chartH))
+
+	m.peak = 0
+	for _, b := range buckets {
+		if b.Tokens > m.peak {
+			m.peak = b.Tokens
+		}
+	}
+	m.ceiling = niceCeiling(m.peak)
+
+	m.viewport.SetContent(buildChart(buckets, chartW, chartH, time.Now(), zoom))
 	// Anchor the view at "now" on each refresh — the rightmost column.
 	m.viewport.SetXOffset(chartW)
 }
@@ -395,11 +415,24 @@ func (m *Model) recomputeWindow() {
 	m.progress7d = newProgressBar(m.progressWidth())
 }
 
-// chartWidth returns the available width for the viewport.
+// shouldShowYAxis is the single source of truth for whether the fixed
+// left Y axis renders. Both chartWidth() and View() consult it so they
+// agree on the layout. Returns true iff the terminal can spare 6 cols
+// for the Y axis (m.w - 8 >= 20) AND has enough rows for the X labels
+// (chartHeight >= 6); see spec 2026-05-12-issue-100-axis-labels.
+func (m Model) shouldShowYAxis() bool {
+	return m.w-8 >= 20 && m.chartHeight() >= 6
+}
+
+// chartWidth returns the available width for the viewport. Shrinks by
+// yAxisWidth (6) when the Y axis is showing.
 func (m Model) chartWidth() int {
 	w := m.w - 2
 	if w < 10 {
 		return 10
+	}
+	if m.shouldShowYAxis() {
+		return w - yAxisWidth
 	}
 	return w
 }
