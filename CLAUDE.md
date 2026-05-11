@@ -104,6 +104,24 @@ Reach for the library function first; manual width/padding arithmetic is the sme
 
 Hand-rolled rendering is fine when no primitive fits — e.g. the per-cell presence/absence baseline strip under the bar chart in `pkg/tui/chart.go`, which has no library equivalent. The rule is "primitive exists → use it", not "never write a `for` loop that builds a string".
 
+### Animation — consider `harmonica` when motion conveys information
+
+`charmbracelet/harmonica` (already a transitive dep via `bubbles/progress`) provides spring physics for smooth, natural motion. When adding or changing a TUI component, ask whether motion would convey *information* — not just polish.
+
+Harmonica fits where:
+
+- ✅ The transition has a discrete, user-initiated trigger (e.g. a single keypress).
+- ✅ The data shape is the same on both sides of the transition (same bucket count, same axis, 1:1 mapping between old and new values).
+- ✅ Motion makes a delta visible that would otherwise require the user to remember the previous state.
+
+Harmonica does *not* fit where:
+
+- ❌ Input is continuous (key-repeat scroll, watcher-driven refresh). Spring latency fights with rapid events; convention everywhere from `less` to `k9s` is hard snap.
+- ❌ The transition changes the layout shape (bucket count, axis range, panel swap). That's a cut or fade, not a spring.
+- ❌ The motion is purely decorative — terminal users notice polish but resent latency more.
+
+When wiring harmonica directly: drive it from a `tea.Tick` command returned by `Update`, and stop ticking the moment all springs are settled — idle TUI must remain zero-animation-cost. The chart can be thousands of buckets wide and `ntcharts/barchart` redraws fully each frame, so benchmark the per-frame rebuild cost before committing (`BenchmarkBarChartRender` at chartW = 100/1000/5000, per the `golang-benchmark` skill).
+
 ### v1 line — don't introduce v2 imports
 
 All four libraries have shipped stable v2 majors (`charm.land/bubbletea/v2`, `charmbracelet/{bubbles,lipgloss}/v2`, `NimbleMarkets/ntcharts/v2`). ccpulse stays on the v1 line until a deliberate migration. Don't add v2 imports as part of unrelated work — the v2 cutover is a planned, separate effort because it touches every `pkg/tui/*.go` file (`View() string` → `View() tea.View`, key-message types split, import path changes).
