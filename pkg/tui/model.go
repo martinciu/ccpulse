@@ -286,8 +286,8 @@ func (m *Model) refreshChart() {
 
 // emptyPlaceholder returns content sized w×h showing a centered
 // "no Claude sessions yet" line styled in the dim Base01 colour.
-// Padded with blank lines so a previous non-empty refresh's content
-// is fully wiped from the viewport.
+// lipgloss.Place pads the surrounding rows with spaces so a previous
+// non-empty refresh's content is fully wiped from the viewport.
 func emptyPlaceholder(w, h int) string {
 	if h < 1 {
 		h = 1
@@ -296,15 +296,7 @@ func emptyPlaceholder(w, h int) string {
 		w = 1
 	}
 	msg := lipgloss.NewStyle().Foreground(Base01).Render("no Claude sessions yet")
-	mid := h / 2
-	lines := make([]string, h)
-	for i := range lines {
-		if i == mid {
-			pad := max((w-lipgloss.Width(msg))/2, 0)
-			lines[i] = strings.Repeat(" ", pad) + msg
-		}
-	}
-	return strings.Join(lines, "\n")
+	return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, msg)
 }
 
 // recomputeWindow updates the status.Window from the DB + quota data.
