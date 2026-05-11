@@ -206,8 +206,11 @@ func renderIndicators(isDev bool, idx IndexProgress, w status.Window) string {
 		mins := max(int(time.Since(w.QuotaUpdatedAt).Minutes()), 1)
 		parts = append(parts, fmt.Sprintf("⚠ %dm old", mins))
 	}
-	if idx.Active {
+	switch {
+	case idx.Active:
 		parts = append(parts, dimStyle.Render(fmt.Sprintf("indexing %d/%d", idx.Done, idx.Total)))
+	case idx.FadeStop > 0:
+		parts = append(parts, indexFadeStyle(idx.FadeStop).Render(fmt.Sprintf("✓ indexed %d", idx.Done)))
 	}
 	if isDev {
 		parts = append(parts, dimStyle.Render("[DEV]"))

@@ -534,6 +534,11 @@ func TestRenderIndicators(t *testing.T) {
 		{"indexing only", false, IndexProgress{Active: true, Done: 12, Total: 30}, status.Window{}, []string{"indexing 12/30"}, false},
 		{"stale only", false, IndexProgress{}, stale, []string{"⚠ 5m old"}, false},
 		{"all active", true, IndexProgress{Active: true, Done: 1, Total: 2}, stale, []string{"⚠ 5m old", "indexing 1/2", "[DEV]"}, false},
+		{"fade stop 1", false, IndexProgress{FadeStop: 1, Done: 100}, status.Window{}, []string{"✓ indexed 100"}, false},
+		{"fade stop 2", false, IndexProgress{FadeStop: 2, Done: 100}, status.Window{}, []string{"✓ indexed 100"}, false},
+		{"fade stop 3", false, IndexProgress{FadeStop: 3, Done: 100}, status.Window{}, []string{"✓ indexed 100"}, false},
+		{"fade stop 0 emits nothing", false, IndexProgress{FadeStop: 0, Done: 100}, status.Window{}, nil, true},
+		{"active wins over fade", false, IndexProgress{Active: true, FadeStop: 2, Done: 5, Total: 10}, status.Window{}, []string{"indexing 5/10"}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -555,6 +560,11 @@ func TestRenderIndicators(t *testing.T) {
 				devIdx := strings.Index(got, "[DEV]")
 				if !(stIdx < ixIdx && ixIdx < devIdx) {
 					t.Errorf("expected stale < indexing < [DEV] order, got %q", got)
+				}
+			}
+			if tt.name == "active wins over fade" {
+				if strings.Contains(got, "✓ indexed") {
+					t.Errorf("active should suppress fade output; got %q", got)
 				}
 			}
 		})
