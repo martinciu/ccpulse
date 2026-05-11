@@ -16,6 +16,63 @@ import (
 	"github.com/martinciu/ccpulse/pkg/status"
 )
 
+func TestView_YAxisFixedAcrossScroll(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "state.db")
+	c, err := cache.Open(dbPath)
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	defer c.Close()
+
+	tab, err := pricing.Load()
+	if err != nil {
+		t.Fatalf("pricing.Load: %v", err)
+	}
+	now := time.Now().UTC()
+	msgs := make([]parse.Message, 50)
+	for i := range msgs {
+		msgs[i] = parse.Message{
+			SessionID:    "s1",
+			ProjectSlug:  "p",
+			Model:        "claude-opus-4-7",
+			Timestamp:    now.Add(time.Duration(-i*10) * time.Minute),
+			InputTokens:  int64(1000 + i*100),
+			OutputTokens: int64(500 + i*50),
+		}
+	}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	m := New(Deps{Cache: c})
+	m.w, m.h = 120, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	m.refreshChart()
+
+	// The Y axis is composed outside the viewport, so the ceiling label
+	// must still appear in View() output after a horizontal scroll. The
+	// label format ("Nk", "N.Nk", "N.NM") doesn't naturally occur inside
+	// the chart's block characters or X tick labels — its presence is a
+	// reliable proxy for "Y axis rendered".
+	expected := formatTokenCount(m.ceiling)
+	if expected == "" {
+		t.Fatalf("expected non-empty ceiling label; m.ceiling = %d", m.ceiling)
+	}
+
+	v1 := m.View()
+	if !strings.Contains(v1, expected) {
+		t.Errorf("View output missing Y axis label %q before scroll:\n%s", expected, v1)
+	}
+
+	m.viewport.ScrollLeft(horizontalScrollStep)
+	v2 := m.View()
+	if !strings.Contains(v2, expected) {
+		t.Errorf("View output missing Y axis label %q after scroll (Y axis should be fixed):\n%s", expected, v2)
+	}
+}
+
 func TestShouldShowYAxis(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

@@ -206,6 +206,10 @@ func (m Model) View() string {
 		body = m.help.FullHelpView(m.keys.FullHelp())
 	} else {
 		body = m.viewport.View()
+		if m.shouldShowYAxis() {
+			yAxis := renderYAxis(m.ceiling, m.chartHeight())
+			body = lipgloss.JoinHorizontal(lipgloss.Top, yAxis, body)
+		}
 	}
 	footer := m.renderFooter()
 	out := lipgloss.JoinVertical(lipgloss.Left, header, sep, body, sep, footer)
