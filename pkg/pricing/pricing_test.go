@@ -57,16 +57,27 @@ func TestCostForUnknown(t *testing.T) {
 }
 
 func TestParseTable(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
-		name    string
-		data    string
-		wantErr string // substring to look for in err.Error(); empty means expect nil error
-		wantVer string // expected Table.Version when no error
+		name             string
+		data             string
+		wantErr          string  // substring to look for in err.Error(); empty means expect nil error
+		wantVer          string  // expected Table.Version when no error
+		wantModelKey     string  // if non-empty, assert tab.Models has this key
+		wantInputPerMtok float64 // expected InputPerMtok for wantModelKey
 	}{
 		{
 			name:    "usd_accepted",
 			data:    `{"version":"test","currency":"USD","models":{}}`,
 			wantVer: "test",
+		},
+		{
+			name:             "happy_path_with_models",
+			data:             `{"version":"test","currency":"USD","models":{"claude-opus-4-7":{"input_per_mtok":5}}}`,
+			wantVer:          "test",
+			wantModelKey:     "claude-opus-4-7",
+			wantInputPerMtok: 5,
 		},
 		{
 			name:    "non_usd_rejected",
@@ -92,6 +103,7 @@ func TestParseTable(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			tab, err := parseTable([]byte(tt.data))
 			if tt.wantErr == "" {
 				if err != nil {
@@ -99,6 +111,14 @@ func TestParseTable(t *testing.T) {
 				}
 				if tab.Version != tt.wantVer {
 					t.Errorf("Version = %q, want %q", tab.Version, tt.wantVer)
+				}
+				if tt.wantModelKey != "" {
+					rate, ok := tab.Models[tt.wantModelKey]
+					if !ok {
+						t.Errorf("Models[%q] missing", tt.wantModelKey)
+					} else if rate.InputPerMtok != tt.wantInputPerMtok {
+						t.Errorf("Models[%q].InputPerMtok = %v, want %v", tt.wantModelKey, rate.InputPerMtok, tt.wantInputPerMtok)
+					}
 				}
 				return
 			}
