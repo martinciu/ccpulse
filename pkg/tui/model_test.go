@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +16,58 @@ import (
 	"github.com/martinciu/ccpulse/pkg/pricing"
 	"github.com/martinciu/ccpulse/pkg/status"
 )
+
+// BenchmarkModelView measures the per-frame cost of the full View()
+// composition: header + sep + JoinHorizontal(yAxis, viewport) + sep +
+// footer. View() runs on every keypress and tick — regressions here
+// (e.g. an extra lipgloss style allocation) bleed into perceived input
+// latency. The benchmark seeds enough buckets to exercise the X labels
+// row + 6-col Y axis prepend in the wide-terminal hot path.
+func BenchmarkModelView(b *testing.B) {
+	dir := b.TempDir()
+	dbPath := filepath.Join(dir, "state.db")
+	c, err := cache.Open(dbPath)
+	if err != nil {
+		b.Fatalf("cache.Open: %v", err)
+	}
+	defer c.Close()
+
+	tab, err := pricing.Load()
+	if err != nil {
+		b.Fatalf("pricing.Load: %v", err)
+	}
+	now := time.Now().UTC().Truncate(15 * time.Minute)
+	msgs := make([]parse.Message, 200)
+	for i := range msgs {
+		msgs[i] = parse.Message{
+			SessionID:   "s1",
+			ProjectSlug: "p",
+			Model:       "claude-opus-4-7",
+			Timestamp:   now.Add(time.Duration(-i*15) * time.Minute),
+			InputTokens: int64(1000 + i*100),
+		}
+	}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		b.Fatalf("InsertMessages: %v", err)
+	}
+
+	m := New(Deps{Cache: c})
+	m.w, m.h = 120, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	m.refreshChart()
+
+	b.ReportAllocs()
+	runtime.GC()
+	b.ResetTimer()
+	for b.Loop() {
+		sinkView = m.View()
+	}
+}
+
+// sinkView prevents the compiler from eliding the View call in
+// BenchmarkModelView when its return value is otherwise unused.
+var sinkView string
 
 func TestView_YAxisFixedAcrossScroll(t *testing.T) {
 	dir := t.TempDir()

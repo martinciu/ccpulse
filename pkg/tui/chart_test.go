@@ -57,22 +57,46 @@ func formatN(n int) string {
 }
 
 func BenchmarkFormatTokenCount(b *testing.B) {
-	vals := []int64{0, 999, 1234, 45_300, 100_000, 999_999, 1_200_000, 100_000_000}
-	b.ReportAllocs()
-	for b.Loop() {
-		for _, v := range vals {
-			sinkString = formatTokenCount(v)
-		}
+	// Sub-benchmarks per branch so each "op" is one call, not 8 — exposes
+	// per-branch regressions instead of diluting them in a geometric mean.
+	cases := []struct {
+		name string
+		v    int64
+	}{
+		{"zero", 0},
+		{"raw", 999},
+		{"k_frac", 45_300},
+		{"k_no_frac", 100_000},
+		{"M_frac", 1_200_000},
+		{"M_no_frac", 100_000_000},
+	}
+	for _, tt := range cases {
+		b.Run(tt.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				sinkString = formatTokenCount(tt.v)
+			}
+		})
 	}
 }
 
 func BenchmarkNiceCeiling(b *testing.B) {
-	vals := []int64{1, 3, 12, 1200, 45_300, 1_200_000, 999_999}
-	b.ReportAllocs()
-	for b.Loop() {
-		for _, v := range vals {
-			_ = niceCeiling(v)
-		}
+	cases := []struct {
+		name string
+		v    int64
+	}{
+		{"small", 12},
+		{"k", 45_300},
+		{"M_low", 1_200_000},
+		{"M_high", 999_999},
+	}
+	for _, tt := range cases {
+		b.Run(tt.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = niceCeiling(tt.v)
+			}
+		})
 	}
 }
 
