@@ -70,7 +70,7 @@ func TestRenderQuotaSide_ProducesExactSlotWidth(t *testing.T) {
 	bar := progress.New(
 		progress.WithWidth(10),
 		progress.WithoutPercentage(),
-		progress.WithScaledGradient(QuotaGradientStart, QuotaGradientEnd),
+		progress.WithGradient(QuotaGradientStart, QuotaGradientEnd),
 	)
 	const slotW = 26 // 3 (label) + 10 (bar) + 5 (percent) + 2 (sep) + 6 (time)
 	for _, percent := range []int{0, 1, 50, 99, 100} {

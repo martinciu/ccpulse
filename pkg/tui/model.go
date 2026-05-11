@@ -383,12 +383,13 @@ func (m Model) progressWidth() int {
 }
 
 // newProgressBar builds a quota bar using the project's green → red
-// gradient (Solarized #859900 → #dc322f). WithScaledGradient — not
-// WithGradient — scales the colour stops to the bar's current fill
-// ratio, so the visible portion always traverses the full ramp; with
-// WithGradient a 10%-filled bar would only show green and hide the
-// red-headroom signal. The actual fill amount is supplied at render
-// time via progress.ViewAs.
+// gradient (Solarized #859900 → #dc322f). WithGradient — not
+// WithScaledGradient — keeps each cell's colour fixed by its position
+// on the bar's full width, so a 5%-filled bar shows only the leftmost
+// (green) cells and red only surfaces as fill approaches 100%. That's
+// the fuel-gauge reading: cool = headroom remaining, warm = approaching
+// the limit. The actual fill amount is supplied at render time via
+// progress.ViewAs.
 func newProgressBar(w int) progress.Model {
 	if w < 10 {
 		w = 10
@@ -396,6 +397,6 @@ func newProgressBar(w int) progress.Model {
 	return progress.New(
 		progress.WithWidth(w),
 		progress.WithoutPercentage(),
-		progress.WithScaledGradient(QuotaGradientStart, QuotaGradientEnd),
+		progress.WithGradient(QuotaGradientStart, QuotaGradientEnd),
 	)
 }
