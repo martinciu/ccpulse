@@ -12,11 +12,14 @@ import (
 )
 
 // IndexProgress carries indexing state from the model into the footer
-// indicator block. Built by View(), passed to renderIndicators.
+// indicator block. Built by View(), passed to renderIndicators. FadeStop
+// is non-zero only during the post-backfill fade window (1, 2, or 3 —
+// see indexFadeStopCount); a zero value means "not fading".
 type IndexProgress struct {
-	Done   int
-	Total  int
-	Active bool
+	Done     int
+	Total    int
+	Active   bool
+	FadeStop int
 }
 
 // renderHeader returns the bordered box containing the supplied bar row.
