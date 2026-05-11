@@ -6,6 +6,8 @@ import (
 
 	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/martinciu/ccpulse/pkg/status"
 )
 
 func TestFormatReset7d_Content(t *testing.T) {
@@ -90,6 +92,101 @@ func TestFormatBurnRate(t *testing.T) {
 			got := formatBurnRate(tt.slope)
 			if got != tt.want {
 				t.Errorf("formatBurnRate(%g) = %q, want %q", tt.slope, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSeverityFor(t *testing.T) {
+	// severityFor exhaustively classifies a *status.Projection into one of
+	// five visual states. Order matters: nil short-circuits before any
+	// field is read; Confidence="low" short-circuits before WillOverreach
+	// is read; then the three projection-based states fan out. The 30-min
+	// imminent boundary is the only threshold this function owns.
+	min9 := 9
+	min41 := 41
+	min30 := 30
+	tests := []struct {
+		name string
+		p    *status.Projection
+		want burnSeverity
+	}{
+		{
+			name: "nil projection → noData",
+			p:    nil,
+			want: burnSeverityNoData,
+		},
+		{
+			name: "low confidence → warmingUp (overrides projection)",
+			p: &status.Projection{
+				SlopePctPerHour:     30,
+				ProjectedPctAtReset: 150,
+				WillOverreach:       true,
+				MinutesTo100Pct:     &min9,
+				Confidence:          "low",
+			},
+			want: burnSeverityWarmingUp,
+		},
+		{
+			name: "no overreach → safe",
+			p: &status.Projection{
+				SlopePctPerHour:     12,
+				ProjectedPctAtReset: 54,
+				WillOverreach:       false,
+				Confidence:          "ok",
+			},
+			want: burnSeveritySafe,
+		},
+		{
+			name: "overreach + eta > 30m → watch",
+			p: &status.Projection{
+				SlopePctPerHour:     23,
+				ProjectedPctAtReset: 117,
+				WillOverreach:       true,
+				MinutesTo100Pct:     &min41,
+				Confidence:          "ok",
+			},
+			want: burnSeverityWatch,
+		},
+		{
+			name: "overreach + eta == 30m → danger (boundary)",
+			p: &status.Projection{
+				SlopePctPerHour:     20,
+				ProjectedPctAtReset: 115,
+				WillOverreach:       true,
+				MinutesTo100Pct:     &min30,
+				Confidence:          "ok",
+			},
+			want: burnSeverityDanger,
+		},
+		{
+			name: "overreach + eta < 30m → danger",
+			p: &status.Projection{
+				SlopePctPerHour:     45,
+				ProjectedPctAtReset: 200,
+				WillOverreach:       true,
+				MinutesTo100Pct:     &min9,
+				Confidence:          "ok",
+			},
+			want: burnSeverityDanger,
+		},
+		{
+			name: "overreach + MinutesTo100Pct nil (already at limit) → danger",
+			p: &status.Projection{
+				SlopePctPerHour:     100,
+				ProjectedPctAtReset: 500,
+				WillOverreach:       true,
+				MinutesTo100Pct:     nil,
+				Confidence:          "ok",
+			},
+			want: burnSeverityDanger,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := severityFor(tt.p)
+			if got != tt.want {
+				t.Errorf("severityFor: got %v, want %v", got, tt.want)
 			}
 		})
 	}

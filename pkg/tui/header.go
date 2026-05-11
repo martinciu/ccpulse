@@ -6,6 +6,8 @@ import (
 
 	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/martinciu/ccpulse/pkg/status"
 )
 
 // IndexProgress carries indexing state from the model into the footer
@@ -97,4 +99,42 @@ func formatBurnRate(slope float64) string {
 	s := fmt.Sprintf("%.1f", slope)
 	s = strings.TrimSuffix(s, ".0")
 	return s + "%/h"
+}
+
+// burnSeverity is the rendering classification for a status.Projection.
+// Five mutually-exclusive states driven by a first-match dispatch.
+type burnSeverity int
+
+const (
+	burnSeverityNoData    burnSeverity = iota // p == nil
+	burnSeverityWarmingUp                     // Confidence == "low"
+	burnSeveritySafe                          // !WillOverreach
+	burnSeverityWatch                         // WillOverreach && eta > 30m
+	burnSeverityDanger                        // WillOverreach && eta <= 30m (or eta nil)
+)
+
+// burnImminentThreshold is the ETA boundary below which an overreaching
+// projection escalates from "watch" (yellow) to "danger" (red). TUI-local
+// constant — if status --json ever exposes a severity field, this moves to
+// pkg/status so both consumers share it.
+const burnImminentThreshold = 30 // minutes
+
+// severityFor classifies a projection into a visual state. Dispatch order:
+// nil → Confidence=low → !WillOverreach → eta>threshold → eta<=threshold.
+// A nil MinutesTo100Pct under WillOverreach=true means "already at limit"
+// and counts as imminent (danger).
+func severityFor(p *status.Projection) burnSeverity {
+	if p == nil {
+		return burnSeverityNoData
+	}
+	if p.Confidence == "low" {
+		return burnSeverityWarmingUp
+	}
+	if !p.WillOverreach {
+		return burnSeveritySafe
+	}
+	if p.MinutesTo100Pct == nil || *p.MinutesTo100Pct <= burnImminentThreshold {
+		return burnSeverityDanger
+	}
+	return burnSeverityWatch
 }
