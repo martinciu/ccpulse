@@ -58,28 +58,24 @@ const statusBlockMaxW = 11
 
 // renderQuotaSide composes one side of the quota bars row:
 //
-//	[dim label] [bar] [right-aligned status block: "percent% time"]
+//	[dim label] [bar] [right-aligned status block: "percent% reset"]
 //
 // The status block ("33% 5d", "100% 4h 59m", etc.) is treated as a
 // single unit and right-aligned within a fixed statusBlockMaxW slot.
-// That keeps the percent and time visually adjacent (one space between
-// them) and pushes the unused slot space to the gap between the bar
-// and the status — where it visually merges with the bar's unfilled
-// cells rather than leaving an awkward fixed gap.
+// That keeps the percent and reset value visually adjacent (one space
+// between them) and pushes the unused slot space to the gap between
+// the bar and the status — where it visually merges with the bar's
+// unfilled cells rather than leaving an awkward fixed gap.
 //
 // Rendered width is always lipgloss.Width(label) + bar.Width +
 // statusBlockMaxW — the three components composed via JoinHorizontal.
-// Callers that need a matching fixed slot for adjacent placeholder
-// content (e.g. the no-7d "(no data)" branch in quotaBars) compute
-// the same sum themselves; we don't pass it in here because that arg
-// would be a no-op the renderer can compute from its own inputs.
 //
 // label is rendered in Base01 (Solarized comment-grey) to match the
-// divider's dim style. timeStr is variable-width output from durString
+// divider's dim style. reset is variable-width output from durString
 // or formatReset7d.
-func renderQuotaSide(label string, bar progress.Model, fillRatio float64, percent int, timeStr string) string {
+func renderQuotaSide(label string, bar progress.Model, fillRatio float64, percent int, reset string) string {
 	dim := lipgloss.NewStyle().Foreground(Base01)
-	status := fmt.Sprintf("%d%% %s", percent, timeStr)
+	status := fmt.Sprintf("%d%% %s", percent, reset)
 	statusSlot := lipgloss.NewStyle().Width(statusBlockMaxW).Align(lipgloss.Right).Render(status)
 	return lipgloss.JoinHorizontal(
 		lipgloss.Top,
