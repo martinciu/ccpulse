@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/lipgloss"
@@ -119,17 +120,20 @@ const (
 	burnSeverityDanger                        // WillOverreach && eta <= 30m (or eta nil)
 )
 
-// burnImminentThreshold is the ETA boundary below which an overreaching
-// projection escalates from "watch" (yellow) to "danger" (red). TUI-local
-// constant — if status --json ever exposes a severity field, this moves to
-// pkg/status so both consumers share it.
-const burnImminentThreshold = 30 // minutes
+// burnImminentRatio is the fraction of a bucket's window below which an
+// overreaching projection escalates from "watch" (yellow) to "danger"
+// (red). 10% means: 5h bucket → 30-min red zone; 7d bucket → ~17-hour
+// red zone. Scaling the threshold to the window keeps the semantic
+// meaning ("imminent") consistent across buckets — a fixed 30-min
+// threshold would never fire watch on the 7d side. TUI-local constant.
+const burnImminentRatio = 0.1
 
 // severityFor classifies a projection into a visual state. Dispatch order:
 // nil → Confidence=low → !WillOverreach → eta>threshold → eta<=threshold.
 // A nil MinutesTo100Pct under WillOverreach=true means "already at limit"
-// and counts as imminent (danger).
-func severityFor(p *status.Projection) burnSeverity {
+// and counts as imminent (danger). The window argument is the bucket's
+// total duration (5h or 7d) — it scales the imminent threshold.
+func severityFor(p *status.Projection, window time.Duration) burnSeverity {
 	if p == nil {
 		return burnSeverityNoData
 	}
@@ -139,7 +143,8 @@ func severityFor(p *status.Projection) burnSeverity {
 	if !p.WillOverreach {
 		return burnSeveritySafe
 	}
-	if p.MinutesTo100Pct == nil || *p.MinutesTo100Pct <= burnImminentThreshold {
+	thresholdMinutes := int(window.Minutes() * burnImminentRatio)
+	if p.MinutesTo100Pct == nil || *p.MinutesTo100Pct <= thresholdMinutes {
 		return burnSeverityDanger
 	}
 	return burnSeverityWatch
@@ -159,14 +164,17 @@ func severityFor(p *status.Projection) burnSeverity {
 // low-confidence projection renders dim; the three projection-driven
 // states share the same "X%/h • projecting Y%[ • limit in Zm]" template,
 // with the trailing limit-in clause appearing only when overreaching.
-func renderBurnRateSide(label string, p *status.Projection, slotW int) string {
+//
+// window is the bucket's full duration (5h or 7d), forwarded to
+// severityFor so the imminent threshold scales per bucket.
+func renderBurnRateSide(label string, p *status.Projection, slotW int, window time.Duration) string {
 	dim := lipgloss.NewStyle().Foreground(Base01)
 	labelW := lipgloss.Width(label)
 	textSlot := max(slotW-labelW, 1)
 	render := func(text string, style lipgloss.Style) string {
 		return dim.Render(label) + style.Width(textSlot).Render(text)
 	}
-	switch severityFor(p) {
+	switch severityFor(p, window) {
 	case burnSeverityNoData:
 		return render("(no data)", dim)
 	case burnSeverityWarmingUp:

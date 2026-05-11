@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/lipgloss"
@@ -102,20 +103,26 @@ func TestSeverityFor(t *testing.T) {
 	// severityFor exhaustively classifies a *status.Projection into one of
 	// five visual states. Order matters: nil short-circuits before any
 	// field is read; Confidence="low" short-circuits before WillOverreach
-	// is read; then the three projection-based states fan out. The 30-min
-	// imminent boundary is the only threshold this function owns.
+	// is read; then the three projection-based states fan out. The
+	// imminent boundary is 10% of the bucket's window — 30 min for 5h,
+	// 1008 min (~16.8h) for 7d.
 	min9 := 9
 	min41 := 41
 	min30 := 30
+	min1007 := 1007
+	min1008 := 1008
+	min1100 := 1100
 	tests := []struct {
-		name string
-		p    *status.Projection
-		want burnSeverity
+		name   string
+		p      *status.Projection
+		window time.Duration
+		want   burnSeverity
 	}{
 		{
-			name: "nil projection → noData",
-			p:    nil,
-			want: burnSeverityNoData,
+			name:   "nil projection → noData",
+			p:      nil,
+			window: 5 * time.Hour,
+			want:   burnSeverityNoData,
 		},
 		{
 			name: "low confidence → warmingUp (overrides projection)",
@@ -126,7 +133,8 @@ func TestSeverityFor(t *testing.T) {
 				MinutesTo100Pct:     &min9,
 				Confidence:          "low",
 			},
-			want: burnSeverityWarmingUp,
+			window: 5 * time.Hour,
+			want:   burnSeverityWarmingUp,
 		},
 		{
 			name: "no overreach → safe",
@@ -136,10 +144,11 @@ func TestSeverityFor(t *testing.T) {
 				WillOverreach:       false,
 				Confidence:          "ok",
 			},
-			want: burnSeveritySafe,
+			window: 5 * time.Hour,
+			want:   burnSeveritySafe,
 		},
 		{
-			name: "overreach + eta > 30m → watch",
+			name: "5h overreach + eta > 30m → watch",
 			p: &status.Projection{
 				SlopePctPerHour:     23,
 				ProjectedPctAtReset: 117,
@@ -147,10 +156,11 @@ func TestSeverityFor(t *testing.T) {
 				MinutesTo100Pct:     &min41,
 				Confidence:          "ok",
 			},
-			want: burnSeverityWatch,
+			window: 5 * time.Hour,
+			want:   burnSeverityWatch,
 		},
 		{
-			name: "overreach + eta == 30m → danger (boundary)",
+			name: "5h overreach + eta == 30m → danger (boundary)",
 			p: &status.Projection{
 				SlopePctPerHour:     20,
 				ProjectedPctAtReset: 115,
@@ -158,10 +168,11 @@ func TestSeverityFor(t *testing.T) {
 				MinutesTo100Pct:     &min30,
 				Confidence:          "ok",
 			},
-			want: burnSeverityDanger,
+			window: 5 * time.Hour,
+			want:   burnSeverityDanger,
 		},
 		{
-			name: "overreach + eta < 30m → danger",
+			name: "5h overreach + eta < 30m → danger",
 			p: &status.Projection{
 				SlopePctPerHour:     45,
 				ProjectedPctAtReset: 200,
@@ -169,10 +180,11 @@ func TestSeverityFor(t *testing.T) {
 				MinutesTo100Pct:     &min9,
 				Confidence:          "ok",
 			},
-			want: burnSeverityDanger,
+			window: 5 * time.Hour,
+			want:   burnSeverityDanger,
 		},
 		{
-			name: "overreach + MinutesTo100Pct nil (already at limit) → danger",
+			name: "5h overreach + MinutesTo100Pct nil (already at limit) → danger",
 			p: &status.Projection{
 				SlopePctPerHour:     100,
 				ProjectedPctAtReset: 500,
@@ -180,12 +192,67 @@ func TestSeverityFor(t *testing.T) {
 				MinutesTo100Pct:     nil,
 				Confidence:          "ok",
 			},
-			want: burnSeverityDanger,
+			window: 5 * time.Hour,
+			want:   burnSeverityDanger,
+		},
+		{
+			// 7d threshold = 10% of 10080 min = 1008 min. eta=1100 is
+			// above the threshold so still "watch", even though it would
+			// be deep into "danger" under the old fixed-30-min rule.
+			name: "7d overreach + eta > 1008m (10% of 7d) → watch",
+			p: &status.Projection{
+				SlopePctPerHour:     0.5,
+				ProjectedPctAtReset: 105,
+				WillOverreach:       true,
+				MinutesTo100Pct:     &min1100,
+				Confidence:          "ok",
+			},
+			window: 7 * 24 * time.Hour,
+			want:   burnSeverityWatch,
+		},
+		{
+			name: "7d overreach + eta == 1008m → danger (boundary)",
+			p: &status.Projection{
+				SlopePctPerHour:     0.5,
+				ProjectedPctAtReset: 110,
+				WillOverreach:       true,
+				MinutesTo100Pct:     &min1008,
+				Confidence:          "ok",
+			},
+			window: 7 * 24 * time.Hour,
+			want:   burnSeverityDanger,
+		},
+		{
+			name: "7d overreach + eta < 1008m → danger",
+			p: &status.Projection{
+				SlopePctPerHour:     0.7,
+				ProjectedPctAtReset: 130,
+				WillOverreach:       true,
+				MinutesTo100Pct:     &min1007,
+				Confidence:          "ok",
+			},
+			window: 7 * 24 * time.Hour,
+			want:   burnSeverityDanger,
+		},
+		{
+			// Cross-bucket sanity: same eta=41m, different windows. On 5h
+			// it's well above the 30-min threshold (watch). On 7d it's
+			// way below 1008 (danger). Demonstrates the scaling.
+			name: "same eta=41m: watch on 5h, danger on 7d",
+			p: &status.Projection{
+				SlopePctPerHour:     23,
+				ProjectedPctAtReset: 117,
+				WillOverreach:       true,
+				MinutesTo100Pct:     &min41,
+				Confidence:          "ok",
+			},
+			window: 7 * 24 * time.Hour,
+			want:   burnSeverityDanger,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := severityFor(tt.p)
+			got := severityFor(tt.p, tt.window)
 			if got != tt.want {
 				t.Errorf("severityFor: got %v, want %v", got, tt.want)
 			}
@@ -286,7 +353,7 @@ func TestRenderBurnRateSide(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := renderBurnRateSide("5h ", tt.p, slotW)
+			got := renderBurnRateSide("5h ", tt.p, slotW, 5*time.Hour)
 			for _, sub := range tt.wantSubstrs {
 				if !strings.Contains(got, sub) {
 					t.Errorf("output missing substring %q\nfull output: %q", sub, got)
