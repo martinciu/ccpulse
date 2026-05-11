@@ -295,9 +295,6 @@ func (m *Model) refreshChart() {
 
 	chartW := len(buckets)
 	chartH := m.chartHeight()
-	if chartH < 1 {
-		chartH = 10
-	}
 	m.viewport.SetContent(buildChart(buckets, chartW, chartH))
 	// Anchor the view at "now" on each refresh — the rightmost column.
 	m.viewport.SetXOffset(chartW)
