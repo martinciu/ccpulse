@@ -74,3 +74,36 @@ Claude encodes project paths as directory slugs: `/` → `-`, `.` → `--`. `can
 ### Plan tiers and the 5-hour window
 
 `status.CeilingFor` maps tier names (`max_5x`, `max_20x`, `pro`, `api`, `custom`) to token budgets. The rolling window is computed over the 5-hour period that precedes the current time, matching Claude Max's rate-limit window. The quota bar uses the bubbles/progress default gradient at every fill level — there are no threshold-based color flips.
+
+## TUI rendering conventions
+
+The TUI is built on four upstream libraries — no custom equivalents should be reintroduced:
+
+- `charmbracelet/bubbletea` — model/update/view loop
+- `charmbracelet/lipgloss` — styling, layout, box composition
+- `charmbracelet/bubbles` — pre-built components (`progress`, `viewport`, `help`, `key`)
+- `NimbleMarkets/ntcharts` — bar/line/sparkline charts
+
+### Prefer library primitives over manual string math
+
+Reach for the library function first; manual width/padding arithmetic is the smell.
+
+| Need | Use | Don't use |
+|---|---|---|
+| Center text in a `w×h` block | `lipgloss.Place` | `strings.Repeat(" ", ...)` + `strings.Join` |
+| Right-align inside a known width | `lipgloss.PlaceHorizontal` | manual `m.w - W(left) - W(right)` padding |
+| Compose styled blocks side-by-side | `lipgloss.JoinHorizontal` | string concat with a padded spacer |
+| Stack styled blocks vertically | `lipgloss.JoinVertical` | `strings.Join(parts, "\n")` |
+| Fixed-width slot or padding | `lipgloss.NewStyle().Width(n).Render(...)` | manual rune counting |
+| Progress bars | `bubbles/progress` | hand-rolled fill characters |
+| Scrollable content | `bubbles/viewport` | manual `XOffset`/line-slice math |
+| Keybinding help footer/overlay | `bubbles/help` + `bubbles/key` | hand-formatted help strings |
+| Bar charts | `ntcharts/barchart` | per-row block-character drawing |
+
+`lipgloss.Width()` — not `len()` or `utf8.RuneCountInString` — is the authority for visual width on styled strings; it accounts for ANSI sequences and wide runes.
+
+Hand-rolled rendering is fine when no primitive fits — e.g. the per-cell presence/absence baseline strip under the bar chart in `pkg/tui/chart.go`, which has no library equivalent. The rule is "primitive exists → use it", not "never write a `for` loop that builds a string".
+
+### v1 line — don't introduce v2 imports
+
+All four libraries have shipped stable v2 majors (`charm.land/bubbletea/v2`, `charmbracelet/{bubbles,lipgloss}/v2`, `NimbleMarkets/ntcharts/v2`). ccpulse stays on the v1 line until a deliberate migration. Don't add v2 imports as part of unrelated work — the v2 cutover is a planned, separate effort because it touches every `pkg/tui/*.go` file (`View() string` → `View() tea.View`, key-message types split, import path changes).
