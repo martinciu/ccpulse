@@ -9,7 +9,9 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/exp/teatest"
+	"github.com/martinciu/ccpulse/pkg/anthro"
 	"github.com/martinciu/ccpulse/pkg/cache"
 	"github.com/martinciu/ccpulse/pkg/parse"
 	"github.com/martinciu/ccpulse/pkg/pricing"
@@ -153,6 +155,62 @@ func newSeededCache(t *testing.T) *cache.Cache {
 		t.Fatalf("InsertMessages: %v", err)
 	}
 	return c
+}
+
+// TestProgram_BurnRateOverreach pumps a QuotaMsg with a 5h utilization
+// that overreaches (95% with ~45m to reset, so ~4h 15m elapsed). The
+// projection's MinutesTo100Pct lands in single-digit minutes — well
+// inside the burnImminentThreshold — so the rendered header should
+// show "limit in" copy in the red style.
+//
+// Why this test: the unit tests cover renderBurnRateSide in isolation,
+// but only this scenario verifies the full wiring (QuotaMsg →
+// recomputeWindow → Compute → Projection → quotaBars two-row layout).
+// A wiring regression (e.g. the burn-rate row not being joined into
+// quotaBars output) would fail this test even though all unit tests
+// still pass.
+func TestProgram_BurnRateOverreach(t *testing.T) {
+	withForcedColor(t)
+	c := newSeededCache(t)
+	m := New(Deps{Cache: c})
+	tm := teatest.NewTestModel(t, m,
+		teatest.WithInitialTermSize(120, 40))
+	t.Cleanup(func() { _ = tm.Quit() })
+
+	now := time.Now()
+	tm.Send(QuotaMsg{
+		Usage: &anthro.Usage{
+			FiveHour: &anthro.Bucket{
+				Utilization: 95.0,
+				ResetsAt:    now.Add(45 * time.Minute),
+			},
+		},
+		Source:    "api",
+		UpdatedAt: now,
+	})
+
+	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	tm.WaitFinished(t, teatest.WithFinalTimeout(2*time.Second))
+
+	out, err := io.ReadAll(tm.FinalOutput(t))
+	if err != nil {
+		t.Fatalf("FinalOutput read: %v", err)
+	}
+	final := string(out)
+	if !strings.Contains(final, "limit in") {
+		t.Errorf("expected 'limit in' copy after overreach QuotaMsg; got:\n%s", final)
+	}
+	// Red style marker — produce the same envelope the renderer would use
+	// and check it appears somewhere in the frame. Avoids hard-coding
+	// escape bytes; survives lipgloss version bumps.
+	redMarker := lipgloss.NewStyle().Foreground(Red).Render("X")
+	openSeq, _, ok := splitANSIEnvelope(redMarker)
+	if !ok {
+		t.Fatalf("could not split red marker envelope from %q", redMarker)
+	}
+	if !strings.Contains(final, openSeq) {
+		t.Errorf("expected red style envelope %q in output; not found in:\n%s", openSeq, final)
+	}
 }
 
 // TestProgram_EmptyToFirstChart verifies the transition from the
