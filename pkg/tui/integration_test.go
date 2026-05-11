@@ -18,11 +18,18 @@ import (
 // setupTestModel builds a fresh Model with empty Deps and wraps it in a
 // teatest.TestModel at a fixed 120x40 terminal. The fixed size keeps
 // layout-dependent assertions deterministic across CI runners.
+//
+// Registers a t.Cleanup that calls tm.Quit() so the bubbletea program
+// goroutine is reaped even if a t.Fatal fires before the test reaches
+// its own WaitFinished call — otherwise goleak would surface the
+// orphaned program goroutine instead of the underlying assertion error.
 func setupTestModel(t *testing.T) *teatest.TestModel {
 	t.Helper()
 	m := New(Deps{})
-	return teatest.NewTestModel(t, m,
+	tm := teatest.NewTestModel(t, m,
 		teatest.WithInitialTermSize(120, 40))
+	t.Cleanup(func() { _ = tm.Quit() })
+	return tm
 }
 
 // TestProgram_QuitPropagation verifies that sending 'q' shuts the
@@ -168,6 +175,7 @@ func TestProgram_EmptyToFirstChart(t *testing.T) {
 	m := New(Deps{Cache: c})
 	tm := teatest.NewTestModel(t, m,
 		teatest.WithInitialTermSize(120, 40))
+	t.Cleanup(func() { _ = tm.Quit() })
 
 	tm.Send(RefreshMsg{})
 
