@@ -87,8 +87,8 @@ func TestInitDevlog_WarnsOnError(t *testing.T) {
 	if !strings.Contains(out, "debug log disabled") {
 		t.Errorf("missing remediation hint in %q", out)
 	}
-	if !strings.Contains(out, cacheDir) {
-		t.Errorf("missing cacheDir path in %q", out)
+	if !strings.Contains(out, "check "+cacheDir+" permissions") {
+		t.Errorf("missing remediation hint referencing cacheDir in %q", out)
 	}
 }
 
