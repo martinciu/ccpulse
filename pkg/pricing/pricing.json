@@ -1,5 +1,6 @@
 {
   "version": "2026-05-10",
+  "currency": "USD",
   "models": {
     "claude-opus-4-7": {
       "input_per_mtok": 5.00,
