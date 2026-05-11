@@ -411,11 +411,24 @@ func (m *Model) recomputeWindow() {
 	m.progress7d = newProgressBar(m.progressWidth())
 }
 
-// chartWidth returns the available width for the viewport.
+// shouldShowYAxis is the single source of truth for whether the fixed
+// left Y axis renders. Both chartWidth() and View() consult it so they
+// agree on the layout. Returns true iff the terminal can spare 6 cols
+// for the Y axis (m.w - 8 >= 20) AND has enough rows for the X labels
+// (chartHeight >= 6); see spec 2026-05-12-issue-100-axis-labels.
+func (m Model) shouldShowYAxis() bool {
+	return m.w-8 >= 20 && m.chartHeight() >= 6
+}
+
+// chartWidth returns the available width for the viewport. Shrinks by
+// yAxisWidth (6) when the Y axis is showing.
 func (m Model) chartWidth() int {
 	w := m.w - 2
 	if w < 10 {
 		return 10
+	}
+	if m.shouldShowYAxis() {
+		return w - yAxisWidth
 	}
 	return w
 }

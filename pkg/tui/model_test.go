@@ -16,6 +16,53 @@ import (
 	"github.com/martinciu/ccpulse/pkg/status"
 )
 
+func TestShouldShowYAxis(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		w, h int
+		want bool
+	}{
+		{"wide tall terminal", 120, 40, true},
+		{"width exactly threshold (28 ⇒ 20 chart cols)", 28, 40, true},
+		{"width 1 below threshold", 27, 40, false},
+		{"tall enough but narrow", 20, 40, false},
+		{"wide but too short for X labels", 120, 12, false}, // chartHeight = 5 < 6
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			m := Model{w: tt.w, h: tt.h}
+			if got := m.shouldShowYAxis(); got != tt.want {
+				t.Errorf("shouldShowYAxis() = %v, want %v (w=%d, h=%d, chartH=%d)",
+					got, tt.want, tt.w, tt.h, m.chartHeight())
+			}
+		})
+	}
+}
+
+func TestChartWidth_AdjustsForYAxis(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		w, h int
+		want int
+	}{
+		{"wide ⇒ m.w-8 (Y axis fits)", 120, 40, 112},
+		{"narrow ⇒ m.w-2 (Y axis dropped)", 20, 40, 18},
+		{"short ⇒ m.w-2 (X labels dropped, Y axis dropped too)", 120, 12, 118},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			m := Model{w: tt.w, h: tt.h}
+			if got := m.chartWidth(); got != tt.want {
+				t.Errorf("chartWidth() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRefreshChart_CachesPeakAndCeiling(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "state.db")
