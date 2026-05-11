@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -861,5 +862,149 @@ func TestInsertMessages_NormalizesNonUTCTimestamp(t *testing.T) {
 	if buckets[10].Tokens != 1500 {
 		t.Errorf("bucket[10].Tokens = %d, want 1500 (input+output of the non-UTC insert)",
 			buckets[10].Tokens)
+	}
+}
+
+func TestIntegrityOK_Healthy(t *testing.T) {
+	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	if !c.IntegrityOK() {
+		t.Fatal("fresh cache should report healthy")
+	}
+}
+
+func TestIntegrityOK_Corrupt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.db")
+
+	// Phase 1: open, seed, close. Close checkpoints the WAL into the
+	// main file so subsequent byte edits actually land in the database.
+	c, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tab, _ := pricing.Load()
+	if err := c.InsertMessages([]parse.Message{{
+		SessionID:   "s1",
+		ProjectSlug: "p",
+		Model:       "claude-opus-4-7",
+		Timestamp:   time.Now(),
+		InputTokens: 10,
+	}}, tab); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Phase 2: corrupt page 2. Default SQLite page_size = 4096; page 1
+	// holds the schema, page 2 is the first B-tree data page. Overwriting
+	// 64 bytes at offset 4096 (the page-2 header) reliably trips
+	// PRAGMA integrity_check.
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	junk := bytes.Repeat([]byte{0xFF}, 64)
+	if _, err := f.WriteAt(junk, 4096); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Phase 3: reopen + verify detection. Re-Open succeeds because the
+	// schema on page 1 is untouched; IntegrityOK returns false via the
+	// integrity_check != "ok" branch.
+	c2, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c2.Close()
+
+	if c2.IntegrityOK() {
+		t.Fatal("page-2-corrupted cache should report unhealthy")
+	}
+}
+
+func TestSlugCanonical_RoundTrip(t *testing.T) {
+	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	want := SlugCanonical{
+		Slug:          "-Users-x-foo-bar",
+		CanonicalPath: "/Users/x/foo/bar",
+		Branch:        "feature/x",
+		Resolved:      true,
+	}
+	if err := c.PutSlugCanonical(want); err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok, err := c.GetSlugCanonical(want.Slug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("want ok=true, got ok=false")
+	}
+	if got.Slug != want.Slug || got.CanonicalPath != want.CanonicalPath ||
+		got.Branch != want.Branch || got.Resolved != want.Resolved {
+		t.Errorf("got %+v, want %+v", got, want)
+	}
+}
+
+func TestSlugCanonical_Miss(t *testing.T) {
+	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	_, ok, err := c.GetSlugCanonical("never-stored")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Error("expected miss, got ok=true")
+	}
+}
+
+func TestSlugCanonical_Upsert(t *testing.T) {
+	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	if err := c.PutSlugCanonical(SlugCanonical{
+		Slug: "k", CanonicalPath: "/old", Resolved: false,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.PutSlugCanonical(SlugCanonical{
+		Slug: "k", CanonicalPath: "/new", Branch: "wt", Resolved: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok, err := c.GetSlugCanonical("k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || got.CanonicalPath != "/new" || got.Branch != "wt" || !got.Resolved {
+		t.Errorf("upsert did not overwrite: %+v", got)
+	}
+}
+
+func TestZoomLabel_DefaultFallback(t *testing.T) {
+	if got := zoomLabel(30 * time.Minute); got != "30m0s" {
+		t.Errorf("zoomLabel(30m) = %q, want %q (default fallback)", got, "30m0s")
 	}
 }
