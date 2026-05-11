@@ -73,7 +73,7 @@ Claude encodes project paths as directory slugs: `/` → `-`, `.` → `--`. `can
 
 ### Plan tiers and the 5-hour window
 
-`status.CeilingFor` maps tier names (`max_5x`, `max_20x`, `pro`, `api`, `custom`) to token budgets. The rolling window is computed over the 5-hour period that precedes the current time, matching Claude Max's rate-limit window. The quota bar uses the bubbles/progress default gradient at every fill level — there are no threshold-based color flips.
+Tier strings (`max_5x`, `max_20x`, `pro`, `api`, `custom`) flow through `Window.CeilingLabel` / `Window.CeilingPretty` for display; ccpulse does not maintain a token-budget table per tier. The rolling 5-hour window matches Claude Max's rate-limit window. The quota bar uses the project's green→red gradient (Solarized `#859900` → `#dc322f` via `progress.WithGradient`), so cool cells indicate headroom and warm cells indicate approaching the limit.
 
 ## TUI rendering conventions
 

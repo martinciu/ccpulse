@@ -201,50 +201,48 @@ func (m Model) renderFooter() string {
 // undimmed — it's a warning meant to draw the eye); indexing and [DEV]
 // are dim. The separator is dim.
 func renderIndicators(isDev bool, idx IndexProgress, w status.Window) string {
-	dim := lipgloss.NewStyle().Foreground(Base01)
 	var parts []string
 	if w.QuotaSource == "cache_stale" {
 		mins := max(int(time.Since(w.QuotaUpdatedAt).Minutes()), 1)
 		parts = append(parts, fmt.Sprintf("⚠ %dm old", mins))
 	}
 	if idx.Active {
-		parts = append(parts, dim.Render(fmt.Sprintf("indexing %d/%d", idx.Done, idx.Total)))
+		parts = append(parts, dimStyle.Render(fmt.Sprintf("indexing %d/%d", idx.Done, idx.Total)))
 	}
 	if isDev {
-		parts = append(parts, dim.Render("[DEV]"))
+		parts = append(parts, dimStyle.Render("[DEV]"))
 	}
 	if len(parts) == 0 {
 		return ""
 	}
-	sep := dim.Render(" · ")
+	sep := dimStyle.Render(" · ")
 	return strings.Join(parts, sep)
 }
 
-// sideChromeFixedCols is the per-side fixed chrome width (label +
-// status block). See progressWidth for the breakdown. Both 5h and 7d
-// use the same value — symmetric chrome is the prerequisite for
-// centring the │ divider.
-const sideChromeFixedCols = 3 + statusBlockMaxW // 14
-
-// quotaBars renders the 5h and 7d quota bars as a single line, designed
-// to live as the sole content row of the bordered header box. The two
-// bars are separated by a dim " │ " divider; chrome is symmetric across
-// both sides so the divider sits at the true midpoint. When 7d data is
-// unavailable that side shows a dim "(no data)" placeholder padded to
-// match the live-bar slot width so the box right edge stays stable
-// across has-data ↔ no-data transitions.
+// quotaBars renders the two content rows that live inside the bordered
+// header box: the existing 5h / 7d quota bars row and the new burn-rate
+// row beneath it. Both rows are separated by a dim " │ " divider and
+// use symmetric chrome so the divider sits at the true midpoint. When
+// 7d data is unavailable that side shows a dim "(no data)" placeholder
+// padded to match the live-bar slot width so the box right edge stays
+// stable across has-data ↔ no-data transitions.
+//
+// The burn-rate row pulls projection data from the same status.Window
+// the bars row uses — no separate compute path.
 func (m Model) quotaBars() string {
-	dimStyle := lipgloss.NewStyle().Foreground(Base01)
-	barW := m.progressWidth()
-	slotW := sideChromeFixedCols + barW
-
 	left := renderQuotaSide(
 		"5h ",
 		m.progress,
 		float64(m.window.Percent)/100.0,
-		m.window.Percent,
 		durString(m.window.MinutesToReset),
 	)
+	// Derive the per-side slot from the actual rendered bars-row left,
+	// not from a theoretical formula: newProgressBar clamps to a 10-col
+	// minimum even when progressWidth() returns less, so the theoretical
+	// per-side width drifts from the rendered width at narrow terminals
+	// (the "clamp regime"). Reading lipgloss.Width(left) guarantees the
+	// burn-rate row's slots line up with the bars row regardless of clamp.
+	slotW := lipgloss.Width(left)
 
 	var right string
 	if m.window.Has7d {
@@ -252,7 +250,6 @@ func (m Model) quotaBars() string {
 			"7d ",
 			m.progress7d,
 			float64(m.window.Percent7d)/100.0,
-			m.window.Percent7d,
 			formatReset7d(m.window.MinutesToReset7d),
 		)
 	} else {
@@ -262,7 +259,26 @@ func (m Model) quotaBars() string {
 	}
 
 	divider := dimStyle.Render(" │ ")
-	return lipgloss.JoinHorizontal(lipgloss.Top, left, divider, right)
+	barsRow := lipgloss.JoinHorizontal(lipgloss.Top, left, divider, right)
+
+	// Burn-rate row mirrors the bars layout: same per-side slotW, same
+	// divider. The "5h "/"7d " label slot is replaced with same-width
+	// blank padding so the burn-rate text starts at the same column as
+	// the progress bar above — spatial association already identifies
+	// each side; repeating the labels would be redundant.
+	// Both projection pointers can be nil (no quota loaded yet, or 7d
+	// not exposed by the server) — the side renderer handles that by
+	// emitting a dim "(no data)" placeholder.
+	var fiveHourProj, sevenDayProj *status.Projection
+	if m.window.Projection != nil {
+		fiveHourProj = m.window.Projection.FiveHour
+		sevenDayProj = m.window.Projection.SevenDay
+	}
+	burnLeft := renderBurnRateSide(burnPad, fiveHourProj, slotW, 5*time.Hour)
+	burnRight := renderBurnRateSide(burnPad, sevenDayProj, slotW, 7*24*time.Hour)
+	burnRow := lipgloss.JoinHorizontal(lipgloss.Top, burnLeft, divider, burnRight)
+
+	return lipgloss.JoinVertical(lipgloss.Left, barsRow, burnRow)
 }
 
 // refreshChart queries the cache and updates the viewport content.
@@ -342,11 +358,11 @@ func (m Model) chartWidth() int {
 }
 
 // chartHeight returns the available rows for the chart, leaving room for
-// the bordered header box (3 rows: top border, bars row, bottom border),
-// two separators (2 rows), and the help footer (1 row). Total non-body
-// overhead = 6 rows.
+// the bordered header box (4 rows: top border, bars row, burn-rate row,
+// bottom border), two separators (2 rows), and the help footer (1 row).
+// Total non-body overhead = 7 rows.
 func (m Model) chartHeight() int {
-	h := m.h - 6
+	h := m.h - 7
 	if h < 5 {
 		return 5
 	}
@@ -358,19 +374,21 @@ func (m Model) chartHeight() int {
 // (matched across both sides for symmetry — the prerequisite for centring
 // the │ divider exactly):
 //   - 3 cols dim label prefix ("5h " or "7d ")
-//   - 11 cols right-aligned status block ("100% 4h 59m" worst case)
+//   - 1 col bar→time margin (barTimeGap)
+//   - 6 cols right-aligned time slot ("4h 59m" worst case; 7d's "23:59"
+//     fits in 5 cols and gets 1 col of leading pad to stay symmetric)
 //
-// Per-side fixed chrome total: 3 + 11 = 14 cols. The header box
+// Per-side fixed chrome total: 3 + 1 + 6 = 10 cols. The header box
 // itself reserves 4 cols (border + padding), and a 3-col " │ " divider
-// sits between the two halves. Total fixed chrome = 4 + 14 + 3 + 14 = 35,
+// sits between the two halves. Total fixed chrome = 4 + 10 + 3 + 10 = 27,
 // split across two bars.
 //
-// At odd parities of (W - 35), integer division gives a 1-col residual
+// At odd parities of (W - 27), integer division gives a 1-col residual
 // that lipgloss absorbs as a trailing pad inside the box. Doesn't affect
 // divider centring because the divider is positioned relative to the
 // symmetric chrome, not derived from total width.
 func (m Model) progressWidth() int {
-	w := (m.w - 35) / 2
+	w := (m.w - 27) / 2
 	if w < 6 {
 		return 6
 	}

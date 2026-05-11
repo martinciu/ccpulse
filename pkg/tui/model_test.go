@@ -24,16 +24,20 @@ func TestInitialView_RendersHeader(t *testing.T) {
 	}
 }
 
-func TestHeaderShowsPercent(t *testing.T) {
+func TestHeaderShowsResetTime(t *testing.T) {
+	// The bars row no longer renders the current % as text (the bar fill
+	// itself conveys it); it shows the time-to-reset on the right. This
+	// guards that the time appears, and that the label "5h " is still
+	// present alongside it.
 	m := New(Deps{})
 	m.w, m.h = 120, 40
 	m.window = status.Window{Percent: 61, MinutesToReset: 107, CeilingLabel: "max_20x"}
 	got := m.View()
-	if !strings.Contains(got, "61%") {
-		t.Errorf("expected 61%% in:\n%s", got)
-	}
 	if !strings.Contains(got, "1h 47m") {
-		t.Errorf("expected 1h 47m in:\n%s", got)
+		t.Errorf("expected reset time '1h 47m' in:\n%s", got)
+	}
+	if !strings.Contains(got, "5h") {
+		t.Errorf("expected label '5h' in:\n%s", got)
 	}
 }
 
@@ -225,18 +229,17 @@ func TestIndexProgressMsg(t *testing.T) {
 }
 
 func TestSevenDayBarRendered(t *testing.T) {
+	// Verifies the two bars sit side-by-side inside the header (not
+	// stacked), with both labels and the dim divider present on the
+	// same line. The current % is no longer text-rendered — the bar's
+	// fill is the visual signal — so this test now keys on labels +
+	// divider rather than percent substrings.
 	m := New(Deps{})
 	m.w, m.h = 120, 40
-	m.window = status.Window{Percent: 1, Has7d: true, Percent7d: 12}
+	m.window = status.Window{Percent: 1, MinutesToReset: 100, Has7d: true, Percent7d: 12, MinutesToReset7d: 1000}
 	m.progress = newProgressBar(m.progressWidth())
 	m.progress7d = newProgressBar(m.progressWidth())
 	v := m.View()
-	if !strings.Contains(v, "  1%") {
-		t.Errorf("expected 5h percent '  1%%' in:\n%s", v)
-	}
-	if !strings.Contains(v, " 12%") {
-		t.Errorf("expected 7d percent ' 12%%' in:\n%s", v)
-	}
 	if !strings.Contains(v, " │ ") {
 		t.Errorf("expected dim divider ' │ ' in:\n%s", v)
 	}
@@ -247,14 +250,14 @@ func TestSevenDayBarRendered(t *testing.T) {
 		t.Errorf("expected dim '7d' label prefix in:\n%s", v)
 	}
 
-	// Both percents, the divider, and both labels must appear on the same
-	// line — bars sit side-by-side inside the header box rather than stacked.
+	// Labels and divider must appear on the same line — bars sit
+	// side-by-side inside the header box rather than stacked.
 	for _, line := range strings.Split(v, "\n") {
-		if strings.Contains(line, "  1%") && strings.Contains(line, " 12%") && strings.Contains(line, " │ ") && strings.Contains(line, "5h") && strings.Contains(line, "7d") {
+		if strings.Contains(line, "5h") && strings.Contains(line, "7d") && strings.Contains(line, " │ ") {
 			return
 		}
 	}
-	t.Errorf("expected both percents, both labels, and the divider on the same line; got:\n%s", v)
+	t.Errorf("expected both labels and the divider on the same line; got:\n%s", v)
 }
 
 func TestQuotaBarsSymmetric(t *testing.T) {
@@ -280,6 +283,44 @@ func TestQuotaBarsSymmetric(t *testing.T) {
 		{"80cols_long_times", 80, status.Window{Percent: 95, MinutesToReset: 299, Has7d: true, Percent7d: 80, MinutesToReset7d: 1439}},
 		{"120cols_zero_times", 120, status.Window{Percent: 0, MinutesToReset: 0, Has7d: true, Percent7d: 0, MinutesToReset7d: 0}},
 		{"80cols_no_7d", 80, status.Window{Percent: 5, MinutesToReset: 52, Has7d: false}},
+		// Asymmetric Projection cases: one bucket has a Projection, the
+		// other is nil. The burn-rate row renders styled rate text on the
+		// populated side and "(no data)" on the nil side. Both sides must
+		// still produce the same visual width through their respective
+		// codepaths (`renderBurnRateSide` for the populated case vs the
+		// noData branch for nil).
+		{
+			"100cols_proj5h_only",
+			100,
+			status.Window{
+				Percent: 43, MinutesToReset: 137,
+				Has7d: true, Percent7d: 17, MinutesToReset7d: 7200,
+				Projection: &status.Projections{
+					FiveHour: &status.Projection{
+						SlopePctPerHour:     12,
+						ProjectedPctAtReset: 54,
+						Confidence:          "ok",
+					},
+					SevenDay: nil,
+				},
+			},
+		},
+		{
+			"100cols_proj7d_only",
+			100,
+			status.Window{
+				Percent: 43, MinutesToReset: 137,
+				Has7d: true, Percent7d: 17, MinutesToReset7d: 7200,
+				Projection: &status.Projections{
+					FiveHour: nil,
+					SevenDay: &status.Projection{
+						SlopePctPerHour:     0.4,
+						ProjectedPctAtReset: 70,
+						Confidence:          "ok",
+					},
+				},
+			},
+		},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
@@ -290,18 +331,20 @@ func TestQuotaBarsSymmetric(t *testing.T) {
 			m.progress7d = newProgressBar(m.progressWidth())
 
 			bars := m.quotaBars()
-			// Split on the full " │ " divider rather than the bare │ rune,
-			// so the adjacent spaces (part of the divider styling, not the
-			// side chrome) are excluded from both halves. Robust across
-			// layout refactors that change how JoinHorizontal composes the
-			// spaces.
-			left, right, ok := strings.Cut(bars, " │ ")
-			if !ok {
-				t.Fatalf("no ' │ ' divider found in quotaBars output: %q", bars)
-			}
-			lw, rw := lipgloss.Width(left), lipgloss.Width(right)
-			if lw != rw {
-				t.Errorf("asymmetric quotaBars at w=%d: left width %d, right width %d\nbars: %q", tt.w, lw, rw, bars)
+			// quotaBars stacks two rows (bars + burn-rate) via JoinVertical
+			// — check symmetry on each row independently. Both share the
+			// same chrome math, so a width drift in either is a real bug.
+			// Split on the full " │ " divider per row rather than the bare
+			// │ rune, so the adjacent spaces are excluded from both halves.
+			for i, row := range strings.Split(bars, "\n") {
+				left, right, ok := strings.Cut(row, " │ ")
+				if !ok {
+					t.Fatalf("no ' │ ' divider found in quotaBars row %d: %q", i, row)
+				}
+				lw, rw := lipgloss.Width(left), lipgloss.Width(right)
+				if lw != rw {
+					t.Errorf("asymmetric quotaBars row %d at w=%d: left width %d, right width %d\nrow: %q", i, tt.w, lw, rw, row)
+				}
 			}
 		})
 	}
