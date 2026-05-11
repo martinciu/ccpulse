@@ -70,6 +70,80 @@ func itoa3(n int) string {
 	return string(buf[i:])
 }
 
+func TestRenderXLabels(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 5, 12, 14, 30, 0, 0, time.UTC)
+	mkBuckets := func(times ...time.Time) []cache.TokenBucket {
+		out := make([]cache.TokenBucket, len(times))
+		for i, ts := range times {
+			out[i] = cache.TokenBucket{BucketStart: ts}
+		}
+		return out
+	}
+
+	tests := []struct {
+		name        string
+		buckets     []cache.TokenBucket
+		chartW      int
+		zoom        ZoomLevel
+		wantEmpty   bool
+		wantSubstrs []string
+	}{
+		{
+			name:      "empty buckets returns empty string",
+			buckets:   nil,
+			chartW:    20,
+			zoom:      ZoomLevels[0],
+			wantEmpty: true,
+		},
+		{
+			name: "5m hour label appears and now marker at right edge",
+			buckets: mkBuckets(
+				time.Date(2026, 5, 12, 14, 0, 0, 0, time.UTC),
+				time.Date(2026, 5, 12, 14, 5, 0, 0, time.UTC),
+				time.Date(2026, 5, 12, 14, 10, 0, 0, time.UTC),
+				time.Date(2026, 5, 12, 14, 15, 0, 0, time.UTC),
+				time.Date(2026, 5, 12, 14, 20, 0, 0, time.UTC),
+				time.Date(2026, 5, 12, 14, 25, 0, 0, time.UTC),
+				time.Date(2026, 5, 12, 14, 30, 0, 0, time.UTC),
+			),
+			chartW:      20,
+			zoom:        ZoomLevels[0],
+			wantSubstrs: []string{"14:00", "▼ now"},
+		},
+		{
+			name: "1h zoom shows weekday",
+			buckets: mkBuckets(
+				time.Date(2026, 5, 12, 0, 0, 0, 0, time.UTC),
+				time.Date(2026, 5, 12, 1, 0, 0, 0, time.UTC),
+			),
+			chartW:      30,
+			zoom:        ZoomLevels[2],
+			wantSubstrs: []string{"Tue", "▼ now"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := renderXLabels(tt.buckets, tt.chartW, tt.zoom, now)
+			if tt.wantEmpty {
+				if got != "" {
+					t.Errorf("expected empty, got %q", got)
+				}
+				return
+			}
+			if w := lipgloss.Width(got); w != tt.chartW {
+				t.Errorf("width = %d, want %d; output = %q", w, tt.chartW, got)
+			}
+			for _, want := range tt.wantSubstrs {
+				if !strings.Contains(got, want) {
+					t.Errorf("output missing %q\nfull: %q", want, got)
+				}
+			}
+		})
+	}
+}
+
 func TestRenderYAxis(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

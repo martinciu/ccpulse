@@ -29,6 +29,57 @@ var ZoomLevels = []ZoomLevel{
 	{"1h", time.Hour},
 }
 
+// renderXLabels returns a 1-row string of width chartW containing
+// clock-aligned tick labels placed at matching bucket columns, with
+// "▼ now" right-aligned at the rightmost columns (always wins on
+// collision). Later labels overwrite earlier ones; labels that would
+// overflow chartW on the right are dropped. Empty bucket set → "".
+// Dim foreground throughout — Y axis labels are default fg so the eye
+// distinguishes the two rows when they sit close together.
+func renderXLabels(buckets []cache.TokenBucket, chartW int, zoom ZoomLevel, now time.Time) string {
+	if chartW < 1 || len(buckets) == 0 {
+		return ""
+	}
+	row := make([]rune, chartW)
+	for i := range row {
+		row[i] = ' '
+	}
+
+	// First pass: write clock-aligned labels at matching bucket columns.
+	// Each bucket maps 1:1 to a column index — same as the bars above.
+	for i, b := range buckets {
+		if i >= chartW {
+			break
+		}
+		label := formatXLabel(b.BucketStart, zoom, now)
+		if label == "" {
+			continue
+		}
+		labelRunes := []rune(label)
+		if i+len(labelRunes) > chartW {
+			continue // would overflow the right edge; skip
+		}
+		for j, r := range labelRunes {
+			row[i+j] = r
+		}
+	}
+
+	// Second pass: overlay "▼ now" at the right edge. Always wins.
+	const nowText = "▼ now"
+	nowRunes := []rune(nowText)
+	switch {
+	case len(nowRunes) <= chartW:
+		start := chartW - len(nowRunes)
+		for j, r := range nowRunes {
+			row[start+j] = r
+		}
+	case chartW >= 1:
+		row[chartW-1] = '▼'
+	}
+
+	return dimStyle.Render(string(row))
+}
+
 // yAxisWidth is the column budget for the fixed-left Y axis. 5 cols are
 // enough for the widest expected label ("99.9k", "1.5M"); the 6th col is
 // breathing room between the axis and the leftmost bar.
