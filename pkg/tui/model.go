@@ -176,6 +176,10 @@ func (m Model) View() string {
 // status indicators right-aligned. When no indicators are active, the
 // line is just the keybindings. Overflow on narrow terminals truncates
 // terminal-side; indicators are transient so the user can widen.
+//
+// avail floors at W(right)+1 so the right block always gets at least a
+// 1-col gutter even when the help line is too wide to leave room — this
+// preserves the existing overflow-and-truncate behaviour.
 func (m Model) renderFooter() string {
 	left := m.help.View(m.keys)
 	right := renderIndicators(m.deps.IsDev, IndexProgress{
@@ -184,11 +188,8 @@ func (m Model) renderFooter() string {
 	if right == "" {
 		return left
 	}
-	pad := m.w - lipgloss.Width(left) - lipgloss.Width(right)
-	if pad < 1 {
-		pad = 1
-	}
-	return left + strings.Repeat(" ", pad) + right
+	avail := max(m.w-lipgloss.Width(left), lipgloss.Width(right)+1)
+	return left + lipgloss.PlaceHorizontal(avail, lipgloss.Right, right)
 }
 
 // renderIndicators builds the right-aligned status block for the footer.
@@ -203,10 +204,7 @@ func renderIndicators(isDev bool, idx IndexProgress, w status.Window) string {
 	dim := lipgloss.NewStyle().Foreground(Base01)
 	var parts []string
 	if w.QuotaSource == "cache_stale" {
-		mins := int(time.Since(w.QuotaUpdatedAt).Minutes())
-		if mins < 1 {
-			mins = 1
-		}
+		mins := max(int(time.Since(w.QuotaUpdatedAt).Minutes()), 1)
 		parts = append(parts, fmt.Sprintf("⚠ %dm old", mins))
 	}
 	if idx.Active {
@@ -284,10 +282,8 @@ func (m *Model) refreshChart() {
 	m.viewport.SetXOffset(chartW)
 }
 
-// emptyPlaceholder returns content sized w×h showing a centered
-// "no Claude sessions yet" line styled in the dim Base01 colour.
-// Padded with blank lines so a previous non-empty refresh's content
-// is fully wiped from the viewport.
+// emptyPlaceholder returns a w×h block with "no Claude sessions yet"
+// centered in dim Base01 — the empty-cache state of the chart viewport.
 func emptyPlaceholder(w, h int) string {
 	if h < 1 {
 		h = 1
@@ -296,15 +292,7 @@ func emptyPlaceholder(w, h int) string {
 		w = 1
 	}
 	msg := lipgloss.NewStyle().Foreground(Base01).Render("no Claude sessions yet")
-	mid := h / 2
-	lines := make([]string, h)
-	for i := range lines {
-		if i == mid {
-			pad := max((w-lipgloss.Width(msg))/2, 0)
-			lines[i] = strings.Repeat(" ", pad) + msg
-		}
-	}
-	return strings.Join(lines, "\n")
+	return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, msg)
 }
 
 // recomputeWindow updates the status.Window from the DB + quota data.
