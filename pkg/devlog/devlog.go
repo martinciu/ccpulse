@@ -13,7 +13,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"time"
 
 	"github.com/charmbracelet/log"
 	"github.com/martinciu/ccpulse/pkg/secfile"
@@ -46,7 +45,7 @@ func Init(isDev bool, cacheDir string) (io.Closer, error) {
 	handler := log.NewWithOptions(f, log.Options{
 		ReportTimestamp: true,
 		ReportCaller:    true,
-		TimeFormat:      time.TimeOnly,
+		TimeFormat:      "2006-01-02 15:04:05.000",
 		Level:           log.DebugLevel,
 	})
 	slog.SetDefault(slog.New(handler))
