@@ -43,27 +43,27 @@ func TestProgram_QuitPropagation(t *testing.T) {
 	tm.WaitFinished(t, teatest.WithFinalTimeout(1*time.Second))
 }
 
-// TestProgram_HelpOverlayRender verifies that pressing '?' renders the
+// TestProgram_HelpOverlayRender verifies that pressing '?' toggles the
 // help overlay through a real program loop (not just the unit-level
-// Update check in TestHelpToggle). Asserts on the rendered key-binding
-// description text — full layout-position assertions are deliberately
-// out of scope; goldens are the future tool for that (see spec).
+// Update check in TestHelpToggle). Asserts on m.showHelp from FinalModel
+// — the rendered footer text "scroll" appears in every frame regardless
+// of the overlay (ShortHelp also lists ScrollLeft/ScrollRight), so the
+// model state is the only precise signal.
 func TestProgram_HelpOverlayRender(t *testing.T) {
 	tm := setupTestModel(t)
 
 	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
 
-	// Trigger quit so we can capture FinalOutput cleanly.
 	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
 	tm.WaitFinished(t, teatest.WithFinalTimeout(1*time.Second))
 
-	out, err := io.ReadAll(tm.FinalOutput(t))
-	if err != nil {
-		t.Fatalf("FinalOutput read: %v", err)
+	final := tm.FinalModel(t, teatest.WithFinalTimeout(1*time.Second))
+	m, ok := final.(Model)
+	if !ok {
+		t.Fatalf("FinalModel: expected tui.Model, got %T", final)
 	}
-	final := string(out)
-	if !strings.Contains(final, "scroll") {
-		t.Errorf("expected help overlay text 'scroll' in final output, got:\n%s", final)
+	if !m.showHelp {
+		t.Errorf("expected showHelp=true after '?' keypress, got false")
 	}
 }
 
