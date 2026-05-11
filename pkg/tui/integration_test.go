@@ -213,6 +213,51 @@ func TestProgram_BurnRateOverreach(t *testing.T) {
 	}
 }
 
+// TestProgram_IndexFadeAppearsAndClears feeds an IndexProgressMsg
+// falling edge into a live teatest program and verifies the
+// ✓ indexed N text appears in a rendered frame and then disappears
+// after the full fade window elapses. Asserts on rendered output via
+// the bytes channel (not FinalModel) because the model goes back to
+// indexFadeStop=0 after the final tick, so the only visible signal
+// of the fade is in the intermediate frames.
+func TestProgram_IndexFadeAppearsAndClears(t *testing.T) {
+	tm := setupTestModel(t)
+
+	// Drive a backfill-shaped sequence: Active=true, then Active=false.
+	tm.Send(IndexProgressMsg{Done: 0, Total: 3, Active: true})
+	tm.Send(IndexProgressMsg{Done: 3, Total: 3, Active: false})
+
+	// During the fade window (up to 1.2 s), at least one rendered
+	// frame should contain "✓ indexed 3".
+	teatest.WaitFor(t, tm.Output(),
+		func(out []byte) bool {
+			return bytes.Contains(out, []byte("✓ indexed 3"))
+		},
+		teatest.WithCheckInterval(50*time.Millisecond),
+		teatest.WithDuration(2*time.Second),
+	)
+
+	// Let the full fade cycle finish before quitting and reading
+	// FinalModel. WaitFor's output buffer is cumulative, so we cannot
+	// poll for disappearance there. Sleep one step past the actual fade
+	// (indexFadeStopCount+1 = 4 steps × indexFadeStepDuration) so a
+	// late tick from scheduler jitter still lands before the quit.
+	time.Sleep((indexFadeStopCount + 1) * indexFadeStepDuration)
+
+	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	tm.WaitFinished(t, teatest.WithFinalTimeout(2*time.Second))
+
+	final := tm.FinalModel(t, teatest.WithFinalTimeout(1*time.Second))
+	mm, ok := final.(Model)
+	if !ok {
+		t.Fatalf("FinalModel: expected tui.Model, got %T", final)
+	}
+	// After the full fade window, indexFadeStop should be back to 0.
+	if mm.indexFadeStop != 0 {
+		t.Errorf("post-fade indexFadeStop: got %d, want 0", mm.indexFadeStop)
+	}
+}
+
 // TestProgram_EmptyToFirstChart verifies the transition from the
 // "no Claude sessions yet" placeholder to a rendered chart after a
 // RefreshMsg with seeded cache data. Mirrors the post-backfill UX
