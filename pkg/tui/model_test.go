@@ -221,11 +221,75 @@ func TestHeatColor(t *testing.T) {
 }
 
 func TestIndexProgressMsg(t *testing.T) {
-	m := New(Deps{})
-	updated, _ := m.Update(IndexProgressMsg{Done: 3, Total: 7, Active: true})
-	got := updated.(Model)
-	if got.indexDone != 3 || got.indexTotal != 7 || !got.indexActive {
-		t.Errorf("IndexProgressMsg not applied: %+v", got)
+	// Drives Model.Update through the four message-edge cases. The
+	// falling edge (true → false) is the only one that should schedule
+	// a tea.Tick and bump indexFadeStop to 1.
+	cases := []struct {
+		name           string
+		priorActive    bool
+		priorFadeStop  int
+		msg            IndexProgressMsg
+		wantActive     bool
+		wantFadeStop   int
+		wantDone       int
+		wantTotal      int
+		wantTickCmd    bool
+	}{
+		{
+			name:        "rising_edge_no_fade",
+			priorActive: false, priorFadeStop: 0,
+			msg:        IndexProgressMsg{Done: 0, Total: 5, Active: true},
+			wantActive: true, wantFadeStop: 0,
+			wantDone: 0, wantTotal: 5, wantTickCmd: false,
+		},
+		{
+			name:        "active_to_active_no_fade",
+			priorActive: true, priorFadeStop: 0,
+			msg:        IndexProgressMsg{Done: 3, Total: 5, Active: true},
+			wantActive: true, wantFadeStop: 0,
+			wantDone: 3, wantTotal: 5, wantTickCmd: false,
+		},
+		{
+			name:        "falling_edge_starts_fade",
+			priorActive: true, priorFadeStop: 0,
+			msg:        IndexProgressMsg{Done: 5, Total: 5, Active: false},
+			wantActive: false, wantFadeStop: 1,
+			wantDone: 5, wantTotal: 5, wantTickCmd: true,
+		},
+		{
+			name:          "active_clears_existing_fade",
+			priorActive:   false, priorFadeStop: 2,
+			msg:           IndexProgressMsg{Done: 0, Total: 5, Active: true},
+			wantActive:    true, wantFadeStop: 0,
+			wantDone: 0, wantTotal: 5, wantTickCmd: false,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m := New(Deps{})
+			m.indexLastActive = c.priorActive
+			m.indexActive = c.priorActive
+			m.indexFadeStop = c.priorFadeStop
+
+			updated, cmd := m.Update(c.msg)
+			got := updated.(Model)
+
+			if got.indexActive != c.wantActive {
+				t.Errorf("indexActive: got %v, want %v", got.indexActive, c.wantActive)
+			}
+			if got.indexFadeStop != c.wantFadeStop {
+				t.Errorf("indexFadeStop: got %d, want %d", got.indexFadeStop, c.wantFadeStop)
+			}
+			if got.indexDone != c.wantDone {
+				t.Errorf("indexDone: got %d, want %d", got.indexDone, c.wantDone)
+			}
+			if got.indexTotal != c.wantTotal {
+				t.Errorf("indexTotal: got %d, want %d", got.indexTotal, c.wantTotal)
+			}
+			if (cmd != nil) != c.wantTickCmd {
+				t.Errorf("tea.Cmd presence: got %v, want %v", cmd != nil, c.wantTickCmd)
+			}
+		})
 	}
 }
 
@@ -571,6 +635,38 @@ func TestRenderIndicators(t *testing.T) {
 	}
 }
 
+
+func TestTickFadeMsg(t *testing.T) {
+	// Drives the tick handler through the three stops, the final
+	// cleanup, and a stale-tick guard.
+	cases := []struct {
+		name          string
+		priorFadeStop int
+		wantFadeStop  int
+		wantTickCmd   bool
+	}{
+		{"stale_tick_when_idle", 0, 0, false},
+		{"stop1_to_stop2", 1, 2, true},
+		{"stop2_to_stop3", 2, 3, true},
+		{"stop3_clears_to_idle", 3, 0, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m := New(Deps{})
+			m.indexFadeStop = c.priorFadeStop
+
+			updated, cmd := m.Update(tickFadeMsg{})
+			got := updated.(Model)
+
+			if got.indexFadeStop != c.wantFadeStop {
+				t.Errorf("indexFadeStop: got %d, want %d", got.indexFadeStop, c.wantFadeStop)
+			}
+			if (cmd != nil) != c.wantTickCmd {
+				t.Errorf("tea.Cmd presence: got %v, want %v", cmd != nil, c.wantTickCmd)
+			}
+		})
+	}
+}
 
 func TestIndexFadeStyle(t *testing.T) {
 	// Verifies the three fade stops map to the expected foregrounds.

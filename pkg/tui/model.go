@@ -36,6 +36,13 @@ type IndexProgressMsg struct {
 	Active bool
 }
 
+// tickFadeMsg drives the post-backfill checkmark fade. Scheduled by
+// the IndexProgressMsg handler on the Active: true → false falling
+// edge, and re-scheduled by the tickFadeMsg handler until
+// indexFadeStop exceeds indexFadeStopCount. Idle TUI cost after the
+// fade ends is zero — no Cmd is returned at the final stop.
+type tickFadeMsg struct{}
+
 // QuotaMsg is sent when fresh usage data is available.
 type QuotaMsg struct {
 	Usage     *anthro.Usage
@@ -112,9 +119,37 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.progress7d = newProgressBar(m.progressWidth())
 		m.refreshChart()
 	case IndexProgressMsg:
+		wasActive := m.indexLastActive
 		m.indexActive = msg.Active
 		m.indexDone = msg.Done
 		m.indexTotal = msg.Total
+		m.indexLastActive = msg.Active
+		switch {
+		case msg.Active:
+			// Defensive — clears any in-flight fade if a second
+			// backfill ever re-enters the active state. Unreachable
+			// in current code (Backfill.Run is one-shot).
+			m.indexFadeStop = 0
+		case wasActive && !msg.Active:
+			// Falling edge — start the fade.
+			m.indexFadeStop = 1
+			return m, tea.Tick(indexFadeStepDuration, func(time.Time) tea.Msg {
+				return tickFadeMsg{}
+			})
+		}
+	case tickFadeMsg:
+		if m.indexFadeStop == 0 {
+			// Stale tick — no fade in progress. Drop silently.
+			return m, nil
+		}
+		m.indexFadeStop++
+		if m.indexFadeStop > indexFadeStopCount {
+			m.indexFadeStop = 0
+			return m, nil
+		}
+		return m, tea.Tick(indexFadeStepDuration, func(time.Time) tea.Msg {
+			return tickFadeMsg{}
+		})
 	case QuotaMsg:
 		m.quota = msg.Usage
 		m.quotaSource = msg.Source
