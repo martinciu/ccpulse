@@ -2,7 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"strings"
 	"testing"
 
 	"github.com/charmbracelet/bubbles/progress"
@@ -10,14 +9,18 @@ import (
 )
 
 func TestFormatReset7d_Content(t *testing.T) {
-	// Asserts the visible (non-padding) content of formatReset7d. Padding
-	// alignment (leading vs trailing) is a layout choice handled separately;
-	// here we only care that the visible content matches expected formatting.
+	// formatReset7d is a pure variable-width formatter — no padding.
+	// Layout (right-align inside a fixed slot) is the renderQuotaSide
+	// helper's job. Asserts raw equality so accidental padding regressions
+	// fail loudly. Boundary cases: 0, 60 (hour rollover), 1439 (just before
+	// day mode), 1440 (just at), 10080 (7 days).
 	tests := []struct {
 		mins int
-		want string // visible content; padding stripped
+		want string
 	}{
+		{0, "00:00"},
 		{30, "00:30"},
+		{60, "01:00"},
 		{90, "01:30"},
 		{1439, "23:59"},
 		{1440, "1d"},
@@ -26,9 +29,9 @@ func TestFormatReset7d_Content(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(fmt.Sprintf("%dmins", tt.mins), func(t *testing.T) {
-			got := strings.TrimSpace(formatReset7d(tt.mins))
+			got := formatReset7d(tt.mins)
 			if got != tt.want {
-				t.Errorf("formatReset7d(%d) = %q (trimmed), want %q", tt.mins, got, tt.want)
+				t.Errorf("formatReset7d(%d) = %q, want %q", tt.mins, got, tt.want)
 			}
 		})
 	}

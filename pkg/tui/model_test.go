@@ -252,7 +252,7 @@ func TestSevenDayBarRendered(t *testing.T) {
 	t.Errorf("expected both percents, both labels, and the divider on the same line; got:\n%s", v)
 }
 
-func TestQuotaBarsLayout(t *testing.T) {
+func TestQuotaBarsLayout_Symmetric(t *testing.T) {
 	// At any terminal width ≥ 60 cols, the bars-row produced by quotaBars()
 	// must be symmetric across the dim │ divider: lipgloss.Width(left) ==
 	// lipgloss.Width(right). This is the centring property — equivalent
