@@ -176,6 +176,10 @@ func (m Model) View() string {
 // status indicators right-aligned. When no indicators are active, the
 // line is just the keybindings. Overflow on narrow terminals truncates
 // terminal-side; indicators are transient so the user can widen.
+//
+// avail floors at W(right)+1 so the right block always gets at least a
+// 1-col gutter even when the help line is too wide to leave room — this
+// preserves the existing overflow-and-truncate behaviour.
 func (m Model) renderFooter() string {
 	left := m.help.View(m.keys)
 	right := renderIndicators(m.deps.IsDev, IndexProgress{
@@ -184,11 +188,8 @@ func (m Model) renderFooter() string {
 	if right == "" {
 		return left
 	}
-	pad := m.w - lipgloss.Width(left) - lipgloss.Width(right)
-	if pad < 1 {
-		pad = 1
-	}
-	return left + strings.Repeat(" ", pad) + right
+	avail := max(m.w-lipgloss.Width(left), lipgloss.Width(right)+1)
+	return left + lipgloss.PlaceHorizontal(avail, lipgloss.Right, right)
 }
 
 // renderIndicators builds the right-aligned status block for the footer.
