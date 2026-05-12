@@ -3,6 +3,7 @@ package anthro
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -489,5 +490,319 @@ func TestUsageCache_TightensExisting(t *testing.T) {
 	fileInfo, _ := os.Stat(path)
 	if got, want := fileInfo.Mode().Perm(), os.FileMode(0o600); got != want {
 		t.Fatalf("file mode: got %o want %o", got, want)
+	}
+}
+
+// captureLogs swaps slog.Default for a slice-backed handler at the given
+// level (or above) and restores via t.Cleanup. Returns a snapshot getter:
+// each call returns a fresh copy of records observed so far, taken under
+// the handler mutex so callers can read mid-test safely if needed.
+//
+// Caveat: slog.SetDefault is process-global. Tests using captureLogs must
+// NOT call t.Parallel() — concurrent tests would cross-contaminate the
+// captured default. ccpulse's pkg/anthro tests are all serial today.
+func captureLogs(t *testing.T, minLevel slog.Level) func() []slog.Record {
+	t.Helper()
+	var (
+		mu   sync.Mutex
+		recs []slog.Record
+	)
+	prev := slog.Default()
+	h := &captureHandler{level: minLevel, mu: &mu, recs: &recs}
+	slog.SetDefault(slog.New(h))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return func() []slog.Record {
+		mu.Lock()
+		defer mu.Unlock()
+		snap := make([]slog.Record, len(recs))
+		copy(snap, recs)
+		return snap
+	}
+}
+
+type captureHandler struct {
+	level slog.Level
+	mu    *sync.Mutex
+	recs  *[]slog.Record
+}
+
+func (h *captureHandler) Enabled(_ context.Context, l slog.Level) bool { return l >= h.level }
+func (h *captureHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	*h.recs = append(*h.recs, r)
+	return nil
+}
+
+// WithAttrs / WithGroup return the receiver unchanged. This is incorrect
+// against the slog.Handler interface (real handlers must apply prefixed
+// attrs/group to subsequent records), but ccpulse never calls slog.With()
+// before logging in the call paths these tests exercise. If that ever
+// changes, captured records will silently drop the prefix attrs — extend
+// these to accumulate (clone-and-append) before relying on the helper there.
+func (h *captureHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *captureHandler) WithGroup(string) slog.Handler      { return h }
+
+// attrMap collects record attributes into a key->value map for assertions.
+func attrMap(r slog.Record) map[string]any {
+	m := map[string]any{}
+	r.Attrs(func(a slog.Attr) bool { m[a.Key] = a.Value.Any(); return true })
+	return m
+}
+
+func TestFetchLogs_CacheFresh(t *testing.T) {
+	dir := t.TempDir()
+	writeFixtureCache(t, dir, time.Now().Add(-1*time.Minute))
+	recs := captureLogs(t, slog.LevelDebug)
+
+	res, err := Fetch(context.Background(), Credential{AccessToken: "tok"}, dir)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if res.Source != "cache_fresh" {
+		t.Fatalf("Source = %q, want cache_fresh", res.Source)
+	}
+	got := recs()
+	if len(got) != 1 {
+		t.Fatalf("captured %d records, want 1: %+v", len(got), got)
+	}
+	r := got[0]
+	if r.Level != slog.LevelDebug {
+		t.Errorf("level = %v, want DEBUG", r.Level)
+	}
+	if r.Message != "anthro.Fetch" {
+		t.Errorf("message = %q, want anthro.Fetch", r.Message)
+	}
+	attrs := attrMap(r)
+	if attrs["source"] != "cache_fresh" {
+		t.Errorf("source = %v, want cache_fresh", attrs["source"])
+	}
+	if _, ok := attrs["cache_age_s"]; !ok {
+		t.Errorf("cache_age_s attribute missing")
+	}
+	if got, ok := attrs["lock_acquired"].(bool); !ok || got != false {
+		t.Errorf("lock_acquired = %v, want false", attrs["lock_acquired"])
+	}
+}
+
+func TestFetchLogs_API(t *testing.T) {
+	dir := t.TempDir()
+	writeFixtureCache(t, dir, time.Now().Add(-10*time.Minute))
+	srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(sampleAPIBody))
+	})
+	withTestEndpoint(t, srv.URL)
+	recs := captureLogs(t, slog.LevelDebug)
+
+	res, err := Fetch(context.Background(), Credential{AccessToken: "tok"}, dir)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if res.Source != "api" {
+		t.Fatalf("Source = %q, want api", res.Source)
+	}
+	got := recs()
+	var apiDbg, fetchDbg *slog.Record
+	for i := range got {
+		r := &got[i]
+		switch r.Message {
+		case "anthro.fetchAPI":
+			apiDbg = r
+		case "anthro.Fetch":
+			fetchDbg = r
+		}
+	}
+	if apiDbg == nil {
+		t.Fatalf("anthro.fetchAPI record missing: %+v", got)
+	}
+	if apiDbg.Level != slog.LevelDebug {
+		t.Errorf("fetchAPI level = %v, want DEBUG", apiDbg.Level)
+	}
+	if got, _ := attrMap(*apiDbg)["status"].(int64); got != 200 {
+		t.Errorf("fetchAPI status = %v, want 200", attrMap(*apiDbg)["status"])
+	}
+	if fetchDbg == nil {
+		t.Fatalf("anthro.Fetch record missing")
+	}
+	if attrMap(*fetchDbg)["source"] != "api" {
+		t.Errorf("Fetch source = %v, want api", attrMap(*fetchDbg)["source"])
+	}
+}
+
+func TestFetchLogs_CacheStale(t *testing.T) {
+	dir := t.TempDir()
+	writeFixtureCache(t, dir, time.Now().Add(-10*time.Minute))
+	srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}`, http.StatusTooManyRequests)
+	})
+	withTestEndpoint(t, srv.URL)
+	recs := captureLogs(t, slog.LevelDebug)
+
+	res, err := Fetch(context.Background(), Credential{AccessToken: "tok"}, dir)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if res.Source != "cache_stale" {
+		t.Fatalf("Source = %q, want cache_stale", res.Source)
+	}
+	got := recs()
+	var apiWarn, fetchDbg *slog.Record
+	for i := range got {
+		r := &got[i]
+		if r.Message == "anthro.fetchAPI non-2xx" {
+			apiWarn = r
+		}
+		if r.Message == "anthro.Fetch" {
+			fetchDbg = r
+		}
+	}
+	if apiWarn == nil {
+		t.Fatalf("anthro.fetchAPI non-2xx record missing: %+v", got)
+	}
+	if apiWarn.Level != slog.LevelWarn {
+		t.Errorf("non-2xx level = %v, want WARN", apiWarn.Level)
+	}
+	attrs := attrMap(*apiWarn)
+	if got, _ := attrs["status"].(int64); got != 429 {
+		t.Errorf("non-2xx status = %v, want 429", attrs["status"])
+	}
+	if snip, _ := attrs["body_snippet"].(string); snip == "" {
+		t.Errorf("body_snippet empty, want non-empty")
+	}
+	if fetchDbg == nil || attrMap(*fetchDbg)["source"] != "cache_stale" {
+		t.Errorf("Fetch DEBUG missing or wrong source: %+v", fetchDbg)
+	}
+}
+
+func TestFetchLogs_BodySnippetEscapesControlBytes(t *testing.T) {
+	// Pins the security property: a malicious or MitM'd response body
+	// containing ANSI escapes / CR / NUL must NOT land in the log as
+	// raw control bytes (would execute in the user's terminal on `tail`).
+	dir := t.TempDir()
+	writeFixtureCache(t, dir, time.Now().Add(-10*time.Minute))
+	srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte("\x1b[2J\r\x00malicious"))
+	})
+	withTestEndpoint(t, srv.URL)
+	recs := captureLogs(t, slog.LevelDebug)
+
+	_, _ = Fetch(context.Background(), Credential{AccessToken: "tok"}, dir)
+
+	got := recs()
+	var seen bool
+	for i := range got {
+		r := &got[i]
+		if r.Message != "anthro.fetchAPI non-2xx" {
+			continue
+		}
+		seen = true
+		snip, _ := attrMap(*r)["body_snippet"].(string)
+		if strings.ContainsAny(snip, "\x1b\r\x00") {
+			t.Errorf("body_snippet leaks raw control bytes: %q", snip)
+		}
+	}
+	if !seen {
+		t.Fatalf("anthro.fetchAPI non-2xx record not captured: %+v", got)
+	}
+}
+
+func TestFetchLogs_TransportError(t *testing.T) {
+	dir := t.TempDir()
+	// httptest server immediately closed: URL is valid but nothing listens.
+	// Relies on the kernel not handing the port to another listener in the
+	// gap between Close() and Fetch(). Standard pattern; if it ever flakes,
+	// switch to "http://127.0.0.1:1" (reserved port, always refuses).
+	srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {})
+	url := srv.URL
+	srv.Close()
+	withTestEndpoint(t, url)
+	recs := captureLogs(t, slog.LevelDebug)
+
+	_, err := Fetch(context.Background(), Credential{AccessToken: "tok"}, dir)
+	if err == nil {
+		t.Fatalf("Fetch returned nil err, want transport error")
+	}
+	got := recs()
+	var transport *slog.Record
+	for i := range got {
+		r := &got[i]
+		if r.Message == "anthro.fetchAPI transport error" {
+			transport = r
+		}
+	}
+	if transport == nil {
+		t.Fatalf("anthro.fetchAPI transport error record missing: %+v", got)
+	}
+	if transport.Level != slog.LevelWarn {
+		t.Errorf("transport level = %v, want WARN", transport.Level)
+	}
+	attrs := attrMap(*transport)
+	if _, ok := attrs["status"]; ok {
+		t.Errorf("status attr present, want absent on transport error")
+	}
+	if _, ok := attrs["err"]; !ok {
+		t.Errorf("err attr missing on transport error")
+	}
+}
+
+func TestFetchLogs_WriteCacheFailure(t *testing.T) {
+	// cacheDir is a regular file → secfile.MkdirAll fails → writeCache fails.
+	tmp := t.TempDir()
+	cacheDir := filepath.Join(tmp, "not-a-dir")
+	if err := os.WriteFile(cacheDir, []byte{}, 0o600); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+	srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(sampleAPIBody))
+	})
+	withTestEndpoint(t, srv.URL)
+	recs := captureLogs(t, slog.LevelDebug)
+
+	res, err := Fetch(context.Background(), Credential{AccessToken: "tok"}, cacheDir)
+	if err != nil {
+		t.Fatalf("Fetch: %v (want nil — writeCache failure must not propagate)", err)
+	}
+	if res.Source != "api" {
+		t.Fatalf("Source = %q, want api", res.Source)
+	}
+	if res.Usage.FiveHour == nil {
+		t.Errorf("FiveHour nil — Fetch should still return the in-memory response")
+	}
+	got := recs()
+	var wc *slog.Record
+	for i := range got {
+		r := &got[i]
+		if r.Message == "anthro.writeCache" {
+			wc = r
+		}
+	}
+	if wc == nil {
+		t.Fatalf("anthro.writeCache record missing: %+v", got)
+	}
+	if wc.Level != slog.LevelWarn {
+		t.Errorf("writeCache level = %v, want WARN", wc.Level)
+	}
+	if _, ok := attrMap(*wc)["err"]; !ok {
+		t.Errorf("err attr missing on writeCache WARN")
+	}
+}
+
+func TestCaptureLogsHelper(t *testing.T) {
+	recs := captureLogs(t, slog.LevelDebug)
+	slog.Debug("first", "k", "v")
+	slog.Warn("second", "n", 42)
+	got := recs()
+	if len(got) != 2 {
+		t.Fatalf("captured %d records, want 2", len(got))
+	}
+	if got[0].Level != slog.LevelDebug || got[0].Message != "first" {
+		t.Errorf("rec[0] = %v %q", got[0].Level, got[0].Message)
+	}
+	if got[1].Level != slog.LevelWarn || got[1].Message != "second" {
+		t.Errorf("rec[1] = %v %q", got[1].Level, got[1].Message)
+	}
+	if n, ok := attrMap(got[1])["n"].(int64); !ok || n != 42 {
+		t.Errorf("rec[1].n = %v, want int64(42)", attrMap(got[1])["n"])
 	}
 }
