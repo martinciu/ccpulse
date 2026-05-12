@@ -89,6 +89,15 @@ type Model struct {
 	lastValues []float64
 	lastStarts []time.Time
 
+	// viewportXOffset shadows m.viewport's unexported xOffset. We need a
+	// readable scroll position to preserve the wall-clock anchor across
+	// refreshes; v1 viewport only exposes a setter. Maintained by
+	// setX/scrollLeft/scrollRight wrappers; every viewport scroll mutation
+	// goes through them, including in tests — bypassing the wrappers makes
+	// the shadow stale and breaks wall-clock preservation on the next
+	// refresh.
+	viewportXOffset int
+
 	// Animation state (per-bar harmonica spring) for the 'u' unit toggle.
 	// Spring values live in [0, 1] ratio space (each bar's ratio of the
 	// active-unit's peak), not raw units — the two units differ by orders
@@ -535,6 +544,21 @@ func (m *Model) renderSpringFrame() {
 		len(visibleRatios), chartH, time.Now(), zoom, chartUnit(m.unitIdx)))
 	m.viewport.SetXOffset(0)
 }
+
+// setX is the single point of entry for changing the viewport's horizontal
+// scroll position. Clamps to the legal range against the latest lastStarts
+// length and chartWidth, then mirrors into the shadow. The viewport's own
+// SetXOffset also clamps internally; we clamp first so the shadow stays
+// truthful even if the library's clamp behaviour ever changes.
+func (m *Model) setX(n int) {
+	maxX := max(0, len(m.lastStarts)-m.chartWidth())
+	n = min(max(n, 0), maxX)
+	m.viewport.SetXOffset(n)
+	m.viewportXOffset = n
+}
+
+func (m *Model) scrollLeft(n int)  { m.setX(m.viewportXOffset - n) }
+func (m *Model) scrollRight(n int) { m.setX(m.viewportXOffset + n) }
 
 // refreshChart queries the cache and updates the viewport content.
 // Safe to call when deps.Cache is nil (no-op). Loads the full history

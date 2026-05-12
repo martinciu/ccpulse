@@ -1285,6 +1285,54 @@ func TestRefreshChart_CostMode(t *testing.T) {
 	}
 }
 
+func TestScrollHelpers_UpdateShadowOffset(t *testing.T) {
+	// Direct unit test of setX / scrollLeft / scrollRight: clamp behaviour
+	// and shadow synchronisation against a Model with a known lastStarts
+	// length and chartWidth.
+	t.Parallel()
+
+	newModel := func() *Model {
+		m := New(Deps{})
+		m.w, m.h = 120, 40
+		m.viewport.Width = m.chartWidth()
+		m.viewport.Height = m.chartHeight()
+		// Seed lastStarts so setX has a non-zero maxX to clamp against.
+		// chartWidth at w=120 is 118 (see TestChartWidth_FloorsAtTen); pick
+		// lastStarts length 200 → maxX = 200 - 118 = 82.
+		m.lastStarts = make([]time.Time, 200)
+		// SetContent so the viewport's own clamp also has content to work
+		// against (longestLineWidth >= 200).
+		m.viewport.SetContent(strings.Repeat("X", 200))
+		return &m
+	}
+
+	tests := []struct {
+		name       string
+		setup      func(*Model)
+		op         func(*Model)
+		wantShadow int
+	}{
+		{"setX 0 → 0", func(m *Model) {}, func(m *Model) { m.setX(0) }, 0},
+		{"setX past max clamps to maxX", func(m *Model) {}, func(m *Model) { m.setX(500) }, 82},
+		{"setX negative clamps to 0", func(m *Model) {}, func(m *Model) { m.setX(-5) }, 0},
+		{"scrollLeft from 50 by 10 → 40", func(m *Model) { m.setX(50) }, func(m *Model) { m.scrollLeft(10) }, 40},
+		{"scrollRight from 75 by 10 → 82 (clamped)", func(m *Model) { m.setX(75) }, func(m *Model) { m.scrollRight(10) }, 82},
+		{"scrollLeft below 0 clamps to 0", func(m *Model) { m.setX(5) }, func(m *Model) { m.scrollLeft(10) }, 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			m := newModel()
+			tt.setup(m)
+			tt.op(m)
+			if m.viewportXOffset != tt.wantShadow {
+				t.Errorf("viewportXOffset = %d, want %d", m.viewportXOffset, tt.wantShadow)
+			}
+		})
+	}
+}
+
 func TestView_CostModeRendersDollarPrefix(t *testing.T) {
 	// End-to-end check that flipping unitIdx to cost causes the rendered
 	// View() to contain a "$"-prefixed Y label. Guards the path
