@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -315,7 +316,15 @@ func runQuotaPoller(
 	push := func() {
 		res, err := anthro.Fetch(ctx, cred, cacheDir)
 		if err != nil {
+			slog.Warn("ccpulse.quotaPoller",
+				"outcome", "fetch_error",
+				"err", err)
 			return
+		}
+		if res.Source == "cache_stale" {
+			slog.Warn("ccpulse.quotaPoller",
+				"outcome", "cache_stale",
+				"cache_age_s", int(time.Since(res.UpdatedAt).Seconds()))
 		}
 		if res.Source == "api" {
 			_ = c.RecordUsageSample(res.Usage, res.UpdatedAt)
