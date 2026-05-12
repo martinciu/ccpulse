@@ -172,6 +172,42 @@ func niceFloor(peak int64) int64 {
 	return int64(math.Round(nice * mag))
 }
 
+// chartUnit selects what `peak` and bar values represent. Used by
+// formatUnitValue to pick the right Y-label format. Spring-animation
+// rendering also reads this through Model.unitIdx.
+type chartUnit int
+
+const (
+	chartUnitTokens chartUnit = iota
+	chartUnitCost
+)
+
+// niceFloorFloat is the float64 generalisation of niceFloor, supporting
+// sub-1 peaks (cost-mode shows e.g. $0.45 buckets). Same {1, 2, 3, 5, 7}
+// mantissa set, but the exponent k may be negative. Returns 0 when
+// peak <= 0 so callers can guard the overlay write.
+func niceFloorFloat(peak float64) float64 {
+	if peak <= 0 {
+		return 0
+	}
+	mag := math.Pow10(int(math.Floor(math.Log10(peak))))
+	norm := peak / mag
+	var nice float64
+	switch {
+	case norm >= 7.0:
+		nice = 7.0
+	case norm >= 5.0:
+		nice = 5.0
+	case norm >= 3.0:
+		nice = 3.0
+	case norm >= 2.0:
+		nice = 2.0
+	default:
+		nice = 1.0
+	}
+	return nice * mag
+}
+
 // formatTokenCount renders an int64 token count compactly with a k/M
 // suffix, suitable for the Y label and other in-chart annotations.
 // Always returns an integer label (no fractional digits). Pair with
@@ -192,6 +228,34 @@ func formatTokenCount(n int64) string {
 		return strconv.FormatFloat(float64(n)/1000, 'f', 0, 64) + "k"
 	}
 	return strconv.FormatFloat(float64(n)/1_000_000, 'f', 0, 64) + "M"
+}
+
+// formatUnitValue renders v in the active unit's compact Y-label form.
+// Tokens use the existing k/M suffix shape (mirroring formatTokenCount).
+// Cost prefixes "$" and keeps two decimals only for sub-dollar values
+// (e.g. "$0.45"); otherwise integer dollars with a k/M suffix above
+// 1000. The 5-col Y-label slot is respected — "$0.45" is exactly 5 cols.
+func formatUnitValue(v float64, unit chartUnit) string {
+	switch unit {
+	case chartUnitCost:
+		if v <= 0 {
+			return "$0"
+		}
+		if v < 1 {
+			return "$" + strconv.FormatFloat(v, 'f', 2, 64)
+		}
+		if v < 1000 {
+			return "$" + strconv.FormatFloat(v, 'f', 0, 64)
+		}
+		if v < 1_000_000 {
+			return "$" + strconv.FormatFloat(v/1000, 'f', 0, 64) + "k"
+		}
+		return "$" + strconv.FormatFloat(v/1_000_000, 'f', 0, 64) + "M"
+	default: // chartUnitTokens
+		// Reuse formatTokenCount's exact behaviour by casting to int64
+		// after the niceFloorFloat path has already snapped to an integer.
+		return formatTokenCount(int64(v))
+	}
 }
 
 // heatColor returns a lipgloss color on a green→yellow→red ramp

@@ -382,6 +382,48 @@ func TestNiceFloor(t *testing.T) {
 	}
 }
 
+func TestNiceFloorFloat(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		peak float64
+		want float64
+	}{
+		{"zero returns zero", 0, 0},
+		{"negative returns zero", -10, 0},
+		// Sub-1 (cost mode), exponent k = -1.
+		{"0.45 falls to 0.3", 0.45, 0.3},
+		{"0.71 falls to 0.7", 0.71, 0.7},
+		{"0.12 falls to 0.1", 0.12, 0.1},
+		{"0.04 falls to 0.03", 0.04, 0.03},
+		// k = 0.
+		{"1.0 stays 1", 1.0, 1.0},
+		{"1.4 stays 1", 1.4, 1.0},
+		{"4.7 falls to 3", 4.7, 3.0},
+		{"7.1 falls to 7", 7.1, 7.0},
+		// k = 1.
+		{"45.7 falls to 30", 45.7, 30.0},
+		{"99 falls to 70", 99, 70.0},
+		// k = 2.
+		{"123 falls to 100", 123, 100.0},
+		{"850 falls to 700", 850, 700.0},
+		// k = 3.
+		{"1234 falls to 1000", 1234, 1000.0},
+		{"4999 falls to 3000", 4999, 3000.0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := niceFloorFloat(tt.peak)
+			// Sub-1 results carry binary-FP residue from math.Pow10(-1);
+			// allow 1e-9 slack rather than asserting exact equality.
+			if diff := got - tt.want; diff < -1e-9 || diff > 1e-9 {
+				t.Errorf("niceFloorFloat(%v) = %v, want %v", tt.peak, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestFormatTokenCount(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -410,6 +452,49 @@ func TestFormatTokenCount(t *testing.T) {
 			got := formatTokenCount(tt.in)
 			if got != tt.want {
 				t.Errorf("formatTokenCount(%d) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFormatUnitValue(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		v    float64
+		unit chartUnit
+		want string
+	}{
+		// Tokens mode — outputs match formatTokenCount(int64(v)).
+		{"tokens zero", 0, chartUnitTokens, "0"},
+		{"tokens negative", -5, chartUnitTokens, "0"},
+		{"tokens 1", 1, chartUnitTokens, "1"},
+		{"tokens 999", 999, chartUnitTokens, "999"},
+		{"tokens exactly 1k", 1000, chartUnitTokens, "1k"},
+		{"tokens 45k", 45000, chartUnitTokens, "45k"},
+		{"tokens 100k", 100_000, chartUnitTokens, "100k"},
+		{"tokens 1M", 1_000_000, chartUnitTokens, "1M"},
+		{"tokens 50M", 50_000_000, chartUnitTokens, "50M"},
+		// Cost mode — sub-1 keeps two decimals, then $X / $Xk / $XM.
+		{"cost zero", 0, chartUnitCost, "$0"},
+		{"cost negative", -0.5, chartUnitCost, "$0"},
+		{"cost 0.45", 0.45, chartUnitCost, "$0.45"},
+		{"cost 0.10", 0.10, chartUnitCost, "$0.10"},
+		{"cost 0.04", 0.04, chartUnitCost, "$0.04"},
+		{"cost 0.99", 0.99, chartUnitCost, "$0.99"},
+		{"cost 1", 1.0, chartUnitCost, "$1"},
+		{"cost 45", 45.0, chartUnitCost, "$45"},
+		{"cost 999", 999.0, chartUnitCost, "$999"},
+		{"cost exactly 1k", 1000.0, chartUnitCost, "$1k"},
+		{"cost 45k", 45000.0, chartUnitCost, "$45k"},
+		{"cost 1M", 1_000_000.0, chartUnitCost, "$1M"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := formatUnitValue(tt.v, tt.unit)
+			if got != tt.want {
+				t.Errorf("formatUnitValue(%v, %v) = %q, want %q", tt.v, tt.unit, got, tt.want)
 			}
 		})
 	}
