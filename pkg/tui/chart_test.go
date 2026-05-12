@@ -14,30 +14,13 @@ import (
 // in BenchmarkBuildChart when its return value is otherwise unused.
 var sinkString string
 
-// syntheticBuckets returns n contiguous 5-minute TokenBucket entries
-// with deterministic, varied Tokens values so heatColor exercises all
-// three colour bands. Anchored to a 3-hour clock boundary so the 15m
-// zoom (used by BenchmarkBuildChart and BenchmarkRenderXLabels) hits a
-// label tick every 36th bucket — exercising renderXLabels' label-write
-// loop. Without this anchor, formatXLabel would return "" for nearly
-// every bucket and the label-write path would be under-measured.
-func syntheticBuckets(n int) []cache.TokenBucket {
-	now := time.Now().UTC().Truncate(3 * time.Hour)
-	out := make([]cache.TokenBucket, n)
-	for i := range out {
-		out[i] = cache.TokenBucket{
-			BucketStart: now.Add(time.Duration(i) * 5 * time.Minute),
-			// Sweep across the heat range; a few zero buckets for gaps.
-			Tokens: int64((i * 137) % 1000),
-		}
-	}
-	return out
-}
-
-// syntheticChartInput projects n synthetic buckets into the
-// (values, starts, peak) shape buildChart now takes. Same value
-// distribution as syntheticBuckets so bench timings stay comparable
-// pre/post the chart refactor.
+// syntheticChartInput produces n contiguous 5-minute chart inputs with
+// deterministic, varied values so heatColor exercises all three colour
+// bands. Anchored to a 3-hour clock boundary so the 15m zoom (used by
+// BenchmarkBuildChart and BenchmarkRenderXLabels) hits a label tick
+// every 36th bucket — exercising renderXLabels' label-write loop.
+// Without this anchor, formatXLabel would return "" for nearly every
+// bucket and the label-write path would be under-measured.
 func syntheticChartInput(n int) (values []float64, starts []time.Time, peak float64) {
 	now := time.Now().UTC().Truncate(3 * time.Hour)
 	values = make([]float64, n)
