@@ -29,7 +29,11 @@ var ZoomLevels = []ZoomLevel{
 
 // overlayYLabel splices `formatUnitValue(niceFloorFloat(peak), unit)`
 // in dim style into the niceFloor row of an already-rendered chart
-// string, replacing the first 5 visible columns of that row.
+// string, replacing the first 5 visible columns of that row. Operates
+// ANSI-aware on the post-scroll viewport output so the label stays
+// pinned to the viewport's left edge regardless of horizontal scroll
+// position (issue #132) — applied in Model.View() after
+// m.viewport.View(), not inside buildChart.
 //
 // peak <= 0 (or a peak whose niceFloorFloat is 0) leaves body
 // untouched. chartH < 6 leaves body untouched (same threshold
@@ -280,7 +284,7 @@ func heatColor(ratio float64) lipgloss.Color {
 // used directly here; passed through for symmetry with overlayYLabel.
 func buildChart(values []float64, starts []time.Time, peak float64,
 	chartW, chartH int, now time.Time, zoom ZoomLevel, unit chartUnit) string {
-	_ = unit // reserved for future per-unit bar styling; reads the value via Model.unitIdx today
+	_ = unit // reserved; a later commit will read it via Model.unitIdx for per-unit bar styling
 	start := time.Now()
 	if chartH < 1 {
 		chartH = 1
