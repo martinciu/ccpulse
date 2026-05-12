@@ -117,6 +117,29 @@ func BenchmarkRenderXLabels(b *testing.B) {
 	}
 }
 
+// BenchmarkBarChartRender measures the per-frame cost of rebuilding
+// the bar chart at the chart widths the animation will hit (the
+// harmonica spring rebuilds the chart canvas each tick — see #101).
+//
+// Sizes 100/1000/5000 cover narrow/normal/wide terminals with the
+// 5m zoom (288 buckets/day; 5000 ≈ 17 days). At 60 FPS the per-frame
+// budget is ~16ms; if 5000 exceeds it, the spring tick rate falls
+// back to harmonica.FPS(30) per the spec's bench-gate rule.
+func BenchmarkBarChartRender(b *testing.B) {
+	now := time.Now().UTC()
+	for _, n := range []int{100, 1000, 5000} {
+		values, starts, peak := syntheticChartInput(n)
+		b.Run(formatN(n), func(b *testing.B) {
+			b.ReportAllocs()
+			runtime.GC()
+			b.ResetTimer()
+			for b.Loop() {
+				sinkString = buildChart(values, starts, peak, n, 20, now, ZoomLevels[1], chartUnitTokens)
+			}
+		})
+	}
+}
+
 // itoa3 avoids strconv import noise — keeps the bench's deps minimal.
 func itoa3(n int) string {
 	if n == 0 {
