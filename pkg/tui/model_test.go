@@ -134,7 +134,7 @@ func TestRefreshChart_CachesPeak(t *testing.T) {
 	m.refreshChart()
 
 	if m.peak == 0 {
-		t.Errorf("expected non-zero peak after insert, got 0")
+		t.Errorf("expected non-zero peak after insert, got %v", m.peak)
 	}
 }
 
@@ -176,9 +176,9 @@ func TestView_YLabelFixedAcrossScroll(t *testing.T) {
 	m.viewport.Height = m.chartHeight()
 	m.refreshChart()
 
-	expected := formatTokenCount(niceFloor(m.peak))
+	expected := formatUnitValue(niceFloorFloat(m.peak), chartUnitTokens)
 	if expected == "" || expected == "0" {
-		t.Fatalf("expected non-empty Y label; m.peak = %d", m.peak)
+		t.Fatalf("expected non-empty Y label; m.peak = %v", m.peak)
 	}
 	if !strings.Contains(m.View(), expected) {
 		t.Errorf("View output missing Y label %q at default scroll position:\n%s", expected, m.View())
@@ -347,7 +347,8 @@ func TestBuildChartEmitsBars(t *testing.T) {
 			Tokens:      int64((i*7 + 1000) * (1 + i%3)),
 		}
 	}
-	out := buildChart(buckets, 30, 10, now, ZoomLevels[1])
+	values, starts, peak := projectBuckets(buckets)
+	out := buildChart(values, starts, peak, 30, 10, now, ZoomLevels[1], chartUnitTokens)
 	if !strings.ContainsAny(out, "█▇▆▅▄▃▂▁") {
 		t.Errorf("buildChart produced no bar block characters; got:\n%s", out)
 	}
@@ -369,7 +370,8 @@ func TestBuildChart_NoBaselineStrip(t *testing.T) {
 	for i := 5; i < 10; i++ {
 		buckets[i].Tokens = int64((i + 1) * 1000)
 	}
-	out := buildChart(buckets, 20, 10, now, ZoomLevels[0])
+	values, starts, peak := projectBuckets(buckets)
+	out := buildChart(values, starts, peak, 20, 10, now, ZoomLevels[0], chartUnitTokens)
 
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
 	bottom := lines[len(lines)-1]
@@ -887,5 +889,446 @@ func TestViewRendersFadeIndicator(t *testing.T) {
 	got := m.View()
 	if !strings.Contains(got, "✓ indexed 42") {
 		t.Errorf("expected '✓ indexed 42' in View() output; got:\n%s", got)
+	}
+}
+
+func TestUnitKeyToggles(t *testing.T) {
+	// Pressing 'u' must flip unitIdx between 0 (tokens) and 1 (cost).
+	// Two presses must return to 0. Initial state is 0 (default reset
+	// per spec — no persistence across launches).
+	m := New(Deps{})
+	m.w, m.h = 120, 40
+
+	if m.unitIdx != 0 {
+		t.Fatalf("expected initial unitIdx=0, got %d", m.unitIdx)
+	}
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	m = updated.(Model)
+	if m.unitIdx != 1 {
+		t.Errorf("after first 'u', unitIdx = %d, want 1", m.unitIdx)
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	m = updated.(Model)
+	if m.unitIdx != 0 {
+		t.Errorf("after second 'u', unitIdx = %d, want 0", m.unitIdx)
+	}
+}
+
+func TestUnitKeyInHelp(t *testing.T) {
+	// The 'u unit' binding must appear in both ShortHelp (footer) and
+	// FullHelp (overlay opened with '?'). Asserts on the rendered help
+	// strings rather than the KeyMap struct so a misnamed help text
+	// surfaces in the test output.
+	m := New(Deps{})
+	m.w, m.h = 120, 40
+
+	// Footer help line: ShortHelp() result, rendered through bubbles/help.
+	// Match the full "u tokens/cost" pair to avoid false positives —
+	// bare "u" also appears in "quit" and "scroll" so the substring is
+	// vacuous on its own.
+	footer := m.help.View(m.keys)
+	if !strings.Contains(footer, "u tokens/cost") {
+		t.Errorf("footer help missing 'u tokens/cost' binding:\n%s", footer)
+	}
+
+	// Help overlay: triggered by '?'. Asserts on the FullHelp view.
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	overlay := updated.(Model).View()
+	if !strings.Contains(overlay, "tokens/cost") {
+		t.Errorf("help overlay missing 'tokens/cost' binding:\n%s", overlay)
+	}
+}
+
+func TestBeginUnitAnimation(t *testing.T) {
+	// Drive a model to a known token state, then call beginUnitAnimation
+	// after flipping unitIdx to cost. Assert the spring slices are sized
+	// to the bucket count, springActive flips true, springRatios reflect
+	// the OLD (token) ratios, and springTargetRatios reflect the NEW
+	// (cost) ratios. m.peak ends up as the cost peak.
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "state.db")
+	c, err := cache.Open(dbPath)
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	defer c.Close()
+
+	tab, err := pricing.Load()
+	if err != nil {
+		t.Fatalf("pricing.Load: %v", err)
+	}
+	now := time.Now().UTC().Truncate(15 * time.Minute)
+	msgs := []parse.Message{
+		{SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7",
+			Timestamp: now.Add(-30 * time.Minute), InputTokens: 10000, OutputTokens: 5000},
+		{SessionID: "s2", ProjectSlug: "p", Model: "claude-opus-4-7",
+			Timestamp: now.Add(-10 * time.Minute), InputTokens: 30000, OutputTokens: 15000},
+	}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	m := New(Deps{Cache: c})
+	m.w, m.h = 120, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+
+	// Render in token mode first so lastValues + peak hold the OLD state.
+	m.refreshChart()
+	if len(m.lastValues) == 0 {
+		t.Fatalf("token-mode lastValues unexpectedly empty")
+	}
+	oldValues := append([]float64(nil), m.lastValues...)
+	oldPeak := m.peak
+
+	// Flip and start animation toward the cost values.
+	m.unitIdx = 1
+	m.beginUnitAnimation()
+
+	if !m.springActive {
+		t.Errorf("springActive = false, want true")
+	}
+	if got, want := len(m.springs), len(oldValues); got != want {
+		t.Errorf("len(springs) = %d, want %d (one per bucket)", got, want)
+	}
+	if got, want := len(m.springRatios), len(oldValues); got != want {
+		t.Errorf("len(springRatios) = %d, want %d", got, want)
+	}
+	if got, want := len(m.springVelocities), len(oldValues); got != want {
+		t.Errorf("len(springVelocities) = %d, want %d", got, want)
+	}
+	if got, want := len(m.springTargetRatios), len(oldValues); got != want {
+		t.Errorf("len(springTargetRatios) = %d, want %d", got, want)
+	}
+
+	// Initial spring state must equal old token ratios (same shape, value-by-value).
+	for i, v := range oldValues {
+		want := v / oldPeak
+		if diff := m.springRatios[i] - want; diff < -1e-9 || diff > 1e-9 {
+			t.Errorf("springRatios[%d] = %v, want %v (old token ratio)", i, m.springRatios[i], want)
+		}
+	}
+
+	// Velocities start at zero.
+	for i, v := range m.springVelocities {
+		if v != 0 {
+			t.Errorf("springVelocities[%d] = %v, want 0", i, v)
+		}
+	}
+
+	// Target ratios must be in [0, 1] and at least one must be non-zero.
+	var anyNonZero bool
+	for i, r := range m.springTargetRatios {
+		if r < 0 || r > 1 {
+			t.Errorf("springTargetRatios[%d] = %v, want [0, 1]", i, r)
+		}
+		if r > 0 {
+			anyNonZero = true
+		}
+	}
+	if !anyNonZero {
+		t.Errorf("all springTargetRatios are zero; expected at least one non-zero cost bucket")
+	}
+
+	// m.peak should now hold the COST peak so View()'s overlayYLabel
+	// renders the correct currency-formatted Y label immediately.
+	if m.peak == 0 {
+		t.Errorf("m.peak unexpectedly 0 after beginUnitAnimation; expected cost peak")
+	}
+	if m.peak >= oldPeak {
+		t.Errorf("m.peak = %v not less than oldPeak = %v; cost peak should be much smaller for these inputs",
+			m.peak, oldPeak)
+	}
+}
+
+func TestUnitToggleAnimationSettles(t *testing.T) {
+	// Drives the model through an animation: press 'u', then deliver up
+	// to 200 springTickMsg ticks. Asserts springActive eventually flips
+	// false, ratios converge to targets within epsilon, and the final
+	// tick returns no further Cmd (idle = zero cost).
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "state.db")
+	c, err := cache.Open(dbPath)
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	defer c.Close()
+
+	tab, err := pricing.Load()
+	if err != nil {
+		t.Fatalf("pricing.Load: %v", err)
+	}
+	now := time.Now().UTC().Truncate(15 * time.Minute)
+	msgs := []parse.Message{
+		{SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7",
+			Timestamp: now.Add(-30 * time.Minute), InputTokens: 10000, OutputTokens: 5000},
+		{SessionID: "s2", ProjectSlug: "p", Model: "claude-opus-4-7",
+			Timestamp: now.Add(-10 * time.Minute), InputTokens: 30000, OutputTokens: 15000},
+	}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	m := New(Deps{Cache: c})
+	m.w, m.h = 120, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	m.refreshChart()
+
+	// Press 'u' — Update should toggle, start the animation, and return
+	// a non-nil Cmd (the first tea.Tick).
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	m = updated.(Model)
+	if !m.springActive {
+		t.Fatalf("springActive = false after 'u' press; expected animation start")
+	}
+	if cmd == nil {
+		t.Fatalf("Update returned nil Cmd after 'u' press; expected tea.Tick")
+	}
+
+	// Drive ticks until settled or 200 attempts (200 * 16.7ms = 3.3s of
+	// synthetic time, well past the spec's 250–400ms settle window).
+	// Calibrated for springDamping >= 0.5 with springFrequency = 6.0;
+	// theoretical settle ticks at epsilon=0.001 are roughly ~143 at
+	// damping=0.5 and ~112 at damping=1.0. At damping=0.3 the cap is
+	// already breached (~229 ticks) — bump maxTicks before reducing
+	// damping below 0.5.
+	const maxTicks = 200
+	var lastCmd tea.Cmd
+	for i := 0; i < maxTicks && m.springActive; i++ {
+		updated, lastCmd = m.Update(springTickMsg{})
+		m = updated.(Model)
+	}
+	if m.springActive {
+		t.Fatalf("animation did not settle within %d ticks", maxTicks)
+	}
+
+	// Final ratios must equal targets (we snap on settle).
+	for i, r := range m.springRatios {
+		if r != m.springTargetRatios[i] {
+			t.Errorf("springRatios[%d] = %v, want %v (snapped target)", i, r, m.springTargetRatios[i])
+		}
+	}
+
+	// Final tick must return no further Cmd — idle TUI cost = zero.
+	if lastCmd != nil {
+		t.Errorf("settle tick returned non-nil Cmd; idle TUI must not keep ticking")
+	}
+}
+
+func TestRefreshDuringAnimationSnapsAndContinues(t *testing.T) {
+	// While animation is active, a RefreshMsg whose data has a different
+	// bucket count must abort the spring (snap to targets) and re-run
+	// refreshChart against the new data. The model after the RefreshMsg
+	// must NOT be springActive and must have lastValues reflecting the
+	// new bucket count.
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "state.db")
+	c, err := cache.Open(dbPath)
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	defer c.Close()
+
+	tab, err := pricing.Load()
+	if err != nil {
+		t.Fatalf("pricing.Load: %v", err)
+	}
+	now := time.Now().UTC().Truncate(15 * time.Minute)
+	// Initial state: one message.
+	msgs := []parse.Message{
+		{SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7",
+			Timestamp: now.Add(-2 * time.Hour), InputTokens: 10000, OutputTokens: 5000},
+	}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	m := New(Deps{Cache: c})
+	m.w, m.h = 120, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	m.refreshChart()
+	preBucketCount := len(m.lastValues)
+
+	// Start animation.
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	m = updated.(Model)
+	if !m.springActive {
+		t.Fatalf("animation didn't start")
+	}
+
+	// Insert a new message far back in time so earliest-bucket moves and the
+	// bucket count grows substantially.
+	newMsgs := []parse.Message{
+		{SessionID: "s2", ProjectSlug: "p", Model: "claude-opus-4-7",
+			Timestamp: now.Add(-12 * time.Hour), InputTokens: 50000, OutputTokens: 25000},
+	}
+	if err := c.InsertMessages(newMsgs, tab); err != nil {
+		t.Fatalf("InsertMessages (new): %v", err)
+	}
+
+	// Deliver RefreshMsg mid-animation.
+	updated, _ = m.Update(RefreshMsg{})
+	m = updated.(Model)
+
+	if m.springActive {
+		t.Errorf("springActive = true after RefreshMsg; expected snap-and-stop")
+	}
+	if len(m.lastValues) <= preBucketCount {
+		t.Errorf("lastValues not refreshed after RefreshMsg; got %d buckets, want > %d",
+			len(m.lastValues), preBucketCount)
+	}
+}
+
+func TestRefreshDoesNotAnimate(t *testing.T) {
+	// RefreshMsg without a prior 'u' press must NOT start an animation.
+	// Guards against the watcher loop accidentally springing the chart
+	// every time a new message arrives.
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "state.db")
+	c, err := cache.Open(dbPath)
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	defer c.Close()
+
+	tab, err := pricing.Load()
+	if err != nil {
+		t.Fatalf("pricing.Load: %v", err)
+	}
+	msgs := []parse.Message{
+		{SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7",
+			Timestamp: time.Now().UTC().Add(-time.Hour), InputTokens: 1000},
+	}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	m := New(Deps{Cache: c})
+	m.w, m.h = 120, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+
+	updated, _ := m.Update(RefreshMsg{})
+	m = updated.(Model)
+	if m.springActive {
+		t.Errorf("springActive = true after RefreshMsg; watcher refresh must not animate")
+	}
+	if len(m.springs) != 0 {
+		t.Errorf("springs slice non-empty after RefreshMsg; expected len=0")
+	}
+}
+
+func TestRefreshChart_CostMode(t *testing.T) {
+	// With unitIdx=1 (cost), refreshChart must call CostBuckets and cache
+	// the cost values into m.lastValues, with m.peak set to max(cost).
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "state.db")
+	c, err := cache.Open(dbPath)
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	defer c.Close()
+
+	tab, err := pricing.Load()
+	if err != nil {
+		t.Fatalf("pricing.Load: %v", err)
+	}
+	now := time.Now().UTC().Truncate(15 * time.Minute)
+	msgs := []parse.Message{
+		{SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7",
+			Timestamp: now.Add(-30 * time.Minute), InputTokens: 10000, OutputTokens: 5000},
+		{SessionID: "s2", ProjectSlug: "p", Model: "claude-opus-4-7",
+			Timestamp: now.Add(-10 * time.Minute), InputTokens: 30000, OutputTokens: 15000},
+	}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	m := New(Deps{Cache: c})
+	m.w, m.h = 120, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+
+	// Token mode (default): peak should match max token count in any bucket.
+	m.refreshChart()
+	tokenPeak := m.peak
+	if tokenPeak == 0 {
+		t.Fatalf("token-mode peak unexpectedly 0")
+	}
+	if len(m.lastValues) == 0 {
+		t.Fatalf("token-mode lastValues unexpectedly empty")
+	}
+
+	// Cost mode: same buckets, but peak/lastValues now reflect dollar cost.
+	m.unitIdx = 1
+	m.refreshChart()
+	costPeak := m.peak
+	if costPeak == 0 {
+		t.Fatalf("cost-mode peak unexpectedly 0")
+	}
+	if len(m.lastValues) == 0 {
+		t.Fatalf("cost-mode lastValues unexpectedly empty")
+	}
+
+	// Cost magnitudes are dollars; tokens are integer counts. They MUST
+	// differ by orders of magnitude for these test inputs (10k–30k input
+	// tokens at Opus rates produces sub-dollar costs). If they're close,
+	// either CostBuckets is returning token totals or lastValues isn't
+	// being routed through the cost branch.
+	if costPeak >= tokenPeak/100 {
+		t.Errorf("cost peak (%v) suspiciously close to token peak (%v); cost branch may not be wired",
+			costPeak, tokenPeak)
+	}
+}
+
+func TestView_CostModeRendersDollarPrefix(t *testing.T) {
+	// End-to-end check that flipping unitIdx to cost causes the rendered
+	// View() to contain a "$"-prefixed Y label. Guards the path
+	// unitIdx -> chartUnit(m.unitIdx) -> overlayYLabel -> formatUnitValue;
+	// a casting bug or wrong constant routing would silently strip the
+	// prefix and no unit-level test would catch it.
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "state.db")
+	c, err := cache.Open(dbPath)
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	defer c.Close()
+
+	tab, err := pricing.Load()
+	if err != nil {
+		t.Fatalf("pricing.Load: %v", err)
+	}
+	now := time.Now().UTC().Truncate(15 * time.Minute)
+	msgs := []parse.Message{
+		{SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7",
+			Timestamp: now.Add(-30 * time.Minute), InputTokens: 10000, OutputTokens: 5000},
+		{SessionID: "s2", ProjectSlug: "p", Model: "claude-opus-4-7",
+			Timestamp: now.Add(-10 * time.Minute), InputTokens: 30000, OutputTokens: 15000},
+	}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	m := New(Deps{Cache: c})
+	m.w, m.h = 120, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+
+	// Token mode (default): View() must NOT contain a "$" Y label.
+	m.refreshChart()
+	if strings.Contains(m.View(), "$") {
+		t.Errorf("token-mode View contains '$' unexpectedly:\n%s", m.View())
+	}
+
+	// Cost mode: View() must contain a "$" Y label.
+	m.unitIdx = 1
+	m.refreshChart()
+	if !strings.Contains(m.View(), "$") {
+		t.Errorf("cost-mode View missing '$' Y label:\n%s", m.View())
 	}
 }
