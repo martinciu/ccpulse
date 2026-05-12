@@ -284,7 +284,7 @@ func heatColor(ratio float64) lipgloss.Color {
 // used directly here; passed through for symmetry with overlayYLabel.
 func buildChart(values []float64, starts []time.Time, peak float64,
 	chartW, chartH int, now time.Time, zoom ZoomLevel, unit chartUnit) string {
-	_ = unit // reserved; a later commit will read it via Model.unitIdx for per-unit bar styling
+	_ = unit // unit is consumed by overlayYLabel in Model.View(), not by buildChart itself
 	start := time.Now()
 	if chartH < 1 {
 		chartH = 1

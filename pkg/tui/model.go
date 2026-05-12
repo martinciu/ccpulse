@@ -542,12 +542,14 @@ func (m *Model) refreshChart() {
 	if m.deps.Cache == nil {
 		return
 	}
-	// If a unit-toggle spring is still in flight, snap it to its
-	// targets before reading fresh data. Refresh paths (watcher
-	// RefreshMsg, WindowSizeMsg, Zoom) hard-cut the animation per
-	// the spec — only the initial 'u' press animates.
+	// If a unit-toggle spring is still in flight, hard-cut it: refresh
+	// paths (watcher RefreshMsg, WindowSizeMsg, Zoom) bypass the
+	// animation per the spec — only the initial 'u' press animates.
+	// No need to snap springRatios to targets here: the rest of
+	// refreshChart overwrites lastValues/lastStarts/peak and rebuilds
+	// the viewport from cache; nothing reads springRatios while
+	// springActive is false.
 	if m.springActive {
-		copy(m.springRatios, m.springTargetRatios)
 		m.springActive = false
 	}
 	zoom := ZoomLevels[m.zoomIdx]
