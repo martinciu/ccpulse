@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -106,6 +107,16 @@ var (
 	cacheTTL    = 3 * time.Minute
 	httpTimeout = 5 * time.Second
 )
+
+// maxBodySnippet bounds the body bytes that fetchAPI surfaces in the
+// non-2xx WARN log. Anthropic error bodies are tiny (~80 bytes) and
+// CloudFlare 429 HTML is well under 512.
+const maxBodySnippet = 512
+
+// maxBodyRead caps the bytes fetchAPI will pull from the response body.
+// Defensive: a misbehaving server shouldn't be able to blow memory. The
+// real usage endpoint returns ~1 KB; 64 KiB leaves plenty of headroom.
+const maxBodyRead = 64 * 1024
 
 // SetAPIURLForTest overrides the usage endpoint URL and returns a restore
 // function for the previous value. Intended for test packages outside
@@ -221,17 +232,47 @@ func fetchAPI(ctx context.Context, token string) (Usage, error) {
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("anthropic-beta", "oauth-2025-04-20")
+
+	start := time.Now()
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
+		slog.Warn("anthro.fetchAPI transport error",
+			"dur_ms", time.Since(start).Milliseconds(),
+			"err", err)
 		return Usage{}, err
 	}
 	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxBodyRead))
+	snippet := body
+	if len(snippet) > maxBodySnippet {
+		snippet = snippet[:maxBodySnippet]
+	}
+	durMS := time.Since(start).Milliseconds()
+
 	if resp.StatusCode != http.StatusOK {
+		// fetchAPI is the only layer with HTTP detail; log here AND return
+		// a sentinel error for caller branching. Not a duplicate-handling
+		// violation — upstream layers log different content at different
+		// severity.
+		slog.Warn("anthro.fetchAPI non-2xx",
+			"status", resp.StatusCode,
+			"dur_ms", durMS,
+			"body_snippet", string(snippet))
 		return Usage{}, fmt.Errorf("api status %d", resp.StatusCode)
 	}
+
 	var u Usage
-	if err := json.NewDecoder(resp.Body).Decode(&u); err != nil {
+	if err := json.Unmarshal(body, &u); err != nil {
+		slog.Warn("anthro.fetchAPI decode",
+			"status", resp.StatusCode,
+			"dur_ms", durMS,
+			"body_snippet", string(snippet),
+			"err", err)
 		return Usage{}, fmt.Errorf("decode response: %w", err)
 	}
+	slog.Debug("anthro.fetchAPI",
+		"status", resp.StatusCode,
+		"dur_ms", durMS)
 	return u, nil
 }

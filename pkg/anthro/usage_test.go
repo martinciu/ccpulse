@@ -567,6 +567,128 @@ func TestFetchLogs_CacheFresh(t *testing.T) {
 	}
 }
 
+func TestFetchLogs_API(t *testing.T) {
+	dir := t.TempDir()
+	writeFixtureCache(t, dir, time.Now().Add(-10*time.Minute))
+	srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(sampleAPIBody))
+	})
+	withTestEndpoint(t, srv.URL)
+	recs := captureLogs(t, slog.LevelDebug)
+
+	res, err := Fetch(context.Background(), Credential{AccessToken: "tok"}, dir)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if res.Source != "api" {
+		t.Fatalf("Source = %q, want api", res.Source)
+	}
+	var apiDbg, fetchDbg *slog.Record
+	for i := range *recs {
+		r := &(*recs)[i]
+		switch r.Message {
+		case "anthro.fetchAPI":
+			apiDbg = r
+		case "anthro.Fetch":
+			fetchDbg = r
+		}
+	}
+	if apiDbg == nil {
+		t.Fatalf("anthro.fetchAPI record missing: %+v", *recs)
+	}
+	if apiDbg.Level != slog.LevelDebug {
+		t.Errorf("fetchAPI level = %v, want DEBUG", apiDbg.Level)
+	}
+	if got, _ := attrMap(*apiDbg)["status"].(int64); got != 200 {
+		t.Errorf("fetchAPI status = %v, want 200", attrMap(*apiDbg)["status"])
+	}
+	if fetchDbg == nil {
+		t.Fatalf("anthro.Fetch record missing")
+	}
+	if attrMap(*fetchDbg)["source"] != "api" {
+		t.Errorf("Fetch source = %v, want api", attrMap(*fetchDbg)["source"])
+	}
+}
+
+func TestFetchLogs_CacheStale(t *testing.T) {
+	dir := t.TempDir()
+	writeFixtureCache(t, dir, time.Now().Add(-10*time.Minute))
+	srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}`, http.StatusTooManyRequests)
+	})
+	withTestEndpoint(t, srv.URL)
+	recs := captureLogs(t, slog.LevelDebug)
+
+	res, err := Fetch(context.Background(), Credential{AccessToken: "tok"}, dir)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if res.Source != "cache_stale" {
+		t.Fatalf("Source = %q, want cache_stale", res.Source)
+	}
+	var apiWarn, fetchDbg *slog.Record
+	for i := range *recs {
+		r := &(*recs)[i]
+		if r.Message == "anthro.fetchAPI non-2xx" {
+			apiWarn = r
+		}
+		if r.Message == "anthro.Fetch" {
+			fetchDbg = r
+		}
+	}
+	if apiWarn == nil {
+		t.Fatalf("anthro.fetchAPI non-2xx record missing: %+v", *recs)
+	}
+	if apiWarn.Level != slog.LevelWarn {
+		t.Errorf("non-2xx level = %v, want WARN", apiWarn.Level)
+	}
+	attrs := attrMap(*apiWarn)
+	if got, _ := attrs["status"].(int64); got != 429 {
+		t.Errorf("non-2xx status = %v, want 429", attrs["status"])
+	}
+	if snip, _ := attrs["body_snippet"].(string); snip == "" {
+		t.Errorf("body_snippet empty, want non-empty")
+	}
+	if fetchDbg == nil || attrMap(*fetchDbg)["source"] != "cache_stale" {
+		t.Errorf("Fetch DEBUG missing or wrong source: %+v", fetchDbg)
+	}
+}
+
+func TestFetchLogs_TransportError(t *testing.T) {
+	dir := t.TempDir()
+	// httptest server immediately closed: URL is valid but nothing listens.
+	srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {})
+	url := srv.URL
+	srv.Close()
+	withTestEndpoint(t, url)
+	recs := captureLogs(t, slog.LevelDebug)
+
+	_, err := Fetch(context.Background(), Credential{AccessToken: "tok"}, dir)
+	if err == nil {
+		t.Fatalf("Fetch returned nil err, want transport error")
+	}
+	var transport *slog.Record
+	for i := range *recs {
+		r := &(*recs)[i]
+		if r.Message == "anthro.fetchAPI transport error" {
+			transport = r
+		}
+	}
+	if transport == nil {
+		t.Fatalf("anthro.fetchAPI transport error record missing: %+v", *recs)
+	}
+	if transport.Level != slog.LevelWarn {
+		t.Errorf("transport level = %v, want WARN", transport.Level)
+	}
+	attrs := attrMap(*transport)
+	if _, ok := attrs["status"]; ok {
+		t.Errorf("status attr present, want absent on transport error")
+	}
+	if _, ok := attrs["err"]; !ok {
+		t.Errorf("err attr missing on transport error")
+	}
+}
+
 func TestCaptureLogsHelper(t *testing.T) {
 	recs := captureLogs(t, slog.LevelDebug)
 	slog.Debug("first", "k", "v")
