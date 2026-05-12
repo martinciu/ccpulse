@@ -892,6 +892,52 @@ func TestViewRendersFadeIndicator(t *testing.T) {
 	}
 }
 
+func TestUnitKeyToggles(t *testing.T) {
+	// Pressing 'u' must flip unitIdx between 0 (tokens) and 1 (cost).
+	// Two presses must return to 0. Initial state is 0 (default reset
+	// per spec — no persistence across launches).
+	m := New(Deps{})
+	m.w, m.h = 120, 40
+
+	if m.unitIdx != 0 {
+		t.Fatalf("expected initial unitIdx=0, got %d", m.unitIdx)
+	}
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	m = updated.(Model)
+	if m.unitIdx != 1 {
+		t.Errorf("after first 'u', unitIdx = %d, want 1", m.unitIdx)
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	m = updated.(Model)
+	if m.unitIdx != 0 {
+		t.Errorf("after second 'u', unitIdx = %d, want 0", m.unitIdx)
+	}
+}
+
+func TestUnitKeyInHelp(t *testing.T) {
+	// The 'u unit' binding must appear in both ShortHelp (footer) and
+	// FullHelp (overlay opened with '?'). Asserts on the rendered help
+	// strings rather than the KeyMap struct so a misnamed help text
+	// surfaces in the test output.
+	m := New(Deps{})
+	m.w, m.h = 120, 40
+
+	// Footer help line: ShortHelp() result, rendered through bubbles/help.
+	footer := m.help.View(m.keys)
+	if !strings.Contains(footer, "u") || !strings.Contains(footer, "unit") {
+		t.Errorf("footer help missing 'u unit' binding:\n%s", footer)
+	}
+
+	// Help overlay: triggered by '?'. Asserts on the FullHelp view.
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	overlay := updated.(Model).View()
+	if !strings.Contains(overlay, "unit") {
+		t.Errorf("help overlay missing 'unit' binding:\n%s", overlay)
+	}
+}
+
 func TestRefreshChart_CostMode(t *testing.T) {
 	// With unitIdx=1 (cost), refreshChart must call CostBuckets and cache
 	// the cost values into m.lastValues, with m.peak set to max(cost).

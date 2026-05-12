@@ -192,6 +192,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.Zoom):
 			m.zoomIdx = (m.zoomIdx + 1) % len(ZoomLevels)
 			m.refreshChart()
+		case key.Matches(msg, m.keys.Unit):
+			m.unitIdx = (m.unitIdx + 1) % 2
+			m.refreshChart()
 		case key.Matches(msg, m.keys.ScrollLeft):
 			m.viewport.ScrollLeft(horizontalScrollStep)
 		case key.Matches(msg, m.keys.ScrollRight):
