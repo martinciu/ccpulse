@@ -20,7 +20,6 @@ import (
 
 	"github.com/martinciu/ccpulse/pkg/anthro"
 	"github.com/martinciu/ccpulse/pkg/cache"
-	"github.com/martinciu/ccpulse/pkg/canonical"
 	"github.com/martinciu/ccpulse/pkg/channel"
 	"github.com/martinciu/ccpulse/pkg/config"
 	"github.com/martinciu/ccpulse/pkg/devlog"
@@ -195,13 +194,10 @@ func runTUI(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	res := canonical.NewResolver(c, "/")
-
 	projectsRoot := envOr("CCPULSE_PROJECTS_ROOT", expand(cfg.Paths.ProjectsRoot))
 
 	ing := &ingest.Ingester{
 		Cache:          c,
-		Resolver:       res,
 		Pricing:        tab,
 		ProjectsRoot:   projectsRoot,
 		ParseErrorsLog: filepath.Join(cacheDir, "parse-errors.log"),

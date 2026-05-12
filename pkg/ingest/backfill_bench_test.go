@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/martinciu/ccpulse/pkg/cache"
-	"github.com/martinciu/ccpulse/pkg/canonical"
 	"github.com/martinciu/ccpulse/pkg/pricing"
 )
 
@@ -75,10 +74,8 @@ func newBenchIngester(b *testing.B, projectsRoot, cacheDir string) *Ingester {
 	b.Cleanup(func() { c.Close() })
 
 	tab, _ := pricing.Load()
-	res := canonical.NewResolver(c, "/")
 	return &Ingester{
 		Cache:          c,
-		Resolver:       res,
 		Pricing:        tab,
 		ProjectsRoot:   projectsRoot,
 		ParseErrorsLog: filepath.Join(cacheDir, "parse-errors.log"),

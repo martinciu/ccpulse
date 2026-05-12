@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 
 	"github.com/martinciu/ccpulse/pkg/cache"
-	"github.com/martinciu/ccpulse/pkg/canonical"
 	"github.com/martinciu/ccpulse/pkg/channel"
 	"github.com/martinciu/ccpulse/pkg/config"
 	"github.com/martinciu/ccpulse/pkg/devlog"
@@ -64,10 +63,8 @@ func runIndex(ctx context.Context, rebuild bool) error {
 		return err
 	}
 
-	res := canonical.NewResolver(c, "/")
 	ing := &ingest.Ingester{
 		Cache:          c,
-		Resolver:       res,
 		Pricing:        tab,
 		ProjectsRoot:   projectsRoot,
 		ParseErrorsLog: filepath.Join(cacheDir, "parse-errors.log"),
