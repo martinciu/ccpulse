@@ -18,13 +18,13 @@ import (
 )
 
 // BenchmarkModelView measures the per-frame cost of the full View()
-// composition: header + sep + JoinHorizontal(yAxis, viewport) + sep +
-// footer. View() runs on every keypress and tick — regressions here
-// (e.g. an extra lipgloss style allocation) bleed into perceived input
-// latency. Sub-benches cover both the wide path (Y axis shown, ~m.w-8
-// chart cols) and the narrow path (Y axis dropped, falls back to m.w-2
-// today's layout) — a regression that only manifests in one branch
-// would slip past a single-dimension bench.
+// composition: header + sep + viewport + sep + footer. View() runs on
+// every keypress and tick — regressions here (e.g. an extra lipgloss
+// style allocation) bleed into perceived input latency. Sub-benches
+// cover wide and narrow terminal widths so a regression that only
+// manifests at one canvas size doesn't slip past a single-dimension
+// bench. After #132 both widths share the same code path (the Y axis
+// is now an in-canvas overlay, not a separate JoinHorizontal column).
 func BenchmarkModelView(b *testing.B) {
 	dir := b.TempDir()
 	dbPath := filepath.Join(dir, "state.db")
@@ -57,8 +57,8 @@ func BenchmarkModelView(b *testing.B) {
 		name string
 		w, h int
 	}{
-		{"wide", 120, 40},   // shouldShowYAxis == true
-		{"narrow", 20, 40},  // shouldShowYAxis == false (Y axis dropped)
+		{"wide", 120, 40},
+		{"narrow", 20, 40},
 	}
 	for _, tt := range cases {
 		b.Run(tt.name, func(b *testing.B) {
