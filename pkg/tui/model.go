@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/harmonica"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/martinciu/ccpulse/pkg/anthro"
@@ -80,6 +81,17 @@ type Model struct {
 	// per-tick animated chart rebuild without re-querying the cache.
 	lastValues []float64
 	lastStarts []time.Time
+
+	// Animation state (per-bar harmonica spring) for the 'u' unit toggle.
+	// Spring values live in [0, 1] ratio space (each bar's ratio of the
+	// active-unit's peak), not raw units — the two units differ by orders
+	// of magnitude so raw-value springs would render bars at catastrophic
+	// heights. springActive is the gate: idle TUI cost is zero when false.
+	springs            []harmonica.Spring
+	springRatios       []float64
+	springVelocities   []float64
+	springTargetRatios []float64
+	springActive       bool
 
 	window         status.Window
 	quota          *anthro.Usage
@@ -343,6 +355,81 @@ func (m Model) quotaBars() string {
 	burnRow := lipgloss.JoinHorizontal(lipgloss.Top, burnLeft, divider, burnRight)
 
 	return lipgloss.JoinVertical(lipgloss.Left, barsRow, burnRow)
+}
+
+// springFPS is the harmonica tick rate for the unit-toggle animation.
+// 60 leaves a 16.7ms per-frame budget. Task 10 (the bench-gate commit)
+// validates the choice against BenchmarkBarChartRender.
+const springFPS = 60
+
+// springFrequency, springDamping are the harmonica parameters tuned for
+// a snappy ~250–400ms settle. Damping 0.5 is over-damped enough to avoid
+// overshoot; frequency 6 Hz gives the spring's natural period.
+const (
+	springFrequency = 6.0
+	springDamping   = 0.5
+)
+
+// springSettleEpsilon is the absolute |ratio - target| and |velocity|
+// below which a spring is considered settled. 0.001 is one tenth of a
+// percent of full bar height — well below visual quantisation of a
+// single chart cell. Unit-independent because the spring lives in
+// ratio space.
+const springSettleEpsilon = 0.001
+
+// beginUnitAnimation captures the current (old-unit) bar ratios as the
+// spring's initial state, queries the new unit's buckets, and primes the
+// per-bar springs to settle toward the new-unit ratios. After this runs,
+// m.peak holds the new unit's peak (so the Y-label overlay reflects the
+// new unit immediately) and springActive is true (so the tick loop in
+// Update will rebuild the chart from springRatios — Task 9 wires that).
+//
+// Caller must have already incremented m.unitIdx before calling.
+//
+// Snapshots m.lastValues / m.peak (the values and peak from the previous
+// refreshChart) BEFORE running refreshChart for the new unit, so the old
+// state survives long enough to compute the initial ratios.
+func (m *Model) beginUnitAnimation() {
+	if m.deps.Cache == nil {
+		return
+	}
+
+	oldValues := m.lastValues
+	oldPeak := m.peak
+
+	// refreshChart updates m.lastValues, m.peak, and the viewport content
+	// to reflect the new unit. Use it as the source of truth for the
+	// new-unit values and peak so beginUnitAnimation doesn't duplicate
+	// the SQL/branching logic.
+	m.refreshChart()
+	newValues := m.lastValues
+	newPeak := m.peak
+
+	if len(newValues) == 0 {
+		// Empty cache or query error — refreshChart already wrote the
+		// empty placeholder to the viewport. Nothing to animate.
+		m.springActive = false
+		return
+	}
+
+	n := len(newValues)
+	m.springs = make([]harmonica.Spring, n)
+	m.springRatios = make([]float64, n)
+	m.springVelocities = make([]float64, n)
+	m.springTargetRatios = make([]float64, n)
+	for i := range n {
+		m.springs[i] = harmonica.NewSpring(harmonica.FPS(springFPS), springFrequency, springDamping)
+		// Initial ratio: previous unit's bucket ratio (or 0 if old peak
+		// was zero, e.g. first-ever toggle on an empty cache).
+		if oldPeak > 0 && i < len(oldValues) {
+			m.springRatios[i] = oldValues[i] / oldPeak
+		}
+		// Target ratio: new unit's bucket ratio.
+		if newPeak > 0 {
+			m.springTargetRatios[i] = newValues[i] / newPeak
+		}
+	}
+	m.springActive = true
 }
 
 // refreshChart queries the cache and updates the viewport content.

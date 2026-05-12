@@ -941,6 +941,108 @@ func TestUnitKeyInHelp(t *testing.T) {
 	}
 }
 
+func TestBeginUnitAnimation(t *testing.T) {
+	// Drive a model to a known token state, then call beginUnitAnimation
+	// after flipping unitIdx to cost. Assert the spring slices are sized
+	// to the bucket count, springActive flips true, springRatios reflect
+	// the OLD (token) ratios, and springTargetRatios reflect the NEW
+	// (cost) ratios. m.peak ends up as the cost peak.
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "state.db")
+	c, err := cache.Open(dbPath)
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	defer c.Close()
+
+	tab, err := pricing.Load()
+	if err != nil {
+		t.Fatalf("pricing.Load: %v", err)
+	}
+	now := time.Now().UTC().Truncate(15 * time.Minute)
+	msgs := []parse.Message{
+		{SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7",
+			Timestamp: now.Add(-30 * time.Minute), InputTokens: 10000, OutputTokens: 5000},
+		{SessionID: "s2", ProjectSlug: "p", Model: "claude-opus-4-7",
+			Timestamp: now.Add(-10 * time.Minute), InputTokens: 30000, OutputTokens: 15000},
+	}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	m := New(Deps{Cache: c})
+	m.w, m.h = 120, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+
+	// Render in token mode first so lastValues + peak hold the OLD state.
+	m.refreshChart()
+	if len(m.lastValues) == 0 {
+		t.Fatalf("token-mode lastValues unexpectedly empty")
+	}
+	oldValues := append([]float64(nil), m.lastValues...)
+	oldPeak := m.peak
+
+	// Flip and start animation toward the cost values.
+	m.unitIdx = 1
+	m.beginUnitAnimation()
+
+	if !m.springActive {
+		t.Errorf("springActive = false, want true")
+	}
+	if got, want := len(m.springs), len(oldValues); got != want {
+		t.Errorf("len(springs) = %d, want %d (one per bucket)", got, want)
+	}
+	if got, want := len(m.springRatios), len(oldValues); got != want {
+		t.Errorf("len(springRatios) = %d, want %d", got, want)
+	}
+	if got, want := len(m.springVelocities), len(oldValues); got != want {
+		t.Errorf("len(springVelocities) = %d, want %d", got, want)
+	}
+	if got, want := len(m.springTargetRatios), len(oldValues); got != want {
+		t.Errorf("len(springTargetRatios) = %d, want %d", got, want)
+	}
+
+	// Initial spring state must equal old token ratios (same shape, value-by-value).
+	for i, v := range oldValues {
+		want := v / oldPeak
+		if diff := m.springRatios[i] - want; diff < -1e-9 || diff > 1e-9 {
+			t.Errorf("springRatios[%d] = %v, want %v (old token ratio)", i, m.springRatios[i], want)
+		}
+	}
+
+	// Velocities start at zero.
+	for i, v := range m.springVelocities {
+		if v != 0 {
+			t.Errorf("springVelocities[%d] = %v, want 0", i, v)
+		}
+	}
+
+	// Target ratios must be in [0, 1] and at least one must be non-zero.
+	var anyNonZero bool
+	for i, r := range m.springTargetRatios {
+		if r < 0 || r > 1 {
+			t.Errorf("springTargetRatios[%d] = %v, want [0, 1]", i, r)
+		}
+		if r > 0 {
+			anyNonZero = true
+		}
+	}
+	if !anyNonZero {
+		t.Errorf("all springTargetRatios are zero; expected at least one non-zero cost bucket")
+	}
+
+	// m.peak should now hold the COST peak so View()'s overlayYLabel
+	// renders the correct currency-formatted Y label immediately.
+	if m.peak == 0 {
+		t.Errorf("m.peak unexpectedly 0 after beginUnitAnimation; expected cost peak")
+	}
+	if m.peak >= oldPeak {
+		t.Errorf("m.peak = %v not less than oldPeak = %v; cost peak should be much smaller for these inputs",
+			m.peak, oldPeak)
+	}
+}
+
 func TestRefreshChart_CostMode(t *testing.T) {
 	// With unitIdx=1 (cost), refreshChart must call CostBuckets and cache
 	// the cost values into m.lastValues, with m.peak set to max(cost).
