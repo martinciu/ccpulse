@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -259,10 +260,13 @@ func fetchAPI(ctx context.Context, token string) (Usage, error) {
 		// a sentinel error for caller branching. Not a duplicate-handling
 		// violation — upstream layers log different content at different
 		// severity.
+		// strconv.Quote escapes ANSI/CR/control bytes so a malicious or
+		// MitM'd response can't inject terminal-escape sequences into the
+		// log file (which is plain bytes; `tail`/`cat` would interpret).
 		slog.Warn("anthro.fetchAPI non-2xx",
 			"status", resp.StatusCode,
 			"dur_ms", durMS,
-			"body_snippet", string(snippet))
+			"body_snippet", strconv.Quote(string(snippet)))
 		return Usage{}, fmt.Errorf("api status %d", resp.StatusCode)
 	}
 
@@ -271,7 +275,7 @@ func fetchAPI(ctx context.Context, token string) (Usage, error) {
 		slog.Warn("anthro.fetchAPI decode",
 			"status", resp.StatusCode,
 			"dur_ms", durMS,
-			"body_snippet", string(snippet),
+			"body_snippet", strconv.Quote(string(snippet)),
 			"err", err)
 		return Usage{}, fmt.Errorf("decode response: %w", err)
 	}

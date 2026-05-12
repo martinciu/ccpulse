@@ -654,6 +654,38 @@ func TestFetchLogs_CacheStale(t *testing.T) {
 	}
 }
 
+func TestFetchLogs_BodySnippetEscapesControlBytes(t *testing.T) {
+	// Pins the security property: a malicious or MitM'd response body
+	// containing ANSI escapes / CR / NUL must NOT land in the log as
+	// raw control bytes (would execute in the user's terminal on `tail`).
+	dir := t.TempDir()
+	writeFixtureCache(t, dir, time.Now().Add(-10*time.Minute))
+	srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte("\x1b[2J\r\x00malicious"))
+	})
+	withTestEndpoint(t, srv.URL)
+	recs := captureLogs(t, slog.LevelDebug)
+
+	_, _ = Fetch(context.Background(), Credential{AccessToken: "tok"}, dir)
+
+	var seen bool
+	for i := range *recs {
+		r := &(*recs)[i]
+		if r.Message != "anthro.fetchAPI non-2xx" {
+			continue
+		}
+		seen = true
+		snip, _ := attrMap(*r)["body_snippet"].(string)
+		if strings.ContainsAny(snip, "\x1b\r\x00") {
+			t.Errorf("body_snippet leaks raw control bytes: %q", snip)
+		}
+	}
+	if !seen {
+		t.Fatalf("anthro.fetchAPI non-2xx record not captured: %+v", *recs)
+	}
+}
+
 func TestFetchLogs_TransportError(t *testing.T) {
 	dir := t.TempDir()
 	// httptest server immediately closed: URL is valid but nothing listens.
