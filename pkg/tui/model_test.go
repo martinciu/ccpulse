@@ -82,21 +82,22 @@ func BenchmarkModelView(b *testing.B) {
 // BenchmarkModelView when its return value is otherwise unused.
 var sinkView string
 
-func TestChartWidth_AdjustsForYAxis(t *testing.T) {
+func TestChartWidth_FloorsAtTen(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name string
-		w, h int
+		w    int
 		want int
 	}{
-		{"wide ⇒ m.w-8 (Y axis fits)", 120, 40, 112},
-		{"narrow ⇒ m.w-2 (Y axis dropped)", 20, 40, 18},
-		{"short ⇒ m.w-2 (X labels dropped, Y axis dropped too)", 120, 12, 118},
+		{"wide", 120, 118},        // m.w - 2
+		{"narrow but not floored", 20, 18},
+		{"floored at 10", 8, 10},  // m.w - 2 == 6, clamped up
+		{"floored at 10 when w==12", 12, 10},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			m := Model{w: tt.w, h: tt.h}
+			m := Model{w: tt.w}
 			if got := m.chartWidth(); got != tt.want {
 				t.Errorf("chartWidth() = %d, want %d", got, tt.want)
 			}
