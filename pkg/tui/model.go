@@ -494,59 +494,72 @@ const (
 	phaseTransitionThreshold = 0.01
 )
 
-// beginUnitAnimation captures the current (old-unit) bar ratios as the
-// spring's initial state, queries the new unit's buckets, and primes the
-// per-bar springs to settle toward the new-unit ratios. After this runs,
-// m.peak holds the new unit's peak (so the Y-label overlay reflects the
-// new unit immediately) and springActive is true (so the tick loop in
-// Update will rebuild the chart from springRatios — Task 9 wires that).
+// beginUnitAnimation primes the two-phase unit-toggle animation. It
+// snapshots the OLD state (oldPeak, oldUnitIdx, oldValues from
+// m.lastValues), runs refreshChart so the viewport content reflects
+// the NEW unit, then builds:
+//   - springRatios[i] from the OLD ratios (current visible heights).
+//   - springFinalTargets[i] from the NEW ratios (Phase 2 destination).
+//   - springProjectiles[i] with per-bar tuned gravity so bar i lands
+//     at zero at t = phase1Duration regardless of its starting ratio.
+//   - springs[i] (Phase 2 spring) configured; springVelocities seeded
+//     at the phase transition, not here.
+//   - springPhase = springShrinking, springActive = true.
 //
 // Caller must have already incremented m.unitIdx before calling.
+// oldUnitIdx is derived by inverting the toggle since this is a
+// 2-cycle (tokens ↔ cost).
 //
-// Snapshots m.lastValues / m.peak (the values and peak from the previous
-// refreshChart) BEFORE running refreshChart for the new unit, so the old
-// state survives long enough to compute the initial ratios.
+// Snapshots happen BEFORE refreshChart so the OLD m.peak / m.lastValues
+// survive the refresh that overwrites them.
 func (m *Model) beginUnitAnimation() {
 	if m.deps.Cache == nil {
 		return
 	}
 
 	oldValues := m.lastValues
-	oldPeak := m.peak
+	m.oldPeak = m.peak
+	m.oldUnitIdx = (m.unitIdx + 1) % 2
 
-	// refreshChart updates m.lastValues, m.peak, and the viewport content
-	// to reflect the new unit. Use it as the source of truth for the
-	// new-unit values and peak so beginUnitAnimation doesn't duplicate
-	// the SQL/branching logic.
 	m.refreshChart()
 	newValues := m.lastValues
 	newPeak := m.peak
 
 	if len(newValues) == 0 {
-		// Empty cache or query error — refreshChart already wrote the
-		// empty placeholder to the viewport. Nothing to animate.
 		m.springActive = false
+		m.springPhase = springIdle
 		return
 	}
 
 	n := len(newValues)
 	m.springs = make([]harmonica.Spring, n)
+	m.springProjectiles = make([]harmonica.Projectile, n)
 	m.springRatios = make([]float64, n)
 	m.springVelocities = make([]float64, n)
-	m.springTargetRatios = make([]float64, n)
+	m.springTargetRatios = make([]float64, n) // zeros — Phase 1 target
+	m.springFinalTargets = make([]float64, n)
+
+	t1 := phase1Duration.Seconds()
 	for i := range n {
-		m.springs[i] = harmonica.NewSpring(harmonica.FPS(springFPS), springFrequency, springDamping)
-		// Initial ratio: previous unit's bucket ratio (or 0 if old peak
-		// was zero, e.g. first-ever toggle on an empty cache).
-		if oldPeak > 0 && i < len(oldValues) {
-			m.springRatios[i] = oldValues[i] / oldPeak
+		if m.oldPeak > 0 && i < len(oldValues) {
+			m.springRatios[i] = oldValues[i] / m.oldPeak
 		}
-		// Target ratio: new unit's bucket ratio.
 		if newPeak > 0 {
-			m.springTargetRatios[i] = newValues[i] / newPeak
+			m.springFinalTargets[i] = newValues[i] / newPeak
 		}
+		// Per-bar tuned gravity so bar i hits 0 at t = phase1Duration.
+		// h = 0.5 · g · t² (zero initial velocity) ⇒ g = 2h / t².
+		g := 2 * m.springRatios[i] / (t1 * t1)
+		m.springProjectiles[i] = *harmonica.NewProjectile(
+			harmonica.FPS(springFPS),
+			harmonica.Point{X: m.springRatios[i]},
+			harmonica.Vector{},      // v0 = 0 (at rest)
+			harmonica.Vector{X: -g}, // accel toward zero
+		)
+		m.springs[i] = harmonica.NewSpring(harmonica.FPS(springFPS), phase2Frequency, phase2Damping)
 	}
 	m.springActive = true
+	m.springPhase = springShrinking
 }
 
 // renderSpringFrame rebuilds the viewport content from the visible

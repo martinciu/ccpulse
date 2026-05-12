@@ -946,10 +946,12 @@ func TestUnitKeyInHelp(t *testing.T) {
 
 func TestBeginUnitAnimation(t *testing.T) {
 	// Drive a model to a known token state, then call beginUnitAnimation
-	// after flipping unitIdx to cost. Assert the spring slices are sized
-	// to the bucket count, springActive flips true, springRatios reflect
-	// the OLD (token) ratios, and springTargetRatios reflect the NEW
-	// (cost) ratios. m.peak ends up as the cost peak.
+	// after flipping unitIdx to cost. Two-phase contract: springActive
+	// flips true, springPhase = springShrinking, springProjectiles is
+	// sized to the bucket count, springTargetRatios is all zeros (Phase 1
+	// target), springFinalTargets holds the new-unit ratios, oldPeak /
+	// oldUnitIdx capture the pre-toggle state, and m.peak is the new
+	// (cost) peak so refreshChart already wrote the new viewport content.
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "state.db")
 	c, err := cache.Open(dbPath)
@@ -993,8 +995,14 @@ func TestBeginUnitAnimation(t *testing.T) {
 	if !m.springActive {
 		t.Errorf("springActive = false, want true")
 	}
+	if m.springPhase != springShrinking {
+		t.Errorf("springPhase = %d, want springShrinking (%d)", m.springPhase, springShrinking)
+	}
 	if got, want := len(m.springs), len(oldValues); got != want {
 		t.Errorf("len(springs) = %d, want %d (one per bucket)", got, want)
+	}
+	if got, want := len(m.springProjectiles), len(oldValues); got != want {
+		t.Errorf("len(springProjectiles) = %d, want %d (one per bucket)", got, want)
 	}
 	if got, want := len(m.springRatios), len(oldValues); got != want {
 		t.Errorf("len(springRatios) = %d, want %d", got, want)
@@ -1005,8 +1013,11 @@ func TestBeginUnitAnimation(t *testing.T) {
 	if got, want := len(m.springTargetRatios), len(oldValues); got != want {
 		t.Errorf("len(springTargetRatios) = %d, want %d", got, want)
 	}
+	if got, want := len(m.springFinalTargets), len(oldValues); got != want {
+		t.Errorf("len(springFinalTargets) = %d, want %d", got, want)
+	}
 
-	// Initial spring state must equal old token ratios (same shape, value-by-value).
+	// Initial spring state must equal old token ratios.
 	for i, v := range oldValues {
 		want := v / oldPeak
 		if diff := m.springRatios[i] - want; diff < -1e-9 || diff > 1e-9 {
@@ -1014,29 +1025,45 @@ func TestBeginUnitAnimation(t *testing.T) {
 		}
 	}
 
-	// Velocities start at zero.
+	// Phase 1 target is zero across the board.
+	for i, r := range m.springTargetRatios {
+		if r != 0 {
+			t.Errorf("springTargetRatios[%d] = %v, want 0 (Phase 1 target)", i, r)
+		}
+	}
+
+	// Velocities start at zero (Phase 2 seeds them at the handoff).
 	for i, v := range m.springVelocities {
 		if v != 0 {
 			t.Errorf("springVelocities[%d] = %v, want 0", i, v)
 		}
 	}
 
-	// Target ratios must be in [0, 1] and at least one must be non-zero.
+	// springFinalTargets must be the new-unit ratios — in [0, 1] and at
+	// least one non-zero.
 	var anyNonZero bool
-	for i, r := range m.springTargetRatios {
+	for i, r := range m.springFinalTargets {
 		if r < 0 || r > 1 {
-			t.Errorf("springTargetRatios[%d] = %v, want [0, 1]", i, r)
+			t.Errorf("springFinalTargets[%d] = %v, want [0, 1]", i, r)
 		}
 		if r > 0 {
 			anyNonZero = true
 		}
 	}
 	if !anyNonZero {
-		t.Errorf("all springTargetRatios are zero; expected at least one non-zero cost bucket")
+		t.Errorf("all springFinalTargets are zero; expected at least one non-zero cost bucket")
 	}
 
-	// m.peak should now hold the COST peak so View()'s overlayYLabel
-	// renders the correct currency-formatted Y label immediately.
+	// View() reads oldPeak / oldUnitIdx during Phase 1 to show the OLD
+	// unit's label. oldUnitIdx is the unit before m.unitIdx was toggled.
+	if m.oldPeak != oldPeak {
+		t.Errorf("oldPeak = %v, want %v (pre-toggle token peak)", m.oldPeak, oldPeak)
+	}
+	if m.oldUnitIdx != 0 {
+		t.Errorf("oldUnitIdx = %d, want 0 (tokens, pre-toggle)", m.oldUnitIdx)
+	}
+
+	// m.peak should hold the COST peak — refreshChart already swapped state.
 	if m.peak == 0 {
 		t.Errorf("m.peak unexpectedly 0 after beginUnitAnimation; expected cost peak")
 	}
