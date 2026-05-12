@@ -18,13 +18,13 @@ import (
 )
 
 // BenchmarkModelView measures the per-frame cost of the full View()
-// composition: header + sep + JoinHorizontal(yAxis, viewport) + sep +
-// footer. View() runs on every keypress and tick — regressions here
-// (e.g. an extra lipgloss style allocation) bleed into perceived input
-// latency. Sub-benches cover both the wide path (Y axis shown, ~m.w-8
-// chart cols) and the narrow path (Y axis dropped, falls back to m.w-2
-// today's layout) — a regression that only manifests in one branch
-// would slip past a single-dimension bench.
+// composition: header + sep + viewport + sep + footer. View() runs on
+// every keypress and tick — regressions here (e.g. an extra lipgloss
+// style allocation) bleed into perceived input latency. Sub-benches
+// cover wide and narrow terminal widths so a regression that only
+// manifests at one canvas size doesn't slip past a single-dimension
+// bench. After #132 both widths share the same code path (the Y axis
+// is now an in-canvas overlay, not a separate JoinHorizontal column).
 func BenchmarkModelView(b *testing.B) {
 	dir := b.TempDir()
 	dbPath := filepath.Join(dir, "state.db")
@@ -57,8 +57,8 @@ func BenchmarkModelView(b *testing.B) {
 		name string
 		w, h int
 	}{
-		{"wide", 120, 40},   // shouldShowYAxis == true
-		{"narrow", 20, 40},  // shouldShowYAxis == false (Y axis dropped)
+		{"wide", 120, 40},
+		{"narrow", 20, 40},
 	}
 	for _, tt := range cases {
 		b.Run(tt.name, func(b *testing.B) {
@@ -82,7 +82,67 @@ func BenchmarkModelView(b *testing.B) {
 // BenchmarkModelView when its return value is otherwise unused.
 var sinkView string
 
-func TestView_YAxisFixedAcrossScroll(t *testing.T) {
+func TestChartWidth_FloorsAtTen(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		w    int
+		want int
+	}{
+		{"wide", 120, 118},
+		{"narrow but not floored", 20, 18},
+		{"floored at 10", 8, 10},
+		{"floored at 10 when w==12", 12, 10},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			m := Model{w: tt.w}
+			if got := m.chartWidth(); got != tt.want {
+				t.Errorf("chartWidth() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRefreshChart_CachesPeak(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "state.db")
+	c, err := cache.Open(dbPath)
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	defer c.Close()
+
+	tab, err := pricing.Load()
+	if err != nil {
+		t.Fatalf("pricing.Load: %v", err)
+	}
+	now := time.Now().UTC().Truncate(15 * time.Minute)
+	msgs := []parse.Message{
+		{SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7", Timestamp: now.Add(-30 * time.Minute), InputTokens: 10000, OutputTokens: 5000},
+		{SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7", Timestamp: now.Add(-10 * time.Minute), InputTokens: 30000, OutputTokens: 15000},
+	}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	m := New(Deps{Cache: c})
+	m.w, m.h = 120, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	m.refreshChart()
+
+	if m.peak == 0 {
+		t.Errorf("expected non-zero peak after insert, got 0")
+	}
+}
+
+func TestView_YLabelFixedAcrossScroll(t *testing.T) {
+	// The Y label is overlaid on the post-scroll viewport output, so it
+	// must appear in View() both at the default scroll-to-now position
+	// AND after the user scrolls left/right. Anything else means the
+	// label tracks the canvas (#132 bug) instead of the viewport.
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "state.db")
 	c, err := cache.Open(dbPath)
@@ -96,15 +156,14 @@ func TestView_YAxisFixedAcrossScroll(t *testing.T) {
 		t.Fatalf("pricing.Load: %v", err)
 	}
 	now := time.Now().UTC()
-	msgs := make([]parse.Message, 50)
+	msgs := make([]parse.Message, 200)
 	for i := range msgs {
 		msgs[i] = parse.Message{
-			SessionID:    "s1",
-			ProjectSlug:  "p",
-			Model:        "claude-opus-4-7",
-			Timestamp:    now.Add(time.Duration(-i*10) * time.Minute),
-			InputTokens:  int64(1000 + i*100),
-			OutputTokens: int64(500 + i*50),
+			SessionID:   "s1",
+			ProjectSlug: "p",
+			Model:       "claude-opus-4-7",
+			Timestamp:   now.Add(time.Duration(-i*15) * time.Minute),
+			InputTokens: int64(1000 + i*100),
 		}
 	}
 	if err := c.InsertMessages(msgs, tab); err != nil {
@@ -112,155 +171,32 @@ func TestView_YAxisFixedAcrossScroll(t *testing.T) {
 	}
 
 	m := New(Deps{Cache: c})
-	m.w, m.h = 120, 40
+	m.w, m.h = 120, 30
 	m.viewport.Width = m.chartWidth()
 	m.viewport.Height = m.chartHeight()
 	m.refreshChart()
 
-	// The Y axis is composed outside the viewport, so the ceiling label
-	// must still appear in View() output after a horizontal scroll. The
-	// label format ("Nk", "N.Nk", "N.NM") doesn't naturally occur inside
-	// the chart's block characters or X tick labels — its presence is a
-	// reliable proxy for "Y axis rendered".
-	expected := formatTokenCount(m.ceiling)
-	if expected == "" {
-		t.Fatalf("expected non-empty ceiling label; m.ceiling = %d", m.ceiling)
+	expected := formatTokenCount(niceFloor(m.peak))
+	if expected == "" || expected == "0" {
+		t.Fatalf("expected non-empty Y label; m.peak = %d", m.peak)
+	}
+	if !strings.Contains(m.View(), expected) {
+		t.Errorf("View output missing Y label %q at default scroll position:\n%s", expected, m.View())
 	}
 
-	v1 := m.View()
-	if !strings.Contains(v1, expected) {
-		t.Errorf("View output missing Y axis label %q before scroll:\n%s", expected, v1)
+	// Scroll a few steps left and right; the label must still be present.
+	for range 5 {
+		m.viewport.ScrollLeft(horizontalScrollStep)
 	}
-
-	m.viewport.ScrollLeft(horizontalScrollStep)
-	v2 := m.View()
-	if !strings.Contains(v2, expected) {
-		t.Errorf("View output missing Y axis label %q after scroll (Y axis should be fixed):\n%s", expected, v2)
+	if !strings.Contains(m.View(), expected) {
+		t.Errorf("View output missing Y label %q after ScrollLeft (label should be fixed to viewport):\n%s",
+			expected, m.View())
 	}
-}
-
-func TestView_NarrowTerminalSkipsYAxis(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "state.db")
-	c, err := cache.Open(dbPath)
-	if err != nil {
-		t.Fatalf("cache.Open: %v", err)
+	for range 3 {
+		m.viewport.ScrollRight(horizontalScrollStep)
 	}
-	defer c.Close()
-
-	tab, err := pricing.Load()
-	if err != nil {
-		t.Fatalf("pricing.Load: %v", err)
-	}
-	now := time.Now().UTC().Truncate(15 * time.Minute)
-	msgs := []parse.Message{
-		{SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7", Timestamp: now.Add(-30 * time.Minute), InputTokens: 30000, OutputTokens: 15000},
-	}
-	if err := c.InsertMessages(msgs, tab); err != nil {
-		t.Fatalf("InsertMessages: %v", err)
-	}
-
-	m := New(Deps{Cache: c})
-	m.w, m.h = 20, 40 // narrow: m.w - 8 = 12 < 20 → Y axis dropped
-	m.viewport.Width = m.chartWidth()
-	m.viewport.Height = m.chartHeight()
-	m.refreshChart()
-
-	if m.shouldShowYAxis() {
-		t.Fatalf("test setup: expected shouldShowYAxis()=false at w=20")
-	}
-	expected := formatTokenCount(m.ceiling)
-	view := m.View()
-	if strings.Contains(view, expected) {
-		t.Errorf("Y axis label %q should NOT appear in View at narrow terminal:\n%s", expected, view)
-	}
-}
-
-func TestShouldShowYAxis(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name string
-		w, h int
-		want bool
-	}{
-		{"wide tall terminal", 120, 40, true},
-		{"width exactly threshold (28 ⇒ 20 chart cols)", 28, 40, true},
-		{"width 1 below threshold", 27, 40, false},
-		{"tall enough but narrow", 20, 40, false},
-		{"wide but too short for X labels", 120, 12, false}, // chartHeight = 5 < 6
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			m := Model{w: tt.w, h: tt.h}
-			if got := m.shouldShowYAxis(); got != tt.want {
-				t.Errorf("shouldShowYAxis() = %v, want %v (w=%d, h=%d, chartH=%d)",
-					got, tt.want, tt.w, tt.h, m.chartHeight())
-			}
-		})
-	}
-}
-
-func TestChartWidth_AdjustsForYAxis(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name string
-		w, h int
-		want int
-	}{
-		{"wide ⇒ m.w-8 (Y axis fits)", 120, 40, 112},
-		{"narrow ⇒ m.w-2 (Y axis dropped)", 20, 40, 18},
-		{"short ⇒ m.w-2 (X labels dropped, Y axis dropped too)", 120, 12, 118},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			m := Model{w: tt.w, h: tt.h}
-			if got := m.chartWidth(); got != tt.want {
-				t.Errorf("chartWidth() = %d, want %d", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestRefreshChart_CachesPeakAndCeiling(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "state.db")
-	c, err := cache.Open(dbPath)
-	if err != nil {
-		t.Fatalf("cache.Open: %v", err)
-	}
-	defer c.Close()
-
-	tab, err := pricing.Load()
-	if err != nil {
-		t.Fatalf("pricing.Load: %v", err)
-	}
-	// Pin to a 15-minute boundary so both messages fall into deterministic
-	// buckets regardless of wall-clock time at test runtime. Default zoom is
-	// 15m (zoomIdx: 1) so refreshChart bucketises at 15-minute granularity.
-	now := time.Now().UTC().Truncate(15 * time.Minute)
-	msgs := []parse.Message{
-		{SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7", Timestamp: now.Add(-30 * time.Minute), InputTokens: 10000, OutputTokens: 5000},
-		{SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7", Timestamp: now.Add(-10 * time.Minute), InputTokens: 30000, OutputTokens: 15000}, // peak bucket ≈ 45000
-	}
-	if err := c.InsertMessages(msgs, tab); err != nil {
-		t.Fatalf("InsertMessages: %v", err)
-	}
-
-	m := New(Deps{Cache: c})
-	m.w, m.h = 120, 40
-	m.refreshChart()
-
-	if m.peak == 0 {
-		t.Errorf("expected non-zero peak after insert, got 0")
-	}
-	if m.ceiling < m.peak {
-		t.Errorf("ceiling (%d) must be >= peak (%d)", m.ceiling, m.peak)
-	}
-	// niceCeiling of ~45k rounds to 50k from {1, 1.5, 2, 2.5, 5} × 10^k.
-	if m.ceiling != 50_000 {
-		t.Errorf("expected ceiling 50000 for peak ~45000, got %d", m.ceiling)
+	if !strings.Contains(m.View(), expected) {
+		t.Errorf("View output missing Y label %q after ScrollRight:\n%s", expected, m.View())
 	}
 }
 

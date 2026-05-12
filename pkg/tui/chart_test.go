@@ -84,40 +84,6 @@ func BenchmarkFormatTokenCount(b *testing.B) {
 	}
 }
 
-func BenchmarkNiceCeiling(b *testing.B) {
-	cases := []struct {
-		name string
-		v    int64
-	}{
-		{"zero", 0}, // exercises the early-return branch
-		{"small", 12},
-		{"k", 45_300},
-		{"M_low", 1_200_000},
-		{"M_high", 999_999},
-	}
-	for _, tt := range cases {
-		b.Run(tt.name, func(b *testing.B) {
-			b.ReportAllocs()
-			for b.Loop() {
-				_ = niceCeiling(tt.v)
-			}
-		})
-	}
-}
-
-func BenchmarkRenderYAxis(b *testing.B) {
-	for _, h := range []int{10, 50, 100} {
-		b.Run(formatN(h), func(b *testing.B) {
-			b.ReportAllocs()
-			runtime.GC()
-			b.ResetTimer()
-			for b.Loop() {
-				sinkString = renderYAxis(50_000, h)
-			}
-		})
-	}
-}
-
 func BenchmarkRenderXLabels(b *testing.B) {
 	now := time.Now().UTC()
 	for _, n := range []int{100, 1000, 5000} {
@@ -295,81 +261,6 @@ func TestRenderXLabels(t *testing.T) {
 	}
 }
 
-func TestRenderYAxis(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name     string
-		ceiling  int64
-		height   int
-		wantRows []string // nil means expect empty output
-	}{
-		{
-			name:    "ceiling 50k height 6",
-			ceiling: 50_000,
-			height:  6,
-			wantRows: []string{
-				" 50.0k",
-				"      ",
-				"      ",
-				"      ",
-				"     0",
-				"      ",
-			},
-		},
-		{
-			name:    "ceiling 1.5M height 8",
-			ceiling: 1_500_000,
-			height:  8,
-			wantRows: []string{
-				"  1.5M",
-				"      ",
-				"      ",
-				"      ",
-				"      ",
-				"      ",
-				"     0",
-				"      ",
-			},
-		},
-		{
-			name:     "ceiling 0 returns blank column",
-			ceiling:  0,
-			height:   6,
-			wantRows: []string{"      ", "      ", "      ", "      ", "      ", "      "},
-		},
-		{
-			name:     "height too small returns empty",
-			ceiling:  50_000,
-			height:   5,
-			wantRows: nil,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			got := renderYAxis(tt.ceiling, tt.height)
-			if tt.wantRows == nil {
-				if got != "" {
-					t.Errorf("expected empty, got %q", got)
-				}
-				return
-			}
-			rows := strings.Split(got, "\n")
-			if len(rows) != len(tt.wantRows) {
-				t.Fatalf("got %d rows, want %d:\n%q", len(rows), len(tt.wantRows), got)
-			}
-			for i, want := range tt.wantRows {
-				if rows[i] != want {
-					t.Errorf("row %d: got %q, want %q", i, rows[i], want)
-				}
-			}
-			if w := lipgloss.Width(rows[0]); w != yAxisWidth {
-				t.Errorf("row 0 width = %d, want %d", w, yAxisWidth)
-			}
-		})
-	}
-}
-
 func TestFormatXLabel(t *testing.T) {
 	t.Parallel()
 	// Tuesday 14:30 UTC. Tests use UTC throughout for determinism.
@@ -410,36 +301,82 @@ func TestFormatXLabel(t *testing.T) {
 	}
 }
 
-func TestNiceCeiling(t *testing.T) {
+func TestOverlayYLabel_InjectsAtNiceFloorRow(t *testing.T) {
+	t.Parallel()
+	// peak = 87000 → niceFloor(87000) = 70000 → label "70k".
+	// chartH=6 → barsH=5 → row = 5 - round(70000/87000 * 5) = 1.
+	body := "AAAAAAAAAA\nBBBBBBBBBB\nCCCCCCCCCC\nDDDDDDDDDD\nEEEEEEEEEE\nFFFFFFFFFF"
+	out := overlayYLabel(body, 87_000, 6)
+	rows := strings.Split(out, "\n")
+	if len(rows) != 6 {
+		t.Fatalf("expected 6 rows, got %d:\n%q", len(rows), out)
+	}
+	if !strings.Contains(rows[1], "70k") {
+		t.Errorf("expected '70k' on row 1, got %q", rows[1])
+	}
+	// Other rows untouched.
+	for i, r := range []string{"AAAAAAAAAA", "CCCCCCCCCC", "DDDDDDDDDD", "EEEEEEEEEE", "FFFFFFFFFF"} {
+		idx := i
+		if idx >= 1 {
+			idx++ // skip row 1
+		}
+		if !strings.Contains(rows[idx], r) {
+			t.Errorf("row %d should still contain %q, got %q", idx, r, rows[idx])
+		}
+	}
+}
+
+func TestOverlayYLabel_BlankWhenEmpty(t *testing.T) {
+	t.Parallel()
+	body := "AAAAAAAAAA\nBBBBBBBBBB\nCCCCCCCCCC\nDDDDDDDDDD\nEEEEEEEEEE\nFFFFFFFFFF"
+	for _, peak := range []int64{0, -5} {
+		out := overlayYLabel(body, peak, 6)
+		if out != body {
+			t.Errorf("peak=%d: expected body untouched, got %q", peak, out)
+		}
+	}
+}
+
+func TestOverlayYLabel_HeightTooSmall(t *testing.T) {
+	t.Parallel()
+	body := "AAAAAAAAAA\nBBBBBBBBBB\nCCCCCCCCCC\nDDDDDDDDDD\nEEEEEEEEEE"
+	// chartH < 6 leaves body untouched — same threshold renderXLabels uses.
+	if got := overlayYLabel(body, 50_000, 5); got != body {
+		t.Errorf("expected body untouched at chartH=5, got %q", got)
+	}
+}
+
+func TestNiceFloor(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name string
 		peak int64
 		want int64
 	}{
-		{"zero returns 1", 0, 1},
-		{"negative returns 1", -10, 1},
+		{"zero returns zero", 0, 0},
+		{"negative returns zero", -10, 0},
 		{"one", 1, 1},
-		{"two", 2, 2},
-		{"three rounds to 5", 3, 5},
-		{"five", 5, 5},
-		{"six rounds to 10", 6, 10},
-		{"twelve rounds to 15", 12, 15},
-		{"1200 rounds to 1500", 1200, 1500},
-		{"12000 rounds to 15000", 12_000, 15_000},
-		{"45300 rounds to 50000", 45_300, 50_000},
-		{"1.2M rounds to 1.5M", 1_200_000, 1_500_000},
-		{"1.6M rounds to 2M", 1_600_000, 2_000_000},
-		{"2.3M rounds to 2.5M", 2_300_000, 2_500_000},
-		{"999999 rounds to 1M", 999_999, 1_000_000},
+		{"99 falls to 70", 99, 70},
+		{"exactly 100", 100, 100},
+		{"exactly 1000", 1000, 1000},
+		{"4999 falls to 3k", 4_999, 3_000},
+		{"exactly 7k", 7_000, 7_000},
+		{"9k falls to 7k", 9_000, 7_000},
+		{"23k falls to 20k", 23_000, 20_000},
+		{"49k falls to 30k", 49_000, 30_000},
+		{"87k falls to 70k", 87_000, 70_000},
+		{"exactly 100k", 100_000, 100_000},
+		{"123456 falls to 100k", 123_456, 100_000},
+		{"999999 falls to 700k", 999_999, 700_000},
 		{"exactly 1M", 1_000_000, 1_000_000},
+		{"50M stays 50M", 50_000_000, 50_000_000},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := niceCeiling(tt.peak)
+			got := niceFloor(tt.peak)
 			if got != tt.want {
-				t.Errorf("niceCeiling(%d) = %d, want %d", tt.peak, got, tt.want)
+				t.Errorf("niceFloor(%d) = %d, want %d", tt.peak, got, tt.want)
 			}
 		})
 	}
@@ -456,17 +393,16 @@ func TestFormatTokenCount(t *testing.T) {
 		{"negative", -5, "0"},
 		{"one", 1, "1"},
 		{"just below k", 999, "999"},
-		{"exactly k", 1000, "1.0k"},
-		{"k small frac", 1234, "1.2k"},
-		{"k mid", 45300, "45.3k"},
-		{"k rounds half-up", 99499, "99.5k"},
-		{"k drop frac at 100", 100000, "100k"},
-		{"k high", 999000, "999k"},
-		{"k just below M", 999999, "1000k"},
-		{"exactly M", 1_000_000, "1.0M"},
-		{"M small frac", 1_200_000, "1.2M"},
-		{"M mid", 45_300_000, "45.3M"},
-		{"M drop frac at 100", 100_000_000, "100M"},
+		{"exactly k", 1000, "1k"},
+		{"k mid", 45000, "45k"},
+		{"k 75k", 75_000, "75k"},
+		{"k 100k", 100_000, "100k"},
+		{"k high", 999_000, "999k"},
+		{"k just below M", 999_999, "1000k"},
+		{"exactly M", 1_000_000, "1M"},
+		{"M mid", 45_000_000, "45M"},
+		{"M 50M", 50_000_000, "50M"},
+		{"M 100M", 100_000_000, "100M"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
