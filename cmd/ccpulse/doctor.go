@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"time"
 
@@ -46,9 +45,6 @@ func newDoctorCmd() *cobra.Command {
 
 			tab, err := pricing.Load()
 			check(out, "pricing loads (v="+tab.Version+")", err == nil, err)
-
-			_, gitErr := exec.LookPath("git")
-			check(out, "git on PATH", gitErr == nil, gitErr)
 
 			// OAuth credential check
 			cred, credErr := anthro.LoadCredential()
