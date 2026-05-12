@@ -186,14 +186,14 @@ func TestView_YLabelFixedAcrossScroll(t *testing.T) {
 
 	// Scroll a few steps left and right; the label must still be present.
 	for range 5 {
-		m.viewport.ScrollLeft(horizontalScrollStep)
+		m.scrollLeft(horizontalScrollStep)
 	}
 	if !strings.Contains(m.View(), expected) {
 		t.Errorf("View output missing Y label %q after ScrollLeft (label should be fixed to viewport):\n%s",
 			expected, m.View())
 	}
 	for range 3 {
-		m.viewport.ScrollRight(horizontalScrollStep)
+		m.scrollRight(horizontalScrollStep)
 	}
 	if !strings.Contains(m.View(), expected) {
 		t.Errorf("View output missing Y label %q after ScrollRight:\n%s", expected, m.View())
@@ -265,9 +265,12 @@ func TestHelpModeSuppressesScroll(t *testing.T) {
 	m.viewport.Width = m.chartWidth()
 	m.viewport.Height = m.chartHeight()
 	// Seed the viewport with content wider than its width so scroll has
-	// room to actually move.
+	// room to actually move. Also seed lastStarts so setX's clamp lets
+	// the requested offset through (setX clamps against len(lastStarts) -
+	// chartWidth).
 	m.viewport.SetContent(strings.Repeat("X", 500))
-	m.viewport.SetXOffset(50)
+	m.lastStarts = make([]time.Time, 500)
+	m.setX(50)
 	startPct := m.viewport.HorizontalScrollPercent()
 
 	// Toggle help on.
