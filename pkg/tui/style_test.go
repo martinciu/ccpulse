@@ -1,6 +1,9 @@
 package tui
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestLabelFadeStyle_Quantisation(t *testing.T) {
 	// `go test` runs without a TTY, so lipgloss auto-strips colors by
@@ -49,7 +52,7 @@ func TestLabelFadeStyle_Quantisation(t *testing.T) {
 			t.Errorf("%s: labelFadeStyle(%v).Render = %q; expected SGR-wrapped output",
 				tc.name, tc.fade, got)
 		}
-		if !contains(got, plain) {
+		if !strings.Contains(got, plain) {
 			t.Errorf("%s: labelFadeStyle(%v).Render = %q does not contain probe %q",
 				tc.name, tc.fade, got, plain)
 		}
@@ -60,15 +63,4 @@ func TestLabelFadeStyle_Quantisation(t *testing.T) {
 	if got := len(labelFadeStops); got != labelFadeStopCount {
 		t.Errorf("len(labelFadeStops) = %d, want %d", got, labelFadeStopCount)
 	}
-}
-
-// contains is a tiny helper so the test file doesn't import strings
-// just for one call.
-func contains(haystack, needle string) bool {
-	for i := 0; i+len(needle) <= len(haystack); i++ {
-		if haystack[i:i+len(needle)] == needle {
-			return true
-		}
-	}
-	return false
 }
