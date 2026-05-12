@@ -134,7 +134,7 @@ func TestRefreshChart_CachesPeak(t *testing.T) {
 	m.refreshChart()
 
 	if m.peak == 0 {
-		t.Errorf("expected non-zero peak after insert, got 0")
+		t.Errorf("expected non-zero peak after insert, got %v", m.peak)
 	}
 }
 
@@ -176,9 +176,9 @@ func TestView_YLabelFixedAcrossScroll(t *testing.T) {
 	m.viewport.Height = m.chartHeight()
 	m.refreshChart()
 
-	expected := formatTokenCount(niceFloor(m.peak))
+	expected := formatUnitValue(niceFloorFloat(m.peak), chartUnitTokens)
 	if expected == "" || expected == "0" {
-		t.Fatalf("expected non-empty Y label; m.peak = %d", m.peak)
+		t.Fatalf("expected non-empty Y label; m.peak = %v", m.peak)
 	}
 	if !strings.Contains(m.View(), expected) {
 		t.Errorf("View output missing Y label %q at default scroll position:\n%s", expected, m.View())
@@ -347,7 +347,8 @@ func TestBuildChartEmitsBars(t *testing.T) {
 			Tokens:      int64((i*7 + 1000) * (1 + i%3)),
 		}
 	}
-	out := buildChart(buckets, 30, 10, now, ZoomLevels[1])
+	values, starts, peak := projectBuckets(buckets)
+	out := buildChart(values, starts, peak, 30, 10, now, ZoomLevels[1], chartUnitTokens)
 	if !strings.ContainsAny(out, "█▇▆▅▄▃▂▁") {
 		t.Errorf("buildChart produced no bar block characters; got:\n%s", out)
 	}
@@ -369,7 +370,8 @@ func TestBuildChart_NoBaselineStrip(t *testing.T) {
 	for i := 5; i < 10; i++ {
 		buckets[i].Tokens = int64((i + 1) * 1000)
 	}
-	out := buildChart(buckets, 20, 10, now, ZoomLevels[0])
+	values, starts, peak := projectBuckets(buckets)
+	out := buildChart(values, starts, peak, 20, 10, now, ZoomLevels[0], chartUnitTokens)
 
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
 	bottom := lines[len(lines)-1]

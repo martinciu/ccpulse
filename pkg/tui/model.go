@@ -90,7 +90,7 @@ type Model struct {
 	// Cached on refreshChart so View() doesn't re-iterate buckets per
 	// frame. peak is the max bucket value in the current chart range;
 	// drives the Y label column rendered outside the scrollable viewport.
-	peak int64
+	peak float64
 
 	w, h int
 }
@@ -203,7 +203,7 @@ func (m Model) View() string {
 	if m.showHelp {
 		body = m.help.FullHelpView(m.keys.FullHelp())
 	} else {
-		body = overlayYLabel(m.viewport.View(), m.peak, m.chartHeight())
+		body = overlayYLabel(m.viewport.View(), m.peak, chartUnitTokens, m.chartHeight())
 	}
 	footer := m.renderFooter()
 	out := lipgloss.JoinVertical(lipgloss.Left, header, sep, body, sep, footer)
@@ -361,17 +361,21 @@ func (m *Model) refreshChart() {
 		return
 	}
 
-	chartW := len(buckets)
-	chartH := m.chartHeight()
-
-	m.peak = 0
-	for _, b := range buckets {
-		if b.Tokens > m.peak {
-			m.peak = b.Tokens
+	values := make([]float64, len(buckets))
+	starts := make([]time.Time, len(buckets))
+	var peak float64
+	for i, b := range buckets {
+		values[i] = float64(b.Tokens)
+		starts[i] = b.BucketStart
+		if values[i] > peak {
+			peak = values[i]
 		}
 	}
+	m.peak = peak
 
-	m.viewport.SetContent(buildChart(buckets, chartW, chartH, time.Now(), zoom))
+	chartW := len(values)
+	chartH := m.chartHeight()
+	m.viewport.SetContent(buildChart(values, starts, peak, chartW, chartH, time.Now(), zoom, chartUnitTokens))
 	// Anchor the view at "now" on each refresh — the rightmost column.
 	m.viewport.SetXOffset(chartW)
 }

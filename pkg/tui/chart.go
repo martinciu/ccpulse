@@ -10,8 +10,6 @@ import (
 	"github.com/NimbleMarkets/ntcharts/barchart"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
-
-	"github.com/martinciu/ccpulse/pkg/cache"
 )
 
 // ZoomLevel maps a human label to a bucket duration. The chart's
@@ -29,27 +27,24 @@ var ZoomLevels = []ZoomLevel{
 	{"1h", time.Hour},
 }
 
-// overlayYLabel splices `formatTokenCount(niceFloor(peak))` in dim style
-// into the niceFloor row of an already-rendered chart string, replacing
-// the first 5 visible columns of that row. Operates ANSI-aware on the
-// post-scroll viewport output so the label stays pinned to the viewport's
-// left edge regardless of horizontal scroll position (issue #132).
+// overlayYLabel splices `formatUnitValue(niceFloorFloat(peak), unit)`
+// in dim style into the niceFloor row of an already-rendered chart
+// string, replacing the first 5 visible columns of that row.
 //
-// peak <= 0 (or a peak whose niceFloor is 0) leaves body untouched.
-// chartH < 6 leaves body untouched (same threshold renderXLabels uses
-// for the X labels row — no Y label without an X label row to balance
-// the layout). Returns body unchanged if the target row is missing or
-// the body is empty.
-func overlayYLabel(body string, peak int64, chartH int) string {
+// peak <= 0 (or a peak whose niceFloorFloat is 0) leaves body
+// untouched. chartH < 6 leaves body untouched (same threshold
+// renderXLabels uses for the X labels row). Returns body unchanged
+// if the target row is missing or the body is empty.
+func overlayYLabel(body string, peak float64, unit chartUnit, chartH int) string {
 	if peak <= 0 || chartH < 6 || body == "" {
 		return body
 	}
-	tick := niceFloor(peak)
+	tick := niceFloorFloat(peak)
 	if tick <= 0 {
 		return body
 	}
 	barsH := chartH - 1
-	row := barsH - int(math.Round(float64(tick)/float64(peak)*float64(barsH)))
+	row := barsH - int(math.Round(tick/peak*float64(barsH)))
 	if row < 0 {
 		row = 0
 	}
@@ -57,7 +52,7 @@ func overlayYLabel(body string, peak int64, chartH int) string {
 		row = barsH - 1
 	}
 
-	label := dimStyle.Render(formatTokenCount(tick))
+	label := dimStyle.Render(formatUnitValue(tick, unit))
 	labelW := lipgloss.Width(label)
 
 	lines := strings.Split(body, "\n")
@@ -72,11 +67,11 @@ func overlayYLabel(body string, peak int64, chartH int) string {
 // clock-aligned tick labels placed at matching bucket columns, with
 // "▼ now" right-aligned at the rightmost columns (always wins on
 // collision). Later labels overwrite earlier ones; labels that would
-// overflow chartW on the right are dropped. Empty bucket set → "".
+// overflow chartW on the right are dropped. Empty starts → "".
 // Dim foreground throughout — Y axis labels are default fg so the eye
 // distinguishes the two rows when they sit close together.
-func renderXLabels(buckets []cache.TokenBucket, chartW int, zoom ZoomLevel, now time.Time) string {
-	if chartW < 1 || len(buckets) == 0 {
+func renderXLabels(starts []time.Time, chartW int, zoom ZoomLevel, now time.Time) string {
+	if chartW < 1 || len(starts) == 0 {
 		return ""
 	}
 	row := make([]rune, chartW)
@@ -84,26 +79,23 @@ func renderXLabels(buckets []cache.TokenBucket, chartW int, zoom ZoomLevel, now 
 		row[i] = ' '
 	}
 
-	// First pass: write clock-aligned labels at matching bucket columns.
-	// Each bucket maps 1:1 to a column index — same as the bars above.
-	for i, b := range buckets {
+	for i, t := range starts {
 		if i >= chartW {
 			break
 		}
-		label := formatXLabel(b.BucketStart, zoom, now)
+		label := formatXLabel(t, zoom, now)
 		if label == "" {
 			continue
 		}
 		labelRunes := []rune(label)
 		if i+len(labelRunes) > chartW {
-			continue // would overflow the right edge; skip
+			continue
 		}
 		for j, r := range labelRunes {
 			row[i+j] = r
 		}
 	}
 
-	// Second pass: overlay "▼ now" at the right edge. Always wins.
 	const nowText = "▼ now"
 	nowRunes := []rune(nowText)
 	switch {
@@ -271,28 +263,27 @@ func heatColor(ratio float64) lipgloss.Color {
 	}
 }
 
-// buildChart renders the viewport content from buckets at the given zoom:
-// bars in the top chartH-1 rows (or all chartH if chartH < 6, the same
-// threshold renderXLabels uses), plus an X-axis tick label row at the
-// bottom. Bars are scaled to peak so the tallest bar fills the full
-// canvas; barchart.WithNoAxis() reclaims the row ntcharts otherwise
-// reserves for its (empty) internal axis.
+// buildChart renders the viewport content from a parallel
+// (values, starts) pair at the given zoom: bars in the top chartH-1
+// rows (or all chartH if chartH < 6), plus an X-axis tick label row
+// at the bottom. Bars are scaled to peak so the tallest bar fills
+// the canvas; barchart.WithNoAxis() reclaims the row ntcharts
+// otherwise reserves for its (empty) internal axis.
 //
-// The Y label is overlaid in Model.View() (issue #132) after the
-// viewport's horizontal scroll, so the label stays pinned to the
-// viewport's left edge regardless of scroll position. buildChart
-// itself returns the pure chart canvas.
-func buildChart(buckets []cache.TokenBucket, chartW, chartH int, now time.Time, zoom ZoomLevel) string {
+// values, starts, and the resulting bar count are 1:1 — values[i]
+// is plotted at column i, with starts[i] feeding the X-axis label.
+// peak is the normalisation reference; pass max(values) for steady
+// state, or 1.0 during ratio-space animation (when values are
+// already normalised to [0, 1]).
+//
+// unit is read by the Y-label overlay path in Model.View() — not
+// used directly here; passed through for symmetry with overlayYLabel.
+func buildChart(values []float64, starts []time.Time, peak float64,
+	chartW, chartH int, now time.Time, zoom ZoomLevel, unit chartUnit) string {
+	_ = unit // reserved for future per-unit bar styling; reads the value via Model.unitIdx today
 	start := time.Now()
 	if chartH < 1 {
-		chartH = 1 // barchart.New panics with a zero height
-	}
-
-	var peak int64
-	for _, b := range buckets {
-		if b.Tokens > peak {
-			peak = b.Tokens
-		}
+		chartH = 1
 	}
 
 	barsH := chartH
@@ -301,34 +292,26 @@ func buildChart(buckets []cache.TokenBucket, chartW, chartH int, now time.Time, 
 		barsH = chartH - 1
 	}
 
-	bars := make([]barchart.BarData, len(buckets))
-	for i, b := range buckets {
+	bars := make([]barchart.BarData, len(values))
+	for i, v := range values {
 		ratio := float64(0)
 		if peak > 0 {
-			ratio = float64(b.Tokens) / float64(peak)
+			ratio = v / peak
 		}
 		c := heatColor(ratio)
-		// ntcharts paints bar cells using both fg + bg of the same color
-		// so the cell renders as a solid block (the example sets both).
-		// Foreground alone leaves the cell empty.
 		bars[i] = barchart.BarData{
 			Values: []barchart.BarValue{
 				{
-					Value: float64(b.Tokens),
+					Value: v,
 					Style: lipgloss.NewStyle().Foreground(c).Background(c),
 				},
 			},
 		}
 	}
 
-	// barGap=0 — bars must touch when chartW == numBars (see #102).
-	// WithNoAxis disables ntcharts' internal axis (we never set BarData.Label,
-	// so its 2 reserved rows are pure waste). WithMaxValue(peak) makes the
-	// tallest bar fill the full canvas; the Y tick label is a sub-peak
-	// reference overlaid separately below.
-	maxValue := float64(peak)
+	maxValue := peak
 	if maxValue == 0 {
-		maxValue = 1 // ntcharts requires a non-zero max; bars will all be empty anyway
+		maxValue = 1 // ntcharts requires non-zero max; bars will all be empty anyway
 	}
 	bc := barchart.New(chartW, barsH,
 		barchart.WithBarGap(0),
@@ -340,12 +323,12 @@ func buildChart(buckets []cache.TokenBucket, chartW, chartH int, now time.Time, 
 	body := bc.View()
 
 	if showXLabels {
-		body = lipgloss.JoinVertical(lipgloss.Left, body, renderXLabels(buckets, chartW, zoom, now))
+		body = lipgloss.JoinVertical(lipgloss.Left, body, renderXLabels(starts, chartW, zoom, now))
 	}
 
 	slog.Debug("tui.buildChart",
 		"dur_ms", time.Since(start).Milliseconds(),
-		"buckets", len(buckets),
+		"buckets", len(values),
 		"chartW", chartW,
 		"chartH", chartH,
 		"peak", peak)

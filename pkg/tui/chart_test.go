@@ -34,18 +34,53 @@ func syntheticBuckets(n int) []cache.TokenBucket {
 	return out
 }
 
+// syntheticChartInput projects n synthetic buckets into the
+// (values, starts, peak) shape buildChart now takes. Same value
+// distribution as syntheticBuckets so bench timings stay comparable
+// pre/post the chart refactor.
+func syntheticChartInput(n int) (values []float64, starts []time.Time, peak float64) {
+	now := time.Now().UTC().Truncate(3 * time.Hour)
+	values = make([]float64, n)
+	starts = make([]time.Time, n)
+	for i := range values {
+		v := float64((i * 137) % 1000)
+		values[i] = v
+		starts[i] = now.Add(time.Duration(i) * 5 * time.Minute)
+		if v > peak {
+			peak = v
+		}
+	}
+	return
+}
+
+// projectBuckets converts a fixed test slice of cache.TokenBucket into
+// the (values, starts, peak) triple buildChart and renderXLabels now
+// take. Used in tests where the existing fixture is a curated bucket
+// list (not a synthetic generator). Keeps the test data declarations
+// readable while the production code moves off bucket types.
+func projectBuckets(bs []cache.TokenBucket) (values []float64, starts []time.Time, peak float64) {
+	values = make([]float64, len(bs))
+	starts = make([]time.Time, len(bs))
+	for i, b := range bs {
+		values[i] = float64(b.Tokens)
+		starts[i] = b.BucketStart
+		if values[i] > peak {
+			peak = values[i]
+		}
+	}
+	return
+}
+
 func BenchmarkBuildChart(b *testing.B) {
 	for _, n := range []int{10_000, 25_000, 50_000} {
-		buckets := syntheticBuckets(n)
+		values, starts, peak := syntheticChartInput(n)
 		b.Run(formatN(n), func(b *testing.B) {
 			b.ReportAllocs()
-			// Drain GC pressure from the syntheticBuckets allocation so it
-			// doesn't bleed into the first iteration's measurement.
 			runtime.GC()
 			b.ResetTimer()
 			now := time.Now().UTC()
 			for b.Loop() {
-				sinkString = buildChart(buckets, n, 20, now, ZoomLevels[1])
+				sinkString = buildChart(values, starts, peak, n, 20, now, ZoomLevels[1], chartUnitTokens)
 			}
 		})
 	}
@@ -87,13 +122,13 @@ func BenchmarkFormatTokenCount(b *testing.B) {
 func BenchmarkRenderXLabels(b *testing.B) {
 	now := time.Now().UTC()
 	for _, n := range []int{100, 1000, 5000} {
-		buckets := syntheticBuckets(n)
+		_, starts, _ := syntheticChartInput(n)
 		b.Run(formatN(n), func(b *testing.B) {
 			b.ReportAllocs()
 			runtime.GC()
 			b.ResetTimer()
 			for b.Loop() {
-				sinkString = renderXLabels(buckets, n, ZoomLevels[1], now)
+				sinkString = renderXLabels(starts, n, ZoomLevels[1], now)
 			}
 		})
 	}
@@ -125,7 +160,8 @@ func TestBuildChart_ContainsXLabelsAndNowMarker(t *testing.T) {
 		{BucketStart: now.Add(-5 * time.Minute), Tokens: 4500},
 		{BucketStart: now, Tokens: 3500},
 	}
-	out := buildChart(bs, len(bs), 10, now, ZoomLevels[0])
+	values, starts, peak := projectBuckets(bs)
+	out := buildChart(values, starts, peak, len(bs), 10, now, ZoomLevels[0], chartUnitTokens)
 	if !strings.Contains(out, "▼ now") {
 		t.Errorf("expected '▼ now' marker in chart output:\n%s", out)
 	}
@@ -148,7 +184,8 @@ func TestBuildChart_ChartHTooShortDropsXLabels(t *testing.T) {
 	}
 	// chartH=5 is below the chartH>=6 threshold; the X labels row should
 	// be dropped and bars should take all 5 rows.
-	out := buildChart(bs, len(bs), 5, now, ZoomLevels[0])
+	values, starts, peak := projectBuckets(bs)
+	out := buildChart(values, starts, peak, len(bs), 5, now, ZoomLevels[0], chartUnitTokens)
 	if strings.Contains(out, "▼ now") {
 		t.Errorf("expected no '▼ now' marker when chartH=5; X labels should be dropped:\n%s", out)
 	}
@@ -163,7 +200,8 @@ func TestRenderXLabels_NowTruncatesAtTinyChartW(t *testing.T) {
 	now := time.Now().UTC()
 	buckets := []cache.TokenBucket{{BucketStart: now}}
 	// chartW=1 can't fit "▼ now" (5 cols); only ▼ should appear.
-	got := renderXLabels(buckets, 1, ZoomLevels[0], now)
+	_, starts, _ := projectBuckets(buckets)
+	got := renderXLabels(starts, 1, ZoomLevels[0], now)
 	if !strings.Contains(got, "▼") {
 		t.Errorf("expected ▼ at chartW=1, got %q", got)
 	}
@@ -181,7 +219,8 @@ func TestRenderXLabels_OverflowingLabelDropped(t *testing.T) {
 		{BucketStart: time.Date(2026, 5, 12, 13, 10, 0, 0, time.UTC)},
 	}
 	// chartW=3: "13:00" at col 0 needs cols 0-4, overflows. Dropped.
-	got := renderXLabels(buckets, 3, ZoomLevels[0], now)
+	_, starts, _ := projectBuckets(buckets)
+	got := renderXLabels(starts, 3, ZoomLevels[0], now)
 	if strings.Contains(got, "13:00") {
 		t.Errorf("'13:00' label should have been dropped (would overflow chartW=3), got %q", got)
 	}
@@ -242,7 +281,8 @@ func TestRenderXLabels(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := renderXLabels(tt.buckets, tt.chartW, tt.zoom, now)
+			_, starts, _ := projectBuckets(tt.buckets)
+			got := renderXLabels(starts, tt.chartW, tt.zoom, now)
 			if tt.wantEmpty {
 				if got != "" {
 					t.Errorf("expected empty, got %q", got)
@@ -303,10 +343,10 @@ func TestFormatXLabel(t *testing.T) {
 
 func TestOverlayYLabel_InjectsAtNiceFloorRow(t *testing.T) {
 	t.Parallel()
-	// peak = 87000 → niceFloor(87000) = 70000 → label "70k".
+	// peak = 87000 → niceFloorFloat(87000) = 70000 → label "70k".
 	// chartH=6 → barsH=5 → row = 5 - round(70000/87000 * 5) = 1.
 	body := "AAAAAAAAAA\nBBBBBBBBBB\nCCCCCCCCCC\nDDDDDDDDDD\nEEEEEEEEEE\nFFFFFFFFFF"
-	out := overlayYLabel(body, 87_000, 6)
+	out := overlayYLabel(body, 87_000, chartUnitTokens, 6)
 	rows := strings.Split(out, "\n")
 	if len(rows) != 6 {
 		t.Fatalf("expected 6 rows, got %d:\n%q", len(rows), out)
@@ -329,10 +369,10 @@ func TestOverlayYLabel_InjectsAtNiceFloorRow(t *testing.T) {
 func TestOverlayYLabel_BlankWhenEmpty(t *testing.T) {
 	t.Parallel()
 	body := "AAAAAAAAAA\nBBBBBBBBBB\nCCCCCCCCCC\nDDDDDDDDDD\nEEEEEEEEEE\nFFFFFFFFFF"
-	for _, peak := range []int64{0, -5} {
-		out := overlayYLabel(body, peak, 6)
+	for _, peak := range []float64{0, -5} {
+		out := overlayYLabel(body, peak, chartUnitTokens, 6)
 		if out != body {
-			t.Errorf("peak=%d: expected body untouched, got %q", peak, out)
+			t.Errorf("peak=%v: expected body untouched, got %q", peak, out)
 		}
 	}
 }
@@ -341,7 +381,7 @@ func TestOverlayYLabel_HeightTooSmall(t *testing.T) {
 	t.Parallel()
 	body := "AAAAAAAAAA\nBBBBBBBBBB\nCCCCCCCCCC\nDDDDDDDDDD\nEEEEEEEEEE"
 	// chartH < 6 leaves body untouched — same threshold renderXLabels uses.
-	if got := overlayYLabel(body, 50_000, 5); got != body {
+	if got := overlayYLabel(body, 50_000, chartUnitTokens, 5); got != body {
 		t.Errorf("expected body untouched at chartH=5, got %q", got)
 	}
 }
