@@ -1742,11 +1742,11 @@ func TestYLabel_Phase1ShowsOldUnit(t *testing.T) {
 		t.Fatalf("expected to stay in Phase 1 for 5 ticks; got phase %d", m.springPhase)
 	}
 
-	view := m.View()
+	body := strings.Join(chartBodyLines(m.View()), "\n")
 	// Phase 1 should still expose a token-shaped label (e.g. "45k", "30k")
-	// — no dollar sign anywhere on the chart body.
-	if !strings.Contains(view, "k") || strings.Contains(view, "$") {
-		t.Errorf("Phase 1 View() should show OLD (tokens) Y-label; got:\n%s", view)
+	// — no dollar sign in the chart body.
+	if !strings.Contains(body, "k") || strings.Contains(body, "$") {
+		t.Errorf("Phase 1 chart body should show OLD (tokens) Y-label; got body:\n%s", body)
 	}
 }
 
@@ -1780,10 +1780,10 @@ func TestYLabel_Phase2ShowsNewUnit(t *testing.T) {
 		t.Fatalf("animation ended before we could sample Phase 2 mid-frame")
 	}
 
-	view := m.View()
-	// Phase 2 should expose a cost-shaped label (contains "$").
-	if !strings.Contains(view, "$") {
-		t.Errorf("Phase 2 View() should show NEW (cost) Y-label; got:\n%s", view)
+	body := strings.Join(chartBodyLines(m.View()), "\n")
+	// Phase 2 should expose a cost-shaped label (contains "$") in the chart body.
+	if !strings.Contains(body, "$") {
+		t.Errorf("Phase 2 chart body should show NEW (cost) Y-label; got body:\n%s", body)
 	}
 }
 
@@ -1827,22 +1827,10 @@ func TestLabelFade_SyncedWithMaxRatio(t *testing.T) {
 	}
 
 	emptyMomentView := m.View()
-	// At the empty moment, the Y-label is absent — overlayYLabel
-	// returned body unchanged because fade <= 0. Neither tokens-shape
-	// nor dollar-shape labels should appear in the body.
-	for line := range strings.SplitSeq(emptyMomentView, "\n") {
-		// Header has "5h" / "7d" tokens — only inspect lines that
-		// look like chart body (no border characters, no separators).
-		if strings.ContainsAny(line, "─│") {
-			continue
-		}
-		if strings.HasPrefix(strings.TrimSpace(line), "5h") ||
-			strings.HasPrefix(strings.TrimSpace(line), "7d") {
-			continue
-		}
-		// A bare-cells chart body line at the empty moment should not
-		// contain "$" or "k" Y-label glyphs. The chart cells themselves
-		// are spaces (no bars rendered).
+	// At the empty moment, the Y-label is absent — overlayYLabel returned
+	// body unchanged because fade <= 0. The chart-body region should not
+	// contain "$" or "k" Y-label glyphs.
+	for _, line := range chartBodyLines(emptyMomentView) {
 		if strings.Contains(line, "$") {
 			t.Errorf("empty-moment frame contains '$' in body line: %q", line)
 		}
