@@ -422,12 +422,14 @@ func (m Model) quotaBars() string {
 // validates the choice against BenchmarkBarChartRender.
 const springFPS = 60
 
-// springFrequency, springDamping are the harmonica parameters tuned for
-// a snappy ~250–400ms settle. Damping 0.5 is over-damped enough to avoid
-// overshoot; frequency 6 Hz gives the spring's natural period.
+// springFrequency, springDamping are the harmonica parameters for the
+// per-bar spring. Frequency 6 Hz controls the speed of approach;
+// damping 0.2 is under-damped (< 1.0) so bars overshoot the target
+// and oscillate briefly before settling — the bouncy feel makes the
+// peak shift between tokens and cost more visible than a pure ease.
 const (
 	springFrequency = 6.0
-	springDamping   = 0.5
+	springDamping   = 0.2
 )
 
 // springSettleEpsilon is the absolute |ratio - target| and |velocity|
