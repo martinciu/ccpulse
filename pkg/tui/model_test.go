@@ -1903,8 +1903,7 @@ func TestLabelFade_SyncedWithMaxRatio(t *testing.T) {
 	// At the empty moment, the Y-label is absent — overlayYLabel
 	// returned body unchanged because fade <= 0. Neither tokens-shape
 	// nor dollar-shape labels should appear in the body.
-	bodyLines := strings.Split(emptyMomentView, "\n")
-	for _, line := range bodyLines {
+	for line := range strings.SplitSeq(emptyMomentView, "\n") {
 		// Header has "5h" / "7d" tokens — only inspect lines that
 		// look like chart body (no border characters, no separators).
 		if strings.ContainsAny(line, "─│") {
