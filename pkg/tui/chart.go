@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/NimbleMarkets/ntcharts/barchart"
+	"github.com/NimbleMarkets/ntcharts/canvas"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/martinciu/ccpulse/pkg/cache"
@@ -236,9 +237,12 @@ func heatColor(ratio float64) lipgloss.Color {
 
 // buildChart renders the viewport content from buckets at the given zoom:
 // bars in the top chartH-1 rows (or all chartH if chartH < 6, the same
-// threshold renderYAxis uses), plus an X-axis tick label row at the
-// bottom. Bars are scaled to niceCeiling(peak) via barchart.WithMaxValue
-// so the Y-axis labels stay truthful about where the tallest bar lands.
+// threshold renderXLabels uses), plus an X-axis tick label row at the
+// bottom. Bars are scaled to peak (not niceFloor) so the tallest bar fills
+// the full canvas; barchart.WithNoAxis() reclaims the 2 rows ntcharts
+// otherwise reserves for its own (empty) axis. A single dim Y tick label
+// at niceFloor(peak) is overlaid inside the canvas at the row matching
+// that value (issue #132).
 func buildChart(buckets []cache.TokenBucket, chartW, chartH int, now time.Time, zoom ZoomLevel) string {
 	start := time.Now()
 	if chartH < 1 {
@@ -251,7 +255,6 @@ func buildChart(buckets []cache.TokenBucket, chartW, chartH int, now time.Time, 
 			peak = b.Tokens
 		}
 	}
-	ceiling := niceCeiling(peak)
 
 	barsH := chartH
 	showXLabels := chartH >= 6
@@ -279,17 +282,38 @@ func buildChart(buckets []cache.TokenBucket, chartW, chartH int, now time.Time, 
 		}
 	}
 
-	// barGap=0 is required when chartW == numBars: the default gap of 1
-	// consumes (numBars-1) cols, leaving (graphSize-gaps)/numBars = 0
-	// width per bar — i.e. bars are not drawn at all.
-	// WithMaxValue overrides auto-scaling so the tallest bar reaches
-	// peak/ceiling × barsH (with visible headroom matching the Y label).
+	// barGap=0 — bars must touch when chartW == numBars (see #102).
+	// WithNoAxis disables ntcharts' internal axis (we never set BarData.Label,
+	// so its 2 reserved rows are pure waste). WithMaxValue(peak) makes the
+	// tallest bar fill the full canvas; the Y tick label is a sub-peak
+	// reference overlaid separately below.
+	maxValue := float64(peak)
+	if maxValue == 0 {
+		maxValue = 1 // ntcharts requires a non-zero max; bars will all be empty anyway
+	}
 	bc := barchart.New(chartW, barsH,
 		barchart.WithBarGap(0),
-		barchart.WithMaxValue(float64(ceiling)),
+		barchart.WithNoAxis(),
+		barchart.WithMaxValue(maxValue),
 	)
 	bc.PushAll(bars)
 	bc.Draw()
+
+	// Overlay the Y tick label at the canvas row matching niceFloor(peak).
+	// Skipped when peak == 0 (empty data) or niceFloor returns 0.
+	if peak > 0 {
+		if tick := niceFloor(peak); tick > 0 {
+			row := barsH - int(math.Round(float64(tick)/float64(peak)*float64(barsH)))
+			if row < 0 {
+				row = 0
+			}
+			if row >= barsH {
+				row = barsH - 1
+			}
+			bc.Canvas.SetStringWithStyle(canvas.Point{X: 0, Y: row}, formatTokenCount(tick), dimStyle)
+		}
+	}
+
 	body := bc.View()
 
 	if showXLabels {
@@ -301,7 +325,6 @@ func buildChart(buckets []cache.TokenBucket, chartW, chartH int, now time.Time, 
 		"buckets", len(buckets),
 		"chartW", chartW,
 		"chartH", chartH,
-		"peak", peak,
-		"ceiling", ceiling)
+		"peak", peak)
 	return body
 }

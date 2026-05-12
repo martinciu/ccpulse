@@ -445,6 +445,69 @@ func TestNiceCeiling(t *testing.T) {
 	}
 }
 
+func TestBuildChart_TickLabelPosition(t *testing.T) {
+	// peak = 87000 → niceFloor(87000) = 75000 → label "75.0k".
+	// barsH = chartH - 1 = 5 (chartH=6, X labels show).
+	// row = 5 - round(75000/87000 * 5) = 5 - 4 = 1.
+	now := time.Now().UTC().Truncate(time.Hour)
+	buckets := []cache.TokenBucket{
+		{BucketStart: now, Tokens: 87_000},
+	}
+	out := buildChart(buckets, 10, 6, now, ZoomLevels[1])
+	rows := strings.Split(out, "\n")
+	if len(rows) < 6 {
+		t.Fatalf("expected at least 6 rows (5 canvas + 1 X label), got %d:\n%s", len(rows), out)
+	}
+	if !strings.Contains(rows[1], "75.0k") {
+		t.Errorf("expected '75.0k' overlay at canvas row 1, got row 1 = %q\nfull:\n%s", rows[1], out)
+	}
+	// Negative: no overlay on other canvas rows.
+	for i, r := range rows[:5] {
+		if i == 1 {
+			continue
+		}
+		if strings.Contains(r, "75.0k") {
+			t.Errorf("'75.0k' overlay leaked onto canvas row %d: %q", i, r)
+		}
+	}
+}
+
+func TestBuildChart_NoTickWhenEmpty(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Hour)
+	// All-zero buckets — peak == 0 → niceFloor returns 0 → overlay skipped.
+	buckets := make([]cache.TokenBucket, 5)
+	for i := range buckets {
+		buckets[i] = cache.TokenBucket{BucketStart: now.Add(time.Duration(i*5) * time.Minute)}
+	}
+	out := buildChart(buckets, 10, 6, now, ZoomLevels[0])
+	// formatTokenCount for any non-zero value ends in "k" or "M" (for n >= 1000)
+	// or is a bare integer < 1000. With peak=0 the overlay is skipped entirely,
+	// so the canvas portion (first 5 rows) must contain no "k" or "M" — neither
+	// ntcharts bar cells nor empty cells emit those characters. Limiting the
+	// scope to canvas rows avoids false-positives from X labels ("Mon" → "M").
+	canvasOnly := strings.Join(strings.Split(out, "\n")[:5], "\n")
+	if strings.ContainsAny(canvasOnly, "kM") {
+		t.Errorf("canvas contains 'k' or 'M' suggesting a token label leaked for empty data:\n%s", canvasOnly)
+	}
+}
+
+func TestBuildChart_NoYAxisGutter(t *testing.T) {
+	// Regression for issue #132: the 6-col Y axis gutter is gone. The bar
+	// at column 0 reaches the bottom canvas row, so that row must NOT start
+	// with whitespace where the old yAxisWidth=6 gutter used to live.
+	now := time.Now().UTC().Truncate(time.Hour)
+	buckets := []cache.TokenBucket{
+		{BucketStart: now, Tokens: 10_000},
+	}
+	out := buildChart(buckets, 10, 6, now, ZoomLevels[1])
+	rows := strings.Split(out, "\n")
+	// Bottom canvas row is rows[4] (canvas occupies 0..4 at chartH=6).
+	canvasBottom := rows[4]
+	if strings.HasPrefix(canvasBottom, "      ") {
+		t.Errorf("canvas bottom row starts with 6-col whitespace gutter; Y axis column should be gone:\n%q", canvasBottom)
+	}
+}
+
 func TestNiceFloor(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
