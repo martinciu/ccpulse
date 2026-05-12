@@ -1,4 +1,10 @@
+version: 2
 project_name: ccpulse
+before:
+  hooks:
+    - sh -c 'mkdir -p completions && go run ./cmd/ccpulse completion bash > completions/ccpulse.bash'
+    - sh -c 'go run ./cmd/ccpulse completion zsh  > completions/_ccpulse'
+    - sh -c 'go run ./cmd/ccpulse completion fish > completions/ccpulse.fish'
 builds:
   - id: ccpulse
     main: ./cmd/ccpulse
@@ -12,8 +18,12 @@ builds:
       - -X main.date={{ .Date }}
       - -X main.buildChannel=release
 archives:
-  - format: tar.gz
+  - formats: [tar.gz]
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+      - completions/*
 checksum:
   name_template: "checksums.txt"
 release:
