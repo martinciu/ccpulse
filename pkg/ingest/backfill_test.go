@@ -262,3 +262,47 @@ func TestBackfillRun_HonoursCtxCancellation(t *testing.T) {
 		t.Errorf("final progress still Active after cancel: %+v", last)
 	}
 }
+
+func TestBackfillRun_BatchLoadsCursorsAndFiltersAllCaughtUp(t *testing.T) {
+	// Pre-record every .jsonl file in the cache at its on-disk size.
+	// AllFileOffsets should hand the visitor a map that filters every
+	// file, so onBeforeProcess (the work-loop hook) must never fire.
+	dir := t.TempDir()
+	projects := filepath.Join(dir, "projects", "-Users-x-foo")
+	cacheDir := filepath.Join(dir, "cache")
+	if err := os.MkdirAll(projects, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(cacheDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	ing := newTestIngester(t, filepath.Dir(projects), cacheDir)
+
+	for _, name := range []string{"a.jsonl", "b.jsonl", "c.jsonl"} {
+		p := filepath.Join(projects, name)
+		if err := os.WriteFile(p, jsonl(name), 0644); err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Stat(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := ing.Cache.RecordFile(p, info.ModTime().UnixNano(), info.Size(), 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var processed []string
+	bf := &Backfill{
+		Ingester:        ing,
+		onBeforeProcess: func(path string) { processed = append(processed, path) },
+	}
+	if err := bf.Run(context.Background(), func(Progress) {}); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(processed) != 0 {
+		t.Errorf("onBeforeProcess fired %d times (paths=%v), want 0 — all files were caught up", len(processed), processed)
+	}
+}
