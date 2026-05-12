@@ -90,7 +90,13 @@ func labelFadeStyle(fade float64) lipgloss.Style {
 	if fade <= 0 {
 		return lipgloss.NewStyle()
 	}
-	stop := int(math.Ceil(fade * float64(labelFadeStopCount)))
+	// Invert fade so high fade (near 1.0 = full opacity at steady state)
+	// maps to stop 1 (brightest, no Foreground), and fade close to 0
+	// maps to stop 5 (faintest, near-background). The Y-label gets
+	// progressively darker as bars shrink (Phase 1) and progressively
+	// brighter as bars grow (Phase 2), matching the spec's "synced with
+	// max(springRatios)" intent.
+	stop := int(math.Ceil((1.0 - fade) * float64(labelFadeStopCount)))
 	stop = max(stop, 1)
 	stop = min(stop, labelFadeStopCount)
 	if stop == 1 {
