@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
@@ -578,6 +579,25 @@ func (m *Model) refreshChart() {
 	if m.springActive {
 		m.springActive = false
 	}
+
+	// Snapshot the wall-clock anchor BEFORE rebuild. lastStarts is empty
+	// on first load and after any empty-cache early-return — handled by
+	// hadAnchor. Read viewportXOffset (the shadow) rather than the
+	// viewport's own xOffset, which is unexported in bubbles v1.
+	var (
+		anchorTime time.Time
+		hadAnchor  bool
+		wasPinned  bool
+	)
+	if len(m.lastStarts) > 0 {
+		prevMax := max(0, len(m.lastStarts)-m.chartWidth())
+		wasPinned = m.viewportXOffset >= prevMax
+		if !wasPinned && m.viewportXOffset < len(m.lastStarts) {
+			anchorTime = m.lastStarts[m.viewportXOffset]
+			hadAnchor = true
+		}
+	}
+
 	zoom := ZoomLevels[m.zoomIdx]
 	// Right edge = the END of the bucket containing now, so the bucket
 	// itself is included in the half-open [from, to) window.
@@ -586,10 +606,10 @@ func (m *Model) refreshChart() {
 	earliest, ok, err := m.deps.Cache.EarliestMessageTime()
 	if err != nil || !ok {
 		m.viewport.SetContent(emptyPlaceholder(m.chartWidth(), m.chartHeight()))
-		m.setX(0)
 		m.lastValues = nil
 		m.lastStarts = nil
 		m.peak = 0
+		m.setX(0)
 		return
 	}
 
@@ -606,10 +626,10 @@ func (m *Model) refreshChart() {
 		buckets, err := m.deps.Cache.CostBuckets(zoom.Duration, from, to)
 		if err != nil || len(buckets) == 0 {
 			m.viewport.SetContent(emptyPlaceholder(m.chartWidth(), m.chartHeight()))
-			m.setX(0)
 			m.lastValues = nil
 			m.lastStarts = nil
 			m.peak = 0
+			m.setX(0)
 			return
 		}
 		values = make([]float64, len(buckets))
@@ -626,10 +646,10 @@ func (m *Model) refreshChart() {
 		buckets, err := m.deps.Cache.TokenBuckets(zoom.Duration, from, to)
 		if err != nil || len(buckets) == 0 {
 			m.viewport.SetContent(emptyPlaceholder(m.chartWidth(), m.chartHeight()))
-			m.setX(0)
 			m.lastValues = nil
 			m.lastStarts = nil
 			m.peak = 0
+			m.setX(0)
 			return
 		}
 		values = make([]float64, len(buckets))
@@ -651,8 +671,26 @@ func (m *Model) refreshChart() {
 	chartW := len(values)
 	chartH := m.chartHeight()
 	m.viewport.SetContent(buildChart(values, starts, peak, chartW, chartH, time.Now(), zoom, unit))
-	// Anchor the view at "now" on each refresh — the rightmost column.
-	m.viewport.SetXOffset(chartW)
+
+	// Restore the user's anchor. Three cases:
+	//   - !hadAnchor (first load, or coming back from an empty-cache
+	//     placeholder): pin to the new right edge.
+	//   - wasPinned: user was at "now", keep them at "now" against the
+	//     new right edge.
+	//   - else: translate the snapshotted anchor to its bucket index in
+	//     the new grid. BucketAlign(anchorTime, zoom.Duration) lands on
+	//     a bucket boundary; sort.Search finds the index of that boundary
+	//     in lastStarts. setX clamps if the cache shrank unexpectedly.
+	switch {
+	case !hadAnchor, wasPinned:
+		m.setX(chartW)
+	default:
+		target := cache.BucketAlign(anchorTime, zoom.Duration)
+		idx := sort.Search(len(m.lastStarts), func(i int) bool {
+			return !m.lastStarts[i].Before(target)
+		})
+		m.setX(idx)
+	}
 }
 
 // emptyPlaceholder returns a w×h block with "no Claude sessions yet"
