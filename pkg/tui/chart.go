@@ -161,6 +161,33 @@ func niceCeiling(peak int64) int64 {
 	return int64(math.Round(nice * mag))
 }
 
+// niceFloor returns the largest "nice" value <= peak from the sequence
+// {1, 2, 2.5, 5, 7.5} × 10^k. Used to pick the in-canvas Y tick label
+// for the bar chart (issue #132). Denser than niceCeiling's set so the
+// tick lands near the peak rather than half-way down the chart.
+// Returns 0 when peak <= 0 so the caller can guard the overlay write.
+func niceFloor(peak int64) int64 {
+	if peak <= 0 {
+		return 0
+	}
+	mag := math.Pow10(int(math.Floor(math.Log10(float64(peak)))))
+	norm := float64(peak) / mag
+	var nice float64
+	switch {
+	case norm >= 7.5:
+		nice = 7.5
+	case norm >= 5.0:
+		nice = 5.0
+	case norm >= 2.5:
+		nice = 2.5
+	case norm >= 2.0:
+		nice = 2.0
+	default:
+		nice = 1.0
+	}
+	return int64(math.Round(nice * mag))
+}
+
 // formatTokenCount renders an int64 token count compactly with a k/M
 // suffix, suitable for the Y axis and other in-chart annotations.
 // Threshold rules:

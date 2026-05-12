@@ -445,6 +445,40 @@ func TestNiceCeiling(t *testing.T) {
 	}
 }
 
+func TestNiceFloor(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		peak int64
+		want int64
+	}{
+		{"zero returns zero", 0, 0},
+		{"negative returns zero", -10, 0},
+		{"one", 1, 1},
+		{"99 falls to 75", 99, 75},
+		{"exactly 100", 100, 100},
+		{"exactly 1000", 1000, 1000},
+		{"7499 falls to 5k", 7_499, 5_000},
+		{"exactly 7.5k", 7_500, 7_500},
+		{"9k falls to 7.5k", 9_000, 7_500},
+		{"23k falls to 20k", 23_000, 20_000},
+		{"87k falls to 75k", 87_000, 75_000},
+		{"exactly 100k", 100_000, 100_000},
+		{"123456 falls to 100k", 123_456, 100_000},
+		{"999999 falls to 750k", 999_999, 750_000},
+		{"exactly 1M", 1_000_000, 1_000_000},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := niceFloor(tt.peak)
+			if got != tt.want {
+				t.Errorf("niceFloor(%d) = %d, want %d", tt.peak, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestFormatTokenCount(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
