@@ -91,12 +91,8 @@ func labelFadeStyle(fade float64) lipgloss.Style {
 		return lipgloss.NewStyle()
 	}
 	stop := int(math.Ceil(fade * float64(labelFadeStopCount)))
-	if stop < 1 {
-		stop = 1
-	}
-	if stop > labelFadeStopCount {
-		stop = labelFadeStopCount
-	}
+	stop = max(stop, 1)
+	stop = min(stop, labelFadeStopCount)
 	if stop == 1 {
 		return lipgloss.NewStyle()
 	}
