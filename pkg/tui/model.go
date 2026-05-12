@@ -586,7 +586,7 @@ func (m *Model) refreshChart() {
 	earliest, ok, err := m.deps.Cache.EarliestMessageTime()
 	if err != nil || !ok {
 		m.viewport.SetContent(emptyPlaceholder(m.chartWidth(), m.chartHeight()))
-		m.viewport.SetXOffset(0)
+		m.setX(0)
 		m.lastValues = nil
 		m.lastStarts = nil
 		m.peak = 0
@@ -606,7 +606,7 @@ func (m *Model) refreshChart() {
 		buckets, err := m.deps.Cache.CostBuckets(zoom.Duration, from, to)
 		if err != nil || len(buckets) == 0 {
 			m.viewport.SetContent(emptyPlaceholder(m.chartWidth(), m.chartHeight()))
-			m.viewport.SetXOffset(0)
+			m.setX(0)
 			m.lastValues = nil
 			m.lastStarts = nil
 			m.peak = 0
@@ -626,7 +626,7 @@ func (m *Model) refreshChart() {
 		buckets, err := m.deps.Cache.TokenBuckets(zoom.Duration, from, to)
 		if err != nil || len(buckets) == 0 {
 			m.viewport.SetContent(emptyPlaceholder(m.chartWidth(), m.chartHeight()))
-			m.viewport.SetXOffset(0)
+			m.setX(0)
 			m.lastValues = nil
 			m.lastStarts = nil
 			m.peak = 0
