@@ -87,6 +87,11 @@ type Model struct {
 	indexLastActive bool
 	indexFadeStop   int
 
+	// Cached on refreshChart so View() doesn't re-iterate buckets per
+	// frame. peak is the max bucket value in the current chart range;
+	// drives the Y label column rendered outside the scrollable viewport.
+	peak int64
+
 	w, h int
 }
 
@@ -199,6 +204,10 @@ func (m Model) View() string {
 		body = m.help.FullHelpView(m.keys.FullHelp())
 	} else {
 		body = m.viewport.View()
+		if m.shouldShowYLabel() {
+			yLabel := renderYLabel(m.peak, m.chartHeight())
+			body = lipgloss.JoinHorizontal(lipgloss.Top, yLabel, body)
+		}
 	}
 	footer := m.renderFooter()
 	out := lipgloss.JoinVertical(lipgloss.Left, header, sep, body, sep, footer)
@@ -359,6 +368,13 @@ func (m *Model) refreshChart() {
 	chartW := len(buckets)
 	chartH := m.chartHeight()
 
+	m.peak = 0
+	for _, b := range buckets {
+		if b.Tokens > m.peak {
+			m.peak = b.Tokens
+		}
+	}
+
 	m.viewport.SetContent(buildChart(buckets, chartW, chartH, time.Now(), zoom))
 	// Anchor the view at "now" on each refresh — the rightmost column.
 	m.viewport.SetXOffset(chartW)
@@ -396,12 +412,23 @@ func (m *Model) recomputeWindow() {
 	m.progress7d = newProgressBar(m.progressWidth())
 }
 
-// chartWidth returns the available width for the viewport. Floors at 10
-// so the ntcharts canvas never collapses to a degenerate width.
+// shouldShowYLabel gates the fixed-left Y label column. Both
+// chartWidth() and View() consult it so they agree on the layout.
+// Returns true iff the terminal can spare yAxisWidth cols (m.w - 8 >= 20)
+// AND has enough rows for the X labels (chartHeight >= 6).
+func (m Model) shouldShowYLabel() bool {
+	return m.w-8 >= 20 && m.chartHeight() >= 6
+}
+
+// chartWidth returns the available width for the viewport. Shrinks by
+// yAxisWidth when the Y label column is showing.
 func (m Model) chartWidth() int {
 	w := m.w - 2
 	if w < 10 {
 		return 10
+	}
+	if m.shouldShowYLabel() {
+		return w - yAxisWidth
 	}
 	return w
 }

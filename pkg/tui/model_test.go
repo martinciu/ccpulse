@@ -82,26 +82,135 @@ func BenchmarkModelView(b *testing.B) {
 // BenchmarkModelView when its return value is otherwise unused.
 var sinkView string
 
-func TestChartWidth_FloorsAtTen(t *testing.T) {
+func TestShouldShowYLabel(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name string
-		w    int
-		want int
+		w, h int
+		want bool
 	}{
-		{"wide", 120, 118},        // m.w - 2
-		{"narrow but not floored", 20, 18},
-		{"floored at 10", 8, 10},  // m.w - 2 == 6, clamped up
-		{"floored at 10 when w==12", 12, 10},
+		{"wide tall terminal", 120, 40, true},
+		{"width exactly threshold (28 ⇒ 20 chart cols)", 28, 40, true},
+		{"width 1 below threshold", 27, 40, false},
+		{"tall enough but narrow", 20, 40, false},
+		{"wide but too short for X labels", 120, 12, false}, // chartHeight = 5 < 6
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			m := Model{w: tt.w}
+			m := Model{w: tt.w, h: tt.h}
+			if got := m.shouldShowYLabel(); got != tt.want {
+				t.Errorf("shouldShowYLabel() = %v, want %v (w=%d, h=%d, chartH=%d)",
+					got, tt.want, tt.w, tt.h, m.chartHeight())
+			}
+		})
+	}
+}
+
+func TestChartWidth_AdjustsForYLabel(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		w, h int
+		want int
+	}{
+		{"wide ⇒ m.w-8 (Y label fits)", 120, 40, 112},
+		{"narrow ⇒ m.w-2 (Y label dropped)", 20, 40, 18},
+		{"short ⇒ m.w-2 (X labels dropped, Y label dropped too)", 120, 12, 118},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			m := Model{w: tt.w, h: tt.h}
 			if got := m.chartWidth(); got != tt.want {
 				t.Errorf("chartWidth() = %d, want %d", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestRefreshChart_CachesPeak(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "state.db")
+	c, err := cache.Open(dbPath)
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	defer c.Close()
+
+	tab, err := pricing.Load()
+	if err != nil {
+		t.Fatalf("pricing.Load: %v", err)
+	}
+	now := time.Now().UTC().Truncate(15 * time.Minute)
+	msgs := []parse.Message{
+		{SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7", Timestamp: now.Add(-30 * time.Minute), InputTokens: 10000, OutputTokens: 5000},
+		{SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7", Timestamp: now.Add(-10 * time.Minute), InputTokens: 30000, OutputTokens: 15000},
+	}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	m := New(Deps{Cache: c})
+	m.w, m.h = 120, 40
+	m.refreshChart()
+
+	if m.peak == 0 {
+		t.Errorf("expected non-zero peak after insert, got 0")
+	}
+}
+
+func TestView_YLabelFixedAcrossScroll(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "state.db")
+	c, err := cache.Open(dbPath)
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	defer c.Close()
+
+	tab, err := pricing.Load()
+	if err != nil {
+		t.Fatalf("pricing.Load: %v", err)
+	}
+	now := time.Now().UTC()
+	msgs := make([]parse.Message, 50)
+	for i := range msgs {
+		msgs[i] = parse.Message{
+			SessionID:    "s1",
+			ProjectSlug:  "p",
+			Model:        "claude-opus-4-7",
+			Timestamp:    now.Add(time.Duration(-i*10) * time.Minute),
+			InputTokens:  int64(1000 + i*100),
+			OutputTokens: int64(500 + i*50),
+		}
+	}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	m := New(Deps{Cache: c})
+	m.w, m.h = 120, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	m.refreshChart()
+
+	// The Y label is composed outside the viewport, so the niceFloor
+	// label must still appear in View() output after a horizontal scroll.
+	expected := formatTokenCount(niceFloor(m.peak))
+	if expected == "" || expected == "0" {
+		t.Fatalf("expected non-empty Y label; m.peak = %d, niceFloor = %d", m.peak, niceFloor(m.peak))
+	}
+
+	v1 := m.View()
+	if !strings.Contains(v1, expected) {
+		t.Errorf("View output missing Y label %q before scroll:\n%s", expected, v1)
+	}
+
+	m.viewport.ScrollLeft(horizontalScrollStep)
+	v2 := m.View()
+	if !strings.Contains(v2, expected) {
+		t.Errorf("View output missing Y label %q after scroll (Y label should be fixed):\n%s", expected, v2)
 	}
 }
 

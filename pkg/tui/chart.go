@@ -1,13 +1,14 @@
 package tui
 
 import (
+	"fmt"
 	"log/slog"
 	"math"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/NimbleMarkets/ntcharts/barchart"
-	"github.com/NimbleMarkets/ntcharts/canvas"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/martinciu/ccpulse/pkg/cache"
@@ -26,6 +27,47 @@ var ZoomLevels = []ZoomLevel{
 	{"5m", 5 * time.Minute},
 	{"15m", 15 * time.Minute},
 	{"1h", time.Hour},
+}
+
+// yAxisWidth is the column budget for the fixed-left Y label column.
+// 5 cols fit the widest expected label ("99.9k", "1.5M"); the 6th col
+// is breathing room between the label and the leftmost bar.
+const yAxisWidth = 6
+
+// renderYLabel returns a yAxisWidth-col × height string with a dim
+// niceFloor(peak) label at the row matching its value, blank elsewhere.
+// Lives outside the scrollable chart canvas so the label is always
+// visible regardless of horizontal scroll position. height < 6 returns
+// "" — the same threshold renderXLabels and Model.shouldShowYLabel use.
+// peak <= 0 (or a peak whose niceFloor is 0) returns a blank column.
+func renderYLabel(peak int64, height int) string {
+	if height < 6 {
+		return ""
+	}
+	blank := strings.Repeat(" ", yAxisWidth)
+	rows := make([]string, height)
+	for i := range rows {
+		rows[i] = blank
+	}
+	if peak <= 0 {
+		return strings.Join(rows, "\n")
+	}
+	tick := niceFloor(peak)
+	if tick <= 0 {
+		return strings.Join(rows, "\n")
+	}
+	// height includes the X labels row at the bottom; barsH is the
+	// canvas's bar-cell height. Match the canvas math in buildChart.
+	barsH := height - 1
+	row := barsH - int(math.Round(float64(tick)/float64(peak)*float64(barsH)))
+	if row < 0 {
+		row = 0
+	}
+	if row >= barsH {
+		row = barsH - 1
+	}
+	rows[row] = dimStyle.Render(fmt.Sprintf("%*s", yAxisWidth, formatTokenCount(tick)))
+	return strings.Join(rows, "\n")
 }
 
 // renderXLabels returns a 1-row string of width chartW containing
@@ -181,11 +223,13 @@ func heatColor(ratio float64) lipgloss.Color {
 // buildChart renders the viewport content from buckets at the given zoom:
 // bars in the top chartH-1 rows (or all chartH if chartH < 6, the same
 // threshold renderXLabels uses), plus an X-axis tick label row at the
-// bottom. Bars are scaled to peak (not niceFloor) so the tallest bar fills
-// the full canvas; barchart.WithNoAxis() reclaims the 2 rows ntcharts
-// otherwise reserves for its own (empty) axis. A single dim Y tick label
-// at niceFloor(peak) is overlaid inside the canvas at the row matching
-// that value (issue #132).
+// bottom. Bars are scaled to peak so the tallest bar fills the full
+// canvas; barchart.WithNoAxis() reclaims the row ntcharts otherwise
+// reserves for its (empty) internal axis (issue #132).
+//
+// The Y label column is rendered separately by renderYLabel and composed
+// outside the scrollable viewport in Model.View, so it stays put when
+// the chart scrolls horizontally.
 func buildChart(buckets []cache.TokenBucket, chartW, chartH int, now time.Time, zoom ZoomLevel) string {
 	start := time.Now()
 	if chartH < 1 {
@@ -241,22 +285,6 @@ func buildChart(buckets []cache.TokenBucket, chartW, chartH int, now time.Time, 
 	)
 	bc.PushAll(bars)
 	bc.Draw()
-
-	// Overlay the Y tick label at the canvas row matching niceFloor(peak).
-	// Skipped when peak == 0 (empty data) or niceFloor returns 0.
-	if peak > 0 {
-		if tick := niceFloor(peak); tick > 0 {
-			row := barsH - int(math.Round(float64(tick)/float64(peak)*float64(barsH)))
-			if row < 0 {
-				row = 0
-			}
-			if row >= barsH {
-				row = barsH - 1
-			}
-			bc.Canvas.SetStringWithStyle(canvas.Point{X: 0, Y: row}, formatTokenCount(tick), dimStyle)
-		}
-	}
-
 	body := bc.View()
 
 	if showXLabels {
