@@ -352,7 +352,7 @@ func TestOverlayYLabel_InjectsAtNiceFloorRow(t *testing.T) {
 	// peak = 87000 → niceFloorFloat(87000) = 70000 → label "70k".
 	// chartH=6 → barsH=5 → row = 5 - round(70000/87000 * 5) = 1.
 	body := "AAAAAAAAAA\nBBBBBBBBBB\nCCCCCCCCCC\nDDDDDDDDDD\nEEEEEEEEEE\nFFFFFFFFFF"
-	out := overlayYLabel(body, 87_000, chartUnitTokens, 6)
+	out := overlayYLabel(body, 87_000, chartUnitTokens, 6, 1.0)
 	rows := strings.Split(out, "\n")
 	if len(rows) != 6 {
 		t.Fatalf("expected 6 rows, got %d:\n%q", len(rows), out)
@@ -376,7 +376,7 @@ func TestOverlayYLabel_BlankWhenEmpty(t *testing.T) {
 	t.Parallel()
 	body := "AAAAAAAAAA\nBBBBBBBBBB\nCCCCCCCCCC\nDDDDDDDDDD\nEEEEEEEEEE\nFFFFFFFFFF"
 	for _, peak := range []float64{0, -5} {
-		out := overlayYLabel(body, peak, chartUnitTokens, 6)
+		out := overlayYLabel(body, peak, chartUnitTokens, 6, 1.0)
 		if out != body {
 			t.Errorf("peak=%v: expected body untouched, got %q", peak, out)
 		}
@@ -387,7 +387,7 @@ func TestOverlayYLabel_HeightTooSmall(t *testing.T) {
 	t.Parallel()
 	body := "AAAAAAAAAA\nBBBBBBBBBB\nCCCCCCCCCC\nDDDDDDDDDD\nEEEEEEEEEE"
 	// chartH < 6 leaves body untouched — same threshold renderXLabels uses.
-	if got := overlayYLabel(body, 50_000, chartUnitTokens, 5); got != body {
+	if got := overlayYLabel(body, 50_000, chartUnitTokens, 5, 1.0); got != body {
 		t.Errorf("expected body untouched at chartH=5, got %q", got)
 	}
 }
@@ -543,5 +543,23 @@ func TestFormatUnitValue(t *testing.T) {
 				t.Errorf("formatUnitValue(%v, %v) = %q, want %q", tt.v, tt.unit, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestOverlayYLabel_FadeZeroSkipsRender(t *testing.T) {
+	// fade == 0 (and fade < 0 by clamp) must short-circuit and return
+	// body unchanged. This is how the empty-moment frame ends up with
+	// no Y-label rendered.
+	body := strings.Repeat("█  ", 20)
+	body = strings.Join([]string{body, body, body, body, body, body, body}, "\n") // 7 rows
+	if got := overlayYLabel(body, 100_000, chartUnitTokens, 7, 0); got != body {
+		t.Errorf("overlayYLabel(fade=0) modified body; expected pass-through")
+	}
+	if got := overlayYLabel(body, 100_000, chartUnitTokens, 7, -0.5); got != body {
+		t.Errorf("overlayYLabel(fade=-0.5) modified body; expected pass-through")
+	}
+	// Sanity: fade == 1.0 still renders the label.
+	if got := overlayYLabel(body, 100_000, chartUnitTokens, 7, 1.0); got == body {
+		t.Errorf("overlayYLabel(fade=1.0) returned body unchanged; expected label to be spliced in")
 	}
 }

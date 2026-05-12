@@ -27,20 +27,23 @@ var ZoomLevels = []ZoomLevel{
 	{"1h", time.Hour},
 }
 
-// overlayYLabel splices `formatUnitValue(niceFloorFloat(peak), unit)`
-// in dim style into the niceFloor row of an already-rendered chart
-// string, replacing the first 5 visible columns of that row. Operates
-// ANSI-aware on the post-scroll viewport output so the label stays
-// pinned to the viewport's left edge regardless of horizontal scroll
-// position (issue #132) — applied in Model.View() after
+// overlayYLabel splices `formatUnitValue(niceFloorFloat(peak), unit)` in
+// the chosen fade style into the niceFloor row of an already-rendered
+// chart string, replacing the first 5 visible columns of that row.
+// Operates ANSI-aware on the post-scroll viewport output so the label
+// stays pinned to the viewport's left edge regardless of horizontal
+// scroll position (issue #132) — applied in Model.View() after
 // m.viewport.View(), not inside buildChart.
 //
-// peak <= 0 (or a peak whose niceFloorFloat is 0) leaves body
-// untouched. chartH < 6 leaves body untouched (same threshold
-// renderXLabels uses for the X labels row). Returns body unchanged
-// if the target row is missing or the body is empty.
-func overlayYLabel(body string, peak float64, unit chartUnit, chartH int) string {
-	if peak <= 0 || chartH < 6 || body == "" {
+// fade ∈ [0, 1] selects the label's discrete fade stop via
+// labelFadeStyle. fade <= 0 short-circuits and returns body unchanged
+// (the empty-moment frame of the two-phase unit-toggle animation,
+// issue #136). At steady state Model.View passes fade=1.0.
+//
+// Other early-returns: peak <= 0, chartH < 6, niceFloorFloat(peak) == 0,
+// or body == "" all return body unchanged.
+func overlayYLabel(body string, peak float64, unit chartUnit, chartH int, fade float64) string {
+	if peak <= 0 || chartH < 6 || body == "" || fade <= 0 {
 		return body
 	}
 	tick := niceFloorFloat(peak)
@@ -56,7 +59,7 @@ func overlayYLabel(body string, peak float64, unit chartUnit, chartH int) string
 		row = barsH - 1
 	}
 
-	label := dimStyle.Render(formatUnitValue(tick, unit))
+	label := labelFadeStyle(fade).Render(formatUnitValue(tick, unit))
 	labelW := lipgloss.Width(label)
 
 	lines := strings.Split(body, "\n")

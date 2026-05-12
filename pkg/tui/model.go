@@ -291,7 +291,7 @@ func (m Model) View() string {
 	if m.showHelp {
 		body = m.help.FullHelpView(m.keys.FullHelp())
 	} else {
-		body = overlayYLabel(m.viewport.View(), m.peak, chartUnit(m.unitIdx), m.chartHeight())
+		body = overlayYLabel(m.viewport.View(), m.peak, chartUnit(m.unitIdx), m.chartHeight(), 1.0)
 	}
 	footer := m.renderFooter()
 	out := lipgloss.JoinVertical(lipgloss.Left, header, sep, body, sep, footer)
