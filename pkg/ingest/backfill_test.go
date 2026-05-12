@@ -130,10 +130,8 @@ func newTestIngester(t *testing.T, projectsRoot, cacheDir string) *Ingester {
 		t.Fatal(err)
 	}
 	tab := mustPricing(t)
-	res := newTestResolver(c)
 	return &Ingester{
 		Cache:          c,
-		Resolver:       res,
 		Pricing:        tab,
 		ProjectsRoot:   projectsRoot,
 		ParseErrorsLog: filepath.Join(cacheDir, "parse-errors.log"),

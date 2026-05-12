@@ -18,7 +18,7 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
-const SchemaVersion = "5"
+const SchemaVersion = "6"
 
 // cachePragmas is appended to the DSN so modernc.org/sqlite applies them
 // on every new pool connection, not just the first one. Issuing pragmas
@@ -181,8 +181,8 @@ INSERT OR IGNORE INTO messages
  input_tokens, output_tokens, cache_read_tokens,
  cache_write_5m_tokens, cache_write_1h_tokens,
  cost_usd_estimate, pricing_version, pricing_unknown,
- is_subagent, parent_session_id)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+ is_subagent, parent_session_id, cwd, git_branch)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 	if err != nil {
 		return err
 	}
@@ -203,7 +203,7 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 			m.Role, m.Model,
 			m.InputTokens, m.OutputTokens, m.CacheReadTokens,
 			m.CacheWrite5mTokens, m.CacheWrite1hTokens,
-			cost, tab.Version, unk, sub, m.ParentSessionID,
+			cost, tab.Version, unk, sub, m.ParentSessionID, m.Cwd, m.GitBranch,
 		); err != nil {
 			return err
 		}
@@ -261,47 +261,6 @@ func (c *Cache) AllFileOffsets() (map[string]int64, error) {
 		return nil, err
 	}
 	return out, nil
-}
-
-type SlugCanonical struct {
-	Slug          string
-	CanonicalPath string
-	Branch        string
-	Resolved      bool
-}
-
-func (c *Cache) PutSlugCanonical(s SlugCanonical) error {
-	r := 0
-	if s.Resolved {
-		r = 1
-	}
-	_, err := c.db.Exec(`
-INSERT INTO slug_canonical(slug, canonical_path, worktree_branch, resolved, resolved_at)
-VALUES (?,?,?,?,datetime('now'))
-ON CONFLICT(slug) DO UPDATE SET
- canonical_path = excluded.canonical_path,
- worktree_branch = excluded.worktree_branch,
- resolved = excluded.resolved,
- resolved_at = excluded.resolved_at
-`, s.Slug, s.CanonicalPath, s.Branch, r)
-	return err
-}
-
-func (c *Cache) GetSlugCanonical(slug string) (SlugCanonical, bool, error) {
-	row := c.db.QueryRow(`
-SELECT slug, canonical_path, COALESCE(worktree_branch,''), resolved
-FROM slug_canonical WHERE slug = ?`, slug)
-	var s SlugCanonical
-	var r int
-	err := row.Scan(&s.Slug, &s.CanonicalPath, &s.Branch, &r)
-	if err == sql.ErrNoRows {
-		return SlugCanonical{}, false, nil
-	}
-	if err != nil {
-		return SlugCanonical{}, false, err
-	}
-	s.Resolved = r != 0
-	return s, true, nil
 }
 
 // IntegrityOK runs `PRAGMA integrity_check` and reports whether SQLite

@@ -26,13 +26,13 @@ func TestOpenAppliesSchema(t *testing.T) {
 	}
 	defer c.Close()
 
-	row := c.DB().QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('messages','files','slug_canonical','meta','usage_samples')`)
+	row := c.DB().QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('messages','files','meta','usage_samples')`)
 	var n int
 	if err := row.Scan(&n); err != nil {
 		t.Fatal(err)
 	}
-	if n != 5 {
-		t.Fatalf("expected 5 tables, got %d", n)
+	if n != 4 {
+		t.Fatalf("expected 4 tables, got %d", n)
 	}
 }
 
@@ -944,76 +944,43 @@ func TestIntegrityOK_Corrupt(t *testing.T) {
 	}
 }
 
-func TestSlugCanonical_RoundTrip(t *testing.T) {
-	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+func TestInsertMessages_PersistsCwdAndGitBranch(t *testing.T) {
+	dir := t.TempDir()
+	c, err := Open(filepath.Join(dir, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer c.Close()
 
-	want := SlugCanonical{
-		Slug:          "-Users-x-foo-bar",
-		CanonicalPath: "/Users/x/foo/bar",
-		Branch:        "feature/x",
-		Resolved:      true,
-	}
-	if err := c.PutSlugCanonical(want); err != nil {
-		t.Fatal(err)
-	}
-
-	got, ok, err := c.GetSlugCanonical(want.Slug)
+	tab, err := pricing.Load()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !ok {
-		t.Fatal("want ok=true, got ok=false")
-	}
-	if got.Slug != want.Slug || got.CanonicalPath != want.CanonicalPath ||
-		got.Branch != want.Branch || got.Resolved != want.Resolved {
-		t.Errorf("got %+v, want %+v", got, want)
-	}
-}
 
-func TestSlugCanonical_Miss(t *testing.T) {
-	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer c.Close()
-
-	_, ok, err := c.GetSlugCanonical("never-stored")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ok {
-		t.Error("expected miss, got ok=true")
-	}
-}
-
-func TestSlugCanonical_Upsert(t *testing.T) {
-	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer c.Close()
-
-	if err := c.PutSlugCanonical(SlugCanonical{
-		Slug: "k", CanonicalPath: "/old", Resolved: false,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := c.PutSlugCanonical(SlugCanonical{
-		Slug: "k", CanonicalPath: "/new", Branch: "wt", Resolved: true,
-	}); err != nil {
+	msgs := []parse.Message{{
+		SessionID:   "s1",
+		ProjectSlug: "-Users-x-proj",
+		Timestamp:   time.Date(2026, 5, 9, 10, 0, 0, 0, time.UTC),
+		Role:        "assistant",
+		Model:       "claude-opus-4-7",
+		Cwd:         "/Users/x/proj",
+		GitBranch:   "main",
+	}}
+	if err := c.InsertMessages(msgs, tab); err != nil {
 		t.Fatal(err)
 	}
 
-	got, ok, err := c.GetSlugCanonical("k")
-	if err != nil {
+	var cwd, branch string
+	if err := c.DB().QueryRow(
+		`SELECT cwd, git_branch FROM messages WHERE session_id = 's1'`,
+	).Scan(&cwd, &branch); err != nil {
 		t.Fatal(err)
 	}
-	if !ok || got.CanonicalPath != "/new" || got.Branch != "wt" || !got.Resolved {
-		t.Errorf("upsert did not overwrite: %+v", got)
+	if cwd != "/Users/x/proj" {
+		t.Errorf("cwd = %q, want /Users/x/proj", cwd)
+	}
+	if branch != "main" {
+		t.Errorf("git_branch = %q, want main", branch)
 	}
 }
 

@@ -7,15 +7,15 @@ import (
 	"testing"
 
 	"github.com/martinciu/ccpulse/pkg/cache"
-	"github.com/martinciu/ccpulse/pkg/canonical"
 	"github.com/martinciu/ccpulse/pkg/pricing"
 )
 
 // jsonl returns a single assistant-line transcript with the given
-// session id. Used throughout the ingest tests.
+// session id. cwd and gitBranch match the slug used in the test fixture.
 func jsonl(sid string) []byte {
 	return []byte(`{"type":"assistant","sessionId":"` + sid +
-		`","timestamp":"2026-05-09T10:00:00.000Z","message":` +
+		`","timestamp":"2026-05-09T10:00:00.000Z","cwd":"/Users/x/foo","gitBranch":"main",` +
+		`"message":` +
 		`{"role":"assistant","model":"claude-opus-4-7","usage":` +
 		`{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,` +
 		`"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}}}` +
@@ -44,7 +44,6 @@ func newIngesterFixture(t *testing.T) (*Ingester, string, string) {
 	t.Cleanup(func() { c.Close() })
 
 	tab, _ := pricing.Load()
-	res := canonical.NewResolver(c, "/")
 
 	jsonlPath := filepath.Join(projects, "-Users-x-foo", "sess.jsonl")
 	if err := os.WriteFile(jsonlPath, jsonl("s1"), 0644); err != nil {
@@ -53,7 +52,6 @@ func newIngesterFixture(t *testing.T) (*Ingester, string, string) {
 
 	ing := &Ingester{
 		Cache:          c,
-		Resolver:       res,
 		Pricing:        tab,
 		ProjectsRoot:   projects,
 		ParseErrorsLog: filepath.Join(cacheDir, "parse-errors.log"),
@@ -243,35 +241,24 @@ func TestProcessFile_TopLevelHasNoSubagentTag(t *testing.T) {
 	}
 }
 
-func TestProcessFile_BackfillsCanonical(t *testing.T) {
+func TestProcessFile_CapturesCwdAndGitBranch(t *testing.T) {
 	ing, _, path := newIngesterFixture(t)
-
-	// Pre-seed the slug_canonical table so the resolver returns
-	// a concrete CanonicalPath without needing a real git repo.
-	if err := ing.Cache.PutSlugCanonical(cache.SlugCanonical{
-		Slug:          "-Users-x-foo",
-		CanonicalPath: "/Users/x/foo",
-		Branch:        "main",
-		Resolved:      true,
-	}); err != nil {
-		t.Fatal(err)
-	}
 
 	if _, err := ing.ProcessFile(path); err != nil {
 		t.Fatal(err)
 	}
 
-	var canon, branch string
+	var cwd, branch string
 	if err := ing.Cache.DB().QueryRow(
-		`SELECT project_canonical, worktree_branch FROM messages WHERE session_id = 's1'`,
-	).Scan(&canon, &branch); err != nil {
+		`SELECT cwd, git_branch FROM messages WHERE session_id = 's1'`,
+	).Scan(&cwd, &branch); err != nil {
 		t.Fatal(err)
 	}
-	if canon != "/Users/x/foo" {
-		t.Errorf("project_canonical = %q, want /Users/x/foo", canon)
+	if cwd != "/Users/x/foo" {
+		t.Errorf("cwd = %q, want /Users/x/foo", cwd)
 	}
 	if branch != "main" {
-		t.Errorf("worktree_branch = %q, want main", branch)
+		t.Errorf("git_branch = %q, want main", branch)
 	}
 }
 
@@ -339,6 +326,3 @@ func mustPricing(t *testing.T) pricing.Table {
 	return tab
 }
 
-func newTestResolver(c *cache.Cache) *canonical.Resolver {
-	return canonical.NewResolver(c, "/")
-}

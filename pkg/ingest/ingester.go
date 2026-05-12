@@ -5,7 +5,6 @@ import (
 	"os"
 
 	"github.com/martinciu/ccpulse/pkg/cache"
-	"github.com/martinciu/ccpulse/pkg/canonical"
 	"github.com/martinciu/ccpulse/pkg/parse"
 	"github.com/martinciu/ccpulse/pkg/pricing"
 )
@@ -17,7 +16,6 @@ var errTruncated = errors.New("recorded offset past EOF; resetting and re-parsin
 // fsnotify event) and from the startup Backfill (every .jsonl).
 type Ingester struct {
 	Cache          *cache.Cache
-	Resolver       *canonical.Resolver
 	Pricing        pricing.Table
 	ProjectsRoot   string
 	ParseErrorsLog string
@@ -73,16 +71,6 @@ func (i *Ingester) ProcessFile(path string) (inserted int, err error) {
 		if err := i.Cache.InsertMessages(msgs, i.Pricing); err != nil {
 			LogFileError(i.ParseErrorsLog, path, err)
 			return 0, err
-		}
-	}
-
-	// Back-fill canonical for rows of this slug that don't have one.
-	if r, _ := i.Resolver.Resolve(slug); r.CanonicalPath != "" {
-		if _, err := i.Cache.DB().Exec(
-			`UPDATE messages SET project_canonical = ?, worktree_branch = ? WHERE project_slug = ? AND project_canonical = ''`,
-			r.CanonicalPath, r.Branch, slug,
-		); err != nil {
-			LogFileError(i.ParseErrorsLog, path, err)
 		}
 	}
 
