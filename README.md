@@ -16,7 +16,54 @@ operation.
   cache in sync as Claude writes new turns; the TUI redraws on each
   refresh.
 
-## Quickstart
+## Installation
+
+### Homebrew (macOS, Linuxbrew)
+
+```sh
+brew install martinciu/tap/ccpulse
+```
+
+Shell completions are installed automatically.
+
+### Debian / Ubuntu (.deb)
+
+```sh
+curl -LO https://github.com/martinciu/ccpulse/releases/latest/download/ccpulse_<version>_linux_amd64.deb
+sudo dpkg -i ccpulse_*.deb
+```
+
+Replace `amd64` with `arm64` on ARM. Find the latest version on the
+[releases page](https://github.com/martinciu/ccpulse/releases).
+
+### Fedora / RHEL / openSUSE (.rpm)
+
+```sh
+sudo rpm -i https://github.com/martinciu/ccpulse/releases/latest/download/ccpulse_<version>_linux_amd64.rpm
+```
+
+Replace `amd64` with `arm64` on ARM.
+
+### `go install`
+
+```sh
+go install github.com/martinciu/ccpulse/cmd/ccpulse@latest
+```
+
+Requires Go 1.25+. Skips the build-channel ldflag, so the binary writes
+dev debug logs to `~/.cache/ccpulse/debug.log`.
+
+After install, launch the TUI:
+
+```sh
+ccpulse
+```
+
+On first launch the TUI cold-walks `~/.claude/projects/` and backfills
+the cache (progress shown in the header). After that, the fsnotify
+watcher keeps the cache up to date automatically.
+
+## Build from source
 
 Requires `mise` and `git`.
 
@@ -27,15 +74,7 @@ mise install        # fetches Go 1.25 into the project-scoped toolchain
 make install        # builds → ~/.local/bin/ccpulse
 ```
 
-The binary lives in `~/.local/bin/ccpulse`. Launch the TUI:
-
-```sh
-ccpulse
-```
-
-On first launch the TUI cold-walks `~/.claude/projects/` and backfills
-the cache (progress shown in the header). After that, the fsnotify
-watcher keeps the cache up to date automatically.
+The binary lives in `~/.local/bin/ccpulse`.
 
 ## Commands
 
