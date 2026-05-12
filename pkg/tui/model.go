@@ -235,7 +235,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.quotaSource = msg.Source
 		m.quotaUpdatedAt = msg.UpdatedAt
 		m.recomputeWindow()
-		m.refreshChart()
 	case RefreshMsg:
 		start := time.Now()
 		m.recomputeWindow()

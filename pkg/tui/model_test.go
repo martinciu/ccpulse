@@ -1545,3 +1545,30 @@ func TestView_CostModeRendersDollarPrefix(t *testing.T) {
 		t.Errorf("cost-mode View missing '$' Y label:\n%s", m.View())
 	}
 }
+
+func TestQuotaMsg_DoesNotRebuildChart(t *testing.T) {
+	// QuotaMsg should update the header (m.quota/recomputeWindow) but
+	// NOT rebuild the chart. Verify by: scroll to a mid-chart anchor,
+	// snapshot the rendered chart bytes, send a QuotaMsg, assert chart
+	// bytes are unchanged AND viewportXOffset is unchanged.
+	m, cleanup := seedScrollTestModel(t, 300)
+	defer cleanup()
+
+	m.scrollLeft(30)
+	beforeOffset := m.viewportXOffset
+	beforeView := m.viewport.View()
+
+	updated, _ := m.Update(QuotaMsg{
+		Usage:     nil,
+		Source:    "cache_fresh",
+		UpdatedAt: time.Now(),
+	})
+	mm := updated.(Model)
+
+	if mm.viewportXOffset != beforeOffset {
+		t.Errorf("viewportXOffset changed across QuotaMsg: %d → %d", beforeOffset, mm.viewportXOffset)
+	}
+	if mm.viewport.View() != beforeView {
+		t.Errorf("viewport rendered output changed across QuotaMsg (chart should not rebuild)")
+	}
+}
