@@ -946,10 +946,12 @@ func TestUnitKeyInHelp(t *testing.T) {
 
 func TestBeginUnitAnimation(t *testing.T) {
 	// Drive a model to a known token state, then call beginUnitAnimation
-	// after flipping unitIdx to cost. Assert the spring slices are sized
-	// to the bucket count, springActive flips true, springRatios reflect
-	// the OLD (token) ratios, and springTargetRatios reflect the NEW
-	// (cost) ratios. m.peak ends up as the cost peak.
+	// after flipping unitIdx to cost. Two-phase contract: springActive
+	// flips true, springPhase = springShrinking, springProjectiles is
+	// sized to the bucket count, springTargetRatios is all zeros (Phase 1
+	// target), springFinalTargets holds the new-unit ratios, oldPeak /
+	// oldUnitIdx capture the pre-toggle state, and m.peak is the new
+	// (cost) peak so refreshChart already wrote the new viewport content.
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "state.db")
 	c, err := cache.Open(dbPath)
@@ -993,8 +995,14 @@ func TestBeginUnitAnimation(t *testing.T) {
 	if !m.springActive {
 		t.Errorf("springActive = false, want true")
 	}
+	if m.springPhase != springShrinking {
+		t.Errorf("springPhase = %d, want springShrinking (%d)", m.springPhase, springShrinking)
+	}
 	if got, want := len(m.springs), len(oldValues); got != want {
 		t.Errorf("len(springs) = %d, want %d (one per bucket)", got, want)
+	}
+	if got, want := len(m.springProjectiles), len(oldValues); got != want {
+		t.Errorf("len(springProjectiles) = %d, want %d (one per bucket)", got, want)
 	}
 	if got, want := len(m.springRatios), len(oldValues); got != want {
 		t.Errorf("len(springRatios) = %d, want %d", got, want)
@@ -1005,8 +1013,11 @@ func TestBeginUnitAnimation(t *testing.T) {
 	if got, want := len(m.springTargetRatios), len(oldValues); got != want {
 		t.Errorf("len(springTargetRatios) = %d, want %d", got, want)
 	}
+	if got, want := len(m.springFinalTargets), len(oldValues); got != want {
+		t.Errorf("len(springFinalTargets) = %d, want %d", got, want)
+	}
 
-	// Initial spring state must equal old token ratios (same shape, value-by-value).
+	// Initial spring state must equal old token ratios.
 	for i, v := range oldValues {
 		want := v / oldPeak
 		if diff := m.springRatios[i] - want; diff < -1e-9 || diff > 1e-9 {
@@ -1014,29 +1025,45 @@ func TestBeginUnitAnimation(t *testing.T) {
 		}
 	}
 
-	// Velocities start at zero.
+	// Phase 1 target is zero across the board.
+	for i, r := range m.springTargetRatios {
+		if r != 0 {
+			t.Errorf("springTargetRatios[%d] = %v, want 0 (Phase 1 target)", i, r)
+		}
+	}
+
+	// Velocities start at zero (Phase 2 seeds them at the handoff).
 	for i, v := range m.springVelocities {
 		if v != 0 {
 			t.Errorf("springVelocities[%d] = %v, want 0", i, v)
 		}
 	}
 
-	// Target ratios must be in [0, 1] and at least one must be non-zero.
+	// springFinalTargets must be the new-unit ratios — in [0, 1] and at
+	// least one non-zero.
 	var anyNonZero bool
-	for i, r := range m.springTargetRatios {
+	for i, r := range m.springFinalTargets {
 		if r < 0 || r > 1 {
-			t.Errorf("springTargetRatios[%d] = %v, want [0, 1]", i, r)
+			t.Errorf("springFinalTargets[%d] = %v, want [0, 1]", i, r)
 		}
 		if r > 0 {
 			anyNonZero = true
 		}
 	}
 	if !anyNonZero {
-		t.Errorf("all springTargetRatios are zero; expected at least one non-zero cost bucket")
+		t.Errorf("all springFinalTargets are zero; expected at least one non-zero cost bucket")
 	}
 
-	// m.peak should now hold the COST peak so View()'s overlayYLabel
-	// renders the correct currency-formatted Y label immediately.
+	// View() reads oldPeak / oldUnitIdx during Phase 1 to show the OLD
+	// unit's label. oldUnitIdx is the unit before m.unitIdx was toggled.
+	if m.oldPeak != oldPeak {
+		t.Errorf("oldPeak = %v, want %v (pre-toggle token peak)", m.oldPeak, oldPeak)
+	}
+	if m.oldUnitIdx != 0 {
+		t.Errorf("oldUnitIdx = %d, want 0 (tokens, pre-toggle)", m.oldUnitIdx)
+	}
+
+	// m.peak should hold the COST peak — refreshChart already swapped state.
 	if m.peak == 0 {
 		t.Errorf("m.peak unexpectedly 0 after beginUnitAnimation; expected cost peak")
 	}
@@ -1047,41 +1074,13 @@ func TestBeginUnitAnimation(t *testing.T) {
 }
 
 func TestUnitToggleAnimationSettles(t *testing.T) {
-	// Drives the model through an animation: press 'u', then deliver up
-	// to 200 springTickMsg ticks. Asserts springActive eventually flips
-	// false, ratios converge to targets within epsilon, and the final
-	// tick returns no further Cmd (idle = zero cost).
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "state.db")
-	c, err := cache.Open(dbPath)
-	if err != nil {
-		t.Fatalf("cache.Open: %v", err)
-	}
-	defer c.Close()
+	// Drives the model through the two-phase animation: press 'u',
+	// then deliver up to 200 springTickMsg ticks. Asserts springActive
+	// eventually flips false, ratios converge to targets within
+	// epsilon, springPhase ends at springIdle, and the final tick
+	// returns no further Cmd (idle = zero cost).
+	m := seedTwoPhaseAnimationModel(t)
 
-	tab, err := pricing.Load()
-	if err != nil {
-		t.Fatalf("pricing.Load: %v", err)
-	}
-	now := time.Now().UTC().Truncate(15 * time.Minute)
-	msgs := []parse.Message{
-		{SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7",
-			Timestamp: now.Add(-30 * time.Minute), InputTokens: 10000, OutputTokens: 5000},
-		{SessionID: "s2", ProjectSlug: "p", Model: "claude-opus-4-7",
-			Timestamp: now.Add(-10 * time.Minute), InputTokens: 30000, OutputTokens: 15000},
-	}
-	if err := c.InsertMessages(msgs, tab); err != nil {
-		t.Fatalf("InsertMessages: %v", err)
-	}
-
-	m := New(Deps{Cache: c})
-	m.w, m.h = 120, 40
-	m.viewport.Width = m.chartWidth()
-	m.viewport.Height = m.chartHeight()
-	m.refreshChart()
-
-	// Press 'u' — Update should toggle, start the animation, and return
-	// a non-nil Cmd (the first tea.Tick).
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
 	m = updated.(Model)
 	if !m.springActive {
@@ -1091,13 +1090,10 @@ func TestUnitToggleAnimationSettles(t *testing.T) {
 		t.Fatalf("Update returned nil Cmd after 'u' press; expected tea.Tick")
 	}
 
-	// Drive ticks until settled or 200 attempts (200 * 16.7ms = 3.3s of
-	// synthetic time, well past the spec's 250–400ms settle window).
-	// Calibrated for springDamping >= 0.5 with springFrequency = 6.0;
-	// theoretical settle ticks at epsilon=0.001 are roughly ~143 at
-	// damping=0.5 and ~112 at damping=1.0. At damping=0.3 the cap is
-	// already breached (~229 ticks) — bump maxTicks before reducing
-	// damping below 0.5.
+	// 200 ticks (~3.3s @ 60 FPS) is well past the two-phase budget
+	// (Phase 1 ≈ 21 ticks, Phase 2 ≈ 30–50 ticks with critical damping
+	// and threshold 0.01). Bump maxTicks before reducing the
+	// phaseTransitionThreshold below 0.01.
 	const maxTicks = 200
 	var lastCmd tea.Cmd
 	for i := 0; i < maxTicks && m.springActive; i++ {
@@ -1107,15 +1103,132 @@ func TestUnitToggleAnimationSettles(t *testing.T) {
 	if m.springActive {
 		t.Fatalf("animation did not settle within %d ticks", maxTicks)
 	}
+	if m.springPhase != springIdle {
+		t.Errorf("springPhase = %d after settle, want springIdle", m.springPhase)
+	}
 
-	// Final ratios must equal targets (we snap on settle).
+	// Final ratios must equal targets (snapped on settle).
 	for i, r := range m.springRatios {
 		if r != m.springTargetRatios[i] {
 			t.Errorf("springRatios[%d] = %v, want %v (snapped target)", i, r, m.springTargetRatios[i])
 		}
 	}
 
-	// Final tick must return no further Cmd — idle TUI cost = zero.
+	if lastCmd != nil {
+		t.Errorf("settle tick returned non-nil Cmd; idle TUI must not keep ticking")
+	}
+}
+
+func TestPhaseTransition_AtThreshold(t *testing.T) {
+	// Drive ticks until Phase 1 settles. At the handoff:
+	//   - springPhase flips to springGrowing.
+	//   - springRatios are snapped to 0 (clean visual handoff).
+	//   - springTargetRatios takes the values from springFinalTargets.
+	//   - springVelocities are seeded as V0 * springFinalTargets[i].
+	m := seedTwoPhaseAnimationModel(t)
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	m = updated.(Model)
+	if m.springPhase != springShrinking {
+		t.Fatalf("springPhase = %d after 'u' press, want springShrinking (%d)", m.springPhase, springShrinking)
+	}
+
+	// Capture the Phase 2 targets we expect to see after the handoff.
+	expectedTargets := append([]float64(nil), m.springFinalTargets...)
+
+	// Sanity probe before the tick loop: capture a non-zero starting ratio
+	// so we can verify Phase 1 is actually moving the bars (not silently
+	// frozen by a future regression in the Projectile.Update plumbing).
+	// A non-trivial input model is required — find a bar that's not at
+	// zero and remember its starting ratio.
+	probeIdx := -1
+	for i, r := range m.springRatios {
+		if r > 0 {
+			probeIdx = i
+			break
+		}
+	}
+	if probeIdx < 0 {
+		t.Fatalf("test setup is degenerate — no non-zero springRatios to probe motion")
+	}
+	probeStart := m.springRatios[probeIdx]
+
+	// Two ticks must move the probe ratio strictly down. Phase 1 starts
+	// at zero velocity and harmonica.Projectile uses explicit Euler
+	// (position integrates current velocity before acceleration kicks
+	// in), so motion appears on tick 2+ — anything ≥ probeStart after
+	// two ticks means the Projectile is frozen, almost certainly a
+	// range-copy regression in the handler.
+	for range 2 {
+		updated, _ = m.Update(springTickMsg{})
+		m = updated.(Model)
+	}
+	if m.springRatios[probeIdx] >= probeStart {
+		t.Errorf("after two ticks, springRatios[%d] = %v >= %v (start) — Phase 1 not moving",
+			probeIdx, m.springRatios[probeIdx], probeStart)
+	}
+
+	// Drive ticks while still in Phase 1.
+	const maxTicks = 100
+	for i := 0; i < maxTicks && m.springPhase == springShrinking; i++ {
+		updated, _ = m.Update(springTickMsg{})
+		m = updated.(Model)
+	}
+	if m.springPhase == springShrinking {
+		t.Fatalf("Phase 1 did not exit within %d ticks", maxTicks)
+	}
+	if m.springPhase != springGrowing {
+		t.Fatalf("springPhase = %d after Phase 1 exit, want springGrowing (%d)", m.springPhase, springGrowing)
+	}
+
+	// At the handoff, springRatios must be zero (snapped).
+	for i, r := range m.springRatios {
+		if r != 0 {
+			t.Errorf("springRatios[%d] = %v after handoff, want 0", i, r)
+		}
+	}
+	// springTargetRatios must now hold the Phase 2 destination.
+	for i, want := range expectedTargets {
+		if m.springTargetRatios[i] != want {
+			t.Errorf("springTargetRatios[%d] = %v after handoff, want %v",
+				i, m.springTargetRatios[i], want)
+		}
+	}
+	// springVelocities must be seeded as V0 * springFinalTargets[i].
+	for i, want := range expectedTargets {
+		got := m.springVelocities[i]
+		exp := phase2InitialVelocityV0 * want
+		if diff := got - exp; diff < -1e-9 || diff > 1e-9 {
+			t.Errorf("springVelocities[%d] = %v, want %v (V0 * springFinalTargets[%d])", i, got, exp, i)
+		}
+	}
+}
+
+func TestPhase2Settle_ClearsState(t *testing.T) {
+	// Drive ticks all the way through both phases. After settle:
+	//   - springActive = false.
+	//   - springPhase = springIdle.
+	//   - springRatios are snapped to springTargetRatios.
+	//   - last tick returns no further Cmd.
+	m := seedTwoPhaseAnimationModel(t)
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	m = updated.(Model)
+
+	// 200 ticks covers both phases comfortably (Phase 1 ≈ 21 ticks @
+	// 60 FPS, Phase 2 ≈ 30–50 ticks with critical damping).
+	const maxTicks = 200
+	var lastCmd tea.Cmd
+	for i := 0; i < maxTicks && m.springActive; i++ {
+		updated, lastCmd = m.Update(springTickMsg{})
+		m = updated.(Model)
+	}
+	if m.springActive {
+		t.Fatalf("animation did not settle within %d ticks", maxTicks)
+	}
+	if m.springPhase != springIdle {
+		t.Errorf("springPhase = %d after settle, want springIdle (%d)", m.springPhase, springIdle)
+	}
 	if lastCmd != nil {
 		t.Errorf("settle tick returned non-nil Cmd; idle TUI must not keep ticking")
 	}
@@ -1180,6 +1293,9 @@ func TestRefreshDuringAnimationSnapsAndContinues(t *testing.T) {
 	if m.springActive {
 		t.Errorf("springActive = true after RefreshMsg; expected snap-and-stop")
 	}
+	if m.springPhase != springIdle {
+		t.Errorf("springPhase = %d after RefreshMsg; expected springIdle", m.springPhase)
+	}
 	if len(m.lastValues) <= preBucketCount {
 		t.Errorf("lastValues not refreshed after RefreshMsg; got %d buckets, want > %d",
 			len(m.lastValues), preBucketCount)
@@ -1219,6 +1335,9 @@ func TestRefreshDoesNotAnimate(t *testing.T) {
 	m = updated.(Model)
 	if m.springActive {
 		t.Errorf("springActive = true after RefreshMsg; watcher refresh must not animate")
+	}
+	if m.springPhase != springIdle {
+		t.Errorf("springPhase = %d after RefreshMsg without prior 'u'; want springIdle", m.springPhase)
 	}
 	if len(m.springs) != 0 {
 		t.Errorf("springs slice non-empty after RefreshMsg; expected len=0")
@@ -1596,5 +1715,377 @@ func TestUnitToggle_SpringStartsAtScrolledOffset(t *testing.T) {
 
 	if mm.springXOffset != scrolledOffset {
 		t.Errorf("springXOffset = %d, want %d (the user's actual viewport offset)", mm.springXOffset, scrolledOffset)
+	}
+}
+
+func TestYLabel_Phase1ShowsOldUnit(t *testing.T) {
+	// During Phase 1 (shrinking), View() must render the Y-label with
+	// the OLD unit's value and the OLD peak. We assert by string
+	// inspection: the rendered View must contain a tokens-format label
+	// (e.g. "45k") and NOT a dollar-format label.
+	m := seedTwoPhaseAnimationModel(t)
+
+	// We're starting from tokens; toggle to cost. Phase 1 should show
+	// the old (tokens) label.
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	m = updated.(Model)
+	if m.springPhase != springShrinking {
+		t.Fatalf("springPhase = %d, want springShrinking", m.springPhase)
+	}
+
+	// Drive a handful of ticks but stay inside Phase 1.
+	for i := 0; i < 5 && m.springPhase == springShrinking; i++ {
+		updated, _ = m.Update(springTickMsg{})
+		m = updated.(Model)
+	}
+	if m.springPhase != springShrinking {
+		t.Fatalf("expected to stay in Phase 1 for 5 ticks; got phase %d", m.springPhase)
+	}
+
+	body := strings.Join(chartBodyLines(m.View()), "\n")
+	// Phase 1 should still expose a token-shaped label (e.g. "45k", "30k")
+	// — no dollar sign in the chart body.
+	if !strings.Contains(body, "k") || strings.Contains(body, "$") {
+		t.Errorf("Phase 1 chart body should show OLD (tokens) Y-label; got body:\n%s", body)
+	}
+}
+
+func TestYLabel_Phase2ShowsNewUnit(t *testing.T) {
+	// During Phase 2 (growing), View() must render the Y-label with
+	// the NEW unit's value and the NEW peak. After toggling to cost
+	// and reaching Phase 2, the label format flips to "$N.NN".
+	m := seedTwoPhaseAnimationModel(t)
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	m = updated.(Model)
+
+	// Drive ticks until we cross into Phase 2.
+	const maxTicks = 100
+	for i := 0; i < maxTicks && m.springPhase != springGrowing; i++ {
+		updated, _ = m.Update(springTickMsg{})
+		m = updated.(Model)
+	}
+	if m.springPhase != springGrowing {
+		t.Fatalf("never reached Phase 2 in %d ticks", maxTicks)
+	}
+
+	// Drive a few more ticks so the spring grows enough that maxRatio
+	// is above the fade-stop-1 threshold (≥ 0.2). At V0=5, omega=6 the
+	// spring reaches ~0.5 in a few ticks for non-zero targets.
+	for i := 0; i < 10 && m.springActive; i++ {
+		updated, _ = m.Update(springTickMsg{})
+		m = updated.(Model)
+	}
+	if !m.springActive {
+		t.Fatalf("animation ended before we could sample Phase 2 mid-frame")
+	}
+
+	body := strings.Join(chartBodyLines(m.View()), "\n")
+	// Phase 2 should expose a cost-shaped label (contains "$") in the chart body.
+	if !strings.Contains(body, "$") {
+		t.Errorf("Phase 2 chart body should show NEW (cost) Y-label; got body:\n%s", body)
+	}
+}
+
+func TestLabelFade_SyncedWithMaxRatio(t *testing.T) {
+	// View()'s computed fade must equal max(springRatios) clamped to
+	// [0, 1] while the animation is active. We assert indirectly by
+	// inspecting the rendered View at known animation states: at the
+	// empty-moment frame (just after Phase 1 handoff, springRatios all
+	// zero), the Y-label must be absent. At steady state (springActive
+	// = false), the Y-label must be present.
+	m := seedTwoPhaseAnimationModel(t)
+
+	// Pre-toggle baseline: the Y-label is present at steady state.
+	pre := m.View()
+	if !strings.Contains(pre, "k") {
+		t.Fatalf("baseline View has no token-shaped label; test setup wrong:\n%s", pre)
+	}
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	m = updated.(Model)
+
+	// Drive ticks until exactly the moment Phase 2 starts. At that
+	// tick, m.springRatios were just snapped to zero (max == 0); the
+	// growing-Phase Update will fire next tick.
+	const maxTicks = 50
+	for i := 0; i < maxTicks && m.springPhase == springShrinking; i++ {
+		updated, _ = m.Update(springTickMsg{})
+		m = updated.(Model)
+	}
+	if m.springPhase != springGrowing {
+		t.Fatalf("did not reach Phase 2 in %d ticks", maxTicks)
+	}
+
+	// At this exact moment springRatios were snapped to zero but no
+	// growing-Phase tick has run yet. Verify the invariant the empty
+	// frame depends on:
+	for i, r := range m.springRatios {
+		if r != 0 {
+			t.Fatalf("springRatios[%d] = %v at handoff, want 0", i, r)
+		}
+	}
+
+	emptyMomentView := m.View()
+	// At the empty moment, the Y-label is absent — overlayYLabel returned
+	// body unchanged because fade <= 0. The chart-body region should not
+	// contain "$" or "k" Y-label glyphs.
+	for _, line := range chartBodyLines(emptyMomentView) {
+		if strings.Contains(line, "$") {
+			t.Errorf("empty-moment frame contains '$' in body line: %q", line)
+		}
+	}
+}
+
+// seedTwoPhaseAnimationModel constructs a Model with two fixture
+// messages so toggling 'u' kicks off a two-phase animation. Cache is
+// closed in a t.Cleanup.
+func seedTwoPhaseAnimationModel(t *testing.T) Model {
+	t.Helper()
+	dir := t.TempDir()
+	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	t.Cleanup(func() { c.Close() })
+
+	tab, err := pricing.Load()
+	if err != nil {
+		t.Fatalf("pricing.Load: %v", err)
+	}
+	now := time.Now().UTC().Truncate(15 * time.Minute)
+	msgs := []parse.Message{
+		{SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7",
+			Timestamp: now.Add(-30 * time.Minute), InputTokens: 10000, OutputTokens: 5000},
+		{SessionID: "s2", ProjectSlug: "p", Model: "claude-opus-4-7",
+			Timestamp: now.Add(-10 * time.Minute), InputTokens: 30000, OutputTokens: 15000},
+	}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	m := New(Deps{Cache: c})
+	m.w, m.h = 120, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	m.refreshChart()
+	return m
+}
+
+// chartBodyLines returns the chart-body rows from a rendered View.
+// Filters out header (5h / 7d quota rows + border lines) and footer
+// (keybinding help, indicators) so substring checks on the Y-label
+// or chart cells aren't false-positively poisoned by header changes.
+func chartBodyLines(view string) []string {
+	t := []string{}
+	for line := range strings.SplitSeq(view, "\n") {
+		if strings.ContainsAny(line, "─│") {
+			continue
+		}
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "5h") ||
+			strings.HasPrefix(trimmed, "7d") ||
+			strings.HasPrefix(trimmed, "burn") {
+			continue
+		}
+		// Footer: starts with help keybinding hints like "q quit" or
+		// "?  toggle help" — these always contain the literal string
+		// "quit" since the binding is fixed.
+		if strings.Contains(line, "quit") {
+			continue
+		}
+		t = append(t, line)
+	}
+	return t
+}
+
+func TestRefreshMsg_AbortsBothPhases(t *testing.T) {
+	// RefreshMsg arriving in either phase must hard-cut the animation:
+	// springActive=false and springPhase=springIdle. Driven by the
+	// existing refreshChart chokepoint (Task 7 extends it).
+	for _, phase := range []springPhase{springShrinking, springGrowing} {
+		name := "Phase1"
+		if phase == springGrowing {
+			name = "Phase2"
+		}
+		t.Run(name, func(t *testing.T) {
+			m := seedTwoPhaseAnimationModel(t)
+			updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+			m = updated.(Model)
+
+			if phase == springGrowing {
+				// Drive ticks until we cross into Phase 2.
+				const maxTicks = 100
+				for i := 0; i < maxTicks && m.springPhase != springGrowing; i++ {
+					updated, _ = m.Update(springTickMsg{})
+					m = updated.(Model)
+				}
+				if m.springPhase != springGrowing {
+					t.Fatalf("never reached Phase 2 in %d ticks", maxTicks)
+				}
+			}
+
+			// Now in the target phase. Deliver RefreshMsg.
+			updated, _ = m.Update(RefreshMsg{})
+			m = updated.(Model)
+
+			if m.springActive {
+				t.Errorf("springActive = true after RefreshMsg in %s; expected hard-cut", name)
+			}
+			if m.springPhase != springIdle {
+				t.Errorf("springPhase = %d after RefreshMsg in %s; expected springIdle", m.springPhase, name)
+			}
+		})
+	}
+}
+
+func TestVisualProbe_PhaseHandoffIsClean(t *testing.T) {
+	// In-process visual probe: drive the animation to the exact
+	// handoff moment (springRatios all zero, springPhase just flipped
+	// to springGrowing). The chart body in the rendered View() must
+	// have NO coloured bar cells — every chart row is uniform spaces
+	// inside the chart-cell region. (The header and footer remain;
+	// we only inspect chart rows.)
+	m := seedTwoPhaseAnimationModel(t)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	m = updated.(Model)
+
+	const maxTicks = 50
+	for i := 0; i < maxTicks && m.springPhase == springShrinking; i++ {
+		updated, _ = m.Update(springTickMsg{})
+		m = updated.(Model)
+	}
+	if m.springPhase != springGrowing {
+		t.Fatalf("did not reach Phase 2 in %d ticks", maxTicks)
+	}
+	// At this moment springRatios were just snapped to 0; no growing
+	// tick has yet rendered new bars.
+	for i, r := range m.springRatios {
+		if r != 0 {
+			t.Fatalf("springRatios[%d] = %v at handoff, want 0", i, r)
+		}
+	}
+
+	view := m.View()
+	// ANSI bar cells inside the chart use SGR colour escapes (heatColor
+	// + lipgloss). The empty-moment frame must contain NO foreground-
+	// background SGR pairs in the chart-body region.
+	//
+	// Heuristic: count the number of chart cells (█ or other heavy
+	// glyphs) in the body. With springRatios all zero and maxValue=1
+	// passed to ntcharts, no cells should be drawn.
+	if strings.ContainsAny(view, "█▇▆▅▄▃▂▁") {
+		t.Errorf("empty-moment frame contains chart-cell glyphs:\n%s", view)
+	}
+}
+
+func TestBeginUnitAnimation_EmptyCache(t *testing.T) {
+	// First 'u' toggle on a model whose cache is empty: beginUnitAnimation
+	// runs refreshChart, which short-circuits on the EarliestMessageTime
+	// missing-row path, leaving lastValues empty. The empty-newValues
+	// guard inside beginUnitAnimation must then set springActive=false
+	// AND springPhase=springIdle without allocating any spring slices.
+	dir := t.TempDir()
+	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	t.Cleanup(func() { c.Close() })
+
+	m := New(Deps{Cache: c})
+	m.w, m.h = 120, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	m.refreshChart()
+
+	// Pretend the user toggled the unit (Update's keybinding already
+	// increments unitIdx; replicate that here to exercise the same path).
+	m.unitIdx = 1
+	m.beginUnitAnimation()
+
+	if m.springActive {
+		t.Errorf("springActive = true on empty-cache toggle; expected no animation")
+	}
+	if m.springPhase != springIdle {
+		t.Errorf("springPhase = %d; expected springIdle", m.springPhase)
+	}
+	if len(m.springs) != 0 || len(m.springProjectiles) != 0 {
+		t.Errorf("spring slices allocated on empty-cache toggle (springs=%d, projectiles=%d); expected zero",
+			len(m.springs), len(m.springProjectiles))
+	}
+}
+
+func TestWindowSizeMsg_AbortsAnimation(t *testing.T) {
+	// WindowSizeMsg routes through refreshChart, which clears both
+	// springActive and springPhase. Spec acceptance criteria explicitly
+	// calls out WindowSizeMsg alongside RefreshMsg and Zoom as abort
+	// triggers, so test it directly rather than relying on transitive
+	// coverage via TestRefreshMsg_AbortsBothPhases.
+	for _, phase := range []springPhase{springShrinking, springGrowing} {
+		name := "Phase1"
+		if phase == springGrowing {
+			name = "Phase2"
+		}
+		t.Run(name, func(t *testing.T) {
+			m := seedTwoPhaseAnimationModel(t)
+			updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+			m = updated.(Model)
+
+			if phase == springGrowing {
+				const maxTicks = 100
+				for i := 0; i < maxTicks && m.springPhase != springGrowing; i++ {
+					updated, _ = m.Update(springTickMsg{})
+					m = updated.(Model)
+				}
+				if m.springPhase != springGrowing {
+					t.Fatalf("never reached Phase 2 in %d ticks", maxTicks)
+				}
+			}
+
+			updated, _ = m.Update(tea.WindowSizeMsg{Width: 160, Height: 50})
+			m = updated.(Model)
+
+			if m.springActive {
+				t.Errorf("springActive = true after WindowSizeMsg in %s; expected hard-cut", name)
+			}
+			if m.springPhase != springIdle {
+				t.Errorf("springPhase = %d after WindowSizeMsg in %s; expected springIdle", m.springPhase, name)
+			}
+		})
+	}
+}
+
+func TestLabelFade_MidAnimationBinding(t *testing.T) {
+	// The Y-label's fade level must follow max(springRatios) — high max
+	// renders the label at full opacity (no Foreground), low max renders
+	// it in a near-background grey, and max=0 omits the label entirely.
+	// We verify the direction binding directly: under forced TrueColor,
+	// fade=1.0 produces a label with no SGR wrapping, whereas a fade
+	// strictly less than 1.0 produces an SGR-wrapped label. The other
+	// fade-related tests cover the empty-moment and content swap; this
+	// test pins the brightness binding.
+	withForcedColor(t)
+
+	const probe = "$1.23"
+	full := labelFadeStyle(1.0).Render(probe)
+	if full != probe {
+		t.Errorf("labelFadeStyle(1.0).Render = %q, want %q (fade=1.0 must be full opacity = no Foreground)",
+			full, probe)
+	}
+
+	// Sample two distinct sub-full fade levels and assert they BOTH
+	// produce SGR-wrapped output that differs from the full-opacity
+	// rendering. Avoids hard-coding hex bytes that termenv might
+	// downsample on this platform.
+	for _, fade := range []float64{0.5, 0.1} {
+		got := labelFadeStyle(fade).Render(probe)
+		if got == probe {
+			t.Errorf("labelFadeStyle(%v).Render = %q (no SGR); expected SGR wrapping at sub-full fade",
+				fade, got)
+		}
+		if got == full {
+			t.Errorf("labelFadeStyle(%v).Render matches labelFadeStyle(1.0); expected distinct styling",
+				fade)
+		}
 	}
 }

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"math"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
@@ -55,4 +56,51 @@ func indexFadeStyle(stop int) lipgloss.Style {
 	default:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("0"))
 	}
+}
+
+// Y-label fade for the two-phase unit-toggle animation (issue #136).
+// 5 stops defined as lipgloss.CompleteColor so termenv picks the
+// highest-fidelity rendering the terminal advertises:
+//   - Truecolor / 256-color: smooth 5-level grey fade via hex / 232–255.
+//   - ANSI 16-color: pairs collapse to default fg / ANSI 8 / ANSI 0 —
+//     3 distinct visible levels, same granularity indexFadeStyle gives.
+//
+// Stop 1 deliberately uses no Foreground call (matches indexFadeStyle's
+// stop-1 precedent) so the label at full opacity matches surrounding
+// chart text colour against the user's theme exactly.
+var labelFadeStops = []lipgloss.CompleteColor{
+	{},                                                // stop 1 — sentinel; no Foreground
+	{TrueColor: "#888888", ANSI256: "244", ANSI: "8"}, // stop 2
+	{TrueColor: "#555555", ANSI256: "240", ANSI: "8"}, // stop 3
+	{TrueColor: "#333333", ANSI256: "236", ANSI: "0"}, // stop 4
+	{TrueColor: "#111111", ANSI256: "232", ANSI: "0"}, // stop 5 — faintest
+}
+
+const labelFadeStopCount = 5
+
+// labelFadeStyle maps fade ∈ [0, 1] to a discrete lipgloss style.
+//   - fade <= 0 → hidden sentinel (no Foreground). Caller gates render on fade > 0.
+//   - 0 < fade  → bucket = ceil(fade * 5), clamped to [1, 5]. Stop 1 is brightest.
+//
+// Stop 1 uses no Foreground call (consistent with indexFadeStyle's stop 1).
+// Stops 2–5 use CompleteColor; lipgloss/termenv downsamples per terminal
+// profile, which can collapse adjacent stops on 16-color terminals — the
+// degradation is documented in the spec.
+func labelFadeStyle(fade float64) lipgloss.Style {
+	if fade <= 0 {
+		return lipgloss.NewStyle()
+	}
+	// Invert fade so high fade (near 1.0 = full opacity at steady state)
+	// maps to stop 1 (brightest, no Foreground), and fade close to 0
+	// maps to stop 5 (faintest, near-background). The Y-label gets
+	// progressively darker as bars shrink (Phase 1) and progressively
+	// brighter as bars grow (Phase 2), matching the spec's "synced with
+	// max(springRatios)" intent.
+	stop := int(math.Ceil((1.0 - fade) * float64(labelFadeStopCount)))
+	stop = max(stop, 1)
+	stop = min(stop, labelFadeStopCount)
+	if stop == 1 {
+		return lipgloss.NewStyle()
+	}
+	return lipgloss.NewStyle().Foreground(labelFadeStops[stop-1])
 }

@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"log/slog"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -51,6 +52,17 @@ type tickFadeMsg struct{}
 // settled, after which idle TUI cost returns to zero (no further
 // Cmd is returned).
 type springTickMsg struct{}
+
+// springPhase tracks which leg of the two-phase unit-toggle animation
+// is currently running. Idle is the steady state; springActive=false
+// implies springPhase=springIdle. See issue #136.
+type springPhase int
+
+const (
+	springIdle      springPhase = iota
+	springShrinking             // Phase 1: bars fall to zero (Projectile, ease-in)
+	springGrowing               // Phase 2: bars grow from zero to target (Spring with Vi, ease-out)
+)
 
 // QuotaMsg is sent when fresh usage data is available.
 type QuotaMsg struct {
@@ -115,6 +127,20 @@ type Model struct {
 	// rebuilds at chart widths > 1000 buckets exceed the 60fps budget
 	// (BenchmarkBarChartRender).
 	springXOffset int
+	// Two-phase animation state (issue #136). springProjectiles drives
+	// Phase 1 (Projectile, per bar, per-bar tuned gravity). springs
+	// drives Phase 2 (Spring with seeded initial velocity). Final
+	// targets are held in springFinalTargets during Phase 1 because
+	// springTargetRatios is zeros while bars fall.
+	springPhase        springPhase
+	springProjectiles  []harmonica.Projectile
+	springFinalTargets []float64
+	// oldPeak / oldUnitIdx are snapshotted in beginUnitAnimation BEFORE
+	// refreshChart switches m.peak / m.unitIdx to the new unit. View()
+	// uses them during Phase 1 so the fading Y-label shows the OLD
+	// unit's value at the OLD peak.
+	oldPeak    float64
+	oldUnitIdx int
 
 	window         status.Window
 	quota          *anthro.Usage
@@ -203,33 +229,56 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.springActive {
 			return m, nil
 		}
-		settled := true
-		for i := range m.springRatios {
-			r, v := m.springs[i].Update(m.springRatios[i], m.springVelocities[i], m.springTargetRatios[i])
-			m.springRatios[i] = r
-			m.springVelocities[i] = v
-			d := r - m.springTargetRatios[i]
-			if d < 0 {
-				d = -d
+		switch m.springPhase {
+		case springShrinking:
+			var maxR float64
+			for i := range m.springRatios {
+				pos := m.springProjectiles[i].Update()
+				// Defensive clamp — early-exit beats us to it under
+				// well-tuned per-bar gravity, but Projectile keeps
+				// accelerating past zero if we let it.
+				pos.X = max(pos.X, 0)
+				m.springRatios[i] = pos.X
+				maxR = max(maxR, pos.X)
 			}
-			vAbs := v
-			if vAbs < 0 {
-				vAbs = -vAbs
+			if maxR < phaseTransitionThreshold {
+				// Phase handoff: snap ratios to zero, seed Phase 2
+				// velocities, switch to springGrowing.
+				for i := range m.springRatios {
+					m.springRatios[i] = 0
+					m.springTargetRatios[i] = m.springFinalTargets[i]
+					m.springVelocities[i] = phase2InitialVelocityV0 * m.springFinalTargets[i]
+				}
+				m.springPhase = springGrowing
 			}
-			if d > springSettleEpsilon || vAbs > springSettleEpsilon {
-				settled = false
+			m.renderSpringFrame()
+			return m, tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
+				return springTickMsg{}
+			})
+
+		case springGrowing:
+			var maxGap float64
+			for i := range m.springRatios {
+				r, v := m.springs[i].Update(m.springRatios[i],
+					m.springVelocities[i], m.springTargetRatios[i])
+				m.springRatios[i] = r
+				m.springVelocities[i] = v
+				gap := math.Abs(m.springTargetRatios[i] - r)
+				maxGap = max(maxGap, gap)
 			}
+			if maxGap < phaseTransitionThreshold {
+				copy(m.springRatios, m.springTargetRatios)
+				m.springActive = false
+				m.springPhase = springIdle
+				m.refreshChart()
+				return m, nil
+			}
+			m.renderSpringFrame()
+			return m, tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
+				return springTickMsg{}
+			})
 		}
-		if settled {
-			copy(m.springRatios, m.springTargetRatios)
-			m.springActive = false
-			m.refreshChart()
-			return m, nil
-		}
-		m.renderSpringFrame()
-		return m, tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
-			return springTickMsg{}
-		})
+		return m, nil
 	case QuotaMsg:
 		m.quota = msg.Usage
 		m.quotaSource = msg.Source
@@ -291,7 +340,21 @@ func (m Model) View() string {
 	if m.showHelp {
 		body = m.help.FullHelpView(m.keys.FullHelp())
 	} else {
-		body = overlayYLabel(m.viewport.View(), m.peak, chartUnit(m.unitIdx), m.chartHeight())
+		fade := 1.0
+		labelUnit := chartUnit(m.unitIdx)
+		labelPeak := m.peak
+		if m.springActive {
+			var maxR float64
+			for _, r := range m.springRatios {
+				maxR = max(maxR, r)
+			}
+			fade = maxR
+			if m.springPhase == springShrinking {
+				labelUnit = chartUnit(m.oldUnitIdx)
+				labelPeak = m.oldPeak
+			}
+		}
+		body = overlayYLabel(m.viewport.View(), labelPeak, labelUnit, m.chartHeight(), fade)
 	}
 	footer := m.renderFooter()
 	out := lipgloss.JoinVertical(lipgloss.Left, header, sep, body, sep, footer)
@@ -436,66 +499,104 @@ const (
 	springDamping   = 1.0
 )
 
-// springSettleEpsilon is the absolute |ratio - target| and |velocity|
-// below which a spring is considered settled. 0.001 is one tenth of a
-// percent of full bar height — well below visual quantisation of a
-// single chart cell. Unit-independent because the spring lives in
-// ratio space.
-const springSettleEpsilon = 0.001
+// Phase durations and tuning for the two-phase animation (#136).
+//
+// phase1Duration is the wall-clock target for Phase 1 (Projectile fall).
+// Per-bar gravity is tuned at beginUnitAnimation so each bar reaches
+// zero at exactly t = phase1Duration regardless of starting height.
+//
+// phase2Frequency, phase2Damping mirror the existing springFrequency
+// and springDamping for Phase 2's spring. Critical damping (1.0) +
+// initial velocity below omega guarantees monotonic ease-out without
+// overshoot.
+//
+// phase2InitialVelocityV0 is V₀ in Vi[i] = V₀ · springFinalTargets[i].
+// Picked below omega=6 so the spring approaches the target monotonically.
+//
+// phaseTransitionThreshold is the symmetric early-exit cutoff: Phase 1
+// hands off when max(springRatios) < threshold; Phase 2 settles when
+// max(springTargetRatios − springRatios) < threshold. 0.01 is below
+// single-cell visual quantisation.
+const (
+	phase1Duration           = 350 * time.Millisecond
+	phase2Frequency          = springFrequency // 6.0
+	phase2Damping            = springDamping   // 1.0
+	phase2InitialVelocityV0  = 5.0
+	phaseTransitionThreshold = 0.01
+)
 
-// beginUnitAnimation captures the current (old-unit) bar ratios as the
-// spring's initial state, queries the new unit's buckets, and primes the
-// per-bar springs to settle toward the new-unit ratios. After this runs,
-// m.peak holds the new unit's peak (so the Y-label overlay reflects the
-// new unit immediately) and springActive is true (so the tick loop in
-// Update will rebuild the chart from springRatios — Task 9 wires that).
+// beginUnitAnimation primes the two-phase unit-toggle animation. It
+// snapshots the OLD state (oldPeak, oldUnitIdx, oldValues from
+// m.lastValues), runs refreshChart so the viewport content reflects
+// the NEW unit, then builds:
+//   - springRatios[i] from the OLD ratios (current visible heights).
+//   - springFinalTargets[i] from the NEW ratios (Phase 2 destination).
+//   - springProjectiles[i] with per-bar tuned gravity so bar i lands
+//     at zero at t = phase1Duration regardless of its starting ratio.
+//   - springs[i] (Phase 2 spring) configured; springVelocities seeded
+//     at the phase transition, not here.
+//   - springPhase = springShrinking, springActive = true.
 //
 // Caller must have already incremented m.unitIdx before calling.
+// oldUnitIdx is derived by inverting the toggle since this is a
+// 2-cycle (tokens ↔ cost).
 //
-// Snapshots m.lastValues / m.peak (the values and peak from the previous
-// refreshChart) BEFORE running refreshChart for the new unit, so the old
-// state survives long enough to compute the initial ratios.
+// Snapshots happen BEFORE refreshChart so the OLD m.peak / m.lastValues
+// survive the refresh that overwrites them.
 func (m *Model) beginUnitAnimation() {
 	if m.deps.Cache == nil {
 		return
 	}
 
 	oldValues := m.lastValues
-	oldPeak := m.peak
+	m.oldPeak = m.peak
+	m.oldUnitIdx = (m.unitIdx + 1) % 2
 
-	// refreshChart updates m.lastValues, m.peak, and the viewport content
-	// to reflect the new unit. Use it as the source of truth for the
-	// new-unit values and peak so beginUnitAnimation doesn't duplicate
-	// the SQL/branching logic.
 	m.refreshChart()
 	newValues := m.lastValues
 	newPeak := m.peak
 
 	if len(newValues) == 0 {
-		// Empty cache or query error — refreshChart already wrote the
-		// empty placeholder to the viewport. Nothing to animate.
 		m.springActive = false
+		m.springPhase = springIdle
 		return
 	}
 
 	n := len(newValues)
 	m.springs = make([]harmonica.Spring, n)
+	m.springProjectiles = make([]harmonica.Projectile, n)
 	m.springRatios = make([]float64, n)
 	m.springVelocities = make([]float64, n)
-	m.springTargetRatios = make([]float64, n)
+	m.springTargetRatios = make([]float64, n) // zeros — Phase 1 target
+	m.springFinalTargets = make([]float64, n)
+
+	t1 := phase1Duration.Seconds()
 	for i := range n {
-		m.springs[i] = harmonica.NewSpring(harmonica.FPS(springFPS), springFrequency, springDamping)
-		// Initial ratio: previous unit's bucket ratio (or 0 if old peak
-		// was zero, e.g. first-ever toggle on an empty cache).
-		if oldPeak > 0 && i < len(oldValues) {
-			m.springRatios[i] = oldValues[i] / oldPeak
+		if m.oldPeak > 0 && i < len(oldValues) {
+			m.springRatios[i] = oldValues[i] / m.oldPeak
 		}
-		// Target ratio: new unit's bucket ratio.
 		if newPeak > 0 {
-			m.springTargetRatios[i] = newValues[i] / newPeak
+			m.springFinalTargets[i] = newValues[i] / newPeak
 		}
+		// Per-bar tuned gravity (quadratic ease-in) so bar i hits 0 at t = phase1Duration.
+		// h = 0.5 · g · t² (zero initial velocity) ⇒ g = 2h / t².
+		// If springRatios[i] == 0 (no prior data for this bucket), g = 0 and the
+		// Projectile is degenerate. Phase 1's max-ratio early-exit handles it on
+		// the first tick — no special case needed here.
+		g := 2 * m.springRatios[i] / (t1 * t1)
+		// Stored by value; Phase 1 tick MUST index (m.springProjectiles[i].Update()),
+		// never range-copy. Projectile.Update has a pointer receiver and mutates
+		// state; a range-copy loop would freeze Phase 1 silently.
+		m.springProjectiles[i] = *harmonica.NewProjectile(
+			harmonica.FPS(springFPS),
+			harmonica.Point{X: m.springRatios[i]},
+			harmonica.Vector{},      // v0 = 0 (at rest)
+			harmonica.Vector{X: -g}, // accel toward zero
+		)
+		m.springs[i] = harmonica.NewSpring(harmonica.FPS(springFPS), phase2Frequency, phase2Damping)
 	}
 	m.springActive = true
+	m.springPhase = springShrinking
 }
 
 // renderSpringFrame rebuilds the viewport content from the visible
@@ -572,6 +673,10 @@ func (m *Model) refreshChart() {
 	// springActive is false.
 	if m.springActive {
 		m.springActive = false
+		m.springPhase = springIdle
+		// springProjectiles, springFinalTargets, oldPeak, oldUnitIdx
+		// remain populated but unread — guarded by springActive=false.
+		// Next beginUnitAnimation re-makes the slices.
 	}
 
 	// Snapshot the wall-clock anchor BEFORE rebuild. lastStarts is empty
