@@ -12,8 +12,6 @@ operation.
 - **Token histogram** — horizontally-scrollable bar chart of usage per
   time bucket, heat-coloured relative to the peak bucket. Zoom cycles
   between 5m / 15m / 1h granularity.
-- **Worktree-aware project grouping** — collapses session slugs back
-  to the canonical project via git.
 - **fsnotify live updates** — file watcher (not polling) keeps the
   cache in sync as Claude writes new turns; the TUI redraws on each
   refresh.
