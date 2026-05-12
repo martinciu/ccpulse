@@ -84,40 +84,6 @@ func BenchmarkFormatTokenCount(b *testing.B) {
 	}
 }
 
-func BenchmarkNiceCeiling(b *testing.B) {
-	cases := []struct {
-		name string
-		v    int64
-	}{
-		{"zero", 0}, // exercises the early-return branch
-		{"small", 12},
-		{"k", 45_300},
-		{"M_low", 1_200_000},
-		{"M_high", 999_999},
-	}
-	for _, tt := range cases {
-		b.Run(tt.name, func(b *testing.B) {
-			b.ReportAllocs()
-			for b.Loop() {
-				_ = niceCeiling(tt.v)
-			}
-		})
-	}
-}
-
-func BenchmarkRenderYAxis(b *testing.B) {
-	for _, h := range []int{10, 50, 100} {
-		b.Run(formatN(h), func(b *testing.B) {
-			b.ReportAllocs()
-			runtime.GC()
-			b.ResetTimer()
-			for b.Loop() {
-				sinkString = renderYAxis(50_000, h)
-			}
-		})
-	}
-}
-
 func BenchmarkRenderXLabels(b *testing.B) {
 	now := time.Now().UTC()
 	for _, n := range []int{100, 1000, 5000} {
@@ -295,81 +261,6 @@ func TestRenderXLabels(t *testing.T) {
 	}
 }
 
-func TestRenderYAxis(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name     string
-		ceiling  int64
-		height   int
-		wantRows []string // nil means expect empty output
-	}{
-		{
-			name:    "ceiling 50k height 6",
-			ceiling: 50_000,
-			height:  6,
-			wantRows: []string{
-				" 50.0k",
-				"      ",
-				"      ",
-				"      ",
-				"     0",
-				"      ",
-			},
-		},
-		{
-			name:    "ceiling 1.5M height 8",
-			ceiling: 1_500_000,
-			height:  8,
-			wantRows: []string{
-				"  1.5M",
-				"      ",
-				"      ",
-				"      ",
-				"      ",
-				"      ",
-				"     0",
-				"      ",
-			},
-		},
-		{
-			name:     "ceiling 0 returns blank column",
-			ceiling:  0,
-			height:   6,
-			wantRows: []string{"      ", "      ", "      ", "      ", "      ", "      "},
-		},
-		{
-			name:     "height too small returns empty",
-			ceiling:  50_000,
-			height:   5,
-			wantRows: nil,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			got := renderYAxis(tt.ceiling, tt.height)
-			if tt.wantRows == nil {
-				if got != "" {
-					t.Errorf("expected empty, got %q", got)
-				}
-				return
-			}
-			rows := strings.Split(got, "\n")
-			if len(rows) != len(tt.wantRows) {
-				t.Fatalf("got %d rows, want %d:\n%q", len(rows), len(tt.wantRows), got)
-			}
-			for i, want := range tt.wantRows {
-				if rows[i] != want {
-					t.Errorf("row %d: got %q, want %q", i, rows[i], want)
-				}
-			}
-			if w := lipgloss.Width(rows[0]); w != yAxisWidth {
-				t.Errorf("row 0 width = %d, want %d", w, yAxisWidth)
-			}
-		})
-	}
-}
-
 func TestFormatXLabel(t *testing.T) {
 	t.Parallel()
 	// Tuesday 14:30 UTC. Tests use UTC throughout for determinism.
@@ -405,41 +296,6 @@ func TestFormatXLabel(t *testing.T) {
 			if got != tt.want {
 				t.Errorf("formatXLabel(%v, %s) = %q, want %q",
 					tt.t.Format(time.RFC3339), tt.zoom.Label, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestNiceCeiling(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name string
-		peak int64
-		want int64
-	}{
-		{"zero returns 1", 0, 1},
-		{"negative returns 1", -10, 1},
-		{"one", 1, 1},
-		{"two", 2, 2},
-		{"three rounds to 5", 3, 5},
-		{"five", 5, 5},
-		{"six rounds to 10", 6, 10},
-		{"twelve rounds to 15", 12, 15},
-		{"1200 rounds to 1500", 1200, 1500},
-		{"12000 rounds to 15000", 12_000, 15_000},
-		{"45300 rounds to 50000", 45_300, 50_000},
-		{"1.2M rounds to 1.5M", 1_200_000, 1_500_000},
-		{"1.6M rounds to 2M", 1_600_000, 2_000_000},
-		{"2.3M rounds to 2.5M", 2_300_000, 2_500_000},
-		{"999999 rounds to 1M", 999_999, 1_000_000},
-		{"exactly 1M", 1_000_000, 1_000_000},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			got := niceCeiling(tt.peak)
-			if got != tt.want {
-				t.Errorf("niceCeiling(%d) = %d, want %d", tt.peak, got, tt.want)
 			}
 		})
 	}

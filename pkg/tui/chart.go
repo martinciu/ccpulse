@@ -1,11 +1,9 @@
 package tui
 
 import (
-	"fmt"
 	"log/slog"
 	"math"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/NimbleMarkets/ntcharts/barchart"
@@ -81,33 +79,6 @@ func renderXLabels(buckets []cache.TokenBucket, chartW int, zoom ZoomLevel, now 
 	return dimStyle.Render(string(row))
 }
 
-// yAxisWidth is the column budget for the fixed-left Y axis. 5 cols are
-// enough for the widest expected label ("99.9k", "1.5M"); the 6th col is
-// breathing room between the axis and the leftmost bar.
-const yAxisWidth = 6
-
-// renderYAxis returns a yAxisWidth-col × height string with the ceiling
-// label at row 0 and "0" at row height-2 (the row above the X labels row
-// in the viewport). Other rows are 6 spaces. ceiling <= 0 returns a 6×H
-// blank column (no spurious "1" over empty bars). height < 6 returns ""
-// (the caller should also have already decided not to show the Y axis
-// via Model.shouldShowYAxis()).
-func renderYAxis(ceiling int64, height int) string {
-	if height < 6 {
-		return ""
-	}
-	blank := strings.Repeat(" ", yAxisWidth)
-	rows := make([]string, height)
-	for i := range rows {
-		rows[i] = blank
-	}
-	if ceiling > 0 {
-		rows[0] = fmt.Sprintf("%*s", yAxisWidth, formatTokenCount(ceiling))
-		rows[height-2] = fmt.Sprintf("%*s", yAxisWidth, "0")
-	}
-	return strings.Join(rows, "\n")
-}
-
 // formatXLabel returns the X-axis tick label for bucket time t at the
 // given zoom; "" if t is not on a label boundary. Cadence is clock-aligned
 // (anchored to hour / 3-hour / day marks) so positions are stable across
@@ -132,34 +103,6 @@ func formatXLabel(t time.Time, zoom ZoomLevel, now time.Time) string {
 		}
 	}
 	return ""
-}
-
-// niceCeiling returns the smallest "nice" value >= peak from the sequence
-// {1, 1.5, 2, 2.5, 5} × 10^k. Used to pick a clean Y axis top label and
-// to override the barchart's auto-scaling (via WithMaxValue) so labels
-// stay truthful about where the tallest bar actually lands.
-func niceCeiling(peak int64) int64 {
-	if peak <= 0 {
-		return 1
-	}
-	mag := math.Pow10(int(math.Floor(math.Log10(float64(peak)))))
-	norm := float64(peak) / mag
-	var nice float64
-	switch {
-	case norm <= 1.0:
-		nice = 1.0
-	case norm <= 1.5:
-		nice = 1.5
-	case norm <= 2.0:
-		nice = 2.0
-	case norm <= 2.5:
-		nice = 2.5
-	case norm <= 5.0:
-		nice = 5.0
-	default:
-		nice = 10.0
-	}
-	return int64(math.Round(nice * mag))
 }
 
 // niceFloor returns the largest "nice" value <= peak from the sequence
