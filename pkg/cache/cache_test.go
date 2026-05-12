@@ -1059,3 +1059,145 @@ func TestInsertMessages_StampsPricingVersion(t *testing.T) {
 		t.Errorf("pricing_version = %q, want %q", got, tab.Version)
 	}
 }
+
+func TestCostBuckets_ContiguousRange(t *testing.T) {
+	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	tab, _ := pricing.Load()
+
+	// Same shape as TestTokenBuckets_ContiguousRange so a future Metric
+	// refactor (#93) can grep for the parallel structure.
+	ts1 := time.Date(2026, 5, 9, 11, 50, 0, 0, time.UTC)
+	ts2 := time.Date(2026, 5, 9, 11, 55, 0, 0, time.UTC)
+	ts3 := time.Date(2026, 5, 9, 11, 57, 0, 0, time.UTC)
+
+	msgs := []parse.Message{
+		{SessionID: "s1", ProjectSlug: "p", Model: "claude-sonnet-4-6",
+			Timestamp: ts1, InputTokens: 1000, OutputTokens: 500},
+		{SessionID: "s2", ProjectSlug: "p", Model: "claude-sonnet-4-6",
+			Timestamp: ts2, InputTokens: 2000, OutputTokens: 800},
+		{SessionID: "s3", ProjectSlug: "p", Model: "claude-sonnet-4-6",
+			Timestamp: ts3, InputTokens: 500, OutputTokens: 200},
+	}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatal(err)
+	}
+
+	from := time.Date(2026, 5, 9, 11, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)
+	buckets, err := c.CostBuckets(5*time.Minute, from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(buckets) != 12 {
+		t.Fatalf("want 12 buckets, got %d: %+v", len(buckets), buckets)
+	}
+	for i, b := range buckets {
+		want := from.Add(time.Duration(i) * 5 * time.Minute)
+		if !b.BucketStart.Equal(want) {
+			t.Errorf("bucket[%d].BucketStart = %v, want %v", i, b.BucketStart, want)
+		}
+	}
+	// Indices 10 (11:50, 1 msg) and 11 (11:55 + 11:57, 2 msgs) carry cost.
+	// Compute the expected per-bucket cost from the same pricing.Table the
+	// production code uses, so a pricing.json change doesn't make this test
+	// drift; we just want to assert the SUM aggregator matches CostFor.
+	cost1, _ := tab.CostFor(msgs[0])
+	cost2, _ := tab.CostFor(msgs[1])
+	cost3, _ := tab.CostFor(msgs[2])
+	wantBucket10 := cost1
+	wantBucket11 := cost2 + cost3
+	for i, b := range buckets {
+		switch i {
+		case 10:
+			if !approxEqual(b.Cost, wantBucket10, 1e-9) {
+				t.Errorf("bucket[10].Cost = %v, want %v", b.Cost, wantBucket10)
+			}
+		case 11:
+			if !approxEqual(b.Cost, wantBucket11, 1e-9) {
+				t.Errorf("bucket[11].Cost = %v, want %v", b.Cost, wantBucket11)
+			}
+		default:
+			if b.Cost != 0 {
+				t.Errorf("bucket[%d].Cost = %v, want 0 (gap)", i, b.Cost)
+			}
+		}
+	}
+}
+
+// approxEqual is the float comparison helper for cost-aggregation tests.
+// Cost is computed in Go via pricing.CostFor and SUMmed in SQLite as REAL,
+// so a strict == would be brittle to FP rounding across the round-trip.
+func approxEqual(a, b, eps float64) bool {
+	d := a - b
+	if d < 0 {
+		d = -d
+	}
+	return d <= eps
+}
+
+func TestCostBuckets_AllEmpty(t *testing.T) {
+	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	from := time.Date(2026, 5, 9, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 5, 9, 6, 0, 0, 0, time.UTC)
+	buckets, err := c.CostBuckets(15*time.Minute, from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(buckets) != 24 {
+		t.Fatalf("want 24 buckets, got %d", len(buckets))
+	}
+	for i, b := range buckets {
+		if b.Cost != 0 {
+			t.Errorf("bucket[%d].Cost = %v, want 0", i, b.Cost)
+		}
+		if i > 0 && !b.BucketStart.After(buckets[i-1].BucketStart) {
+			t.Errorf("bucket starts not monotonic at index %d", i)
+		}
+	}
+}
+
+func TestCostBuckets_PricingUnknownContributesZero(t *testing.T) {
+	// pricing_unknown=1 messages store cost_usd_estimate=0 at ingest, so
+	// SUM(cost_usd_estimate) returns 0 for buckets containing only unpriced
+	// models. Documented as a silent under-report in the spec; this test
+	// pins the behaviour so a future "exclude unpriced" change is a
+	// deliberate decision, not an accident.
+	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	tab, _ := pricing.Load()
+	ts := time.Date(2026, 5, 9, 11, 50, 0, 0, time.UTC)
+	msgs := []parse.Message{
+		{SessionID: "s1", ProjectSlug: "p", Model: "model-not-in-pricing-json",
+			Timestamp: ts, InputTokens: 1000, OutputTokens: 500},
+	}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatal(err)
+	}
+
+	from := time.Date(2026, 5, 9, 11, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)
+	buckets, err := c.CostBuckets(5*time.Minute, from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, b := range buckets {
+		if b.Cost != 0 {
+			t.Errorf("bucket[%d].Cost = %v, want 0 (unpriced model)", i, b.Cost)
+		}
+	}
+}

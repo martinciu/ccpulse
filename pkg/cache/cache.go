@@ -362,6 +362,72 @@ ORDER BY bucket_epoch ASC
 	return out, nil
 }
 
+// CostBucket is one time-bucketed total of USD cost.
+type CostBucket struct {
+	BucketStart time.Time
+	Cost        float64
+}
+
+// CostBuckets returns one CostBucket per `dur` interval covering
+// [from, to). Mirrors TokenBuckets exactly except the aggregator is
+// SUM(cost_usd_estimate). Messages with pricing_unknown=1 contribute 0
+// to their bucket because cost_usd_estimate was stored as 0 at ingest;
+// no extra WHERE clause is needed.
+func (c *Cache) CostBuckets(dur time.Duration, from, to time.Time) ([]CostBucket, error) {
+	start := time.Now()
+	from = BucketAlign(from, dur)
+	to = BucketAlign(to, dur)
+	if !to.After(from) {
+		return nil, nil
+	}
+	bucketSecs := int64(dur.Seconds())
+	fromStr := from.UTC().Format("2006-01-02T15:04:05.000Z07:00")
+	toStr := to.UTC().Format("2006-01-02T15:04:05.000Z07:00")
+	rows, err := c.db.Query(`
+SELECT
+  CAST(CAST(strftime('%s', ts) AS INTEGER) / ? AS INTEGER) * ? AS bucket_epoch,
+  SUM(cost_usd_estimate)
+FROM messages
+WHERE ts >= ? AND ts < ?
+GROUP BY bucket_epoch
+ORDER BY bucket_epoch ASC
+`, bucketSecs, bucketSecs, fromStr, toStr)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	totals := make(map[int64]float64)
+	for rows.Next() {
+		var epoch int64
+		var cost float64
+		if err := rows.Scan(&epoch, &cost); err != nil {
+			return nil, err
+		}
+		totals[epoch] = cost
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	n := int(to.Sub(from) / dur)
+	out := make([]CostBucket, n)
+	for i := range n {
+		bs := from.Add(time.Duration(i) * dur)
+		out[i] = CostBucket{
+			BucketStart: bs,
+			Cost:        totals[bs.Unix()],
+		}
+	}
+	slog.Debug("cache.CostBuckets",
+		"dur_ms", time.Since(start).Milliseconds(),
+		"zoom", zoomLabel(dur),
+		"unit", "cost",
+		"buckets", n,
+		"rows_aggregated", len(totals))
+	return out, nil
+}
+
 // zoomLabel returns the compact human label that matches pkg/tui's
 // ZoomLevels labels ("5m", "15m", "1h") for the three known zoom
 // durations. Falls back to time.Duration.String() (e.g. "5m0s") for
