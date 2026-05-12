@@ -2002,3 +2002,43 @@ func TestRefreshMsg_AbortsBothPhases(t *testing.T) {
 		})
 	}
 }
+
+func TestVisualProbe_PhaseHandoffIsClean(t *testing.T) {
+	// In-process visual probe: drive the animation to the exact
+	// handoff moment (springRatios all zero, springPhase just flipped
+	// to springGrowing). The chart body in the rendered View() must
+	// have NO coloured bar cells — every chart row is uniform spaces
+	// inside the chart-cell region. (The header and footer remain;
+	// we only inspect chart rows.)
+	m := seedTwoPhaseAnimationModel(t)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	m = updated.(Model)
+
+	const maxTicks = 50
+	for i := 0; i < maxTicks && m.springPhase == springShrinking; i++ {
+		updated, _ = m.Update(springTickMsg{})
+		m = updated.(Model)
+	}
+	if m.springPhase != springGrowing {
+		t.Fatalf("did not reach Phase 2 in %d ticks", maxTicks)
+	}
+	// At this moment springRatios were just snapped to 0; no growing
+	// tick has yet rendered new bars.
+	for i, r := range m.springRatios {
+		if r != 0 {
+			t.Fatalf("springRatios[%d] = %v at handoff, want 0", i, r)
+		}
+	}
+
+	view := m.View()
+	// ANSI bar cells inside the chart use SGR colour escapes (heatColor
+	// + lipgloss). The empty-moment frame must contain NO foreground-
+	// background SGR pairs in the chart-body region.
+	//
+	// Heuristic: count the number of chart cells (█ or other heavy
+	// glyphs) in the body. With springRatios all zero and maxValue=1
+	// passed to ntcharts, no cells should be drawn.
+	if strings.ContainsAny(view, "█▇▆▅▄▃▂▁") {
+		t.Errorf("empty-moment frame contains chart-cell glyphs:\n%s", view)
+	}
+}
