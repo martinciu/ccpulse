@@ -1043,6 +1043,180 @@ func TestBeginUnitAnimation(t *testing.T) {
 	}
 }
 
+func TestUnitToggleAnimationSettles(t *testing.T) {
+	// Drives the model through an animation: press 'u', then deliver up
+	// to 200 springTickMsg ticks. Asserts springActive eventually flips
+	// false, ratios converge to targets within epsilon, and the final
+	// tick returns no further Cmd (idle = zero cost).
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "state.db")
+	c, err := cache.Open(dbPath)
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	defer c.Close()
+
+	tab, err := pricing.Load()
+	if err != nil {
+		t.Fatalf("pricing.Load: %v", err)
+	}
+	now := time.Now().UTC().Truncate(15 * time.Minute)
+	msgs := []parse.Message{
+		{SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7",
+			Timestamp: now.Add(-30 * time.Minute), InputTokens: 10000, OutputTokens: 5000},
+		{SessionID: "s2", ProjectSlug: "p", Model: "claude-opus-4-7",
+			Timestamp: now.Add(-10 * time.Minute), InputTokens: 30000, OutputTokens: 15000},
+	}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	m := New(Deps{Cache: c})
+	m.w, m.h = 120, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	m.refreshChart()
+
+	// Press 'u' — Update should toggle, start the animation, and return
+	// a non-nil Cmd (the first tea.Tick).
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	m = updated.(Model)
+	if !m.springActive {
+		t.Fatalf("springActive = false after 'u' press; expected animation start")
+	}
+	if cmd == nil {
+		t.Fatalf("Update returned nil Cmd after 'u' press; expected tea.Tick")
+	}
+
+	// Drive ticks until settled or 200 attempts (200 * 16.7ms = 3.3s of
+	// synthetic time, well past the spec's 250–400ms settle window).
+	const maxTicks = 200
+	var lastCmd tea.Cmd
+	for i := 0; i < maxTicks && m.springActive; i++ {
+		updated, lastCmd = m.Update(springTickMsg{})
+		m = updated.(Model)
+	}
+	if m.springActive {
+		t.Fatalf("animation did not settle within %d ticks", maxTicks)
+	}
+
+	// Final ratios must equal targets (we snap on settle).
+	for i, r := range m.springRatios {
+		if r != m.springTargetRatios[i] {
+			t.Errorf("springRatios[%d] = %v, want %v (snapped target)", i, r, m.springTargetRatios[i])
+		}
+	}
+
+	// Final tick must return no further Cmd — idle TUI cost = zero.
+	if lastCmd != nil {
+		t.Errorf("settle tick returned non-nil Cmd; idle TUI must not keep ticking")
+	}
+}
+
+func TestRefreshDuringAnimationSnapsAndContinues(t *testing.T) {
+	// While animation is active, a RefreshMsg whose data has a different
+	// bucket count must abort the spring (snap to targets) and re-run
+	// refreshChart against the new data. The model after the RefreshMsg
+	// must NOT be springActive and must have lastValues reflecting the
+	// new bucket count.
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "state.db")
+	c, err := cache.Open(dbPath)
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	defer c.Close()
+
+	tab, err := pricing.Load()
+	if err != nil {
+		t.Fatalf("pricing.Load: %v", err)
+	}
+	now := time.Now().UTC().Truncate(15 * time.Minute)
+	// Initial state: one message.
+	msgs := []parse.Message{
+		{SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7",
+			Timestamp: now.Add(-2 * time.Hour), InputTokens: 10000, OutputTokens: 5000},
+	}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	m := New(Deps{Cache: c})
+	m.w, m.h = 120, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	m.refreshChart()
+	preBucketCount := len(m.lastValues)
+
+	// Start animation.
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	m = updated.(Model)
+	if !m.springActive {
+		t.Fatalf("animation didn't start")
+	}
+
+	// Insert a new message far back in time so earliest-bucket moves and the
+	// bucket count grows substantially.
+	newMsgs := []parse.Message{
+		{SessionID: "s2", ProjectSlug: "p", Model: "claude-opus-4-7",
+			Timestamp: now.Add(-12 * time.Hour), InputTokens: 50000, OutputTokens: 25000},
+	}
+	if err := c.InsertMessages(newMsgs, tab); err != nil {
+		t.Fatalf("InsertMessages (new): %v", err)
+	}
+
+	// Deliver RefreshMsg mid-animation.
+	updated, _ = m.Update(RefreshMsg{})
+	m = updated.(Model)
+
+	if m.springActive {
+		t.Errorf("springActive = true after RefreshMsg; expected snap-and-stop")
+	}
+	if len(m.lastValues) <= preBucketCount {
+		t.Errorf("lastValues not refreshed after RefreshMsg; got %d buckets, want > %d",
+			len(m.lastValues), preBucketCount)
+	}
+}
+
+func TestRefreshDoesNotAnimate(t *testing.T) {
+	// RefreshMsg without a prior 'u' press must NOT start an animation.
+	// Guards against the watcher loop accidentally springing the chart
+	// every time a new message arrives.
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "state.db")
+	c, err := cache.Open(dbPath)
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	defer c.Close()
+
+	tab, err := pricing.Load()
+	if err != nil {
+		t.Fatalf("pricing.Load: %v", err)
+	}
+	msgs := []parse.Message{
+		{SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7",
+			Timestamp: time.Now().UTC().Add(-time.Hour), InputTokens: 1000},
+	}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	m := New(Deps{Cache: c})
+	m.w, m.h = 120, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+
+	updated, _ := m.Update(RefreshMsg{})
+	m = updated.(Model)
+	if m.springActive {
+		t.Errorf("springActive = true after RefreshMsg; watcher refresh must not animate")
+	}
+	if len(m.springs) != 0 {
+		t.Errorf("springs slice non-empty after RefreshMsg; expected len=0")
+	}
+}
+
 func TestRefreshChart_CostMode(t *testing.T) {
 	// With unitIdx=1 (cost), refreshChart must call CostBuckets and cache
 	// the cost values into m.lastValues, with m.peak set to max(cost).

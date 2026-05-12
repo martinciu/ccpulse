@@ -44,6 +44,13 @@ type IndexProgressMsg struct {
 // fade ends is zero — no Cmd is returned at the final stop.
 type tickFadeMsg struct{}
 
+// springTickMsg drives the per-bar harmonica spring loop after a
+// 'u' unit-toggle. Scheduled by Update on the unit-key path and
+// re-scheduled by the springTickMsg handler until all springs are
+// settled, after which idle TUI cost returns to zero (no further
+// Cmd is returned).
+type springTickMsg struct{}
+
 // QuotaMsg is sent when fresh usage data is available.
 type QuotaMsg struct {
 	Usage     *anthro.Usage
@@ -92,6 +99,12 @@ type Model struct {
 	springVelocities   []float64
 	springTargetRatios []float64
 	springActive       bool
+	// springXOffset is the leftmost bucket index visible in the viewport
+	// when animation started. The spring runs over all bucket ratios but
+	// only the visible window is re-rendered each tick — full-canvas
+	// rebuilds at chart widths > 1000 buckets exceed the 60fps budget
+	// (BenchmarkBarChartRender).
+	springXOffset int
 
 	window         status.Window
 	quota          *anthro.Usage
@@ -176,6 +189,37 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Tick(indexFadeStepDuration, func(time.Time) tea.Msg {
 			return tickFadeMsg{}
 		})
+	case springTickMsg:
+		if !m.springActive {
+			return m, nil
+		}
+		settled := true
+		for i := range m.springRatios {
+			r, v := m.springs[i].Update(m.springRatios[i], m.springVelocities[i], m.springTargetRatios[i])
+			m.springRatios[i] = r
+			m.springVelocities[i] = v
+			d := r - m.springTargetRatios[i]
+			if d < 0 {
+				d = -d
+			}
+			vAbs := v
+			if vAbs < 0 {
+				vAbs = -vAbs
+			}
+			if d > springSettleEpsilon || vAbs > springSettleEpsilon {
+				settled = false
+			}
+		}
+		if settled {
+			copy(m.springRatios, m.springTargetRatios)
+			m.springActive = false
+			m.refreshChart()
+			return m, nil
+		}
+		m.renderSpringFrame()
+		return m, tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
+			return springTickMsg{}
+		})
 	case QuotaMsg:
 		m.quota = msg.Usage
 		m.quotaSource = msg.Source
@@ -206,7 +250,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.refreshChart()
 		case key.Matches(msg, m.keys.Unit):
 			m.unitIdx = (m.unitIdx + 1) % 2
-			m.refreshChart()
+			m.beginUnitAnimation()
+			if m.springActive {
+				// After beginUnitAnimation, viewport content is the new
+				// full-canvas with XOffset set to "now" (rightmost).
+				// Compute the effective XOffset (which viewport clamps to
+				// longestLineWidth - Width) as the spring's window so the
+				// user sees the same time range during animation as after
+				// settle.
+				offset := len(m.lastValues) - m.chartWidth()
+				if offset < 0 {
+					offset = 0
+				}
+				m.springXOffset = offset
+				return m, tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
+					return springTickMsg{}
+				})
+			}
 		case key.Matches(msg, m.keys.ScrollLeft):
 			m.viewport.ScrollLeft(horizontalScrollStep)
 		case key.Matches(msg, m.keys.ScrollRight):
@@ -432,6 +492,48 @@ func (m *Model) beginUnitAnimation() {
 	m.springActive = true
 }
 
+// renderSpringFrame rebuilds the viewport content from the visible
+// window of spring ratios. Pass 1.0 as the chart's max value because
+// the ratios already live in [0, 1]; ntcharts then renders each bar
+// at the right proportional height.
+//
+// PERF: full-canvas rebuilds at chartW > 1000 buckets exceed the 60fps
+// per-frame budget (see BenchmarkBarChartRender). The spring runs over
+// ALL ratios so every bar settles correctly, but only the chartWidth()
+// window starting at m.springXOffset is rendered each tick. Off-screen
+// bars are invisible anyway; their final positions are committed on
+// settle via the steady-state refreshChart call.
+//
+// Sets viewport.XOffset = 0 because the canvas is now exactly viewport-
+// wide; settle's refreshChart restores the full-canvas + XOffset state.
+func (m *Model) renderSpringFrame() {
+	if len(m.springRatios) == 0 {
+		return
+	}
+	zoom := ZoomLevels[m.zoomIdx]
+	chartW := m.chartWidth()
+	chartH := m.chartHeight()
+
+	// Clamp the window to the actual ratios slice.
+	start := m.springXOffset
+	if start < 0 {
+		start = 0
+	}
+	end := start + chartW
+	if end > len(m.springRatios) {
+		end = len(m.springRatios)
+	}
+	if start >= end {
+		return
+	}
+
+	visibleRatios := m.springRatios[start:end]
+	visibleStarts := m.lastStarts[start:end]
+	m.viewport.SetContent(buildChart(visibleRatios, visibleStarts, 1.0,
+		len(visibleRatios), chartH, time.Now(), zoom, chartUnit(m.unitIdx)))
+	m.viewport.SetXOffset(0)
+}
+
 // refreshChart queries the cache and updates the viewport content.
 // Safe to call when deps.Cache is nil (no-op). Loads the full history
 // present in the cache, from the earliest message up to "now". On an
@@ -439,6 +541,14 @@ func (m *Model) beginUnitAnimation() {
 func (m *Model) refreshChart() {
 	if m.deps.Cache == nil {
 		return
+	}
+	// If a unit-toggle spring is still in flight, snap it to its
+	// targets before reading fresh data. Refresh paths (watcher
+	// RefreshMsg, WindowSizeMsg, Zoom) hard-cut the animation per
+	// the spec — only the initial 'u' press animates.
+	if m.springActive {
+		copy(m.springRatios, m.springTargetRatios)
+		m.springActive = false
 	}
 	zoom := ZoomLevels[m.zoomIdx]
 	// Right edge = the END of the bucket containing now, so the bucket
