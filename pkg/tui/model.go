@@ -228,33 +228,59 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.springActive {
 			return m, nil
 		}
-		settled := true
-		for i := range m.springRatios {
-			r, v := m.springs[i].Update(m.springRatios[i], m.springVelocities[i], m.springTargetRatios[i])
-			m.springRatios[i] = r
-			m.springVelocities[i] = v
-			d := r - m.springTargetRatios[i]
-			if d < 0 {
-				d = -d
+		switch m.springPhase {
+		case springShrinking:
+			var maxR float64
+			for i := range m.springRatios {
+				pos := m.springProjectiles[i].Update()
+				// Defensive clamp — early-exit beats us to it under
+				// well-tuned per-bar gravity, but Projectile keeps
+				// accelerating past zero if we let it.
+				pos.X = max(pos.X, 0)
+				m.springRatios[i] = pos.X
+				maxR = max(maxR, pos.X)
 			}
-			vAbs := v
-			if vAbs < 0 {
-				vAbs = -vAbs
+			if maxR < phaseTransitionThreshold {
+				// Phase handoff: snap ratios to zero, seed Phase 2
+				// velocities, switch to springGrowing.
+				for i := range m.springRatios {
+					m.springRatios[i] = 0
+					m.springTargetRatios[i] = m.springFinalTargets[i]
+					m.springVelocities[i] = phase2InitialVelocityV0 * m.springFinalTargets[i]
+				}
+				m.springPhase = springGrowing
 			}
-			if d > springSettleEpsilon || vAbs > springSettleEpsilon {
-				settled = false
+			m.renderSpringFrame()
+			return m, tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
+				return springTickMsg{}
+			})
+
+		case springGrowing:
+			var maxGap float64
+			for i := range m.springRatios {
+				r, v := m.springs[i].Update(m.springRatios[i],
+					m.springVelocities[i], m.springTargetRatios[i])
+				m.springRatios[i] = r
+				m.springVelocities[i] = v
+				gap := m.springTargetRatios[i] - r
+				if gap < 0 {
+					gap = -gap
+				}
+				maxGap = max(maxGap, gap)
 			}
+			if maxGap < phaseTransitionThreshold {
+				copy(m.springRatios, m.springTargetRatios)
+				m.springActive = false
+				m.springPhase = springIdle
+				m.refreshChart()
+				return m, nil
+			}
+			m.renderSpringFrame()
+			return m, tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
+				return springTickMsg{}
+			})
 		}
-		if settled {
-			copy(m.springRatios, m.springTargetRatios)
-			m.springActive = false
-			m.refreshChart()
-			return m, nil
-		}
-		m.renderSpringFrame()
-		return m, tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
-			return springTickMsg{}
-		})
+		return m, nil
 	case QuotaMsg:
 		m.quota = msg.Usage
 		m.quotaSource = msg.Source

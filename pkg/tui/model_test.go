@@ -1074,10 +1074,11 @@ func TestBeginUnitAnimation(t *testing.T) {
 }
 
 func TestUnitToggleAnimationSettles(t *testing.T) {
-	// Drives the model through an animation: press 'u', then deliver up
-	// to 200 springTickMsg ticks. Asserts springActive eventually flips
-	// false, ratios converge to targets within epsilon, and the final
-	// tick returns no further Cmd (idle = zero cost).
+	// Drives the model through the two-phase animation: press 'u',
+	// then deliver up to 200 springTickMsg ticks. Asserts springActive
+	// eventually flips false, ratios converge to targets within
+	// epsilon, springPhase ends at springIdle, and the final tick
+	// returns no further Cmd (idle = zero cost).
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "state.db")
 	c, err := cache.Open(dbPath)
@@ -1107,8 +1108,6 @@ func TestUnitToggleAnimationSettles(t *testing.T) {
 	m.viewport.Height = m.chartHeight()
 	m.refreshChart()
 
-	// Press 'u' — Update should toggle, start the animation, and return
-	// a non-nil Cmd (the first tea.Tick).
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
 	m = updated.(Model)
 	if !m.springActive {
@@ -1118,13 +1117,10 @@ func TestUnitToggleAnimationSettles(t *testing.T) {
 		t.Fatalf("Update returned nil Cmd after 'u' press; expected tea.Tick")
 	}
 
-	// Drive ticks until settled or 200 attempts (200 * 16.7ms = 3.3s of
-	// synthetic time, well past the spec's 250–400ms settle window).
-	// Calibrated for springDamping >= 0.5 with springFrequency = 6.0;
-	// theoretical settle ticks at epsilon=0.001 are roughly ~143 at
-	// damping=0.5 and ~112 at damping=1.0. At damping=0.3 the cap is
-	// already breached (~229 ticks) — bump maxTicks before reducing
-	// damping below 0.5.
+	// 200 ticks (~3.3s @ 60 FPS) is well past the two-phase budget
+	// (Phase 1 ≈ 21 ticks, Phase 2 ≈ 30–50 ticks with critical damping
+	// and threshold 0.01). Bump maxTicks before reducing the
+	// phaseTransitionThreshold below 0.01.
 	const maxTicks = 200
 	var lastCmd tea.Cmd
 	for i := 0; i < maxTicks && m.springActive; i++ {
@@ -1134,15 +1130,152 @@ func TestUnitToggleAnimationSettles(t *testing.T) {
 	if m.springActive {
 		t.Fatalf("animation did not settle within %d ticks", maxTicks)
 	}
+	if m.springPhase != springIdle {
+		t.Errorf("springPhase = %d after settle, want springIdle", m.springPhase)
+	}
 
-	// Final ratios must equal targets (we snap on settle).
+	// Final ratios must equal targets (snapped on settle).
 	for i, r := range m.springRatios {
 		if r != m.springTargetRatios[i] {
 			t.Errorf("springRatios[%d] = %v, want %v (snapped target)", i, r, m.springTargetRatios[i])
 		}
 	}
 
-	// Final tick must return no further Cmd — idle TUI cost = zero.
+	if lastCmd != nil {
+		t.Errorf("settle tick returned non-nil Cmd; idle TUI must not keep ticking")
+	}
+}
+
+func TestPhaseTransition_AtThreshold(t *testing.T) {
+	// Drive ticks until Phase 1 settles. At the handoff:
+	//   - springPhase flips to springGrowing.
+	//   - springRatios are snapped to 0 (clean visual handoff).
+	//   - springTargetRatios takes the values from springFinalTargets.
+	//   - springVelocities are seeded as V0 * springFinalTargets[i].
+	dir := t.TempDir()
+	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	defer c.Close()
+
+	tab, err := pricing.Load()
+	if err != nil {
+		t.Fatalf("pricing.Load: %v", err)
+	}
+	now := time.Now().UTC().Truncate(15 * time.Minute)
+	msgs := []parse.Message{
+		{SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7",
+			Timestamp: now.Add(-30 * time.Minute), InputTokens: 10000, OutputTokens: 5000},
+		{SessionID: "s2", ProjectSlug: "p", Model: "claude-opus-4-7",
+			Timestamp: now.Add(-10 * time.Minute), InputTokens: 30000, OutputTokens: 15000},
+	}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	m := New(Deps{Cache: c})
+	m.w, m.h = 120, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	m.refreshChart()
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	m = updated.(Model)
+	if m.springPhase != springShrinking {
+		t.Fatalf("springPhase = %d after 'u' press, want springShrinking (%d)", m.springPhase, springShrinking)
+	}
+
+	// Capture the Phase 2 targets we expect to see after the handoff.
+	expectedTargets := append([]float64(nil), m.springFinalTargets...)
+
+	// Drive ticks while still in Phase 1.
+	const maxTicks = 100
+	for i := 0; i < maxTicks && m.springPhase == springShrinking; i++ {
+		updated, _ = m.Update(springTickMsg{})
+		m = updated.(Model)
+	}
+	if m.springPhase == springShrinking {
+		t.Fatalf("Phase 1 did not exit within %d ticks", maxTicks)
+	}
+	if m.springPhase != springGrowing {
+		t.Fatalf("springPhase = %d after Phase 1 exit, want springGrowing (%d)", m.springPhase, springGrowing)
+	}
+
+	// At the handoff, springRatios must be zero (snapped).
+	for i, r := range m.springRatios {
+		if r != 0 {
+			t.Errorf("springRatios[%d] = %v after handoff, want 0", i, r)
+		}
+	}
+	// springTargetRatios must now hold the Phase 2 destination.
+	for i, want := range expectedTargets {
+		if m.springTargetRatios[i] != want {
+			t.Errorf("springTargetRatios[%d] = %v after handoff, want %v",
+				i, m.springTargetRatios[i], want)
+		}
+	}
+	// springVelocities must be seeded as V0 * springFinalTargets[i].
+	for i, want := range expectedTargets {
+		got := m.springVelocities[i]
+		exp := phase2InitialVelocityV0 * want
+		if diff := got - exp; diff < -1e-9 || diff > 1e-9 {
+			t.Errorf("springVelocities[%d] = %v, want %v (V0 * springFinalTargets[%d])", i, got, exp, i)
+		}
+	}
+}
+
+func TestPhase2Settle_ClearsState(t *testing.T) {
+	// Drive ticks all the way through both phases. After settle:
+	//   - springActive = false.
+	//   - springPhase = springIdle.
+	//   - springRatios are snapped to springTargetRatios.
+	//   - last tick returns no further Cmd.
+	dir := t.TempDir()
+	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	defer c.Close()
+
+	tab, err := pricing.Load()
+	if err != nil {
+		t.Fatalf("pricing.Load: %v", err)
+	}
+	now := time.Now().UTC().Truncate(15 * time.Minute)
+	msgs := []parse.Message{
+		{SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7",
+			Timestamp: now.Add(-30 * time.Minute), InputTokens: 10000, OutputTokens: 5000},
+		{SessionID: "s2", ProjectSlug: "p", Model: "claude-opus-4-7",
+			Timestamp: now.Add(-10 * time.Minute), InputTokens: 30000, OutputTokens: 15000},
+	}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	m := New(Deps{Cache: c})
+	m.w, m.h = 120, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	m.refreshChart()
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	m = updated.(Model)
+
+	// 200 ticks covers both phases comfortably (Phase 1 ≈ 21 ticks @
+	// 60 FPS, Phase 2 ≈ 30–50 ticks with critical damping).
+	const maxTicks = 200
+	var lastCmd tea.Cmd
+	for i := 0; i < maxTicks && m.springActive; i++ {
+		updated, lastCmd = m.Update(springTickMsg{})
+		m = updated.(Model)
+	}
+	if m.springActive {
+		t.Fatalf("animation did not settle within %d ticks", maxTicks)
+	}
+	if m.springPhase != springIdle {
+		t.Errorf("springPhase = %d after settle, want springIdle (%d)", m.springPhase, springIdle)
+	}
 	if lastCmd != nil {
 		t.Errorf("settle tick returned non-nil Cmd; idle TUI must not keep ticking")
 	}
