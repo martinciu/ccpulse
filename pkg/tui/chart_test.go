@@ -303,16 +303,16 @@ func TestFormatXLabel(t *testing.T) {
 
 func TestOverlayYLabel_InjectsAtNiceFloorRow(t *testing.T) {
 	t.Parallel()
-	// peak = 87000 → niceFloor(87000) = 75000 → label "75.0k".
-	// chartH=6 → barsH=5 → row = 5 - round(75000/87000 * 5) = 1.
+	// peak = 87000 → niceFloor(87000) = 70000 → label "70k".
+	// chartH=6 → barsH=5 → row = 5 - round(70000/87000 * 5) = 1.
 	body := "AAAAAAAAAA\nBBBBBBBBBB\nCCCCCCCCCC\nDDDDDDDDDD\nEEEEEEEEEE\nFFFFFFFFFF"
 	out := overlayYLabel(body, 87_000, 6)
 	rows := strings.Split(out, "\n")
 	if len(rows) != 6 {
 		t.Fatalf("expected 6 rows, got %d:\n%q", len(rows), out)
 	}
-	if !strings.Contains(rows[1], "75.0k") {
-		t.Errorf("expected '75.0k' on row 1, got %q", rows[1])
+	if !strings.Contains(rows[1], "70k") {
+		t.Errorf("expected '70k' on row 1, got %q", rows[1])
 	}
 	// Other rows untouched.
 	for i, r := range []string{"AAAAAAAAAA", "CCCCCCCCCC", "DDDDDDDDDD", "EEEEEEEEEE", "FFFFFFFFFF"} {
@@ -356,18 +356,20 @@ func TestNiceFloor(t *testing.T) {
 		{"zero returns zero", 0, 0},
 		{"negative returns zero", -10, 0},
 		{"one", 1, 1},
-		{"99 falls to 75", 99, 75},
+		{"99 falls to 70", 99, 70},
 		{"exactly 100", 100, 100},
 		{"exactly 1000", 1000, 1000},
-		{"7499 falls to 5k", 7_499, 5_000},
-		{"exactly 7.5k", 7_500, 7_500},
-		{"9k falls to 7.5k", 9_000, 7_500},
+		{"4999 falls to 3k", 4_999, 3_000},
+		{"exactly 7k", 7_000, 7_000},
+		{"9k falls to 7k", 9_000, 7_000},
 		{"23k falls to 20k", 23_000, 20_000},
-		{"87k falls to 75k", 87_000, 75_000},
+		{"49k falls to 30k", 49_000, 30_000},
+		{"87k falls to 70k", 87_000, 70_000},
 		{"exactly 100k", 100_000, 100_000},
 		{"123456 falls to 100k", 123_456, 100_000},
-		{"999999 falls to 750k", 999_999, 750_000},
+		{"999999 falls to 700k", 999_999, 700_000},
 		{"exactly 1M", 1_000_000, 1_000_000},
+		{"50M stays 50M", 50_000_000, 50_000_000},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -391,17 +393,16 @@ func TestFormatTokenCount(t *testing.T) {
 		{"negative", -5, "0"},
 		{"one", 1, "1"},
 		{"just below k", 999, "999"},
-		{"exactly k", 1000, "1.0k"},
-		{"k small frac", 1234, "1.2k"},
-		{"k mid", 45300, "45.3k"},
-		{"k rounds half-up", 99499, "99.5k"},
-		{"k drop frac at 100", 100000, "100k"},
-		{"k high", 999000, "999k"},
-		{"k just below M", 999999, "1000k"},
-		{"exactly M", 1_000_000, "1.0M"},
-		{"M small frac", 1_200_000, "1.2M"},
-		{"M mid", 45_300_000, "45.3M"},
-		{"M drop frac at 100", 100_000_000, "100M"},
+		{"exactly k", 1000, "1k"},
+		{"k mid", 45000, "45k"},
+		{"k 75k", 75_000, "75k"},
+		{"k 100k", 100_000, "100k"},
+		{"k high", 999_000, "999k"},
+		{"k just below M", 999_999, "1000k"},
+		{"exactly M", 1_000_000, "1M"},
+		{"M mid", 45_000_000, "45M"},
+		{"M 50M", 50_000_000, "50M"},
+		{"M 100M", 100_000_000, "100M"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

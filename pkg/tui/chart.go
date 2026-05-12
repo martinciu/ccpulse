@@ -146,9 +146,9 @@ func formatXLabel(t time.Time, zoom ZoomLevel, now time.Time) string {
 }
 
 // niceFloor returns the largest "nice" value <= peak from the sequence
-// {1, 2, 2.5, 5, 7.5} × 10^k. Used to pick the in-canvas Y tick label
-// for the bar chart (issue #132). Denser than niceCeiling's set so the
-// tick lands near the peak rather than half-way down the chart.
+// {1, 2, 3, 5, 7} × 10^k. Used to pick the Y label for the bar chart
+// (issue #132). The set is integer-only so formatTokenCount always
+// produces an integer label (e.g. "75k", "50M") — no "7.5k" / "2.5M".
 // Returns 0 when peak <= 0 so the caller can guard the overlay write.
 func niceFloor(peak int64) int64 {
 	if peak <= 0 {
@@ -158,12 +158,12 @@ func niceFloor(peak int64) int64 {
 	norm := float64(peak) / mag
 	var nice float64
 	switch {
-	case norm >= 7.5:
-		nice = 7.5
+	case norm >= 7.0:
+		nice = 7.0
 	case norm >= 5.0:
 		nice = 5.0
-	case norm >= 2.5:
-		nice = 2.5
+	case norm >= 3.0:
+		nice = 3.0
 	case norm >= 2.0:
 		nice = 2.0
 	default:
@@ -173,15 +173,14 @@ func niceFloor(peak int64) int64 {
 }
 
 // formatTokenCount renders an int64 token count compactly with a k/M
-// suffix, suitable for the Y axis and other in-chart annotations.
-// Threshold rules:
+// suffix, suitable for the Y label and other in-chart annotations.
+// Always returns an integer label (no fractional digits). Pair with
+// niceFloor so the integer-rounded label exactly matches its row.
 //
-//	n <= 0       -> "0"
-//	n < 1000     -> raw integer
-//	n < 1e6      -> k suffix, 1 frac digit; drop frac when v >= 100
-//	n >= 1e6     -> M suffix, same precision rule
-//
-// Max output width: 5 cols. Fits the 6-col Y axis budget with breathing room.
+//	n <= 0     -> "0"
+//	n < 1000   -> raw integer
+//	n < 1e6    -> rounded thousands with "k" (e.g. "75k", "100k")
+//	n >= 1e6   -> rounded millions with "M" (e.g. "50M", "1M")
 func formatTokenCount(n int64) string {
 	if n <= 0 {
 		return "0"
@@ -190,19 +189,9 @@ func formatTokenCount(n int64) string {
 		return strconv.FormatInt(n, 10)
 	}
 	if n < 1_000_000 {
-		return formatSuffixed(float64(n)/1000, "k")
+		return strconv.FormatFloat(float64(n)/1000, 'f', 0, 64) + "k"
 	}
-	return formatSuffixed(float64(n)/1_000_000, "M")
-}
-
-// formatSuffixed prints v with 1 fractional digit when v < 100 and 0
-// fractional digits otherwise, then appends suffix. Keeps labels inside
-// the 5-col budget for any expected token magnitude.
-func formatSuffixed(v float64, suffix string) string {
-	if v >= 100 {
-		return strconv.FormatFloat(v, 'f', 0, 64) + suffix
-	}
-	return strconv.FormatFloat(v, 'f', 1, 64) + suffix
+	return strconv.FormatFloat(float64(n)/1_000_000, 'f', 0, 64) + "M"
 }
 
 // heatColor returns a lipgloss color on a green→yellow→red ramp
