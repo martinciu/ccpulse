@@ -186,14 +186,14 @@ func TestView_YLabelFixedAcrossScroll(t *testing.T) {
 
 	// Scroll a few steps left and right; the label must still be present.
 	for range 5 {
-		m.viewport.ScrollLeft(horizontalScrollStep)
+		m.scrollLeft(horizontalScrollStep)
 	}
 	if !strings.Contains(m.View(), expected) {
 		t.Errorf("View output missing Y label %q after ScrollLeft (label should be fixed to viewport):\n%s",
 			expected, m.View())
 	}
 	for range 3 {
-		m.viewport.ScrollRight(horizontalScrollStep)
+		m.scrollRight(horizontalScrollStep)
 	}
 	if !strings.Contains(m.View(), expected) {
 		t.Errorf("View output missing Y label %q after ScrollRight:\n%s", expected, m.View())
@@ -265,9 +265,12 @@ func TestHelpModeSuppressesScroll(t *testing.T) {
 	m.viewport.Width = m.chartWidth()
 	m.viewport.Height = m.chartHeight()
 	// Seed the viewport with content wider than its width so scroll has
-	// room to actually move.
+	// room to actually move. Also seed lastStarts so setX's clamp lets
+	// the requested offset through (setX clamps against len(lastStarts) -
+	// chartWidth).
 	m.viewport.SetContent(strings.Repeat("X", 500))
-	m.viewport.SetXOffset(50)
+	m.lastStarts = make([]time.Time, 500)
+	m.setX(50)
 	startPct := m.viewport.HorizontalScrollPercent()
 
 	// Toggle help on.
@@ -1285,6 +1288,219 @@ func TestRefreshChart_CostMode(t *testing.T) {
 	}
 }
 
+func TestScrollHelpers_UpdateShadowOffset(t *testing.T) {
+	// Direct unit test of setX / scrollLeft / scrollRight: clamp behaviour
+	// and shadow synchronisation against a Model with a known lastStarts
+	// length and chartWidth.
+	t.Parallel()
+
+	newModel := func() *Model {
+		m := New(Deps{})
+		m.w, m.h = 120, 40
+		m.viewport.Width = m.chartWidth()
+		m.viewport.Height = m.chartHeight()
+		// Seed lastStarts so setX has a non-zero maxX to clamp against.
+		// chartWidth at w=120 is 118 (see TestChartWidth_FloorsAtTen); pick
+		// lastStarts length 200 → maxX = 200 - 118 = 82.
+		m.lastStarts = make([]time.Time, 200)
+		// SetContent so the viewport's own clamp also has content to work
+		// against (longestLineWidth >= 200).
+		m.viewport.SetContent(strings.Repeat("X", 200))
+		return &m
+	}
+
+	tests := []struct {
+		name       string
+		setup      func(*Model)
+		op         func(*Model)
+		wantShadow int
+	}{
+		{"setX 0 → 0", func(m *Model) {}, func(m *Model) { m.setX(0) }, 0},
+		{"setX past max clamps to maxX", func(m *Model) {}, func(m *Model) { m.setX(500) }, 82},
+		{"setX negative clamps to 0", func(m *Model) {}, func(m *Model) { m.setX(-5) }, 0},
+		{"scrollLeft from 50 by 10 → 40", func(m *Model) { m.setX(50) }, func(m *Model) { m.scrollLeft(10) }, 40},
+		{"scrollRight from 75 by 10 → 82 (clamped)", func(m *Model) { m.setX(75) }, func(m *Model) { m.scrollRight(10) }, 82},
+		{"scrollLeft below 0 clamps to 0", func(m *Model) { m.setX(5) }, func(m *Model) { m.scrollLeft(10) }, 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			m := newModel()
+			tt.setup(m)
+			tt.op(m)
+			if m.viewportXOffset != tt.wantShadow {
+				t.Errorf("viewportXOffset = %d, want %d", m.viewportXOffset, tt.wantShadow)
+			}
+		})
+	}
+}
+
+// seedScrollTestModel builds a Model + Cache pair seeded with `count`
+// messages spaced 5 minutes apart ending now. With count=500 the cache
+// spans ~41h, which at 5m zoom (zoomIdx=0) produces ~500 buckets vs
+// chartWidth=118 at w=120 — plenty of scroll room. At 15m zoom the same
+// cache produces ~167 buckets, still overflowing chartWidth=118, so the
+// zoom-translation subtest also has somewhere to scroll.
+//
+// Returns the Model with chartWidth=118 (w=120) and zoom=5m (zoomIdx=0).
+// Caller is responsible for cache.Close via the returned cleanup.
+func seedScrollTestModel(t *testing.T, count int) (*Model, func()) {
+	t.Helper()
+	c, err := cache.Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tab, err := pricing.Load()
+	if err != nil {
+		c.Close()
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(5 * time.Minute)
+	msgs := make([]parse.Message, count)
+	for i := range msgs {
+		msgs[i] = parse.Message{
+			SessionID:   "s1",
+			ProjectSlug: "p",
+			Model:       "claude-opus-4-7",
+			Timestamp:   now.Add(time.Duration(-i*5) * time.Minute),
+			InputTokens: int64(1000 + i*10),
+		}
+	}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		c.Close()
+		t.Fatal(err)
+	}
+	m := New(Deps{Cache: c})
+	m.w, m.h = 120, 40
+	m.zoomIdx = 0 // 5m zoom: count messages → ~count buckets, overflows chartWidth=118
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	m.refreshChart()
+	return &m, func() { c.Close() }
+}
+
+func TestRefreshChart_FirstLoadPinsRight(t *testing.T) {
+	// First refresh (no prior lastStarts → !hadAnchor branch) should
+	// pin the viewport to the right edge: viewportXOffset == maxX.
+	m, cleanup := seedScrollTestModel(t, 500)
+	defer cleanup()
+
+	maxX := max(0, len(m.lastStarts)-m.chartWidth())
+	if m.viewportXOffset != maxX {
+		t.Errorf("viewportXOffset = %d, want %d (right edge)", m.viewportXOffset, maxX)
+	}
+}
+
+func TestRefreshChart_PreservesWallClockAnchor(t *testing.T) {
+	// Verifies the wall-clock anchor survives every refresh trigger
+	// type. wantPinned is true when the trigger should leave the user
+	// pinned to the right edge (only when the user was already pinned
+	// before the trigger fired). Otherwise the leftmost visible bucket
+	// after the trigger must equal the bucket that was leftmost before,
+	// modulo BucketAlign to the active zoom (only the zoom case crosses
+	// densities).
+	//
+	// Scroll amount and count are chosen so the anchor index remains
+	// within maxX after every trigger:
+	//   - count=500, zoomIdx=0 (5m): ~500 buckets, maxX≈382 at w=120
+	//   - scrollLeft(250): offset≈132, safely mid-chart
+	//   - after zoom to 15m: ~167 buckets, maxX≈49; BucketAlign(anchor,15m)
+	//     lands near now−(132×5m)=~11h ago, well within the 15m grid
+	//   - after resize w=160: chartWidth=158, maxX≈342; offset 132 < 342
+	tests := []struct {
+		name        string
+		startPinned bool
+		trigger     func(m *Model)
+	}{
+		{"refresh keeps scrolled anchor", false, func(m *Model) { m.refreshChart() }},
+		{"refresh keeps pinned user pinned", true, func(m *Model) { m.refreshChart() }},
+		{"zoom translates anchor to new density", false, func(m *Model) {
+			m.zoomIdx = (m.zoomIdx + 1) % len(ZoomLevels)
+			m.refreshChart()
+		}},
+		{"unit toggle keeps anchor", false, func(m *Model) {
+			m.unitIdx = (m.unitIdx + 1) % 2
+			m.refreshChart()
+		}},
+		{"resize keeps anchor", false, func(m *Model) {
+			m.w = 160
+			m.viewport.Width = m.chartWidth()
+			m.viewport.Height = m.chartHeight()
+			m.refreshChart()
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m, cleanup := seedScrollTestModel(t, 500)
+			defer cleanup()
+
+			// Set up scroll precondition.
+			var anchorTime time.Time
+			if tt.startPinned {
+				// Already pinned by seedScrollTestModel's initial refreshChart.
+				if m.viewportXOffset != max(0, len(m.lastStarts)-m.chartWidth()) {
+					t.Fatalf("setup: expected pinned-right, got viewportXOffset=%d", m.viewportXOffset)
+				}
+			} else {
+				// Scroll left to a mid-chart position. Use 250 steps so the
+				// anchor (≈132 buckets from left at 5m) remains within maxX
+				// at every post-trigger zoom/size — including after zoom to
+				// 15m (maxX≈49) and resize to w=160 (maxX≈342).
+				m.scrollLeft(250)
+				if m.viewportXOffset == 0 || m.viewportXOffset == max(0, len(m.lastStarts)-m.chartWidth()) {
+					t.Fatalf("setup: scroll should land mid-chart, got viewportXOffset=%d", m.viewportXOffset)
+				}
+				anchorTime = m.lastStarts[m.viewportXOffset]
+			}
+
+			tt.trigger(m)
+
+			if tt.startPinned {
+				maxX := max(0, len(m.lastStarts)-m.chartWidth())
+				if m.viewportXOffset != maxX {
+					t.Errorf("after trigger: viewportXOffset = %d, want %d (still pinned)", m.viewportXOffset, maxX)
+				}
+				return
+			}
+
+			zoom := ZoomLevels[m.zoomIdx]
+			wantAnchor := cache.BucketAlign(anchorTime, zoom.Duration)
+			got := m.lastStarts[m.viewportXOffset]
+			if !got.Equal(wantAnchor) {
+				t.Errorf("after trigger: anchor at viewport left = %v, want %v (BucketAlign of pre-trigger anchor %v to %s)",
+					got, wantAnchor, anchorTime, zoom.Label)
+			}
+		})
+	}
+}
+
+// TestRefreshChart_PreservesScroll_Issue134 is a regression-named guard
+// for https://github.com/martinciu/ccpulse/issues/134 — the bug where
+// a watcher-driven RefreshMsg re-pinned the user back to "now" every
+// ~100ms during an active Claude session. Same shape as the table-
+// driven "refresh keeps scrolled anchor" case but kept separate so a
+// bisect on the issue number lands on a focused failure.
+func TestRefreshChart_PreservesScroll_Issue134(t *testing.T) {
+	m, cleanup := seedScrollTestModel(t, 500)
+	defer cleanup()
+
+	m.scrollLeft(30)
+	anchorTime := m.lastStarts[m.viewportXOffset]
+	beforePct := m.viewport.HorizontalScrollPercent()
+	if beforePct >= 1.0 {
+		t.Fatalf("setup: scroll should not be at right edge, got HorizontalScrollPercent=%v", beforePct)
+	}
+
+	m.refreshChart()
+
+	got := m.lastStarts[m.viewportXOffset]
+	if !got.Equal(anchorTime) {
+		t.Errorf("anchor drifted across refresh: %v → %v", anchorTime, got)
+	}
+}
+
 func TestView_CostModeRendersDollarPrefix(t *testing.T) {
 	// End-to-end check that flipping unitIdx to cost causes the rendered
 	// View() to contain a "$"-prefixed Y label. Guards the path
@@ -1330,5 +1546,55 @@ func TestView_CostModeRendersDollarPrefix(t *testing.T) {
 	m.refreshChart()
 	if !strings.Contains(m.View(), "$") {
 		t.Errorf("cost-mode View missing '$' Y label:\n%s", m.View())
+	}
+}
+
+func TestQuotaMsg_DoesNotRebuildChart(t *testing.T) {
+	// QuotaMsg should update the header (m.quota/recomputeWindow) but
+	// NOT rebuild the chart. Verify by: scroll to a mid-chart anchor,
+	// snapshot the rendered chart bytes, send a QuotaMsg, assert chart
+	// bytes are unchanged AND viewportXOffset is unchanged.
+	m, cleanup := seedScrollTestModel(t, 300)
+	defer cleanup()
+
+	m.scrollLeft(30)
+	beforeOffset := m.viewportXOffset
+	beforeView := m.viewport.View()
+
+	updated, _ := m.Update(QuotaMsg{
+		Usage:     nil,
+		Source:    "cache_fresh",
+		UpdatedAt: time.Now(),
+	})
+	mm := updated.(Model)
+
+	if mm.viewportXOffset != beforeOffset {
+		t.Errorf("viewportXOffset changed across QuotaMsg: %d → %d", beforeOffset, mm.viewportXOffset)
+	}
+	if mm.viewport.View() != beforeView {
+		t.Errorf("viewport rendered output changed across QuotaMsg (chart should not rebuild)")
+	}
+}
+
+func TestUnitToggle_SpringStartsAtScrolledOffset(t *testing.T) {
+	// A scrolled-away user pressing 'u' to toggle tokens↔cost should
+	// have the spring animation start from their actual viewport offset,
+	// not from the right edge. Otherwise the animation renders against
+	// the wrong slice of bars.
+	m, cleanup := seedScrollTestModel(t, 300)
+	defer cleanup()
+
+	m.scrollLeft(30)
+	scrolledOffset := m.viewportXOffset
+	rightEdge := max(0, len(m.lastValues)-m.chartWidth())
+	if scrolledOffset == rightEdge {
+		t.Fatalf("setup: scroll should land away from right edge, got %d == %d", scrolledOffset, rightEdge)
+	}
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	mm := updated.(Model)
+
+	if mm.springXOffset != scrolledOffset {
+		t.Errorf("springXOffset = %d, want %d (the user's actual viewport offset)", mm.springXOffset, scrolledOffset)
 	}
 }

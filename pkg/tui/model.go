@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
@@ -88,6 +89,15 @@ type Model struct {
 	// per-tick animated chart rebuild without re-querying the cache.
 	lastValues []float64
 	lastStarts []time.Time
+
+	// viewportXOffset shadows m.viewport's unexported xOffset. We need a
+	// readable scroll position to preserve the wall-clock anchor across
+	// refreshes; v1 viewport only exposes a setter. Maintained by
+	// setX/scrollLeft/scrollRight wrappers; every viewport scroll mutation
+	// goes through them, including in tests — bypassing the wrappers makes
+	// the shadow stale and breaks wall-clock preservation on the next
+	// refresh.
+	viewportXOffset int
 
 	// Animation state (per-bar harmonica spring) for the 'u' unit toggle.
 	// Spring values live in [0, 1] ratio space (each bar's ratio of the
@@ -225,7 +235,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.quotaSource = msg.Source
 		m.quotaUpdatedAt = msg.UpdatedAt
 		m.recomputeWindow()
-		m.refreshChart()
 	case RefreshMsg:
 		start := time.Now()
 		m.recomputeWindow()
@@ -253,24 +262,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.beginUnitAnimation()
 			if m.springActive {
 				// After beginUnitAnimation, viewport content is the new
-				// full-canvas with XOffset set to "now" (rightmost).
-				// Compute the effective XOffset (which viewport clamps to
-				// longestLineWidth - Width) as the spring's window so the
-				// user sees the same time range during animation as after
-				// settle.
-				offset := len(m.lastValues) - m.chartWidth()
-				if offset < 0 {
-					offset = 0
-				}
-				m.springXOffset = offset
+				// full-canvas with XOffset preserved at the user's
+				// wall-clock anchor (via refreshChart). Use the shadow
+				// scroll position as the spring's window so the animated
+				// slice matches what the user is actually looking at.
+				m.springXOffset = m.viewportXOffset
 				return m, tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
 					return springTickMsg{}
 				})
 			}
 		case key.Matches(msg, m.keys.ScrollLeft):
-			m.viewport.ScrollLeft(horizontalScrollStep)
+			m.scrollLeft(horizontalScrollStep)
 		case key.Matches(msg, m.keys.ScrollRight):
-			m.viewport.ScrollRight(horizontalScrollStep)
+			m.scrollRight(horizontalScrollStep)
 		}
 	}
 	return m, nil
@@ -536,6 +540,21 @@ func (m *Model) renderSpringFrame() {
 	m.viewport.SetXOffset(0)
 }
 
+// setX is the single point of entry for changing the viewport's horizontal
+// scroll position. Clamps to the legal range against the latest lastStarts
+// length and chartWidth, then mirrors into the shadow. The viewport's own
+// SetXOffset also clamps internally; we clamp first so the shadow stays
+// truthful even if the library's clamp behaviour ever changes.
+func (m *Model) setX(n int) {
+	maxX := max(0, len(m.lastStarts)-m.chartWidth())
+	n = min(max(n, 0), maxX)
+	m.viewport.SetXOffset(n)
+	m.viewportXOffset = n
+}
+
+func (m *Model) scrollLeft(n int)  { m.setX(m.viewportXOffset - n) }
+func (m *Model) scrollRight(n int) { m.setX(m.viewportXOffset + n) }
+
 // refreshChart queries the cache and updates the viewport content.
 // Safe to call when deps.Cache is nil (no-op). Loads the full history
 // present in the cache, from the earliest message up to "now". On an
@@ -554,6 +573,25 @@ func (m *Model) refreshChart() {
 	if m.springActive {
 		m.springActive = false
 	}
+
+	// Snapshot the wall-clock anchor BEFORE rebuild. lastStarts is empty
+	// on first load and after any empty-cache early-return — handled by
+	// hadAnchor. Read viewportXOffset (the shadow) rather than the
+	// viewport's own xOffset, which is unexported in bubbles v1.
+	var (
+		anchorTime time.Time
+		hadAnchor  bool
+		wasPinned  bool
+	)
+	if len(m.lastStarts) > 0 {
+		prevMax := max(0, len(m.lastStarts)-m.chartWidth())
+		wasPinned = m.viewportXOffset >= prevMax
+		if !wasPinned && m.viewportXOffset < len(m.lastStarts) {
+			anchorTime = m.lastStarts[m.viewportXOffset]
+			hadAnchor = true
+		}
+	}
+
 	zoom := ZoomLevels[m.zoomIdx]
 	// Right edge = the END of the bucket containing now, so the bucket
 	// itself is included in the half-open [from, to) window.
@@ -562,10 +600,10 @@ func (m *Model) refreshChart() {
 	earliest, ok, err := m.deps.Cache.EarliestMessageTime()
 	if err != nil || !ok {
 		m.viewport.SetContent(emptyPlaceholder(m.chartWidth(), m.chartHeight()))
-		m.viewport.SetXOffset(0)
 		m.lastValues = nil
 		m.lastStarts = nil
 		m.peak = 0
+		m.setX(0)
 		return
 	}
 
@@ -582,10 +620,10 @@ func (m *Model) refreshChart() {
 		buckets, err := m.deps.Cache.CostBuckets(zoom.Duration, from, to)
 		if err != nil || len(buckets) == 0 {
 			m.viewport.SetContent(emptyPlaceholder(m.chartWidth(), m.chartHeight()))
-			m.viewport.SetXOffset(0)
 			m.lastValues = nil
 			m.lastStarts = nil
 			m.peak = 0
+			m.setX(0)
 			return
 		}
 		values = make([]float64, len(buckets))
@@ -602,10 +640,10 @@ func (m *Model) refreshChart() {
 		buckets, err := m.deps.Cache.TokenBuckets(zoom.Duration, from, to)
 		if err != nil || len(buckets) == 0 {
 			m.viewport.SetContent(emptyPlaceholder(m.chartWidth(), m.chartHeight()))
-			m.viewport.SetXOffset(0)
 			m.lastValues = nil
 			m.lastStarts = nil
 			m.peak = 0
+			m.setX(0)
 			return
 		}
 		values = make([]float64, len(buckets))
@@ -627,8 +665,26 @@ func (m *Model) refreshChart() {
 	chartW := len(values)
 	chartH := m.chartHeight()
 	m.viewport.SetContent(buildChart(values, starts, peak, chartW, chartH, time.Now(), zoom, unit))
-	// Anchor the view at "now" on each refresh — the rightmost column.
-	m.viewport.SetXOffset(chartW)
+
+	// Restore the user's anchor. Three cases:
+	//   - !hadAnchor (first load, or coming back from an empty-cache
+	//     placeholder): pin to the new right edge.
+	//   - wasPinned: user was at "now", keep them at "now" against the
+	//     new right edge.
+	//   - else: translate the snapshotted anchor to its bucket index in
+	//     the new grid. BucketAlign(anchorTime, zoom.Duration) lands on
+	//     a bucket boundary; sort.Search finds the index of that boundary
+	//     in lastStarts. setX clamps if the cache shrank unexpectedly.
+	switch {
+	case !hadAnchor, wasPinned:
+		m.setX(chartW)
+	default:
+		target := cache.BucketAlign(anchorTime, zoom.Duration)
+		idx := sort.Search(len(m.lastStarts), func(i int) bool {
+			return !m.lastStarts[i].Before(target)
+		})
+		m.setX(idx)
+	}
 }
 
 // emptyPlaceholder returns a w×h block with "no Claude sessions yet"
