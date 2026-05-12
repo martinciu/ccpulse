@@ -1090,9 +1090,11 @@ func TestUnitToggleAnimationSettles(t *testing.T) {
 
 	// Drive ticks until settled or 200 attempts (200 * 16.7ms = 3.3s of
 	// synthetic time, well past the spec's 250–400ms settle window).
-	// Calibrated for springDamping >= 0.2 with springFrequency = 6.0;
-	// going below that damping ratio pushes the theoretical settle time
-	// to within striking distance of this cap and risks flaky failure.
+	// Calibrated for springDamping >= 0.5 with springFrequency = 6.0;
+	// theoretical settle ticks at epsilon=0.001 are roughly ~143 at
+	// damping=0.5 and ~112 at damping=1.0. At damping=0.3 the cap is
+	// already breached (~229 ticks) — bump maxTicks before reducing
+	// damping below 0.5.
 	const maxTicks = 200
 	var lastCmd tea.Cmd
 	for i := 0; i < maxTicks && m.springActive; i++ {
