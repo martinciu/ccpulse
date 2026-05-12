@@ -487,13 +487,6 @@ const (
 	springDamping   = 1.0
 )
 
-// springSettleEpsilon is the absolute |ratio - target| and |velocity|
-// below which a spring is considered settled. 0.001 is one tenth of a
-// percent of full bar height — well below visual quantisation of a
-// single chart cell. Unit-independent because the spring lives in
-// ratio space.
-const springSettleEpsilon = 0.001
-
 // Phase durations and tuning for the two-phase animation (#136).
 //
 // phase1Duration is the wall-clock target for Phase 1 (Projectile fall).
