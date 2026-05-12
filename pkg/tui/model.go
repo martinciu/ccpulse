@@ -277,9 +277,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				})
 			}
 		case key.Matches(msg, m.keys.ScrollLeft):
-			m.viewport.ScrollLeft(horizontalScrollStep)
+			m.scrollLeft(horizontalScrollStep)
 		case key.Matches(msg, m.keys.ScrollRight):
-			m.viewport.ScrollRight(horizontalScrollStep)
+			m.scrollRight(horizontalScrollStep)
 		}
 	}
 	return m, nil
