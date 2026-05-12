@@ -547,9 +547,15 @@ func (m *Model) beginUnitAnimation() {
 		if newPeak > 0 {
 			m.springFinalTargets[i] = newValues[i] / newPeak
 		}
-		// Per-bar tuned gravity so bar i hits 0 at t = phase1Duration.
+		// Per-bar tuned gravity (quadratic ease-in) so bar i hits 0 at t = phase1Duration.
 		// h = 0.5 · g · t² (zero initial velocity) ⇒ g = 2h / t².
+		// If springRatios[i] == 0 (no prior data for this bucket), g = 0 and the
+		// Projectile is degenerate. Phase 1's max-ratio early-exit handles it on
+		// the first tick — no special case needed here.
 		g := 2 * m.springRatios[i] / (t1 * t1)
+		// Stored by value; Phase 1 tick MUST index (m.springProjectiles[i].Update()),
+		// never range-copy. Projectile.Update has a pointer receiver and mutates
+		// state; a range-copy loop would freeze Phase 1 silently.
 		m.springProjectiles[i] = *harmonica.NewProjectile(
 			harmonica.FPS(springFPS),
 			harmonica.Point{X: m.springRatios[i]},
