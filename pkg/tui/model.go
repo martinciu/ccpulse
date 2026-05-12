@@ -52,6 +52,17 @@ type tickFadeMsg struct{}
 // Cmd is returned).
 type springTickMsg struct{}
 
+// springPhase tracks which leg of the two-phase unit-toggle animation
+// is currently running. Idle is the steady state; springActive=false
+// implies springPhase=springIdle. See issue #136.
+type springPhase int
+
+const (
+	springIdle      springPhase = iota
+	springShrinking             // Phase 1: bars fall to zero (Projectile, ease-in)
+	springGrowing               // Phase 2: bars grow from zero to target (Spring with Vi, ease-out)
+)
+
 // QuotaMsg is sent when fresh usage data is available.
 type QuotaMsg struct {
 	Usage     *anthro.Usage
@@ -115,6 +126,20 @@ type Model struct {
 	// rebuilds at chart widths > 1000 buckets exceed the 60fps budget
 	// (BenchmarkBarChartRender).
 	springXOffset int
+	// Two-phase animation state (issue #136). springProjectiles drives
+	// Phase 1 (Projectile, per bar, per-bar tuned gravity). springs
+	// drives Phase 2 (Spring with seeded initial velocity). Final
+	// targets are held in springFinalTargets during Phase 1 because
+	// springTargetRatios is zeros while bars fall.
+	springPhase        springPhase
+	springProjectiles  []harmonica.Projectile
+	springFinalTargets []float64
+	// oldPeak / oldUnitIdx are snapshotted in beginUnitAnimation BEFORE
+	// refreshChart switches m.peak / m.unitIdx to the new unit. View()
+	// uses them during Phase 1 so the fading Y-label shows the OLD
+	// unit's value at the OLD peak.
+	oldPeak    float64
+	oldUnitIdx int
 
 	window         status.Window
 	quota          *anthro.Usage
@@ -442,6 +467,32 @@ const (
 // single chart cell. Unit-independent because the spring lives in
 // ratio space.
 const springSettleEpsilon = 0.001
+
+// Phase durations and tuning for the two-phase animation (#136).
+//
+// phase1Duration is the wall-clock target for Phase 1 (Projectile fall).
+// Per-bar gravity is tuned at beginUnitAnimation so each bar reaches
+// zero at exactly t = phase1Duration regardless of starting height.
+//
+// phase2Frequency, phase2Damping mirror the existing springFrequency
+// and springDamping for Phase 2's spring. Critical damping (1.0) +
+// initial velocity below omega guarantees monotonic ease-out without
+// overshoot.
+//
+// phase2InitialVelocityV0 is V₀ in Vi[i] = V₀ · springFinalTargets[i].
+// Picked below omega=6 so the spring approaches the target monotonically.
+//
+// phaseTransitionThreshold is the symmetric early-exit cutoff: Phase 1
+// hands off when max(springRatios) < threshold; Phase 2 settles when
+// max(springTargetRatios − springRatios) < threshold. 0.01 is below
+// single-cell visual quantisation.
+const (
+	phase1Duration           = 350 * time.Millisecond
+	phase2Frequency          = springFrequency // 6.0
+	phase2Damping            = springDamping   // 1.0
+	phase2InitialVelocityV0  = 5.0
+	phaseTransitionThreshold = 0.01
+)
 
 // beginUnitAnimation captures the current (old-unit) bar ratios as the
 // spring's initial state, queries the new unit's buckets, and primes the
