@@ -194,7 +194,11 @@ func Fetch(ctx context.Context, cred Credential, cacheDir string) (res FetchResu
 		}
 		return FetchResult{}, fmt.Errorf("anthro fetch: %w", apiErr)
 	}
-	_ = writeCache(cachePath, u, now)
+	if werr := writeCache(cachePath, u, now); werr != nil {
+		slog.Warn("anthro.writeCache",
+			"path", cachePath,
+			"err", werr)
+	}
 	return FetchResult{Usage: u, Source: "api", UpdatedAt: now.UTC()}, nil
 }
 

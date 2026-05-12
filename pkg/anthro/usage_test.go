@@ -689,6 +689,47 @@ func TestFetchLogs_TransportError(t *testing.T) {
 	}
 }
 
+func TestFetchLogs_WriteCacheFailure(t *testing.T) {
+	// cacheDir is a regular file → secfile.MkdirAll fails → writeCache fails.
+	tmp := t.TempDir()
+	cacheDir := filepath.Join(tmp, "not-a-dir")
+	if err := os.WriteFile(cacheDir, []byte{}, 0o600); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+	srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(sampleAPIBody))
+	})
+	withTestEndpoint(t, srv.URL)
+	recs := captureLogs(t, slog.LevelDebug)
+
+	res, err := Fetch(context.Background(), Credential{AccessToken: "tok"}, cacheDir)
+	if err != nil {
+		t.Fatalf("Fetch: %v (want nil — writeCache failure must not propagate)", err)
+	}
+	if res.Source != "api" {
+		t.Fatalf("Source = %q, want api", res.Source)
+	}
+	if res.Usage.FiveHour == nil {
+		t.Errorf("FiveHour nil — Fetch should still return the in-memory response")
+	}
+	var wc *slog.Record
+	for i := range *recs {
+		r := &(*recs)[i]
+		if r.Message == "anthro.writeCache" {
+			wc = r
+		}
+	}
+	if wc == nil {
+		t.Fatalf("anthro.writeCache record missing: %+v", *recs)
+	}
+	if wc.Level != slog.LevelWarn {
+		t.Errorf("writeCache level = %v, want WARN", wc.Level)
+	}
+	if _, ok := attrMap(*wc)["err"]; !ok {
+		t.Errorf("err attr missing on writeCache WARN")
+	}
+}
+
 func TestCaptureLogsHelper(t *testing.T) {
 	recs := captureLogs(t, slog.LevelDebug)
 	slog.Debug("first", "k", "v")
