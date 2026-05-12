@@ -3,6 +3,7 @@ package anthro
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -489,5 +490,63 @@ func TestUsageCache_TightensExisting(t *testing.T) {
 	fileInfo, _ := os.Stat(path)
 	if got, want := fileInfo.Mode().Perm(), os.FileMode(0o600); got != want {
 		t.Fatalf("file mode: got %o want %o", got, want)
+	}
+}
+
+// captureLogs swaps slog.Default for a slice-backed handler at the given
+// level (or above) and restores via t.Cleanup. Returned slice is grown by
+// the handler as records arrive; callers read it after the code under
+// test returns.
+func captureLogs(t *testing.T, minLevel slog.Level) *[]slog.Record {
+	t.Helper()
+	var (
+		mu   sync.Mutex
+		recs []slog.Record
+	)
+	prev := slog.Default()
+	h := &captureHandler{level: minLevel, mu: &mu, recs: &recs}
+	slog.SetDefault(slog.New(h))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &recs
+}
+
+type captureHandler struct {
+	level slog.Level
+	mu    *sync.Mutex
+	recs  *[]slog.Record
+}
+
+func (h *captureHandler) Enabled(_ context.Context, l slog.Level) bool { return l >= h.level }
+func (h *captureHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	*h.recs = append(*h.recs, r)
+	return nil
+}
+func (h *captureHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *captureHandler) WithGroup(string) slog.Handler      { return h }
+
+// attrMap collects record attributes into a key->value map for assertions.
+func attrMap(r slog.Record) map[string]any {
+	m := map[string]any{}
+	r.Attrs(func(a slog.Attr) bool { m[a.Key] = a.Value.Any(); return true })
+	return m
+}
+
+func TestCaptureLogsHelper(t *testing.T) {
+	recs := captureLogs(t, slog.LevelDebug)
+	slog.Debug("first", "k", "v")
+	slog.Warn("second", "n", 42)
+	if len(*recs) != 2 {
+		t.Fatalf("captured %d records, want 2", len(*recs))
+	}
+	if (*recs)[0].Level != slog.LevelDebug || (*recs)[0].Message != "first" {
+		t.Errorf("rec[0] = %v %q", (*recs)[0].Level, (*recs)[0].Message)
+	}
+	if (*recs)[1].Level != slog.LevelWarn || (*recs)[1].Message != "second" {
+		t.Errorf("rec[1] = %v %q", (*recs)[1].Level, (*recs)[1].Message)
+	}
+	if got, ok := attrMap((*recs)[1])["n"].(int64); !ok || got != 42 {
+		t.Errorf("rec[1].n = %v, want int64(42)", attrMap((*recs)[1])["n"])
 	}
 }
