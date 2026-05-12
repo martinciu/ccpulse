@@ -52,6 +52,44 @@ func TestParseSingleAssistant(t *testing.T) {
 	if m.ProjectSlug != "test-slug" {
 		t.Errorf("ProjectSlug = %q", m.ProjectSlug)
 	}
+	if m.Cwd != "/Users/x/proj" {
+		t.Errorf("Cwd = %q", m.Cwd)
+	}
+	if m.GitBranch != "main" {
+		t.Errorf("GitBranch = %q", m.GitBranch)
+	}
+}
+
+func TestParseCapturesCwdAndGitBranch(t *testing.T) {
+	f, err := os.Open("testdata/with_envelope_fields.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	msgs, err := Parse(f, "test-slug")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("got %d messages, want 2", len(msgs))
+	}
+
+	with := msgs[0]
+	if with.Cwd != "/Users/x/proj" {
+		t.Errorf("with.Cwd = %q, want /Users/x/proj", with.Cwd)
+	}
+	if with.GitBranch != "feature/x" {
+		t.Errorf("with.GitBranch = %q, want feature/x", with.GitBranch)
+	}
+
+	without := msgs[1]
+	if without.Cwd != "" {
+		t.Errorf("without.Cwd = %q, want empty", without.Cwd)
+	}
+	if without.GitBranch != "" {
+		t.Errorf("without.GitBranch = %q, want empty", without.GitBranch)
+	}
 }
 
 func TestParseMixedLines(t *testing.T) {

@@ -23,12 +23,16 @@ type Message struct {
 	CacheWrite1hTokens int64
 	IsSubagent         bool
 	ParentSessionID    string
+	Cwd                string
+	GitBranch          string
 }
 
 type rawLine struct {
 	Type      string    `json:"type"`
 	SessionID string    `json:"sessionId"`
 	Timestamp time.Time `json:"timestamp"`
+	Cwd       string    `json:"cwd"`
+	GitBranch string    `json:"gitBranch"`
 	Message   struct {
 		Role  string `json:"role"`
 		Model string `json:"model"`
@@ -107,6 +111,8 @@ func toMessage(raw rawLine, slug string) Message {
 		CacheReadTokens:    raw.Message.Usage.CacheReadInputTokens,
 		CacheWrite5mTokens: raw.Message.Usage.CacheCreation.Ephemeral5mInputTokens,
 		CacheWrite1hTokens: raw.Message.Usage.CacheCreation.Ephemeral1hInputTokens,
+		Cwd:                raw.Cwd,
+		GitBranch:          raw.GitBranch,
 	}
 }
 
