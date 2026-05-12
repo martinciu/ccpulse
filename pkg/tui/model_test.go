@@ -1401,10 +1401,10 @@ func TestRefreshChart_PreservesWallClockAnchor(t *testing.T) {
 	// Scroll amount and count are chosen so the anchor index remains
 	// within maxX after every trigger:
 	//   - count=500, zoomIdx=0 (5m): ~500 buckets, maxX≈382 at w=120
-	//   - scrollLeft(100): offset≈282, safely mid-chart
+	//   - scrollLeft(250): offset≈132, safely mid-chart
 	//   - after zoom to 15m: ~167 buckets, maxX≈49; BucketAlign(anchor,15m)
-	//     lands near now−(282×5m)=~23.5h ago, well within the 15m grid
-	//   - after resize w=160: chartWidth=158, maxX≈342; offset 282 < 342
+	//     lands near now−(132×5m)=~11h ago, well within the 15m grid
+	//   - after resize w=160: chartWidth=158, maxX≈342; offset 132 < 342
 	tests := []struct {
 		name        string
 		startPinned bool
