@@ -41,6 +41,23 @@ nfpms:
         dst: /usr/share/zsh/site-functions/_ccpulse
       - src: ./completions/ccpulse.fish
         dst: /usr/share/fish/vendor_completions.d/ccpulse.fish
+brews:
+  - name: ccpulse
+    repository:
+      owner: martinciu
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: https://github.com/martinciu/ccpulse
+    description: Native Go TUI dashboard for Claude Code usage
+    license: MIT
+    install: |
+      bin.install "ccpulse"
+      bash_completion.install "completions/ccpulse.bash" => "ccpulse"
+      zsh_completion.install "completions/_ccpulse"
+      fish_completion.install "completions/ccpulse.fish"
+    test: |
+      assert_match version.to_s, shell_output("#{bin}/ccpulse version")
+      system "#{bin}/ccpulse", "--help"
 checksum:
   name_template: "checksums.txt"
 release:
