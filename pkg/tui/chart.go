@@ -92,7 +92,7 @@ func renderXLabels(starts []time.Time, chartW int, zoom ZoomLevel, now time.Time
 			continue
 		}
 		labelRunes := []rune(label)
-		if i+len(labelRunes) > chartW {
+		if i+lipgloss.Width(label) > chartW {
 			continue
 		}
 		for j, r := range labelRunes {
@@ -102,9 +102,10 @@ func renderXLabels(starts []time.Time, chartW int, zoom ZoomLevel, now time.Time
 
 	const nowText = "▼ now"
 	nowRunes := []rune(nowText)
+	nowW := lipgloss.Width(nowText)
 	switch {
-	case len(nowRunes) <= chartW:
-		start := chartW - len(nowRunes)
+	case nowW <= chartW:
+		start := chartW - nowW
 		for j, r := range nowRunes {
 			row[start+j] = r
 		}
