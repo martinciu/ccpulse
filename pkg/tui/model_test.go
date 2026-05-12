@@ -1790,3 +1790,170 @@ func TestUnitToggle_SpringStartsAtScrolledOffset(t *testing.T) {
 		t.Errorf("springXOffset = %d, want %d (the user's actual viewport offset)", mm.springXOffset, scrolledOffset)
 	}
 }
+
+func TestYLabel_Phase1ShowsOldUnit(t *testing.T) {
+	// During Phase 1 (shrinking), View() must render the Y-label with
+	// the OLD unit's value and the OLD peak. We assert by string
+	// inspection: the rendered View must contain a tokens-format label
+	// (e.g. "45k") and NOT a dollar-format label.
+	m := seedTwoPhaseAnimationModel(t)
+
+	// We're starting from tokens; toggle to cost. Phase 1 should show
+	// the old (tokens) label.
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	m = updated.(Model)
+	if m.springPhase != springShrinking {
+		t.Fatalf("springPhase = %d, want springShrinking", m.springPhase)
+	}
+
+	// Drive a handful of ticks but stay inside Phase 1.
+	for i := 0; i < 5 && m.springPhase == springShrinking; i++ {
+		updated, _ = m.Update(springTickMsg{})
+		m = updated.(Model)
+	}
+	if m.springPhase != springShrinking {
+		t.Fatalf("expected to stay in Phase 1 for 5 ticks; got phase %d", m.springPhase)
+	}
+
+	view := m.View()
+	// Phase 1 should still expose a token-shaped label (e.g. "45k", "30k")
+	// — no dollar sign anywhere on the chart body.
+	if !strings.Contains(view, "k") || strings.Contains(view, "$") {
+		t.Errorf("Phase 1 View() should show OLD (tokens) Y-label; got:\n%s", view)
+	}
+}
+
+func TestYLabel_Phase2ShowsNewUnit(t *testing.T) {
+	// During Phase 2 (growing), View() must render the Y-label with
+	// the NEW unit's value and the NEW peak. After toggling to cost
+	// and reaching Phase 2, the label format flips to "$N.NN".
+	m := seedTwoPhaseAnimationModel(t)
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	m = updated.(Model)
+
+	// Drive ticks until we cross into Phase 2.
+	const maxTicks = 100
+	for i := 0; i < maxTicks && m.springPhase != springGrowing; i++ {
+		updated, _ = m.Update(springTickMsg{})
+		m = updated.(Model)
+	}
+	if m.springPhase != springGrowing {
+		t.Fatalf("never reached Phase 2 in %d ticks", maxTicks)
+	}
+
+	// Drive a few more ticks so the spring grows enough that maxRatio
+	// is above the fade-stop-1 threshold (≥ 0.2). At V0=5, omega=6 the
+	// spring reaches ~0.5 in a few ticks for non-zero targets.
+	for i := 0; i < 10 && m.springActive; i++ {
+		updated, _ = m.Update(springTickMsg{})
+		m = updated.(Model)
+	}
+	if !m.springActive {
+		t.Fatalf("animation ended before we could sample Phase 2 mid-frame")
+	}
+
+	view := m.View()
+	// Phase 2 should expose a cost-shaped label (contains "$").
+	if !strings.Contains(view, "$") {
+		t.Errorf("Phase 2 View() should show NEW (cost) Y-label; got:\n%s", view)
+	}
+}
+
+func TestLabelFade_SyncedWithMaxRatio(t *testing.T) {
+	// View()'s computed fade must equal max(springRatios) clamped to
+	// [0, 1] while the animation is active. We assert indirectly by
+	// inspecting the rendered View at known animation states: at the
+	// empty-moment frame (just after Phase 1 handoff, springRatios all
+	// zero), the Y-label must be absent. At steady state (springActive
+	// = false), the Y-label must be present.
+	m := seedTwoPhaseAnimationModel(t)
+
+	// Pre-toggle baseline: the Y-label is present at steady state.
+	pre := m.View()
+	if !strings.Contains(pre, "k") {
+		t.Fatalf("baseline View has no token-shaped label; test setup wrong:\n%s", pre)
+	}
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	m = updated.(Model)
+
+	// Drive ticks until exactly the moment Phase 2 starts. At that
+	// tick, m.springRatios were just snapped to zero (max == 0); the
+	// growing-Phase Update will fire next tick.
+	const maxTicks = 50
+	for i := 0; i < maxTicks && m.springPhase == springShrinking; i++ {
+		updated, _ = m.Update(springTickMsg{})
+		m = updated.(Model)
+	}
+	if m.springPhase != springGrowing {
+		t.Fatalf("did not reach Phase 2 in %d ticks", maxTicks)
+	}
+
+	// At this exact moment springRatios were snapped to zero but no
+	// growing-Phase tick has run yet. Verify the invariant the empty
+	// frame depends on:
+	for i, r := range m.springRatios {
+		if r != 0 {
+			t.Fatalf("springRatios[%d] = %v at handoff, want 0", i, r)
+		}
+	}
+
+	emptyMomentView := m.View()
+	// At the empty moment, the Y-label is absent — overlayYLabel
+	// returned body unchanged because fade <= 0. Neither tokens-shape
+	// nor dollar-shape labels should appear in the body.
+	bodyLines := strings.Split(emptyMomentView, "\n")
+	for _, line := range bodyLines {
+		// Header has "5h" / "7d" tokens — only inspect lines that
+		// look like chart body (no border characters, no separators).
+		if strings.ContainsAny(line, "─│") {
+			continue
+		}
+		if strings.HasPrefix(strings.TrimSpace(line), "5h") ||
+			strings.HasPrefix(strings.TrimSpace(line), "7d") {
+			continue
+		}
+		// A bare-cells chart body line at the empty moment should not
+		// contain "$" or "k" Y-label glyphs. The chart cells themselves
+		// are spaces (no bars rendered).
+		if strings.Contains(line, "$") {
+			t.Errorf("empty-moment frame contains '$' in body line: %q", line)
+		}
+	}
+}
+
+// seedTwoPhaseAnimationModel constructs a Model with two fixture
+// messages so toggling 'u' kicks off a two-phase animation. Cache is
+// closed in a t.Cleanup.
+func seedTwoPhaseAnimationModel(t *testing.T) Model {
+	t.Helper()
+	dir := t.TempDir()
+	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	t.Cleanup(func() { c.Close() })
+
+	tab, err := pricing.Load()
+	if err != nil {
+		t.Fatalf("pricing.Load: %v", err)
+	}
+	now := time.Now().UTC().Truncate(15 * time.Minute)
+	msgs := []parse.Message{
+		{SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7",
+			Timestamp: now.Add(-30 * time.Minute), InputTokens: 10000, OutputTokens: 5000},
+		{SessionID: "s2", ProjectSlug: "p", Model: "claude-opus-4-7",
+			Timestamp: now.Add(-10 * time.Minute), InputTokens: 30000, OutputTokens: 15000},
+	}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	m := New(Deps{Cache: c})
+	m.w, m.h = 120, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	m.refreshChart()
+	return m
+}

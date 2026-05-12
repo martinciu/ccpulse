@@ -340,7 +340,21 @@ func (m Model) View() string {
 	if m.showHelp {
 		body = m.help.FullHelpView(m.keys.FullHelp())
 	} else {
-		body = overlayYLabel(m.viewport.View(), m.peak, chartUnit(m.unitIdx), m.chartHeight(), 1.0)
+		fade := 1.0
+		labelUnit := chartUnit(m.unitIdx)
+		labelPeak := m.peak
+		if m.springActive {
+			var maxR float64
+			for _, r := range m.springRatios {
+				maxR = max(maxR, r)
+			}
+			fade = maxR
+			if m.springPhase == springShrinking {
+				labelUnit = chartUnit(m.oldUnitIdx)
+				labelPeak = m.oldPeak
+			}
+		}
+		body = overlayYLabel(m.viewport.View(), labelPeak, labelUnit, m.chartHeight(), fade)
 	}
 	footer := m.renderFooter()
 	out := lipgloss.JoinVertical(lipgloss.Left, header, sep, body, sep, footer)
