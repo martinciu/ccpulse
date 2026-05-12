@@ -18,8 +18,10 @@ import (
 // isolates the filter step: WalkDir + the new batched-cursor map
 // lookup. Not a CI regression gate — a reproducible probe.
 //
-// Run with: go test ./pkg/ingest/ -bench BenchmarkBackfillEnumerate1k -benchmem -run ^$ -benchtime 1x
+// Run with: go test ./pkg/ingest/ -bench BenchmarkBackfillEnumerate1k -run ^$ -count=10
 func BenchmarkBackfillEnumerate1k(b *testing.B) {
+	b.ReportAllocs()
+
 	dir := b.TempDir()
 	projects := filepath.Join(dir, "projects", "-Users-x-foo")
 	cacheDir := filepath.Join(dir, "cache")
