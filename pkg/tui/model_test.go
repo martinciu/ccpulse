@@ -1963,6 +1963,33 @@ func seedTwoPhaseAnimationModel(t *testing.T) Model {
 	return m
 }
 
+// chartBodyLines returns the chart-body rows from a rendered View.
+// Filters out header (5h / 7d quota rows + border lines) and footer
+// (keybinding help, indicators) so substring checks on the Y-label
+// or chart cells aren't false-positively poisoned by header changes.
+func chartBodyLines(view string) []string {
+	t := []string{}
+	for line := range strings.SplitSeq(view, "\n") {
+		if strings.ContainsAny(line, "─│") {
+			continue
+		}
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "5h") ||
+			strings.HasPrefix(trimmed, "7d") ||
+			strings.HasPrefix(trimmed, "burn") {
+			continue
+		}
+		// Footer: starts with help keybinding hints like "q quit" or
+		// "?  toggle help" — these always contain the literal string
+		// "quit" since the binding is fixed.
+		if strings.Contains(line, "quit") {
+			continue
+		}
+		t = append(t, line)
+	}
+	return t
+}
+
 func TestRefreshMsg_AbortsBothPhases(t *testing.T) {
 	// RefreshMsg arriving in either phase must hard-cut the animation:
 	// springActive=false and springPhase=springIdle. Driven by the
