@@ -1572,3 +1572,26 @@ func TestQuotaMsg_DoesNotRebuildChart(t *testing.T) {
 		t.Errorf("viewport rendered output changed across QuotaMsg (chart should not rebuild)")
 	}
 }
+
+func TestUnitToggle_SpringStartsAtScrolledOffset(t *testing.T) {
+	// A scrolled-away user pressing 'u' to toggle tokens↔cost should
+	// have the spring animation start from their actual viewport offset,
+	// not from the right edge. Otherwise the animation renders against
+	// the wrong slice of bars.
+	m, cleanup := seedScrollTestModel(t, 300)
+	defer cleanup()
+
+	m.scrollLeft(30)
+	scrolledOffset := m.viewportXOffset
+	rightEdge := max(0, len(m.lastValues)-m.chartWidth())
+	if scrolledOffset == rightEdge {
+		t.Fatalf("setup: scroll should land away from right edge, got %d == %d", scrolledOffset, rightEdge)
+	}
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	mm := updated.(Model)
+
+	if mm.springXOffset != scrolledOffset {
+		t.Errorf("springXOffset = %d, want %d (the user's actual viewport offset)", mm.springXOffset, scrolledOffset)
+	}
+}

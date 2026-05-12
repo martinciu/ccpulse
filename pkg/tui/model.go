@@ -262,16 +262,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.beginUnitAnimation()
 			if m.springActive {
 				// After beginUnitAnimation, viewport content is the new
-				// full-canvas with XOffset set to "now" (rightmost).
-				// Compute the effective XOffset (which viewport clamps to
-				// longestLineWidth - Width) as the spring's window so the
-				// user sees the same time range during animation as after
-				// settle.
-				offset := len(m.lastValues) - m.chartWidth()
-				if offset < 0 {
-					offset = 0
-				}
-				m.springXOffset = offset
+				// full-canvas with XOffset preserved at the user's
+				// wall-clock anchor (via refreshChart). Use the shadow
+				// scroll position as the spring's window so the animated
+				// slice matches what the user is actually looking at.
+				m.springXOffset = m.viewportXOffset
 				return m, tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
 					return springTickMsg{}
 				})
