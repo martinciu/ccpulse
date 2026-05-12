@@ -102,9 +102,10 @@ func renderXLabels(starts []time.Time, chartW int, zoom ZoomLevel, now time.Time
 
 	const nowText = "▼ now"
 	nowRunes := []rune(nowText)
+	nowW := lipgloss.Width(nowText)
 	switch {
-	case lipgloss.Width(nowText) <= chartW:
-		start := chartW - lipgloss.Width(nowText)
+	case nowW <= chartW:
+		start := chartW - nowW
 		for j, r := range nowRunes {
 			row[start+j] = r
 		}
