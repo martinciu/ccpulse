@@ -2014,3 +2014,78 @@ func TestBeginUnitAnimation_EmptyCache(t *testing.T) {
 			len(m.springs), len(m.springProjectiles))
 	}
 }
+
+func TestWindowSizeMsg_AbortsAnimation(t *testing.T) {
+	// WindowSizeMsg routes through refreshChart, which clears both
+	// springActive and springPhase. Spec acceptance criteria explicitly
+	// calls out WindowSizeMsg alongside RefreshMsg and Zoom as abort
+	// triggers, so test it directly rather than relying on transitive
+	// coverage via TestRefreshMsg_AbortsBothPhases.
+	for _, phase := range []springPhase{springShrinking, springGrowing} {
+		name := "Phase1"
+		if phase == springGrowing {
+			name = "Phase2"
+		}
+		t.Run(name, func(t *testing.T) {
+			m := seedTwoPhaseAnimationModel(t)
+			updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+			m = updated.(Model)
+
+			if phase == springGrowing {
+				const maxTicks = 100
+				for i := 0; i < maxTicks && m.springPhase != springGrowing; i++ {
+					updated, _ = m.Update(springTickMsg{})
+					m = updated.(Model)
+				}
+				if m.springPhase != springGrowing {
+					t.Fatalf("never reached Phase 2 in %d ticks", maxTicks)
+				}
+			}
+
+			updated, _ = m.Update(tea.WindowSizeMsg{Width: 160, Height: 50})
+			m = updated.(Model)
+
+			if m.springActive {
+				t.Errorf("springActive = true after WindowSizeMsg in %s; expected hard-cut", name)
+			}
+			if m.springPhase != springIdle {
+				t.Errorf("springPhase = %d after WindowSizeMsg in %s; expected springIdle", m.springPhase, name)
+			}
+		})
+	}
+}
+
+func TestLabelFade_MidAnimationBinding(t *testing.T) {
+	// The Y-label's fade level must follow max(springRatios) — high max
+	// renders the label at full opacity (no Foreground), low max renders
+	// it in a near-background grey, and max=0 omits the label entirely.
+	// We verify the direction binding directly: under forced TrueColor,
+	// fade=1.0 produces a label with no SGR wrapping, whereas a fade
+	// strictly less than 1.0 produces an SGR-wrapped label. The other
+	// fade-related tests cover the empty-moment and content swap; this
+	// test pins the brightness binding.
+	withForcedColor(t)
+
+	const probe = "$1.23"
+	full := labelFadeStyle(1.0).Render(probe)
+	if full != probe {
+		t.Errorf("labelFadeStyle(1.0).Render = %q, want %q (fade=1.0 must be full opacity = no Foreground)",
+			full, probe)
+	}
+
+	// Sample two distinct sub-full fade levels and assert they BOTH
+	// produce SGR-wrapped output that differs from the full-opacity
+	// rendering. Avoids hard-coding hex bytes that termenv might
+	// downsample on this platform.
+	for _, fade := range []float64{0.5, 0.1} {
+		got := labelFadeStyle(fade).Render(probe)
+		if got == probe {
+			t.Errorf("labelFadeStyle(%v).Render = %q (no SGR); expected SGR wrapping at sub-full fade",
+				fade, got)
+		}
+		if got == full {
+			t.Errorf("labelFadeStyle(%v).Render matches labelFadeStyle(1.0); expected distinct styling",
+				fade)
+		}
+	}
+}
