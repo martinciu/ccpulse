@@ -1968,7 +1968,6 @@ func TestRefreshMsg_AbortsBothPhases(t *testing.T) {
 	// springActive=false and springPhase=springIdle. Driven by the
 	// existing refreshChart chokepoint (Task 7 extends it).
 	for _, phase := range []springPhase{springShrinking, springGrowing} {
-		phase := phase // capture for subtest
 		name := "Phase1"
 		if phase == springGrowing {
 			name = "Phase2"
