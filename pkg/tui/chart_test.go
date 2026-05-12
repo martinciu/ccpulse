@@ -45,7 +45,7 @@ func BenchmarkBuildChart(b *testing.B) {
 			b.ResetTimer()
 			now := time.Now().UTC()
 			for b.Loop() {
-				sinkString = buildChart(buckets, n, 20, 0, now, ZoomLevels[1])
+				sinkString = buildChart(buckets, n, 20, now, ZoomLevels[1])
 			}
 		})
 	}
@@ -125,7 +125,7 @@ func TestBuildChart_ContainsXLabelsAndNowMarker(t *testing.T) {
 		{BucketStart: now.Add(-5 * time.Minute), Tokens: 4500},
 		{BucketStart: now, Tokens: 3500},
 	}
-	out := buildChart(bs, len(bs), 10, 0, now, ZoomLevels[0])
+	out := buildChart(bs, len(bs), 10, now, ZoomLevels[0])
 	if !strings.Contains(out, "▼ now") {
 		t.Errorf("expected '▼ now' marker in chart output:\n%s", out)
 	}
@@ -148,7 +148,7 @@ func TestBuildChart_ChartHTooShortDropsXLabels(t *testing.T) {
 	}
 	// chartH=5 is below the chartH>=6 threshold; the X labels row should
 	// be dropped and bars should take all 5 rows.
-	out := buildChart(bs, len(bs), 5, 0, now, ZoomLevels[0])
+	out := buildChart(bs, len(bs), 5, now, ZoomLevels[0])
 	if strings.Contains(out, "▼ now") {
 		t.Errorf("expected no '▼ now' marker when chartH=5; X labels should be dropped:\n%s", out)
 	}
@@ -301,49 +301,48 @@ func TestFormatXLabel(t *testing.T) {
 	}
 }
 
-func TestBuildChart_OverlayAtLeftVisibleCol(t *testing.T) {
+func TestOverlayYLabel_InjectsAtNiceFloorRow(t *testing.T) {
 	t.Parallel()
 	// peak = 87000 → niceFloor(87000) = 75000 → label "75.0k".
 	// chartH=6 → barsH=5 → row = 5 - round(75000/87000 * 5) = 1.
-	// chartW=20, leftVisibleCol=10 → label punched at canvas col 10.
-	now := time.Now().UTC().Truncate(time.Hour)
-	buckets := make([]cache.TokenBucket, 20)
-	for i := range buckets {
-		buckets[i] = cache.TokenBucket{
-			BucketStart: now.Add(time.Duration(i*5) * time.Minute),
-			Tokens:      87_000,
-		}
-	}
-	out := buildChart(buckets, 20, 6, 10, now, ZoomLevels[1])
+	body := "AAAAAAAAAA\nBBBBBBBBBB\nCCCCCCCCCC\nDDDDDDDDDD\nEEEEEEEEEE\nFFFFFFFFFF"
+	out := overlayYLabel(body, 87_000, 6)
 	rows := strings.Split(out, "\n")
-	if len(rows) < 6 {
-		t.Fatalf("expected at least 6 rows, got %d:\n%s", len(rows), out)
+	if len(rows) != 6 {
+		t.Fatalf("expected 6 rows, got %d:\n%q", len(rows), out)
 	}
 	if !strings.Contains(rows[1], "75.0k") {
-		t.Errorf("expected '75.0k' on canvas row 1, got %q\nfull:\n%s", rows[1], out)
+		t.Errorf("expected '75.0k' on row 1, got %q", rows[1])
 	}
-	for i, r := range rows[:5] {
-		if i == 1 {
-			continue
+	// Other rows untouched.
+	for i, r := range []string{"AAAAAAAAAA", "CCCCCCCCCC", "DDDDDDDDDD", "EEEEEEEEEE", "FFFFFFFFFF"} {
+		idx := i
+		if idx >= 1 {
+			idx++ // skip row 1
 		}
-		if strings.Contains(r, "75.0k") {
-			t.Errorf("'75.0k' leaked onto canvas row %d: %q", i, r)
+		if !strings.Contains(rows[idx], r) {
+			t.Errorf("row %d should still contain %q, got %q", idx, r, rows[idx])
 		}
 	}
 }
 
-func TestBuildChart_NoOverlayWhenEmpty(t *testing.T) {
+func TestOverlayYLabel_BlankWhenEmpty(t *testing.T) {
 	t.Parallel()
-	now := time.Now().UTC().Truncate(time.Hour)
-	// All-zero buckets — peak == 0 → niceFloor 0 → overlay skipped.
-	buckets := make([]cache.TokenBucket, 5)
-	for i := range buckets {
-		buckets[i] = cache.TokenBucket{BucketStart: now.Add(time.Duration(i*5) * time.Minute)}
+	body := "AAAAAAAAAA\nBBBBBBBBBB\nCCCCCCCCCC\nDDDDDDDDDD\nEEEEEEEEEE\nFFFFFFFFFF"
+	for _, peak := range []int64{0, -5} {
+		out := overlayYLabel(body, peak, 6)
+		if out != body {
+			t.Errorf("peak=%d: expected body untouched, got %q", peak, out)
+		}
 	}
-	out := buildChart(buckets, 10, 6, 0, now, ZoomLevels[0])
-	canvasOnly := strings.Join(strings.Split(out, "\n")[:5], "\n")
-	if strings.ContainsAny(canvasOnly, "kM") {
-		t.Errorf("canvas contains 'k' or 'M' suggesting a token label leaked for empty data:\n%s", canvasOnly)
+}
+
+func TestOverlayYLabel_HeightTooSmall(t *testing.T) {
+	t.Parallel()
+	body := "AAAAAAAAAA\nBBBBBBBBBB\nCCCCCCCCCC\nDDDDDDDDDD\nEEEEEEEEEE"
+	// chartH < 6 leaves body untouched — same threshold renderXLabels uses.
+	if got := overlayYLabel(body, 50_000, 5); got != body {
+		t.Errorf("expected body untouched at chartH=5, got %q", got)
 	}
 }
 

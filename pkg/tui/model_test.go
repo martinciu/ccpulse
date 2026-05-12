@@ -138,11 +138,11 @@ func TestRefreshChart_CachesPeak(t *testing.T) {
 	}
 }
 
-func TestView_YLabelVisibleAfterScrollToNow(t *testing.T) {
-	// With chart wider than the viewport, refreshChart auto-scrolls to
-	// the right edge ("now"). The overlay must land at the viewport's
-	// left edge (canvas col = chartW - viewport.Width), so View() shows
-	// the niceFloor label in the default scroll-to-now view.
+func TestView_YLabelFixedAcrossScroll(t *testing.T) {
+	// The Y label is overlaid on the post-scroll viewport output, so it
+	// must appear in View() both at the default scroll-to-now position
+	// AND after the user scrolls left/right. Anything else means the
+	// label tracks the canvas (#132 bug) instead of the viewport.
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "state.db")
 	c, err := cache.Open(dbPath)
@@ -181,7 +181,22 @@ func TestView_YLabelVisibleAfterScrollToNow(t *testing.T) {
 		t.Fatalf("expected non-empty Y label; m.peak = %d", m.peak)
 	}
 	if !strings.Contains(m.View(), expected) {
-		t.Errorf("View output missing in-canvas Y label %q after scroll-to-now:\n%s", expected, m.View())
+		t.Errorf("View output missing Y label %q at default scroll position:\n%s", expected, m.View())
+	}
+
+	// Scroll a few steps left and right; the label must still be present.
+	for range 5 {
+		m.viewport.ScrollLeft(horizontalScrollStep)
+	}
+	if !strings.Contains(m.View(), expected) {
+		t.Errorf("View output missing Y label %q after ScrollLeft (label should be fixed to viewport):\n%s",
+			expected, m.View())
+	}
+	for range 3 {
+		m.viewport.ScrollRight(horizontalScrollStep)
+	}
+	if !strings.Contains(m.View(), expected) {
+		t.Errorf("View output missing Y label %q after ScrollRight:\n%s", expected, m.View())
 	}
 }
 
@@ -332,7 +347,7 @@ func TestBuildChartEmitsBars(t *testing.T) {
 			Tokens:      int64((i*7 + 1000) * (1 + i%3)),
 		}
 	}
-	out := buildChart(buckets, 30, 10, 0, now, ZoomLevels[1])
+	out := buildChart(buckets, 30, 10, now, ZoomLevels[1])
 	if !strings.ContainsAny(out, "█▇▆▅▄▃▂▁") {
 		t.Errorf("buildChart produced no bar block characters; got:\n%s", out)
 	}
@@ -354,7 +369,7 @@ func TestBuildChart_NoBaselineStrip(t *testing.T) {
 	for i := 5; i < 10; i++ {
 		buckets[i].Tokens = int64((i + 1) * 1000)
 	}
-	out := buildChart(buckets, 20, 10, 0, now, ZoomLevels[0])
+	out := buildChart(buckets, 20, 10, now, ZoomLevels[0])
 
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
 	bottom := lines[len(lines)-1]

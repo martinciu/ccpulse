@@ -4,11 +4,12 @@ import (
 	"log/slog"
 	"math"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/NimbleMarkets/ntcharts/barchart"
-	"github.com/NimbleMarkets/ntcharts/canvas"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/martinciu/ccpulse/pkg/cache"
 )
@@ -26,6 +27,45 @@ var ZoomLevels = []ZoomLevel{
 	{"5m", 5 * time.Minute},
 	{"15m", 15 * time.Minute},
 	{"1h", time.Hour},
+}
+
+// overlayYLabel splices `formatTokenCount(niceFloor(peak))` in dim style
+// into the niceFloor row of an already-rendered chart string, replacing
+// the first 5 visible columns of that row. Operates ANSI-aware on the
+// post-scroll viewport output so the label stays pinned to the viewport's
+// left edge regardless of horizontal scroll position (issue #132).
+//
+// peak <= 0 (or a peak whose niceFloor is 0) leaves body untouched.
+// chartH < 6 leaves body untouched (same threshold renderXLabels uses
+// for the X labels row — no Y label without an X label row to balance
+// the layout). Returns body unchanged if the target row is missing or
+// the body is empty.
+func overlayYLabel(body string, peak int64, chartH int) string {
+	if peak <= 0 || chartH < 6 || body == "" {
+		return body
+	}
+	tick := niceFloor(peak)
+	if tick <= 0 {
+		return body
+	}
+	barsH := chartH - 1
+	row := barsH - int(math.Round(float64(tick)/float64(peak)*float64(barsH)))
+	if row < 0 {
+		row = 0
+	}
+	if row >= barsH {
+		row = barsH - 1
+	}
+
+	label := dimStyle.Render(formatTokenCount(tick))
+	labelW := lipgloss.Width(label)
+
+	lines := strings.Split(body, "\n")
+	if row >= len(lines) {
+		return body
+	}
+	lines[row] = ansi.TruncateLeft(lines[row], labelW, label)
+	return strings.Join(lines, "\n")
 }
 
 // renderXLabels returns a 1-row string of width chartW containing
@@ -185,15 +225,11 @@ func heatColor(ratio float64) lipgloss.Color {
 // canvas; barchart.WithNoAxis() reclaims the row ntcharts otherwise
 // reserves for its (empty) internal axis.
 //
-// A single dim Y label `formatTokenCount(niceFloor(peak))` is overlaid
-// inside the canvas at the row matching niceFloor's value, anchored at
-// column `leftVisibleCol`. The caller passes the canvas column that
-// will land at the viewport's left edge after the SetXOffset scroll, so
-// the label sits at the visible left edge in the default (scroll-to-now)
-// view (issue #132). When the user scrolls horizontally afterwards, the
-// label moves with the canvas — accepted tradeoff for keeping the
-// chart canvas full-width with no external Y-axis gutter.
-func buildChart(buckets []cache.TokenBucket, chartW, chartH, leftVisibleCol int, now time.Time, zoom ZoomLevel) string {
+// The Y label is overlaid in Model.View() (issue #132) after the
+// viewport's horizontal scroll, so the label stays pinned to the
+// viewport's left edge regardless of scroll position. buildChart
+// itself returns the pure chart canvas.
+func buildChart(buckets []cache.TokenBucket, chartW, chartH int, now time.Time, zoom ZoomLevel) string {
 	start := time.Now()
 	if chartH < 1 {
 		chartH = 1 // barchart.New panics with a zero height
@@ -248,30 +284,6 @@ func buildChart(buckets []cache.TokenBucket, chartW, chartH, leftVisibleCol int,
 	)
 	bc.PushAll(bars)
 	bc.Draw()
-
-	// Overlay the Y label at the canvas col that maps to viewport col 0
-	// after scroll-to-now. peak <= 0 or niceFloor returning 0 skips the
-	// overlay so empty data doesn't render a "0" label.
-	if peak > 0 {
-		if tick := niceFloor(peak); tick > 0 {
-			row := barsH - int(math.Round(float64(tick)/float64(peak)*float64(barsH)))
-			if row < 0 {
-				row = 0
-			}
-			if row >= barsH {
-				row = barsH - 1
-			}
-			col := leftVisibleCol
-			if col < 0 {
-				col = 0
-			}
-			if col >= chartW {
-				col = chartW - 1
-			}
-			bc.Canvas.SetStringWithStyle(canvas.Point{X: col, Y: row}, formatTokenCount(tick), dimStyle)
-		}
-	}
-
 	body := bc.View()
 
 	if showXLabels {

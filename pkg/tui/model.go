@@ -203,7 +203,7 @@ func (m Model) View() string {
 	if m.showHelp {
 		body = m.help.FullHelpView(m.keys.FullHelp())
 	} else {
-		body = m.viewport.View()
+		body = overlayYLabel(m.viewport.View(), m.peak, m.chartHeight())
 	}
 	footer := m.renderFooter()
 	out := lipgloss.JoinVertical(lipgloss.Left, header, sep, body, sep, footer)
@@ -371,15 +371,7 @@ func (m *Model) refreshChart() {
 		}
 	}
 
-	// SetXOffset(chartW) clamps to chartW - viewportW; the Y label
-	// overlay anchors to that canvas column so it lands at the viewport's
-	// left edge in the default scroll-to-now view.
-	leftVisibleCol := chartW - m.viewport.Width
-	if leftVisibleCol < 0 {
-		leftVisibleCol = 0
-	}
-
-	m.viewport.SetContent(buildChart(buckets, chartW, chartH, leftVisibleCol, time.Now(), zoom))
+	m.viewport.SetContent(buildChart(buckets, chartW, chartH, time.Now(), zoom))
 	// Anchor the view at "now" on each refresh — the rightmost column.
 	m.viewport.SetXOffset(chartW)
 }
