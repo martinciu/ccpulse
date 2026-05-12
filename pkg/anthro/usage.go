@@ -112,6 +112,10 @@ var (
 // maxBodySnippet bounds the body bytes that fetchAPI surfaces in the
 // non-2xx WARN log. Anthropic error bodies are tiny (~80 bytes) and
 // CloudFlare 429 HTML is well under 512.
+//
+// The snippet is wrapped in strconv.Quote at log sites to keep raw ANSI
+// escape sequences / CR / NUL bytes from a malicious or MitM'd response
+// from executing in the user's terminal when they tail the debug log.
 const maxBodySnippet = 512
 
 // maxBodyRead caps the bytes fetchAPI will pull from the response body.
@@ -228,6 +232,14 @@ func acquireFetchLock(cacheDir string) (release func(), err error) {
 	}, nil
 }
 
+// fetchAPI emits exactly one slog record per call. The four message keys
+// (anthro.fetchAPI, anthro.fetchAPI non-2xx, anthro.fetchAPI transport error,
+// anthro.fetchAPI decode) are distinct because each variant carries a
+// different attribute shape (status+body_snippet vs err vs status+body+err).
+// Compare with runQuotaPoller in cmd/ccpulse/main.go, which uses one
+// message ("ccpulse.quotaPoller") plus an "outcome" attribute because its
+// branches share the same attribute shape. Rule of thumb: one msg per
+// distinct attribute shape; vary outcome by attribute value when shapes match.
 func fetchAPI(ctx context.Context, token string) (Usage, error) {
 	ctx, cancel := context.WithTimeout(ctx, httpTimeout)
 	defer cancel()

@@ -494,10 +494,14 @@ func TestUsageCache_TightensExisting(t *testing.T) {
 }
 
 // captureLogs swaps slog.Default for a slice-backed handler at the given
-// level (or above) and restores via t.Cleanup. Returned slice is grown by
-// the handler as records arrive; callers read it after the code under
-// test returns.
-func captureLogs(t *testing.T, minLevel slog.Level) *[]slog.Record {
+// level (or above) and restores via t.Cleanup. Returns a snapshot getter:
+// each call returns a fresh copy of records observed so far, taken under
+// the handler mutex so callers can read mid-test safely if needed.
+//
+// Caveat: slog.SetDefault is process-global. Tests using captureLogs must
+// NOT call t.Parallel() — concurrent tests would cross-contaminate the
+// captured default. ccpulse's pkg/anthro tests are all serial today.
+func captureLogs(t *testing.T, minLevel slog.Level) func() []slog.Record {
 	t.Helper()
 	var (
 		mu   sync.Mutex
@@ -507,7 +511,13 @@ func captureLogs(t *testing.T, minLevel slog.Level) *[]slog.Record {
 	h := &captureHandler{level: minLevel, mu: &mu, recs: &recs}
 	slog.SetDefault(slog.New(h))
 	t.Cleanup(func() { slog.SetDefault(prev) })
-	return &recs
+	return func() []slog.Record {
+		mu.Lock()
+		defer mu.Unlock()
+		snap := make([]slog.Record, len(recs))
+		copy(snap, recs)
+		return snap
+	}
 }
 
 type captureHandler struct {
@@ -523,6 +533,13 @@ func (h *captureHandler) Handle(_ context.Context, r slog.Record) error {
 	*h.recs = append(*h.recs, r)
 	return nil
 }
+
+// WithAttrs / WithGroup return the receiver unchanged. This is incorrect
+// against the slog.Handler interface (real handlers must apply prefixed
+// attrs/group to subsequent records), but ccpulse never calls slog.With()
+// before logging in the call paths these tests exercise. If that ever
+// changes, captured records will silently drop the prefix attrs — extend
+// these to accumulate (clone-and-append) before relying on the helper there.
 func (h *captureHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
 func (h *captureHandler) WithGroup(string) slog.Handler      { return h }
 
@@ -545,10 +562,11 @@ func TestFetchLogs_CacheFresh(t *testing.T) {
 	if res.Source != "cache_fresh" {
 		t.Fatalf("Source = %q, want cache_fresh", res.Source)
 	}
-	if len(*recs) != 1 {
-		t.Fatalf("captured %d records, want 1: %+v", len(*recs), *recs)
+	got := recs()
+	if len(got) != 1 {
+		t.Fatalf("captured %d records, want 1: %+v", len(got), got)
 	}
-	r := (*recs)[0]
+	r := got[0]
 	if r.Level != slog.LevelDebug {
 		t.Errorf("level = %v, want DEBUG", r.Level)
 	}
@@ -583,9 +601,10 @@ func TestFetchLogs_API(t *testing.T) {
 	if res.Source != "api" {
 		t.Fatalf("Source = %q, want api", res.Source)
 	}
+	got := recs()
 	var apiDbg, fetchDbg *slog.Record
-	for i := range *recs {
-		r := &(*recs)[i]
+	for i := range got {
+		r := &got[i]
 		switch r.Message {
 		case "anthro.fetchAPI":
 			apiDbg = r
@@ -594,7 +613,7 @@ func TestFetchLogs_API(t *testing.T) {
 		}
 	}
 	if apiDbg == nil {
-		t.Fatalf("anthro.fetchAPI record missing: %+v", *recs)
+		t.Fatalf("anthro.fetchAPI record missing: %+v", got)
 	}
 	if apiDbg.Level != slog.LevelDebug {
 		t.Errorf("fetchAPI level = %v, want DEBUG", apiDbg.Level)
@@ -626,9 +645,10 @@ func TestFetchLogs_CacheStale(t *testing.T) {
 	if res.Source != "cache_stale" {
 		t.Fatalf("Source = %q, want cache_stale", res.Source)
 	}
+	got := recs()
 	var apiWarn, fetchDbg *slog.Record
-	for i := range *recs {
-		r := &(*recs)[i]
+	for i := range got {
+		r := &got[i]
 		if r.Message == "anthro.fetchAPI non-2xx" {
 			apiWarn = r
 		}
@@ -637,7 +657,7 @@ func TestFetchLogs_CacheStale(t *testing.T) {
 		}
 	}
 	if apiWarn == nil {
-		t.Fatalf("anthro.fetchAPI non-2xx record missing: %+v", *recs)
+		t.Fatalf("anthro.fetchAPI non-2xx record missing: %+v", got)
 	}
 	if apiWarn.Level != slog.LevelWarn {
 		t.Errorf("non-2xx level = %v, want WARN", apiWarn.Level)
@@ -669,9 +689,10 @@ func TestFetchLogs_BodySnippetEscapesControlBytes(t *testing.T) {
 
 	_, _ = Fetch(context.Background(), Credential{AccessToken: "tok"}, dir)
 
+	got := recs()
 	var seen bool
-	for i := range *recs {
-		r := &(*recs)[i]
+	for i := range got {
+		r := &got[i]
 		if r.Message != "anthro.fetchAPI non-2xx" {
 			continue
 		}
@@ -682,13 +703,16 @@ func TestFetchLogs_BodySnippetEscapesControlBytes(t *testing.T) {
 		}
 	}
 	if !seen {
-		t.Fatalf("anthro.fetchAPI non-2xx record not captured: %+v", *recs)
+		t.Fatalf("anthro.fetchAPI non-2xx record not captured: %+v", got)
 	}
 }
 
 func TestFetchLogs_TransportError(t *testing.T) {
 	dir := t.TempDir()
 	// httptest server immediately closed: URL is valid but nothing listens.
+	// Relies on the kernel not handing the port to another listener in the
+	// gap between Close() and Fetch(). Standard pattern; if it ever flakes,
+	// switch to "http://127.0.0.1:1" (reserved port, always refuses).
 	srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {})
 	url := srv.URL
 	srv.Close()
@@ -699,15 +723,16 @@ func TestFetchLogs_TransportError(t *testing.T) {
 	if err == nil {
 		t.Fatalf("Fetch returned nil err, want transport error")
 	}
+	got := recs()
 	var transport *slog.Record
-	for i := range *recs {
-		r := &(*recs)[i]
+	for i := range got {
+		r := &got[i]
 		if r.Message == "anthro.fetchAPI transport error" {
 			transport = r
 		}
 	}
 	if transport == nil {
-		t.Fatalf("anthro.fetchAPI transport error record missing: %+v", *recs)
+		t.Fatalf("anthro.fetchAPI transport error record missing: %+v", got)
 	}
 	if transport.Level != slog.LevelWarn {
 		t.Errorf("transport level = %v, want WARN", transport.Level)
@@ -744,15 +769,16 @@ func TestFetchLogs_WriteCacheFailure(t *testing.T) {
 	if res.Usage.FiveHour == nil {
 		t.Errorf("FiveHour nil — Fetch should still return the in-memory response")
 	}
+	got := recs()
 	var wc *slog.Record
-	for i := range *recs {
-		r := &(*recs)[i]
+	for i := range got {
+		r := &got[i]
 		if r.Message == "anthro.writeCache" {
 			wc = r
 		}
 	}
 	if wc == nil {
-		t.Fatalf("anthro.writeCache record missing: %+v", *recs)
+		t.Fatalf("anthro.writeCache record missing: %+v", got)
 	}
 	if wc.Level != slog.LevelWarn {
 		t.Errorf("writeCache level = %v, want WARN", wc.Level)
@@ -766,16 +792,17 @@ func TestCaptureLogsHelper(t *testing.T) {
 	recs := captureLogs(t, slog.LevelDebug)
 	slog.Debug("first", "k", "v")
 	slog.Warn("second", "n", 42)
-	if len(*recs) != 2 {
-		t.Fatalf("captured %d records, want 2", len(*recs))
+	got := recs()
+	if len(got) != 2 {
+		t.Fatalf("captured %d records, want 2", len(got))
 	}
-	if (*recs)[0].Level != slog.LevelDebug || (*recs)[0].Message != "first" {
-		t.Errorf("rec[0] = %v %q", (*recs)[0].Level, (*recs)[0].Message)
+	if got[0].Level != slog.LevelDebug || got[0].Message != "first" {
+		t.Errorf("rec[0] = %v %q", got[0].Level, got[0].Message)
 	}
-	if (*recs)[1].Level != slog.LevelWarn || (*recs)[1].Message != "second" {
-		t.Errorf("rec[1] = %v %q", (*recs)[1].Level, (*recs)[1].Message)
+	if got[1].Level != slog.LevelWarn || got[1].Message != "second" {
+		t.Errorf("rec[1] = %v %q", got[1].Level, got[1].Message)
 	}
-	if got, ok := attrMap((*recs)[1])["n"].(int64); !ok || got != 42 {
-		t.Errorf("rec[1].n = %v, want int64(42)", attrMap((*recs)[1])["n"])
+	if n, ok := attrMap(got[1])["n"].(int64); !ok || n != 42 {
+		t.Errorf("rec[1].n = %v, want int64(42)", attrMap(got[1])["n"])
 	}
 }
