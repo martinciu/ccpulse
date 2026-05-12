@@ -45,7 +45,7 @@ func BenchmarkBuildChart(b *testing.B) {
 			b.ResetTimer()
 			now := time.Now().UTC()
 			for b.Loop() {
-				sinkString = buildChart(buckets, n, 20, now, ZoomLevels[1])
+				sinkString = buildChart(buckets, n, 20, 0, now, ZoomLevels[1])
 			}
 		})
 	}
@@ -125,7 +125,7 @@ func TestBuildChart_ContainsXLabelsAndNowMarker(t *testing.T) {
 		{BucketStart: now.Add(-5 * time.Minute), Tokens: 4500},
 		{BucketStart: now, Tokens: 3500},
 	}
-	out := buildChart(bs, len(bs), 10, now, ZoomLevels[0])
+	out := buildChart(bs, len(bs), 10, 0, now, ZoomLevels[0])
 	if !strings.Contains(out, "▼ now") {
 		t.Errorf("expected '▼ now' marker in chart output:\n%s", out)
 	}
@@ -148,7 +148,7 @@ func TestBuildChart_ChartHTooShortDropsXLabels(t *testing.T) {
 	}
 	// chartH=5 is below the chartH>=6 threshold; the X labels row should
 	// be dropped and bars should take all 5 rows.
-	out := buildChart(bs, len(bs), 5, now, ZoomLevels[0])
+	out := buildChart(bs, len(bs), 5, 0, now, ZoomLevels[0])
 	if strings.Contains(out, "▼ now") {
 		t.Errorf("expected no '▼ now' marker when chartH=5; X labels should be dropped:\n%s", out)
 	}
@@ -301,52 +301,49 @@ func TestFormatXLabel(t *testing.T) {
 	}
 }
 
-func TestRenderYLabel_PositionsAtNiceFloorRow(t *testing.T) {
+func TestBuildChart_OverlayAtLeftVisibleCol(t *testing.T) {
 	t.Parallel()
 	// peak = 87000 → niceFloor(87000) = 75000 → label "75.0k".
-	// height = 6 (X labels row included). barsH = 5.
-	// row = 5 - round(75000/87000 * 5) = 5 - 4 = 1.
-	out := renderYLabel(87_000, 6)
+	// chartH=6 → barsH=5 → row = 5 - round(75000/87000 * 5) = 1.
+	// chartW=20, leftVisibleCol=10 → label punched at canvas col 10.
+	now := time.Now().UTC().Truncate(time.Hour)
+	buckets := make([]cache.TokenBucket, 20)
+	for i := range buckets {
+		buckets[i] = cache.TokenBucket{
+			BucketStart: now.Add(time.Duration(i*5) * time.Minute),
+			Tokens:      87_000,
+		}
+	}
+	out := buildChart(buckets, 20, 6, 10, now, ZoomLevels[1])
 	rows := strings.Split(out, "\n")
-	if len(rows) != 6 {
-		t.Fatalf("expected 6 rows, got %d:\n%q", len(rows), out)
+	if len(rows) < 6 {
+		t.Fatalf("expected at least 6 rows, got %d:\n%s", len(rows), out)
 	}
 	if !strings.Contains(rows[1], "75.0k") {
-		t.Errorf("expected '75.0k' on row 1, got %q\nfull:\n%s", rows[1], out)
+		t.Errorf("expected '75.0k' on canvas row 1, got %q\nfull:\n%s", rows[1], out)
 	}
-	for i, r := range rows {
+	for i, r := range rows[:5] {
 		if i == 1 {
 			continue
 		}
 		if strings.Contains(r, "75.0k") {
-			t.Errorf("'75.0k' leaked onto row %d: %q", i, r)
-		}
-		if lipgloss.Width(r) != yAxisWidth {
-			t.Errorf("row %d width = %d, want %d: %q", i, lipgloss.Width(r), yAxisWidth, r)
+			t.Errorf("'75.0k' leaked onto canvas row %d: %q", i, r)
 		}
 	}
 }
 
-func TestRenderYLabel_BlankWhenEmpty(t *testing.T) {
+func TestBuildChart_NoOverlayWhenEmpty(t *testing.T) {
 	t.Parallel()
-	// peak <= 0 → no label, just a yAxisWidth-col blank column.
-	for _, peak := range []int64{0, -5} {
-		out := renderYLabel(peak, 10)
-		if strings.ContainsAny(out, "kM") {
-			t.Errorf("peak=%d should produce no label, got %q", peak, out)
-		}
-		rows := strings.Split(out, "\n")
-		if len(rows) != 10 {
-			t.Errorf("peak=%d: expected 10 rows, got %d", peak, len(rows))
-		}
+	now := time.Now().UTC().Truncate(time.Hour)
+	// All-zero buckets — peak == 0 → niceFloor 0 → overlay skipped.
+	buckets := make([]cache.TokenBucket, 5)
+	for i := range buckets {
+		buckets[i] = cache.TokenBucket{BucketStart: now.Add(time.Duration(i*5) * time.Minute)}
 	}
-}
-
-func TestRenderYLabel_HeightTooSmall(t *testing.T) {
-	t.Parallel()
-	// height < 6 returns "" — same threshold as the X labels row.
-	if got := renderYLabel(50_000, 5); got != "" {
-		t.Errorf("expected empty at height=5, got %q", got)
+	out := buildChart(buckets, 10, 6, 0, now, ZoomLevels[0])
+	canvasOnly := strings.Join(strings.Split(out, "\n")[:5], "\n")
+	if strings.ContainsAny(canvasOnly, "kM") {
+		t.Errorf("canvas contains 'k' or 'M' suggesting a token label leaked for empty data:\n%s", canvasOnly)
 	}
 }
 

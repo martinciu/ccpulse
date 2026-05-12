@@ -82,46 +82,22 @@ func BenchmarkModelView(b *testing.B) {
 // BenchmarkModelView when its return value is otherwise unused.
 var sinkView string
 
-func TestShouldShowYLabel(t *testing.T) {
+func TestChartWidth_FloorsAtTen(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name string
-		w, h int
-		want bool
-	}{
-		{"wide tall terminal", 120, 40, true},
-		{"width exactly threshold (28 ⇒ 20 chart cols)", 28, 40, true},
-		{"width 1 below threshold", 27, 40, false},
-		{"tall enough but narrow", 20, 40, false},
-		{"wide but too short for X labels", 120, 12, false}, // chartHeight = 5 < 6
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			m := Model{w: tt.w, h: tt.h}
-			if got := m.shouldShowYLabel(); got != tt.want {
-				t.Errorf("shouldShowYLabel() = %v, want %v (w=%d, h=%d, chartH=%d)",
-					got, tt.want, tt.w, tt.h, m.chartHeight())
-			}
-		})
-	}
-}
-
-func TestChartWidth_AdjustsForYLabel(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name string
-		w, h int
+		w    int
 		want int
 	}{
-		{"wide ⇒ m.w-8 (Y label fits)", 120, 40, 112},
-		{"narrow ⇒ m.w-2 (Y label dropped)", 20, 40, 18},
-		{"short ⇒ m.w-2 (X labels dropped, Y label dropped too)", 120, 12, 118},
+		{"wide", 120, 118},
+		{"narrow but not floored", 20, 18},
+		{"floored at 10", 8, 10},
+		{"floored at 10 when w==12", 12, 10},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			m := Model{w: tt.w, h: tt.h}
+			m := Model{w: tt.w}
 			if got := m.chartWidth(); got != tt.want {
 				t.Errorf("chartWidth() = %d, want %d", got, tt.want)
 			}
@@ -153,6 +129,8 @@ func TestRefreshChart_CachesPeak(t *testing.T) {
 
 	m := New(Deps{Cache: c})
 	m.w, m.h = 120, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
 	m.refreshChart()
 
 	if m.peak == 0 {
@@ -160,7 +138,11 @@ func TestRefreshChart_CachesPeak(t *testing.T) {
 	}
 }
 
-func TestView_YLabelFixedAcrossScroll(t *testing.T) {
+func TestView_YLabelVisibleAfterScrollToNow(t *testing.T) {
+	// With chart wider than the viewport, refreshChart auto-scrolls to
+	// the right edge ("now"). The overlay must land at the viewport's
+	// left edge (canvas col = chartW - viewport.Width), so View() shows
+	// the niceFloor label in the default scroll-to-now view.
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "state.db")
 	c, err := cache.Open(dbPath)
@@ -174,15 +156,14 @@ func TestView_YLabelFixedAcrossScroll(t *testing.T) {
 		t.Fatalf("pricing.Load: %v", err)
 	}
 	now := time.Now().UTC()
-	msgs := make([]parse.Message, 50)
+	msgs := make([]parse.Message, 200)
 	for i := range msgs {
 		msgs[i] = parse.Message{
-			SessionID:    "s1",
-			ProjectSlug:  "p",
-			Model:        "claude-opus-4-7",
-			Timestamp:    now.Add(time.Duration(-i*10) * time.Minute),
-			InputTokens:  int64(1000 + i*100),
-			OutputTokens: int64(500 + i*50),
+			SessionID:   "s1",
+			ProjectSlug: "p",
+			Model:       "claude-opus-4-7",
+			Timestamp:   now.Add(time.Duration(-i*15) * time.Minute),
+			InputTokens: int64(1000 + i*100),
 		}
 	}
 	if err := c.InsertMessages(msgs, tab); err != nil {
@@ -190,27 +171,17 @@ func TestView_YLabelFixedAcrossScroll(t *testing.T) {
 	}
 
 	m := New(Deps{Cache: c})
-	m.w, m.h = 120, 40
+	m.w, m.h = 120, 30
 	m.viewport.Width = m.chartWidth()
 	m.viewport.Height = m.chartHeight()
 	m.refreshChart()
 
-	// The Y label is composed outside the viewport, so the niceFloor
-	// label must still appear in View() output after a horizontal scroll.
 	expected := formatTokenCount(niceFloor(m.peak))
 	if expected == "" || expected == "0" {
-		t.Fatalf("expected non-empty Y label; m.peak = %d, niceFloor = %d", m.peak, niceFloor(m.peak))
+		t.Fatalf("expected non-empty Y label; m.peak = %d", m.peak)
 	}
-
-	v1 := m.View()
-	if !strings.Contains(v1, expected) {
-		t.Errorf("View output missing Y label %q before scroll:\n%s", expected, v1)
-	}
-
-	m.viewport.ScrollLeft(horizontalScrollStep)
-	v2 := m.View()
-	if !strings.Contains(v2, expected) {
-		t.Errorf("View output missing Y label %q after scroll (Y label should be fixed):\n%s", expected, v2)
+	if !strings.Contains(m.View(), expected) {
+		t.Errorf("View output missing in-canvas Y label %q after scroll-to-now:\n%s", expected, m.View())
 	}
 }
 
@@ -361,7 +332,7 @@ func TestBuildChartEmitsBars(t *testing.T) {
 			Tokens:      int64((i*7 + 1000) * (1 + i%3)),
 		}
 	}
-	out := buildChart(buckets, 30, 10, now, ZoomLevels[1])
+	out := buildChart(buckets, 30, 10, 0, now, ZoomLevels[1])
 	if !strings.ContainsAny(out, "█▇▆▅▄▃▂▁") {
 		t.Errorf("buildChart produced no bar block characters; got:\n%s", out)
 	}
@@ -383,7 +354,7 @@ func TestBuildChart_NoBaselineStrip(t *testing.T) {
 	for i := 5; i < 10; i++ {
 		buckets[i].Tokens = int64((i + 1) * 1000)
 	}
-	out := buildChart(buckets, 20, 10, now, ZoomLevels[0])
+	out := buildChart(buckets, 20, 10, 0, now, ZoomLevels[0])
 
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
 	bottom := lines[len(lines)-1]

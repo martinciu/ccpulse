@@ -204,10 +204,6 @@ func (m Model) View() string {
 		body = m.help.FullHelpView(m.keys.FullHelp())
 	} else {
 		body = m.viewport.View()
-		if m.shouldShowYLabel() {
-			yLabel := renderYLabel(m.peak, m.chartHeight())
-			body = lipgloss.JoinHorizontal(lipgloss.Top, yLabel, body)
-		}
 	}
 	footer := m.renderFooter()
 	out := lipgloss.JoinVertical(lipgloss.Left, header, sep, body, sep, footer)
@@ -375,7 +371,15 @@ func (m *Model) refreshChart() {
 		}
 	}
 
-	m.viewport.SetContent(buildChart(buckets, chartW, chartH, time.Now(), zoom))
+	// SetXOffset(chartW) clamps to chartW - viewportW; the Y label
+	// overlay anchors to that canvas column so it lands at the viewport's
+	// left edge in the default scroll-to-now view.
+	leftVisibleCol := chartW - m.viewport.Width
+	if leftVisibleCol < 0 {
+		leftVisibleCol = 0
+	}
+
+	m.viewport.SetContent(buildChart(buckets, chartW, chartH, leftVisibleCol, time.Now(), zoom))
 	// Anchor the view at "now" on each refresh — the rightmost column.
 	m.viewport.SetXOffset(chartW)
 }
@@ -412,23 +416,12 @@ func (m *Model) recomputeWindow() {
 	m.progress7d = newProgressBar(m.progressWidth())
 }
 
-// shouldShowYLabel gates the fixed-left Y label column. Both
-// chartWidth() and View() consult it so they agree on the layout.
-// Returns true iff the terminal can spare yAxisWidth cols (m.w - 8 >= 20)
-// AND has enough rows for the X labels (chartHeight >= 6).
-func (m Model) shouldShowYLabel() bool {
-	return m.w-8 >= 20 && m.chartHeight() >= 6
-}
-
-// chartWidth returns the available width for the viewport. Shrinks by
-// yAxisWidth when the Y label column is showing.
+// chartWidth returns the available width for the viewport. Floors at 10
+// so the ntcharts canvas never collapses to a degenerate width.
 func (m Model) chartWidth() int {
 	w := m.w - 2
 	if w < 10 {
 		return 10
-	}
-	if m.shouldShowYLabel() {
-		return w - yAxisWidth
 	}
 	return w
 }
