@@ -52,12 +52,8 @@ func overlayYLabel(body string, peak float64, unit chartUnit, chartH int, fade f
 	}
 	barsH := chartH - 1
 	row := barsH - int(math.Round(tick/peak*float64(barsH)))
-	if row < 0 {
-		row = 0
-	}
-	if row >= barsH {
-		row = barsH - 1
-	}
+	row = max(row, 0)
+	row = min(row, barsH-1)
 
 	label := labelFadeStyle(fade).Render(formatUnitValue(tick, unit))
 	labelW := lipgloss.Width(label)
