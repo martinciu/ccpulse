@@ -1201,3 +1201,54 @@ func TestCostBuckets_PricingUnknownContributesZero(t *testing.T) {
 		}
 	}
 }
+
+func TestAllFileOffsets_Empty(t *testing.T) {
+	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	offsets, err := c.AllFileOffsets()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if offsets == nil {
+		t.Fatal("AllFileOffsets returned nil map on empty cache; want empty non-nil map")
+	}
+	if len(offsets) != 0 {
+		t.Errorf("len = %d, want 0", len(offsets))
+	}
+}
+
+func TestAllFileOffsets_ReturnsAllRows(t *testing.T) {
+	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	want := map[string]int64{
+		"/tmp/a.jsonl": 100,
+		"/tmp/b.jsonl": 200,
+		"/tmp/c.jsonl": 300,
+	}
+	for path, off := range want {
+		if err := c.RecordFile(path, 1, off, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := c.AllFileOffsets()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("len = %d, want %d", len(got), len(want))
+	}
+	for path, wantOff := range want {
+		if got[path] != wantOff {
+			t.Errorf("offset[%s] = %d, want %d", path, got[path], wantOff)
+		}
+	}
+}

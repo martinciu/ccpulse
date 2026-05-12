@@ -51,6 +51,18 @@ func (b *Backfill) Run(ctx context.Context, onProgress func(Progress)) error {
 		mtime time.Time
 	}
 
+	// One SELECT replaces what was previously an O(N) GetFile call
+	// per visited path. ProcessFile inside the work loop still calls
+	// GetFile and re-checks offset == st.Size, so this map is a
+	// filter hint, not the authoritative gate: an empty map (after
+	// a query error) is safe — every file falls through to
+	// ProcessFile, which no-ops the caught-up ones.
+	offsets, err := b.Ingester.Cache.AllFileOffsets()
+	if err != nil {
+		LogFileError(b.Ingester.ParseErrorsLog, b.Ingester.ProjectsRoot, err)
+		offsets = map[string]int64{}
+	}
+
 	// The visitor swallows per-entry errors (logged, return nil) so
 	// the walk continues across permission glitches in single
 	// subdirectories. Root-not-found is handled by the pre-stat
@@ -78,8 +90,7 @@ func (b *Backfill) Run(ctx context.Context, onProgress func(Progress)) error {
 			LogFileError(b.Ingester.ParseErrorsLog, p, err)
 			return nil
 		}
-		_, offset, _, found, _ := b.Ingester.Cache.GetFile(p)
-		if found && offset == info.Size() {
+		if off, ok := offsets[p]; ok && off == info.Size() {
 			return nil
 		}
 		entries = append(entries, entry{path: p, mtime: info.ModTime()})

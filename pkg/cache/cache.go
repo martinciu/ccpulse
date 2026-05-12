@@ -235,6 +235,34 @@ func (c *Cache) GetFile(path string) (mtime, offset, line int64, found bool, err
 	return mtime, offset, line, true, nil
 }
 
+// AllFileOffsets returns path → last_offset_bytes for every recorded
+// file in one query. Lets enumerators decide which files need
+// processing without O(N) GetFile round-trips. Returns an empty
+// (non-nil) map when the table is empty. A missing key is the
+// caller's signal that the file is unrecorded — semantically
+// equivalent to GetFile's found=false path.
+func (c *Cache) AllFileOffsets() (map[string]int64, error) {
+	rows, err := c.db.Query(`SELECT path, last_offset_bytes FROM files`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make(map[string]int64)
+	for rows.Next() {
+		var path string
+		var offset int64
+		if err := rows.Scan(&path, &offset); err != nil {
+			return nil, err
+		}
+		out[path] = offset
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 type SlugCanonical struct {
 	Slug          string
 	CanonicalPath string
