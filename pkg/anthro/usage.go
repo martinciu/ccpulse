@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -136,19 +137,37 @@ type FetchResult struct {
 // flock on a sibling lock file: the first caller refreshes the cache, the
 // rest re-read under the lock and find a fresh entry — eliminating the
 // duplicate-API-hit race that survived the atomic-write fix in #75.
-func Fetch(ctx context.Context, cred Credential, cacheDir string) (FetchResult, error) {
+func Fetch(ctx context.Context, cred Credential, cacheDir string) (res FetchResult, err error) {
 	if cred.AccessToken == "" {
 		return FetchResult{}, errors.New("anthro: empty access token")
 	}
 	cachePath := filepath.Join(cacheDir, "usage.json")
 	now := time.Now()
+	var lockAcquired bool
 
 	cached, cacheErr := readCache(cachePath)
+	defer func() {
+		src := res.Source
+		if src == "" && err != nil {
+			src = "error"
+		}
+		attrs := []any{"source", src}
+		if cacheErr == nil {
+			attrs = append(attrs, "cache_age_s", int(now.Sub(cached.UpdatedAt).Seconds()))
+		}
+		attrs = append(attrs, "lock_acquired", lockAcquired)
+		if err != nil {
+			attrs = append(attrs, "err", err)
+		}
+		slog.Debug("anthro.Fetch", attrs...)
+	}()
+
 	if cacheErr == nil && now.Sub(cached.UpdatedAt) < cacheTTL {
 		return FetchResult{Usage: cached.Usage, Source: "cache_fresh", UpdatedAt: cached.UpdatedAt}, nil
 	}
 
 	if release, lockErr := acquireFetchLock(cacheDir); lockErr == nil {
+		lockAcquired = true
 		defer release()
 		now = time.Now()
 		cached, cacheErr = readCache(cachePath)
@@ -157,12 +176,12 @@ func Fetch(ctx context.Context, cred Credential, cacheDir string) (FetchResult, 
 		}
 	}
 
-	u, err := fetchAPI(ctx, cred.AccessToken)
-	if err != nil {
+	u, apiErr := fetchAPI(ctx, cred.AccessToken)
+	if apiErr != nil {
 		if cacheErr == nil {
 			return FetchResult{Usage: cached.Usage, Source: "cache_stale", UpdatedAt: cached.UpdatedAt}, nil
 		}
-		return FetchResult{}, fmt.Errorf("anthro fetch: %w", err)
+		return FetchResult{}, fmt.Errorf("anthro fetch: %w", apiErr)
 	}
 	_ = writeCache(cachePath, u, now)
 	return FetchResult{Usage: u, Source: "api", UpdatedAt: now.UTC()}, nil

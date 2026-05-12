@@ -533,6 +533,40 @@ func attrMap(r slog.Record) map[string]any {
 	return m
 }
 
+func TestFetchLogs_CacheFresh(t *testing.T) {
+	dir := t.TempDir()
+	writeFixtureCache(t, dir, time.Now().Add(-1*time.Minute))
+	recs := captureLogs(t, slog.LevelDebug)
+
+	res, err := Fetch(context.Background(), Credential{AccessToken: "tok"}, dir)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if res.Source != "cache_fresh" {
+		t.Fatalf("Source = %q, want cache_fresh", res.Source)
+	}
+	if len(*recs) != 1 {
+		t.Fatalf("captured %d records, want 1: %+v", len(*recs), *recs)
+	}
+	r := (*recs)[0]
+	if r.Level != slog.LevelDebug {
+		t.Errorf("level = %v, want DEBUG", r.Level)
+	}
+	if r.Message != "anthro.Fetch" {
+		t.Errorf("message = %q, want anthro.Fetch", r.Message)
+	}
+	attrs := attrMap(r)
+	if attrs["source"] != "cache_fresh" {
+		t.Errorf("source = %v, want cache_fresh", attrs["source"])
+	}
+	if _, ok := attrs["cache_age_s"]; !ok {
+		t.Errorf("cache_age_s attribute missing")
+	}
+	if got, ok := attrs["lock_acquired"].(bool); !ok || got != false {
+		t.Errorf("lock_acquired = %v, want false", attrs["lock_acquired"])
+	}
+}
+
 func TestCaptureLogsHelper(t *testing.T) {
 	recs := captureLogs(t, slog.LevelDebug)
 	slog.Debug("first", "k", "v")
