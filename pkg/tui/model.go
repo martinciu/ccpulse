@@ -673,6 +673,10 @@ func (m *Model) refreshChart() {
 	// springActive is false.
 	if m.springActive {
 		m.springActive = false
+		m.springPhase = springIdle
+		// springProjectiles, springFinalTargets, oldPeak, oldUnitIdx
+		// remain populated but unread — guarded by springActive=false.
+		// Next beginUnitAnimation re-makes the slices.
 	}
 
 	// Snapshot the wall-clock anchor BEFORE rebuild. lastStarts is empty

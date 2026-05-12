@@ -1372,6 +1372,9 @@ func TestRefreshDuringAnimationSnapsAndContinues(t *testing.T) {
 	if m.springActive {
 		t.Errorf("springActive = true after RefreshMsg; expected snap-and-stop")
 	}
+	if m.springPhase != springIdle {
+		t.Errorf("springPhase = %d after RefreshMsg; expected springIdle", m.springPhase)
+	}
 	if len(m.lastValues) <= preBucketCount {
 		t.Errorf("lastValues not refreshed after RefreshMsg; got %d buckets, want > %d",
 			len(m.lastValues), preBucketCount)
@@ -1411,6 +1414,9 @@ func TestRefreshDoesNotAnimate(t *testing.T) {
 	m = updated.(Model)
 	if m.springActive {
 		t.Errorf("springActive = true after RefreshMsg; watcher refresh must not animate")
+	}
+	if m.springPhase != springIdle {
+		t.Errorf("springPhase = %d after RefreshMsg without prior 'u'; want springIdle", m.springPhase)
 	}
 	if len(m.springs) != 0 {
 		t.Errorf("springs slice non-empty after RefreshMsg; expected len=0")
@@ -1955,4 +1961,45 @@ func seedTwoPhaseAnimationModel(t *testing.T) Model {
 	m.viewport.Height = m.chartHeight()
 	m.refreshChart()
 	return m
+}
+
+func TestRefreshMsg_AbortsBothPhases(t *testing.T) {
+	// RefreshMsg arriving in either phase must hard-cut the animation:
+	// springActive=false and springPhase=springIdle. Driven by the
+	// existing refreshChart chokepoint (Task 7 extends it).
+	for _, phase := range []springPhase{springShrinking, springGrowing} {
+		phase := phase // capture for subtest
+		name := "Phase1"
+		if phase == springGrowing {
+			name = "Phase2"
+		}
+		t.Run(name, func(t *testing.T) {
+			m := seedTwoPhaseAnimationModel(t)
+			updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+			m = updated.(Model)
+
+			if phase == springGrowing {
+				// Drive ticks until we cross into Phase 2.
+				const maxTicks = 100
+				for i := 0; i < maxTicks && m.springPhase != springGrowing; i++ {
+					updated, _ = m.Update(springTickMsg{})
+					m = updated.(Model)
+				}
+				if m.springPhase != springGrowing {
+					t.Fatalf("never reached Phase 2 in %d ticks", maxTicks)
+				}
+			}
+
+			// Now in the target phase. Deliver RefreshMsg.
+			updated, _ = m.Update(RefreshMsg{})
+			m = updated.(Model)
+
+			if m.springActive {
+				t.Errorf("springActive = true after RefreshMsg in %s; expected hard-cut", name)
+			}
+			if m.springPhase != springIdle {
+				t.Errorf("springPhase = %d after RefreshMsg in %s; expected springIdle", m.springPhase, name)
+			}
+		})
+	}
 }
