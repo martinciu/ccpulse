@@ -71,6 +71,15 @@ type Model struct {
 	showHelp   bool
 
 	zoomIdx int // index into ZoomLevels
+	unitIdx int // 0 = tokens, 1 = cost. Cycled by 'u'. Resets on launch.
+
+	// lastValues / lastStarts are the per-bucket inputs fed to the
+	// most recent buildChart, in the active unit. Refreshed by
+	// refreshChart; lastValues is snapshotted by beginUnitAnimation
+	// as the spring's initial state, and lastStarts feeds the
+	// per-tick animated chart rebuild without re-querying the cache.
+	lastValues []float64
+	lastStarts []time.Time
 
 	window         status.Window
 	quota          *anthro.Usage
@@ -203,7 +212,7 @@ func (m Model) View() string {
 	if m.showHelp {
 		body = m.help.FullHelpView(m.keys.FullHelp())
 	} else {
-		body = overlayYLabel(m.viewport.View(), m.peak, chartUnitTokens, m.chartHeight())
+		body = overlayYLabel(m.viewport.View(), m.peak, chartUnit(m.unitIdx), m.chartHeight())
 	}
 	footer := m.renderFooter()
 	out := lipgloss.JoinVertical(lipgloss.Left, header, sep, body, sep, footer)
@@ -350,32 +359,70 @@ func (m *Model) refreshChart() {
 	if err != nil || !ok {
 		m.viewport.SetContent(emptyPlaceholder(m.chartWidth(), m.chartHeight()))
 		m.viewport.SetXOffset(0)
+		m.lastValues = nil
+		m.lastStarts = nil
+		m.peak = 0
 		return
 	}
 
 	from := cache.BucketAlign(earliest, zoom.Duration)
-	buckets, err := m.deps.Cache.TokenBuckets(zoom.Duration, from, to)
-	if err != nil || len(buckets) == 0 {
-		m.viewport.SetContent(emptyPlaceholder(m.chartWidth(), m.chartHeight()))
-		m.viewport.SetXOffset(0)
-		return
+
+	var (
+		values []float64
+		starts []time.Time
+		peak   float64
+		unit   chartUnit
+	)
+	switch m.unitIdx {
+	case 1: // cost
+		buckets, err := m.deps.Cache.CostBuckets(zoom.Duration, from, to)
+		if err != nil || len(buckets) == 0 {
+			m.viewport.SetContent(emptyPlaceholder(m.chartWidth(), m.chartHeight()))
+			m.viewport.SetXOffset(0)
+			m.lastValues = nil
+			m.lastStarts = nil
+			m.peak = 0
+			return
+		}
+		values = make([]float64, len(buckets))
+		starts = make([]time.Time, len(buckets))
+		for i, b := range buckets {
+			values[i] = b.Cost
+			starts[i] = b.BucketStart
+			if values[i] > peak {
+				peak = values[i]
+			}
+		}
+		unit = chartUnitCost
+	default: // tokens
+		buckets, err := m.deps.Cache.TokenBuckets(zoom.Duration, from, to)
+		if err != nil || len(buckets) == 0 {
+			m.viewport.SetContent(emptyPlaceholder(m.chartWidth(), m.chartHeight()))
+			m.viewport.SetXOffset(0)
+			m.lastValues = nil
+			m.lastStarts = nil
+			m.peak = 0
+			return
+		}
+		values = make([]float64, len(buckets))
+		starts = make([]time.Time, len(buckets))
+		for i, b := range buckets {
+			values[i] = float64(b.Tokens)
+			starts[i] = b.BucketStart
+			if values[i] > peak {
+				peak = values[i]
+			}
+		}
+		unit = chartUnitTokens
 	}
 
-	values := make([]float64, len(buckets))
-	starts := make([]time.Time, len(buckets))
-	var peak float64
-	for i, b := range buckets {
-		values[i] = float64(b.Tokens)
-		starts[i] = b.BucketStart
-		if values[i] > peak {
-			peak = values[i]
-		}
-	}
 	m.peak = peak
+	m.lastValues = values
+	m.lastStarts = starts
 
 	chartW := len(values)
 	chartH := m.chartHeight()
-	m.viewport.SetContent(buildChart(values, starts, peak, chartW, chartH, time.Now(), zoom, chartUnitTokens))
+	m.viewport.SetContent(buildChart(values, starts, peak, chartW, chartH, time.Now(), zoom, unit))
 	// Anchor the view at "now" on each refresh — the rightmost column.
 	m.viewport.SetXOffset(chartW)
 }
