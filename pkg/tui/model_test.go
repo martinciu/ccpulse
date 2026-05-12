@@ -1079,34 +1079,7 @@ func TestUnitToggleAnimationSettles(t *testing.T) {
 	// eventually flips false, ratios converge to targets within
 	// epsilon, springPhase ends at springIdle, and the final tick
 	// returns no further Cmd (idle = zero cost).
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "state.db")
-	c, err := cache.Open(dbPath)
-	if err != nil {
-		t.Fatalf("cache.Open: %v", err)
-	}
-	defer c.Close()
-
-	tab, err := pricing.Load()
-	if err != nil {
-		t.Fatalf("pricing.Load: %v", err)
-	}
-	now := time.Now().UTC().Truncate(15 * time.Minute)
-	msgs := []parse.Message{
-		{SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7",
-			Timestamp: now.Add(-30 * time.Minute), InputTokens: 10000, OutputTokens: 5000},
-		{SessionID: "s2", ProjectSlug: "p", Model: "claude-opus-4-7",
-			Timestamp: now.Add(-10 * time.Minute), InputTokens: 30000, OutputTokens: 15000},
-	}
-	if err := c.InsertMessages(msgs, tab); err != nil {
-		t.Fatalf("InsertMessages: %v", err)
-	}
-
-	m := New(Deps{Cache: c})
-	m.w, m.h = 120, 40
-	m.viewport.Width = m.chartWidth()
-	m.viewport.Height = m.chartHeight()
-	m.refreshChart()
+	m := seedTwoPhaseAnimationModel(t)
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
 	m = updated.(Model)
@@ -1152,33 +1125,7 @@ func TestPhaseTransition_AtThreshold(t *testing.T) {
 	//   - springRatios are snapped to 0 (clean visual handoff).
 	//   - springTargetRatios takes the values from springFinalTargets.
 	//   - springVelocities are seeded as V0 * springFinalTargets[i].
-	dir := t.TempDir()
-	c, err := cache.Open(filepath.Join(dir, "state.db"))
-	if err != nil {
-		t.Fatalf("cache.Open: %v", err)
-	}
-	defer c.Close()
-
-	tab, err := pricing.Load()
-	if err != nil {
-		t.Fatalf("pricing.Load: %v", err)
-	}
-	now := time.Now().UTC().Truncate(15 * time.Minute)
-	msgs := []parse.Message{
-		{SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7",
-			Timestamp: now.Add(-30 * time.Minute), InputTokens: 10000, OutputTokens: 5000},
-		{SessionID: "s2", ProjectSlug: "p", Model: "claude-opus-4-7",
-			Timestamp: now.Add(-10 * time.Minute), InputTokens: 30000, OutputTokens: 15000},
-	}
-	if err := c.InsertMessages(msgs, tab); err != nil {
-		t.Fatalf("InsertMessages: %v", err)
-	}
-
-	m := New(Deps{Cache: c})
-	m.w, m.h = 120, 40
-	m.viewport.Width = m.chartWidth()
-	m.viewport.Height = m.chartHeight()
-	m.refreshChart()
+	m := seedTwoPhaseAnimationModel(t)
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
 	m = updated.(Model)
@@ -1263,33 +1210,7 @@ func TestPhase2Settle_ClearsState(t *testing.T) {
 	//   - springPhase = springIdle.
 	//   - springRatios are snapped to springTargetRatios.
 	//   - last tick returns no further Cmd.
-	dir := t.TempDir()
-	c, err := cache.Open(filepath.Join(dir, "state.db"))
-	if err != nil {
-		t.Fatalf("cache.Open: %v", err)
-	}
-	defer c.Close()
-
-	tab, err := pricing.Load()
-	if err != nil {
-		t.Fatalf("pricing.Load: %v", err)
-	}
-	now := time.Now().UTC().Truncate(15 * time.Minute)
-	msgs := []parse.Message{
-		{SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7",
-			Timestamp: now.Add(-30 * time.Minute), InputTokens: 10000, OutputTokens: 5000},
-		{SessionID: "s2", ProjectSlug: "p", Model: "claude-opus-4-7",
-			Timestamp: now.Add(-10 * time.Minute), InputTokens: 30000, OutputTokens: 15000},
-	}
-	if err := c.InsertMessages(msgs, tab); err != nil {
-		t.Fatalf("InsertMessages: %v", err)
-	}
-
-	m := New(Deps{Cache: c})
-	m.w, m.h = 120, 40
-	m.viewport.Width = m.chartWidth()
-	m.viewport.Height = m.chartHeight()
-	m.refreshChart()
+	m := seedTwoPhaseAnimationModel(t)
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
 	m = updated.(Model)
