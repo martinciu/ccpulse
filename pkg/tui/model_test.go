@@ -1978,3 +1978,39 @@ func TestVisualProbe_PhaseHandoffIsClean(t *testing.T) {
 		t.Errorf("empty-moment frame contains chart-cell glyphs:\n%s", view)
 	}
 }
+
+func TestBeginUnitAnimation_EmptyCache(t *testing.T) {
+	// First 'u' toggle on a model whose cache is empty: beginUnitAnimation
+	// runs refreshChart, which short-circuits on the EarliestMessageTime
+	// missing-row path, leaving lastValues empty. The empty-newValues
+	// guard inside beginUnitAnimation must then set springActive=false
+	// AND springPhase=springIdle without allocating any spring slices.
+	dir := t.TempDir()
+	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	t.Cleanup(func() { c.Close() })
+
+	m := New(Deps{Cache: c})
+	m.w, m.h = 120, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	m.refreshChart()
+
+	// Pretend the user toggled the unit (Update's keybinding already
+	// increments unitIdx; replicate that here to exercise the same path).
+	m.unitIdx = 1
+	m.beginUnitAnimation()
+
+	if m.springActive {
+		t.Errorf("springActive = true on empty-cache toggle; expected no animation")
+	}
+	if m.springPhase != springIdle {
+		t.Errorf("springPhase = %d; expected springIdle", m.springPhase)
+	}
+	if len(m.springs) != 0 || len(m.springProjectiles) != 0 {
+		t.Errorf("spring slices allocated on empty-cache toggle (springs=%d, projectiles=%d); expected zero",
+			len(m.springs), len(m.springProjectiles))
+	}
+}
