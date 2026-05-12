@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"log/slog"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -262,10 +263,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.springVelocities[i], m.springTargetRatios[i])
 				m.springRatios[i] = r
 				m.springVelocities[i] = v
-				gap := m.springTargetRatios[i] - r
-				if gap < 0 {
-					gap = -gap
-				}
+				gap := math.Abs(m.springTargetRatios[i] - r)
 				maxGap = max(maxGap, gap)
 			}
 			if maxGap < phaseTransitionThreshold {

@@ -1189,6 +1189,38 @@ func TestPhaseTransition_AtThreshold(t *testing.T) {
 	// Capture the Phase 2 targets we expect to see after the handoff.
 	expectedTargets := append([]float64(nil), m.springFinalTargets...)
 
+	// Sanity probe before the tick loop: capture a non-zero starting ratio
+	// so we can verify Phase 1 is actually moving the bars (not silently
+	// frozen by a future regression in the Projectile.Update plumbing).
+	// A non-trivial input model is required — find a bar that's not at
+	// zero and remember its starting ratio.
+	probeIdx := -1
+	for i, r := range m.springRatios {
+		if r > 0 {
+			probeIdx = i
+			break
+		}
+	}
+	if probeIdx < 0 {
+		t.Fatalf("test setup is degenerate — no non-zero springRatios to probe motion")
+	}
+	probeStart := m.springRatios[probeIdx]
+
+	// Two ticks must move the probe ratio strictly down. Phase 1 starts
+	// at zero velocity and harmonica.Projectile uses explicit Euler
+	// (position integrates current velocity before acceleration kicks
+	// in), so motion appears on tick 2+ — anything ≥ probeStart after
+	// two ticks means the Projectile is frozen, almost certainly a
+	// range-copy regression in the handler.
+	for range 2 {
+		updated, _ = m.Update(springTickMsg{})
+		m = updated.(Model)
+	}
+	if m.springRatios[probeIdx] >= probeStart {
+		t.Errorf("after two ticks, springRatios[%d] = %v >= %v (start) — Phase 1 not moving",
+			probeIdx, m.springRatios[probeIdx], probeStart)
+	}
+
 	// Drive ticks while still in Phase 1.
 	const maxTicks = 100
 	for i := 0; i < maxTicks && m.springPhase == springShrinking; i++ {
