@@ -1,4 +1,4 @@
-.PHONY: build install seed-dev seed-dev-config seed-dev-cache reset-dev test lint
+.PHONY: build install seed-dev seed-dev-config seed-dev-cache reset-dev test lint snapshot
 
 BIN := ccpulse
 INSTALL_DIR := $(HOME)/.local/bin
@@ -26,3 +26,6 @@ test:
 
 lint:
 	go vet ./...
+
+snapshot:
+	HOMEBREW_TAP_GITHUB_TOKEN=dummy goreleaser release --snapshot --clean
