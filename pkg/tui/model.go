@@ -424,12 +424,12 @@ const springFPS = 60
 
 // springFrequency, springDamping are the harmonica parameters for the
 // per-bar spring. Frequency 6 Hz controls the speed of approach;
-// damping 0.2 is under-damped (< 1.0) so bars overshoot the target
-// and oscillate briefly before settling — the bouncy feel makes the
-// peak shift between tokens and cost more visible than a pure ease.
+// damping 1.0 is critically damped — the spring reaches the target
+// as fast as possible WITHOUT overshooting. No bounce, no oscillation,
+// just a tight monotonic ease into the new ratios.
 const (
 	springFrequency = 6.0
-	springDamping   = 0.2
+	springDamping   = 1.0
 )
 
 // springSettleEpsilon is the absolute |ratio - target| and |velocity|
