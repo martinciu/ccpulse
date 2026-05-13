@@ -38,9 +38,10 @@ func TestMain(m *testing.M) {
 // process-global DefaultRenderer. If two parallel tests both call this
 // helper, their Cleanups will race against each other's assertions and
 // the second restore can flip the profile mid-render of the first.
-// No test in this package currently calls t.Parallel(), so this is a
-// latent footgun rather than an active bug. If adding t.Parallel() to
-// any tui test, refactor this helper to use a private
+// Other tests in this package do call t.Parallel(), but none of them
+// invoke withForcedColor or withForcedDarkBackground today — the
+// footgun is latent, not active. If you add t.Parallel() to any test
+// that uses either helper, refactor that helper to use a private
 // lipgloss.NewRenderer instead of mutating the global.
 func withForcedColor(t *testing.T) {
 	t.Helper()
@@ -56,8 +57,8 @@ func withForcedColor(t *testing.T) {
 // CompleteAdaptiveColor tokens, so the resolved side is deterministic.
 //
 // NOT SAFE WITH t.Parallel(): same reason as withForcedColor — mutates the
-// global default renderer. If adding t.Parallel() to any tui test, refactor
-// to use a private lipgloss.NewRenderer.
+// global default renderer. See withForcedColor's NOT-SAFE block for the
+// active-vs-latent footgun framing; same applies here.
 func withForcedDarkBackground(t *testing.T, dark bool) {
 	t.Helper()
 	r := lipgloss.DefaultRenderer()
