@@ -495,7 +495,9 @@ func (m Model) headerRows() string {
 	burnRight := renderBurnRateSide(burnPad, sevenDayProj, slotW, 7*24*time.Hour)
 	burnRow := lipgloss.JoinHorizontal(lipgloss.Top, burnLeft, divider, burnRight)
 
-	return lipgloss.JoinVertical(lipgloss.Left, barsRow, burnRow)
+	innerW := lipgloss.Width(barsRow)
+	sparkRow := renderSparklineRow(m.recentBuckets, innerW)
+	return lipgloss.JoinVertical(lipgloss.Left, barsRow, burnRow, sparkRow)
 }
 
 // springFPS is the harmonica tick rate for the unit-toggle animation.
@@ -872,11 +874,11 @@ func (m Model) chartWidth() int {
 }
 
 // chartHeight returns the available rows for the chart, leaving room for
-// the bordered header box (4 rows: top border, bars row, burn-rate row,
-// bottom border), two separators (2 rows), and the help footer (1 row).
-// Total non-body overhead = 7 rows.
+// the bordered header box (5 rows: top border, bars row, burn-rate row,
+// sparkline row, bottom border), two separators (2 rows), and the help
+// footer (1 row). Total non-body overhead = 8 rows.
 func (m Model) chartHeight() int {
-	h := m.h - 7
+	h := m.h - 8
 	if h < 5 {
 		return 5
 	}

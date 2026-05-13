@@ -514,7 +514,7 @@ func TestSevenDayBarRendered(t *testing.T) {
 	t.Errorf("expected both labels and the divider on the same line; got:\n%s", v)
 }
 
-func TestQuotaBarsSymmetric(t *testing.T) {
+func TestHeaderRowsSymmetric(t *testing.T) {
 	// The bars-row produced by headerRows() must be symmetric across the
 	// dim " │ " divider: lipgloss.Width(left) == lipgloss.Width(right).
 	// This is the centring property — equivalent to "divider visually
@@ -593,7 +593,10 @@ func TestQuotaBarsSymmetric(t *testing.T) {
 			for i, row := range strings.Split(bars, "\n") {
 				left, right, ok := strings.Cut(row, " │ ")
 				if !ok {
-					t.Fatalf("no ' │ ' divider found in headerRows row %d: %q", i, row)
+					// The 3rd row is the sparkline — left-anchored,
+					// no central divider. Skip the symmetry check;
+					// its own test asserts presence and label.
+					continue
 				}
 				lw, rw := lipgloss.Width(left), lipgloss.Width(right)
 				if lw != rw {
@@ -601,6 +604,31 @@ func TestQuotaBarsSymmetric(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestHeaderRows_IncludesSparklineRow(t *testing.T) {
+	// headerRows() must return three rows now: bars + burn-rate +
+	// sparkline. The sparkline row is identified by the "rate " label
+	// prefix. Asserts on row count (3) and label presence.
+	path := filepath.Join(t.TempDir(), "state.db")
+	c, err := cache.Open(path)
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+
+	m := New(Deps{Cache: c})
+	m.w, m.h = 120, 40
+	m.recomputeWindow()
+
+	out := m.headerRows()
+	rows := strings.Split(out, "\n")
+	if len(rows) != 3 {
+		t.Fatalf("headerRows() returned %d rows, want 3:\n%s", len(rows), out)
+	}
+	if !strings.Contains(rows[2], "rate ") {
+		t.Errorf("3rd row missing 'rate ' label: %q", rows[2])
 	}
 }
 
