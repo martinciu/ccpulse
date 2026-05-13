@@ -44,7 +44,49 @@ func isAllUpperASCII(s string) bool {
 	return true
 }
 
-// detectDateOrder will be added in Task 2.
-// parseLocaleEnv will be added in Task 2.
-// Suppress unused-import lint until Task 2 lands.
-var _ = os.Getenv
+// parseLocaleEnv extracts a region from a single locale env value
+// (POSIX or BCP-47 form) and applies the Just-US policy:
+//
+//	"en_US.UTF-8"       → US      → MonthFirst
+//	"de_DE@euro"        → DE      → DayFirst
+//	"sr_RS.UTF-8@latin" → RS      → DayFirst
+//	"zh-Hans-CN"        → CN      → DayFirst
+//	"C" / "POSIX" / ""  → (none)  → MonthFirst (fail-closed to en_US)
+//	"en" / "garbage"    → (none)  → MonthFirst (no region extractable)
+//
+// The fail-closed default keeps existing US users with default LANG
+// unchanged.
+func parseLocaleEnv(v string) dateOrder {
+	// Strip ".encoding" and "@modifier" suffixes.
+	if i := strings.IndexAny(v, ".@"); i >= 0 {
+		v = v[:i]
+	}
+	if v == "" || v == "C" || v == "POSIX" {
+		return dateOrderMonthFirst
+	}
+	region := extractRegion(v)
+	// No extractable region (bare "en", "garbage", etc.) → fail-closed
+	// to MonthFirst, the legacy en_US convention. Same for region "US".
+	if region == "" || region == "US" {
+		return dateOrderMonthFirst
+	}
+	return dateOrderDayFirst
+}
+
+// detectDateOrder reads LC_TIME, LC_ALL, LANG (first non-empty wins)
+// and returns the order for the user's region. All-empty / unset env
+// returns dateOrderMonthFirst, matching the legacy hard-coded en_US
+// behavior — existing US users on default macOS / Linux see no change.
+//
+// No shell-out: matches ccpulse's "no runtime git" principle and
+// avoids the os/exec dependency that a `defaults read -g AppleLocale`
+// path would add. macOS Terminal/iTerm propagate the System Settings
+// region into LANG by default, so env-only covers the typical case.
+func detectDateOrder() dateOrder {
+	for _, key := range []string{"LC_TIME", "LC_ALL", "LANG"} {
+		if v := os.Getenv(key); v != "" {
+			return parseLocaleEnv(v)
+		}
+	}
+	return dateOrderMonthFirst
+}
