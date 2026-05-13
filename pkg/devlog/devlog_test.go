@@ -117,3 +117,39 @@ func TestInit_TightensExisting(t *testing.T) {
 		t.Fatalf("file mode: got %o want %o", got.Mode().Perm(), 0o600)
 	}
 }
+
+func TestParseLevel(t *testing.T) {
+	tests := []struct {
+		name    string
+		in      string
+		want    slog.Level
+		wantErr bool
+	}{
+		{name: "off", in: "off", want: LevelOff},
+		{name: "OFF mixed case", in: "OFF", want: LevelOff},
+		{name: "debug", in: "debug", want: slog.LevelDebug},
+		{name: "DEBUG mixed case", in: "DEBUG", want: slog.LevelDebug},
+		{name: "info", in: "info", want: slog.LevelInfo},
+		{name: "warn", in: "warn", want: slog.LevelWarn},
+		{name: "error", in: "error", want: slog.LevelError},
+		{name: "unknown", in: "trace", wantErr: true},
+		{name: "empty", in: "", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseLevel(tt.in)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("ParseLevel(%q) = %v, want error", tt.in, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ParseLevel(%q) returned %v", tt.in, err)
+			}
+			if got != tt.want {
+				t.Errorf("ParseLevel(%q) = %v, want %v", tt.in, got, tt.want)
+			}
+		})
+	}
+}
