@@ -2091,3 +2091,26 @@ func TestLabelFade_MidAnimationBinding(t *testing.T) {
 		}
 	}
 }
+
+func TestVisibleBuckets_FloorsAtOne(t *testing.T) {
+	t.Parallel()
+	m := Model{w: 12, zoomIdx: 2} // 24h, BarWidth=5; chartWidth() = w-2 = 10
+	got := m.visibleBuckets()
+	if got != 2 { // 10 / 5 = 2
+		t.Errorf("visibleBuckets w=12 24h = %d, want 2", got)
+	}
+
+	m = Model{w: 6, zoomIdx: 2} // chartWidth floors at 10; 10/5 = 2
+	got = m.visibleBuckets()
+	if got != 2 {
+		t.Errorf("visibleBuckets tiny w 24h = %d, want 2", got)
+	}
+}
+
+func TestVisibleBuckets_BarWidthOne(t *testing.T) {
+	t.Parallel()
+	m := Model{w: 22, zoomIdx: 0} // 15m, BarWidth=1; chartWidth() = 20
+	if got := m.visibleBuckets(); got != 20 {
+		t.Errorf("visibleBuckets w=22 15m = %d, want 20", got)
+	}
+}

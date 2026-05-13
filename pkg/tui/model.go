@@ -649,14 +649,15 @@ func (m *Model) renderSpringFrame() {
 }
 
 // setX is the single point of entry for changing the viewport's horizontal
-// scroll position. Clamps to the legal range against the latest lastStarts
-// length and chartWidth, then mirrors into the shadow. The viewport's own
-// SetXOffset also clamps internally; we clamp first so the shadow stays
-// truthful even if the library's clamp behaviour ever changes.
+// scroll position. n is a bucket index (not a column count); setX clamps
+// it against lastStarts and visibleBuckets, then multiplies by BarWidth
+// when delegating to viewport.SetXOffset (which is column-indexed). The
+// shadow viewportXOffset stays in bucket-index space.
 func (m *Model) setX(n int) {
-	maxX := max(0, len(m.lastStarts)-m.chartWidth())
+	bw := ZoomLevels[m.zoomIdx].BarWidth
+	maxX := max(0, len(m.lastStarts)-m.visibleBuckets())
 	n = min(max(n, 0), maxX)
-	m.viewport.SetXOffset(n)
+	m.viewport.SetXOffset(n * bw)
 	m.viewportXOffset = n
 }
 
@@ -839,6 +840,22 @@ func (m Model) chartWidth() int {
 		return 10
 	}
 	return w
+}
+
+// visibleBuckets returns how many whole bars fit in the viewport at the
+// active zoom's BarWidth. Bucket-indexed throughout: 1 unit = 1 bar.
+// Floors at 1 so the chart never collapses to zero visible bars when
+// BarWidth > chartWidth() (degenerate terminal width).
+func (m Model) visibleBuckets() int {
+	bw := ZoomLevels[m.zoomIdx].BarWidth
+	if bw < 1 {
+		bw = 1
+	}
+	v := m.chartWidth() / bw
+	if v < 1 {
+		return 1
+	}
+	return v
 }
 
 // chartHeight returns the available rows for the chart, leaving room for
