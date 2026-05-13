@@ -39,10 +39,25 @@ Replace `amd64` with `arm64` on ARM. Find the latest version on the
 ### Fedora / RHEL / openSUSE (.rpm)
 
 ```sh
-sudo rpm -i https://github.com/martinciu/ccpulse/releases/latest/download/ccpulse_<version>_linux_amd64.rpm
+curl -LO https://github.com/martinciu/ccpulse/releases/latest/download/ccpulse_<version>_linux_amd64.rpm
+sudo rpm -i ccpulse_*.rpm
 ```
 
 Replace `amd64` with `arm64` on ARM.
+
+### Verifying the download (optional)
+
+Each release ships a `checksums.txt` alongside the binaries. To verify
+integrity before installing:
+
+```sh
+curl -LO https://github.com/martinciu/ccpulse/releases/latest/download/checksums.txt
+sha256sum --ignore-missing -c checksums.txt
+```
+
+Run this from the directory where you downloaded the `.deb` / `.rpm` /
+tarball. The Homebrew install path is already integrity-checked by
+`brew` against the formula's `sha256`.
 
 ### `go install`
 
