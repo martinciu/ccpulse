@@ -351,7 +351,7 @@ func TestBuildChartEmitsBars(t *testing.T) {
 		}
 	}
 	values, starts, peak := projectBuckets(buckets)
-	out := buildChart(values, starts, peak, 30, 10, now, ZoomLevels[1], chartUnitTokens)
+	out := buildChart(values, starts, peak, 30, 10, now, ZoomLevels[1], chartUnitTokens, dateOrderMonthFirst)
 	if !strings.ContainsAny(out, "█▇▆▅▄▃▂▁") {
 		t.Errorf("buildChart produced no bar block characters; got:\n%s", out)
 	}
@@ -374,7 +374,7 @@ func TestBuildChart_NoBaselineStrip(t *testing.T) {
 		buckets[i].Tokens = int64((i + 1) * 1000)
 	}
 	values, starts, peak := projectBuckets(buckets)
-	out := buildChart(values, starts, peak, 20, 10, now, ZoomLevels[0], chartUnitTokens)
+	out := buildChart(values, starts, peak, 20, 10, now, ZoomLevels[0], chartUnitTokens, dateOrderMonthFirst)
 
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
 	bottom := lines[len(lines)-1]
