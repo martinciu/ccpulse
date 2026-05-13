@@ -1222,6 +1222,79 @@ func TestTokenBuckets_24h_HalfHourOffsetTz(t *testing.T) {
 	}
 }
 
+// insertMessageCost is a cost-only variant of insertMessage.
+func insertMessageCost(t *testing.T, c *Cache, ts time.Time, cost float64) {
+	t.Helper()
+	_, err := c.DB().Exec(`
+INSERT INTO messages
+(session_id, project_slug, ts, role, model,
+ input_tokens, output_tokens, cache_read_tokens,
+ cache_write_5m_tokens, cache_write_1h_tokens,
+ cost_usd_estimate, pricing_version, pricing_unknown,
+ is_subagent, parent_session_id, cwd, git_branch)
+VALUES('s','p',?,'assistant','m',0,0,0,0,0,?,'v1',0,0,'','','')`,
+		ts.UTC().Format("2006-01-02T15:04:05.000Z07:00"), cost)
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+}
+
+func TestCostBuckets_24h_LocalAlignment(t *testing.T) {
+	withTimeLocal(t, "Europe/Berlin")
+	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	insertMessageCost(t, c, time.Date(2026, 5, 13, 21, 59, 0, 0, time.UTC), 1.00)
+	insertMessageCost(t, c, time.Date(2026, 5, 13, 22, 0, 0, 0, time.UTC), 2.50)
+	insertMessageCost(t, c, time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC), 0.50)
+
+	from := dayStartLocal(time.Date(2026, 5, 13, 0, 0, 0, 0, time.Local))
+	to := dayStartLocal(time.Date(2026, 5, 15, 0, 0, 0, 0, time.Local))
+	buckets, err := c.CostBuckets(24*time.Hour, from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(buckets) != 2 {
+		t.Fatalf("got %d buckets, want 2", len(buckets))
+	}
+	if buckets[0].Cost != 1.00 {
+		t.Errorf("2026-05-13 cost = %v, want 1.00", buckets[0].Cost)
+	}
+	if buckets[1].Cost != 3.00 {
+		t.Errorf("2026-05-14 cost = %v, want 3.00", buckets[1].Cost)
+	}
+}
+
+func TestCostBuckets_24h_DST_SpringForward(t *testing.T) {
+	withTimeLocal(t, "Europe/Berlin")
+	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	for _, ts := range []time.Time{
+		time.Date(2026, 3, 28, 23, 0, 0, 0, time.UTC),
+		time.Date(2026, 3, 29, 1, 0, 0, 0, time.UTC),
+		time.Date(2026, 3, 29, 21, 59, 0, 0, time.UTC),
+	} {
+		insertMessageCost(t, c, ts, 1.0)
+	}
+
+	from := dayStartLocal(time.Date(2026, 3, 29, 0, 0, 0, 0, time.Local))
+	to := dayStartLocal(time.Date(2026, 3, 30, 0, 0, 0, 0, time.Local))
+	buckets, err := c.CostBuckets(24*time.Hour, from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(buckets) != 1 || buckets[0].Cost != 3.0 {
+		t.Errorf("DST spring-forward: %+v, want one bucket of 3.0", buckets)
+	}
+}
+
 func TestZoomLabel_DefaultFallback(t *testing.T) {
 	if got := zoomLabel(30 * time.Minute); got != "30m0s" {
 		t.Errorf("zoomLabel(30m) = %q, want %q (default fallback)", got, "30m0s")

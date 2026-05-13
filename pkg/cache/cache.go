@@ -429,6 +429,9 @@ type CostBucket struct {
 // to their bucket because cost_usd_estimate was stored as 0 at ingest;
 // no extra WHERE clause is needed.
 func (c *Cache) CostBuckets(dur time.Duration, from, to time.Time) ([]CostBucket, error) {
+	if dur == 24*time.Hour {
+		return c.costBucketsDaily(from, to)
+	}
 	start := time.Now()
 	from = BucketAlign(from, dur)
 	to = BucketAlign(to, dur)
@@ -479,6 +482,56 @@ ORDER BY bucket_epoch ASC
 		"zoom", zoomLabel(dur),
 		"unit", "cost",
 		"buckets", n,
+		"rows_aggregated", len(totals))
+	return out, nil
+}
+
+// costBucketsDaily mirrors tokenBucketsDaily for SUM(cost_usd_estimate).
+// See tokenBucketsDaily docs for the local-tz / DST / iteration rationale.
+func (c *Cache) costBucketsDaily(from, to time.Time) ([]CostBucket, error) {
+	start := time.Now()
+	from = dayStartLocal(from)
+	to = dayStartLocal(to)
+	if !to.After(from) {
+		return nil, nil
+	}
+	fromStr := from.UTC().Format("2006-01-02T15:04:05.000Z07:00")
+	toStr := to.UTC().Format("2006-01-02T15:04:05.000Z07:00")
+	rows, err := c.db.Query(`
+SELECT
+  strftime('%Y-%m-%d', ts, 'localtime') AS day,
+  SUM(cost_usd_estimate)
+FROM messages
+WHERE ts >= ? AND ts < ?
+GROUP BY day
+ORDER BY day ASC
+`, fromStr, toStr)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	totals := make(map[string]float64)
+	for rows.Next() {
+		var day string
+		var cost float64
+		if err := rows.Scan(&day, &cost); err != nil {
+			return nil, err
+		}
+		totals[day] = cost
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	out := []CostBucket{}
+	for d := from; d.Before(to); d = d.AddDate(0, 0, 1) {
+		key := d.Format("2006-01-02")
+		out = append(out, CostBucket{BucketStart: d, Cost: totals[key]})
+	}
+	slog.Debug("cache.costBucketsDaily",
+		"dur_ms", time.Since(start).Milliseconds(),
+		"buckets", len(out),
 		"rows_aggregated", len(totals))
 	return out, nil
 }
