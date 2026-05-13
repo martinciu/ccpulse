@@ -200,6 +200,49 @@ func TestInit_ReleaseFiltersBelowLevel(t *testing.T) {
 	}
 }
 
+func TestInit_ChannelSplit_BothFilesCoexist(t *testing.T) {
+	prev := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	dir := t.TempDir()
+
+	closer1, err := Init(Options{IsDev: true, CacheDir: dir, Level: slog.LevelDebug})
+	if err != nil {
+		t.Fatal(err)
+	}
+	slog.Debug("hello dev")
+	closer1.Close()
+
+	closer2, err := Init(Options{IsDev: false, CacheDir: dir, Level: slog.LevelInfo})
+	if err != nil {
+		t.Fatal(err)
+	}
+	slog.Info("hello release")
+	closer2.Close()
+
+	dev, err := os.ReadFile(filepath.Join(dir, "debug.log"))
+	if err != nil {
+		t.Fatalf("debug.log: %v", err)
+	}
+	if !strings.Contains(string(dev), "hello dev") {
+		t.Errorf("debug.log missing dev output: %q", dev)
+	}
+	if strings.Contains(string(dev), "hello release") {
+		t.Errorf("debug.log unexpectedly contains release output: %q", dev)
+	}
+
+	rel, err := os.ReadFile(filepath.Join(dir, "ccpulse.log"))
+	if err != nil {
+		t.Fatalf("ccpulse.log: %v", err)
+	}
+	if !strings.Contains(string(rel), "hello release") {
+		t.Errorf("ccpulse.log missing release output: %q", rel)
+	}
+	if strings.Contains(string(rel), "hello dev") {
+		t.Errorf("ccpulse.log unexpectedly contains dev output: %q", rel)
+	}
+}
+
 func TestParseLevel(t *testing.T) {
 	tests := []struct {
 		name    string
