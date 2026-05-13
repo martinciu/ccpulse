@@ -105,6 +105,61 @@ func TestInit_TightensExisting(t *testing.T) {
 	}
 }
 
+func TestInit_ReleaseWritesCcpulseLog(t *testing.T) {
+	prev := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	dir := t.TempDir()
+	closer, err := Init(Options{IsDev: false, CacheDir: dir, Level: slog.LevelInfo})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if closer == nil {
+		t.Fatal("Init returned nil closer at LevelInfo; want non-nil")
+	}
+	defer closer.Close()
+
+	slog.Info("hello release", "key", "value")
+
+	logPath := filepath.Join(dir, "ccpulse.log")
+	got, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "hello release") {
+		t.Errorf("ccpulse.log missing slog output: %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "debug.log")); !os.IsNotExist(err) {
+		t.Errorf("release mode created debug.log; want only ccpulse.log")
+	}
+}
+
+func TestInit_ReleaseFiltersBelowLevel(t *testing.T) {
+	prev := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	dir := t.TempDir()
+	closer, err := Init(Options{IsDev: false, CacheDir: dir, Level: slog.LevelInfo})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closer.Close()
+
+	slog.Debug("should be filtered")
+	slog.Info("should appear")
+
+	got, err := os.ReadFile(filepath.Join(dir, "ccpulse.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(got), "should be filtered") {
+		t.Errorf("DEBUG record reached file at LevelInfo:\n%s", got)
+	}
+	if !strings.Contains(string(got), "should appear") {
+		t.Errorf("INFO record missing from file:\n%s", got)
+	}
+}
+
 func TestParseLevel(t *testing.T) {
 	tests := []struct {
 		name    string
