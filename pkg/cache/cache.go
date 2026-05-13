@@ -2,6 +2,7 @@ package cache
 
 import (
 	"database/sql"
+	"database/sql/driver"
 	_ "embed"
 	"errors"
 	"fmt"
@@ -12,8 +13,40 @@ import (
 	"github.com/martinciu/ccpulse/pkg/anthro"
 	"github.com/martinciu/ccpulse/pkg/parse"
 	"github.com/martinciu/ccpulse/pkg/pricing"
-	_ "modernc.org/sqlite"
+	"modernc.org/sqlite"
 )
+
+// init registers a deterministic local_day(ts) SQL scalar function. It
+// projects a UTC RFC3339 timestamp string into the calendar day of
+// time.Local and returns "YYYY-MM-DD" — used by the 24h zoom path to
+// bucket messages by local-tz day.
+//
+// Why not SQLite's built-in `strftime('%Y-%m-%d', ts, 'localtime')`?
+// modernc.org/sqlite's transpiled libc reads tzdata differently per
+// platform. On Darwin, libc_darwin.go:Xlocaltime calls
+// getLocalLocation() which honors Go's time.Local. On Linux, the musl
+// transpilation routes through X__secs_to_zone, which reads tzdata
+// via libc's frozen os.Environ() snapshot — completely bypassing Go's
+// time.Local. Tests that mutate time.Local therefore work on Mac and
+// silently fall back to UTC on Linux. This Go-side function reads
+// time.Local at call time, behaving identically on both platforms.
+func init() {
+	sqlite.MustRegisterDeterministicScalarFunction(
+		"local_day",
+		1,
+		func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+			ts, ok := args[0].(string)
+			if !ok {
+				return "", nil
+			}
+			t, err := time.Parse("2006-01-02T15:04:05.000Z07:00", ts)
+			if err != nil {
+				return "", nil
+			}
+			return t.In(time.Local).Format("2006-01-02"), nil
+		},
+	)
+}
 
 //go:embed schema.sql
 var schemaSQL string
@@ -365,9 +398,14 @@ ORDER BY bucket_epoch ASC
 	return out, nil
 }
 
+// dailySQL is the shared 24h-zoom SQL form used by both tokenBucketsDaily
+// and costBucketsDaily, parameterised by the aggregate expression. The
+// local_day(ts) call uses the Go-registered scalar function (see init()
+// above) so day grouping honours time.Local on every platform.
+//
 // tokenBucketsDaily returns one TokenBucket per local-tz calendar day in
 // [from, to). Bucket boundaries are local midnight; SQLite groups via
-// strftime('%Y-%m-%d', ts, 'localtime'). Iteration uses AddDate(0, 0, 1)
+// the registered local_day(ts) function. Iteration uses AddDate(0, 0, 1)
 // so DST transitions (spring-forward 23h day, fall-back 25h day) each
 // produce exactly one bucket.
 //
@@ -383,7 +421,7 @@ func (c *Cache) tokenBucketsDaily(from, to time.Time) ([]TokenBucket, error) {
 	toStr := to.UTC().Format("2006-01-02T15:04:05.000Z07:00")
 	rows, err := c.db.Query(`
 SELECT
-  strftime('%Y-%m-%d', ts, 'localtime') AS day,
+  local_day(ts) AS day,
   SUM(input_tokens + output_tokens + cache_read_tokens
       + cache_write_5m_tokens + cache_write_1h_tokens)
 FROM messages
@@ -507,7 +545,7 @@ func (c *Cache) costBucketsDaily(from, to time.Time) ([]CostBucket, error) {
 	toStr := to.UTC().Format("2006-01-02T15:04:05.000Z07:00")
 	rows, err := c.db.Query(`
 SELECT
-  strftime('%Y-%m-%d', ts, 'localtime') AS day,
+  local_day(ts) AS day,
   SUM(cost_usd_estimate)
 FROM messages
 WHERE ts >= ? AND ts < ?
