@@ -42,7 +42,7 @@ These env vars override `config.toml` at runtime — useful for testing against 
    - On each event: `parse.ParseFromOffsetWithErrors` tails the file from the last byte offset → `cache.InsertMessages` (writes `cwd` and `git_branch` captured per-message from the JSONL envelope) → sends `tui.RefreshMsg` to the Bubble Tea program.
    - `ccpulse index` does a full cold walk via `parse.Walk`.
 
-2. The TUI (`pkg/tui`) is a pure Bubble Tea model. It renders a single view: a bordered header with side-by-side 5h and 7d quota bars (`bubbles/progress`), followed by a horizontally-scrollable bar chart (`ntcharts/barchart`) of token usage per time bucket, heat-coloured relative to the peak bucket. On `RefreshMsg` it calls `status.Compute` (for the quota window) and `cache.TokenBuckets` (for the histogram at the current zoom level) and redraws. The `z` key cycles zoom (5m / 15m / 1h); `←`/`→` scroll the chart; `?` toggles a full-help overlay. The TUI never writes to the cache.
+2. The TUI (`pkg/tui`) is a pure Bubble Tea model. It renders a single view: a bordered header with side-by-side 5h and 7d quota bars (`bubbles/progress`), followed by a horizontally-scrollable bar chart (`ntcharts/barchart`) of token usage per time bucket, heat-coloured relative to the peak bucket. On `RefreshMsg` it calls `status.Compute` (for the quota window) and `cache.TokenBuckets` (for the histogram at the current zoom level) and redraws. The `z` key cycles zoom (15m / 1h / 24h); `←`/`→` scroll the chart; `?` toggles a full-help overlay. The TUI never writes to the cache.
 
 ### Package map
 

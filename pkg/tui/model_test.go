@@ -654,7 +654,7 @@ func TestRefreshChart_FromEarliest(t *testing.T) {
 	// message (aligned to the active zoom's bucket boundary) up to "now".
 	// We verify this by inserting a single message ~3 hours ago and
 	// confirming TokenBuckets returns at least the matching number of
-	// 15m buckets at zoom index 1 (15m bucket / no Lookback).
+	// 15m buckets at zoom index 0 (15m zoom, the default).
 	c, err := cache.Open(filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -674,7 +674,7 @@ func TestRefreshChart_FromEarliest(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	zoom := ZoomLevels[1] // 15m
+	zoom := ZoomLevels[0] // 15m
 	to := cache.BucketAlign(now, zoom.Duration).Add(zoom.Duration)
 	from := cache.BucketAlign(earliest, zoom.Duration)
 	wantMin := int(to.Sub(from)/zoom.Duration) - 1 // tolerate ±1 bucket on boundary
