@@ -7,10 +7,20 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// Discrete TUI palette colors mapped to ANSI slots 0–15. The terminal's
-// configured theme (Catppuccin, Dracula, Gruvbox, …) drives
-// the actual rendered RGB. Names are kept color-based at this layer;
-// semantic wrappers (burnSafeStyle, …) live where consumed.
+// Severity, chrome, and faint-stop tokens. Light/Dark stops feed
+// lipgloss.AdaptiveColor — termenv profile degradation handles 16-color
+// terminals automatically (no hand-mapped ANSI fallback needed). Promote to
+// lipgloss.CompleteAdaptiveColor only if a visual probe surfaces a problem.
+var (
+	colorSafe   = lipgloss.AdaptiveColor{Light: "#2e7d32", Dark: "#81c784"} // Material green 700 / 300
+	colorWatch  = lipgloss.AdaptiveColor{Light: "#ef6c00", Dark: "#ffb74d"} // Material orange 700 / 300
+	colorDanger = lipgloss.AdaptiveColor{Light: "#c62828", Dark: "#e57373"} // Material red 700 / 300
+	colorMuted  = lipgloss.AdaptiveColor{Light: "#666666", Dark: "#9e9e9e"} // chrome, dim labels (Material grey 700 / 500)
+	colorFaint  = lipgloss.AdaptiveColor{Light: "#bdbdbd", Dark: "#424242"} // fade-out endpoint (Material grey 400 / 800)
+)
+
+// Discrete TUI palette colors mapped to ANSI slots 0–15. Retained during
+// the #126 migration; removed in the final rename cleanup task.
 var (
 	Red    = lipgloss.Color("1") // severity: danger / over-limit
 	Yellow = lipgloss.Color("3") // severity: warning / watch

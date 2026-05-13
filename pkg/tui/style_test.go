@@ -3,6 +3,8 @@ package tui
 import (
 	"strings"
 	"testing"
+
+	"github.com/charmbracelet/lipgloss"
 )
 
 func TestLabelFadeStyle_Quantisation(t *testing.T) {
@@ -57,5 +59,34 @@ func TestLabelFadeStyle_Quantisation(t *testing.T) {
 	// rely on it as the bucket count.
 	if got := len(labelFadeStops); got != labelFadeStopCount {
 		t.Errorf("len(labelFadeStops) = %d, want %d", got, labelFadeStopCount)
+	}
+}
+
+func TestAdaptiveTokens_LightDark(t *testing.T) {
+	// Pins the Light/Dark hex stops for the five severity/chrome tokens.
+	// Catches accidental Light/Dark swaps and hex drift across future edits.
+	// Asserts on the AdaptiveColor struct fields directly — verifying lipgloss's
+	// own HasDarkBackground routing is out of scope.
+	cases := []struct {
+		name      string
+		token     lipgloss.AdaptiveColor
+		wantLight string
+		wantDark  string
+	}{
+		{"colorSafe", colorSafe, "#2e7d32", "#81c784"},
+		{"colorWatch", colorWatch, "#ef6c00", "#ffb74d"},
+		{"colorDanger", colorDanger, "#c62828", "#e57373"},
+		{"colorMuted", colorMuted, "#666666", "#9e9e9e"},
+		{"colorFaint", colorFaint, "#bdbdbd", "#424242"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if c.token.Light != c.wantLight {
+				t.Errorf("%s.Light = %q, want %q", c.name, c.token.Light, c.wantLight)
+			}
+			if c.token.Dark != c.wantDark {
+				t.Errorf("%s.Dark = %q, want %q", c.name, c.token.Dark, c.wantDark)
+			}
+		})
 	}
 }
