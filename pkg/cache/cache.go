@@ -294,6 +294,10 @@ func dayStartLocal(t time.Time) time.Time {
 }
 
 // TokenBucket is one time-bucketed total of token usage.
+//
+// For sub-day durations (15m/1h), BucketStart is in UTC. For the 24h
+// zoom, BucketStart is in time.Local (parsed via dayStartLocal). Callers
+// rendering the value should not assume Location() == time.UTC.
 type TokenBucket struct {
 	BucketStart time.Time
 	Tokens      int64
@@ -418,6 +422,10 @@ ORDER BY day ASC
 }
 
 // CostBucket is one time-bucketed total of USD cost.
+//
+// For sub-day durations (15m/1h), BucketStart is in UTC. For the 24h
+// zoom, BucketStart is in time.Local (parsed via dayStartLocal). Callers
+// rendering the value should not assume Location() == time.UTC.
 type CostBucket struct {
 	BucketStart time.Time
 	Cost        float64
@@ -537,19 +545,19 @@ ORDER BY day ASC
 }
 
 // zoomLabel returns the compact human label that matches pkg/tui's
-// ZoomLevels labels ("5m", "15m", "1h") for the three known zoom
+// ZoomLevels labels ("15m", "1h", "24h") for the three known zoom
 // durations. Falls back to time.Duration.String() (e.g. "5m0s") for
 // any other value. Keeps the slog "zoom" field consistent across
 // pkg/cache and pkg/tui so a single grep correlates all four perf
 // timing sites.
 func zoomLabel(d time.Duration) string {
 	switch d {
-	case 5 * time.Minute:
-		return "5m"
 	case 15 * time.Minute:
 		return "15m"
 	case time.Hour:
 		return "1h"
+	case 24 * time.Hour:
+		return "24h"
 	}
 	return d.String()
 }
