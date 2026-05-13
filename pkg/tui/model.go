@@ -618,8 +618,9 @@ func (m *Model) beginUnitAnimation() {
 // bars are invisible anyway; their final positions are committed on
 // settle via the steady-state refreshChart call.
 //
-// Sets viewport.XOffset = 0 because the canvas is now exactly viewport-
-// wide; settle's refreshChart restores the full-canvas + XOffset state.
+// Sets viewport.XOffset = 0 because the windowed canvas is rendered
+// starting at slice col 0; the leadingPad below shifts content to
+// match the pre-spring viewport position.
 func (m *Model) renderSpringFrame() {
 	if len(m.springRatios) == 0 {
 		return
@@ -643,8 +644,34 @@ func (m *Model) renderSpringFrame() {
 
 	visibleRatios := m.springRatios[start:end]
 	visibleStarts := m.lastStarts[start:end]
-	m.viewport.SetContent(buildChart(visibleRatios, visibleStarts, 1.0,
-		zoom.CanvasWidth(len(visibleRatios)), chartH, time.Now(), zoom, chartUnit(m.unitIdx), m.dateOrder))
+	content := buildChart(visibleRatios, visibleStarts, 1.0,
+		zoom.CanvasWidth(len(visibleRatios)), chartH, time.Now(), zoom, chartUnit(m.unitIdx), m.dateOrder)
+
+	// Pre-spring viewport.SetXOffset(K*stride) is clamped to
+	// longestLineWidth-Width at the right edge whenever K*stride exceeds
+	// the canvas right edge. When the canvas right edge doesn't sit on a
+	// stride boundary (24h has BarGap=2 and the viewport width is rarely
+	// a multiple of 12), this clamping shifts pre-spring bars rightward
+	// in the viewport (with the leading slack filled by the gap content
+	// just before the first visible bar). The windowed spring canvas
+	// would otherwise render its bars at slice col 0 with no leading
+	// shift — producing a visible "jump left" + trailing blank on the
+	// transition. Prepending the same column count here keeps bar
+	// positions stable across the steady-state ↔ spring boundary.
+	stride := zoom.stride()
+	desiredXOffset := start * stride
+	prevLongest := zoom.CanvasWidth(len(m.lastValues))
+	actualXOffset := min(desiredXOffset, max(0, prevLongest-m.viewport.Width))
+	if pad := desiredXOffset - actualXOffset; pad > 0 {
+		prefix := strings.Repeat(" ", pad)
+		lines := strings.Split(content, "\n")
+		for i, line := range lines {
+			lines[i] = prefix + line
+		}
+		content = strings.Join(lines, "\n")
+	}
+
+	m.viewport.SetContent(content)
 	m.viewport.SetXOffset(0)
 }
 
