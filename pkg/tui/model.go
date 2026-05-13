@@ -642,37 +642,34 @@ func (m *Model) renderSpringFrame() {
 		return
 	}
 
-	visibleRatios := m.springRatios[start:end]
-	visibleStarts := m.lastStarts[start:end]
-	content := buildChart(visibleRatios, visibleStarts, 1.0,
-		zoom.CanvasWidth(len(visibleRatios)), chartH, time.Now(), zoom, chartUnit(m.unitIdx), m.dateOrder)
-
-	// Pre-spring viewport.SetXOffset(K*stride) is clamped to
+	// Pre-spring viewport.SetXOffset(K*stride) gets clamped to
 	// longestLineWidth-Width at the right edge whenever K*stride exceeds
 	// the canvas right edge. When the canvas right edge doesn't sit on a
-	// stride boundary (24h has BarGap=2 and the viewport width is rarely
-	// a multiple of 12), this clamping shifts pre-spring bars rightward
-	// in the viewport (with the leading slack filled by the gap content
-	// just before the first visible bar). The windowed spring canvas
-	// would otherwise render its bars at slice col 0 with no leading
-	// shift — producing a visible "jump left" + trailing blank on the
-	// transition. Prepending the same column count here keeps bar
-	// positions stable across the steady-state ↔ spring boundary.
+	// stride boundary (24h has BarGap=2 and viewport width is rarely a
+	// multiple of 12), the leading slack lands either in the gap before
+	// bucket K (visible as 1–2 blank cols) or mid-way through bucket K-1
+	// (visible as a partial bar at the left). Either way, the windowed
+	// spring canvas must reproduce that leading content so the user
+	// doesn't see a "jump left" or a vanishing partial bar on the
+	// steady-state ↔ spring transition. Include bucket [start-1] as a
+	// leading bar and offset into it by the same slack the viewport
+	// would have shown pre-spring.
 	stride := zoom.stride()
 	desiredXOffset := start * stride
 	prevLongest := zoom.CanvasWidth(len(m.lastValues))
 	actualXOffset := min(desiredXOffset, max(0, prevLongest-m.viewport.Width))
-	if pad := desiredXOffset - actualXOffset; pad > 0 {
-		prefix := strings.Repeat(" ", pad)
-		lines := strings.Split(content, "\n")
-		for i, line := range lines {
-			lines[i] = prefix + line
-		}
-		content = strings.Join(lines, "\n")
+	sliceStart := start
+	springXOff := 0
+	if start >= 1 && actualXOffset < desiredXOffset {
+		sliceStart = start - 1
+		springXOff = actualXOffset - sliceStart*stride
 	}
 
-	m.viewport.SetContent(content)
-	m.viewport.SetXOffset(0)
+	visibleRatios := m.springRatios[sliceStart:end]
+	visibleStarts := m.lastStarts[sliceStart:end]
+	m.viewport.SetContent(buildChart(visibleRatios, visibleStarts, 1.0,
+		zoom.CanvasWidth(len(visibleRatios)), chartH, time.Now(), zoom, chartUnit(m.unitIdx), m.dateOrder))
+	m.viewport.SetXOffset(springXOff)
 }
 
 // setX is the single point of entry for changing the viewport's horizontal
