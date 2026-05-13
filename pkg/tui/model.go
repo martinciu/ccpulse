@@ -655,15 +655,8 @@ func (m *Model) renderSpringFrame() {
 	// leading bar and offset into it by the same slack the viewport
 	// would have shown pre-spring.
 	stride := zoom.stride()
-	desiredXOffset := start * stride
 	prevLongest := zoom.CanvasWidth(len(m.lastValues))
-	actualXOffset := min(desiredXOffset, max(0, prevLongest-m.viewport.Width))
-	sliceStart := start
-	springXOff := 0
-	if start >= 1 && actualXOffset < desiredXOffset {
-		sliceStart = start - 1
-		springXOff = actualXOffset - sliceStart*stride
-	}
+	sliceStart, springXOff := computeSpringSlice(start, prevLongest, m.viewport.Width, stride)
 
 	visibleRatios := m.springRatios[sliceStart:end]
 	visibleStarts := m.lastStarts[sliceStart:end]

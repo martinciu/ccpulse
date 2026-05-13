@@ -66,6 +66,32 @@ var ZoomLevels = []ZoomLevel{
 	{"24h", 24 * time.Hour, 10, 2},
 }
 
+// computeSpringSlice returns the slice start (bucket-index) and viewport
+// xOffset (column-index) used by renderSpringFrame to reproduce the
+// pre-spring viewport position. Pre-spring's viewport.SetXOffset(K*stride)
+// is clamped to longestLineWidth-vpWidth at the right edge; when that
+// clamp doesn't align to a stride boundary, the spring canvas must
+// include bucket [start-1] as a leading bar and offset into it by the
+// slack so the partial-bar / gap content matches.
+//
+// Defensive: springXOff is clamped to ≥0 so a future degenerate state
+// (e.g. prevLongest < vpWidth mid-animation due to data shrinking)
+// cannot produce a negative offset that downstream callers would have
+// to handle.
+func computeSpringSlice(start, prevLongest, vpWidth, stride int) (sliceStart, springXOff int) {
+	desiredXOffset := start * stride
+	actualXOffset := min(desiredXOffset, max(0, prevLongest-vpWidth))
+	sliceStart = start
+	if start >= 1 && actualXOffset < desiredXOffset {
+		sliceStart = start - 1
+		springXOff = actualXOffset - sliceStart*stride
+	}
+	if springXOff < 0 {
+		springXOff = 0
+	}
+	return sliceStart, springXOff
+}
+
 // overlayYLabel splices `formatUnitValue(niceFloorFloat(peak), unit)` in
 // the chosen fade style into the niceFloorFloat(peak) row of an already-rendered
 // chart string, replacing the first 5 visible columns of that row.

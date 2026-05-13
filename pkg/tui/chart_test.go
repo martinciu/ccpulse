@@ -703,6 +703,96 @@ func TestBuildChart_24h_CanvasWidth(t *testing.T) {
 	}
 }
 
+func TestComputeSpringSlice(t *testing.T) {
+	t.Parallel()
+	// All cases use stride=12 (matches the 24h ZoomLevel: BarWidth=10, BarGap=2).
+	const stride = 12
+	tests := []struct {
+		name         string
+		start        int
+		prevLongest  int
+		vpWidth      int
+		wantSlice    int
+		wantSpringXOff int
+	}{
+		{
+			name:           "start=0 unclamped",
+			start:          0,
+			prevLongest:    4318,
+			vpWidth:        120,
+			wantSlice:      0,
+			wantSpringXOff: 0,
+		},
+		{
+			name:           "mid-scroll unclamped",
+			start:          200,
+			prevLongest:    4318,
+			vpWidth:        120,
+			wantSlice:      200,
+			wantSpringXOff: 0,
+		},
+		{
+			name:           "pinned-right slack in gap",
+			start:          350,
+			prevLongest:    4318,
+			vpWidth:        120,
+			wantSlice:      349,
+			wantSpringXOff: 10,
+		},
+		{
+			name:           "pinned-right slack in bar (terminal 130)",
+			start:          350,
+			prevLongest:    4318,
+			vpWidth:        128,
+			wantSlice:      349,
+			wantSpringXOff: 2,
+		},
+		{
+			name:           "canvas fits in viewport, start=0",
+			start:          0,
+			prevLongest:    60,
+			vpWidth:        120,
+			wantSlice:      0,
+			wantSpringXOff: 0,
+		},
+		{
+			// Critical: exercises the defensive springXOff < 0 clamp.
+			// Without the clamp, springXOff would be:
+			//   desiredXOffset = 5*12 = 60
+			//   actualXOffset = min(60, max(0, 60-120)) = min(60, 0) = 0
+			//   sliceStart = 4, springXOff = 0 - 4*12 = -48
+			name:           "canvas fits in viewport, start=5 (negative-pre-clamp path)",
+			start:          5,
+			prevLongest:    60,
+			vpWidth:        120,
+			wantSlice:      4,
+			wantSpringXOff: 0,
+		},
+		{
+			// start=1 with clamp: canvas is tiny so actualXOffset=0,
+			// sliceStart drops to 0, springXOff = 0 - 0*12 = 0.
+			name:           "start=1 with clamp",
+			start:          1,
+			prevLongest:    14,
+			vpWidth:        120,
+			wantSlice:      0,
+			wantSpringXOff: 0,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			gotSlice, gotXOff := computeSpringSlice(tt.start, tt.prevLongest, tt.vpWidth, stride)
+			if gotSlice != tt.wantSlice {
+				t.Errorf("sliceStart = %d, want %d", gotSlice, tt.wantSlice)
+			}
+			if gotXOff != tt.wantSpringXOff {
+				t.Errorf("springXOff = %d, want %d", gotXOff, tt.wantSpringXOff)
+			}
+		})
+	}
+}
+
 func TestOverlayYLabel_FadeZeroSkipsRender(t *testing.T) {
 	// fade == 0 (and fade < 0 by clamp) must short-circuit and return
 	// body unchanged. This is how the empty-moment frame ends up with
