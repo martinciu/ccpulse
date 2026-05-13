@@ -63,7 +63,7 @@ func BenchmarkBuildChart(b *testing.B) {
 			b.ResetTimer()
 			now := time.Now().UTC()
 			for b.Loop() {
-				sinkString = buildChart(values, starts, peak, n, 20, now, ZoomLevels[1], chartUnitTokens)
+				sinkString = buildChart(values, starts, peak, n, 20, now, ZoomLevels[1], chartUnitTokens, dateOrderMonthFirst)
 			}
 		})
 	}
@@ -111,7 +111,7 @@ func BenchmarkRenderXLabels(b *testing.B) {
 			runtime.GC()
 			b.ResetTimer()
 			for b.Loop() {
-				sinkString = renderXLabels(starts, n, ZoomLevels[1], now)
+				sinkString = renderXLabels(starts, n, ZoomLevels[1], now, dateOrderMonthFirst)
 			}
 		})
 	}
@@ -134,7 +134,7 @@ func BenchmarkBarChartRender(b *testing.B) {
 			runtime.GC()
 			b.ResetTimer()
 			for b.Loop() {
-				sinkString = buildChart(values, starts, peak, n, 20, now, ZoomLevels[1], chartUnitTokens)
+				sinkString = buildChart(values, starts, peak, n, 20, now, ZoomLevels[1], chartUnitTokens, dateOrderMonthFirst)
 			}
 		})
 	}
@@ -167,7 +167,7 @@ func TestBuildChart_ContainsXLabelsAndNowMarker(t *testing.T) {
 		{BucketStart: now, Tokens: 3500},
 	}
 	values, starts, peak := projectBuckets(bs)
-	out := buildChart(values, starts, peak, len(bs), 10, now, ZoomLevels[0], chartUnitTokens)
+	out := buildChart(values, starts, peak, len(bs), 10, now, ZoomLevels[0], chartUnitTokens, dateOrderMonthFirst)
 	if !strings.Contains(out, "▼ now") {
 		t.Errorf("expected '▼ now' marker in chart output:\n%s", out)
 	}
@@ -191,7 +191,7 @@ func TestBuildChart_ChartHTooShortDropsXLabels(t *testing.T) {
 	// chartH=5 is below the chartH>=6 threshold; the X labels row should
 	// be dropped and bars should take all 5 rows.
 	values, starts, peak := projectBuckets(bs)
-	out := buildChart(values, starts, peak, len(bs), 5, now, ZoomLevels[0], chartUnitTokens)
+	out := buildChart(values, starts, peak, len(bs), 5, now, ZoomLevels[0], chartUnitTokens, dateOrderMonthFirst)
 	if strings.Contains(out, "▼ now") {
 		t.Errorf("expected no '▼ now' marker when chartH=5; X labels should be dropped:\n%s", out)
 	}
@@ -207,7 +207,7 @@ func TestRenderXLabels_NowTruncatesAtTinyChartW(t *testing.T) {
 	buckets := []cache.TokenBucket{{BucketStart: now}}
 	// chartW=1 can't fit "▼ now" (5 cols); only ▼ should appear.
 	_, starts, _ := projectBuckets(buckets)
-	got := renderXLabels(starts, 1, ZoomLevels[0], now)
+	got := renderXLabels(starts, 1, ZoomLevels[0], now, dateOrderMonthFirst)
 	if !strings.Contains(got, "▼") {
 		t.Errorf("expected ▼ at chartW=1, got %q", got)
 	}
@@ -226,7 +226,7 @@ func TestRenderXLabels_OverflowingLabelDropped(t *testing.T) {
 	}
 	// chartW=3: "13:00" at col 0 needs cols 0-4, overflows. Dropped.
 	_, starts, _ := projectBuckets(buckets)
-	got := renderXLabels(starts, 3, ZoomLevels[0], now)
+	got := renderXLabels(starts, 3, ZoomLevels[0], now, dateOrderMonthFirst)
 	if strings.Contains(got, "13:00") {
 		t.Errorf("'13:00' label should have been dropped (would overflow chartW=3), got %q", got)
 	}
@@ -288,7 +288,7 @@ func TestRenderXLabels(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			_, starts, _ := projectBuckets(tt.buckets)
-			got := renderXLabels(starts, tt.chartW, tt.zoom, now)
+			got := renderXLabels(starts, tt.chartW, tt.zoom, now, dateOrderMonthFirst)
 			if tt.wantEmpty {
 				if got != "" {
 					t.Errorf("expected empty, got %q", got)
@@ -318,30 +318,48 @@ func TestFormatXLabel(t *testing.T) {
 		return time.Date(2026, time.Month(month), day, 0, 0, 0, 0, time.UTC)
 	}
 	tests := []struct {
-		name string
-		t    time.Time
-		zoom ZoomLevel
-		want string
+		name  string
+		t     time.Time
+		zoom  ZoomLevel
+		order dateOrder
+		want  string
 	}{
-		{"5m on hour", d(13, 0), ZoomLevels[0], "13:00"},
-		{"5m mid-hour 15min", d(13, 15), ZoomLevels[0], ""},
-		{"5m mid-hour 5min", d(13, 5), ZoomLevels[0], ""},
-		{"15m on 3-hour", d(12, 0), ZoomLevels[1], "12:00"},
-		{"15m off-3-hour", d(13, 0), ZoomLevels[1], ""},
-		{"15m mid-window 09:00", d(9, 0), ZoomLevels[1], "09:00"},
-		{"1h today midnight Tue", day(5, 12), ZoomLevels[2], "Tue"},
-		{"1h yesterday Mon", day(5, 11), ZoomLevels[2], "Mon"},
-		{"1h 6 days ago Wed", day(5, 6), ZoomLevels[2], "Wed"},
-		{"1h 7 days ago falls to MM-DD", day(5, 5), ZoomLevels[2], "05-05"},
-		{"1h non-midnight returns empty", d(14, 0), ZoomLevels[2], ""},
+		// Existing cases — non-midnight slots, both orders should match.
+		{"5m on hour MonthFirst", d(13, 0), ZoomLevels[0], dateOrderMonthFirst, "13:00"},
+		{"5m on hour DayFirst", d(13, 0), ZoomLevels[0], dateOrderDayFirst, "13:00"},
+		{"5m mid-hour 15min", d(13, 15), ZoomLevels[0], dateOrderMonthFirst, ""},
+		{"5m mid-hour 5min", d(13, 5), ZoomLevels[0], dateOrderMonthFirst, ""},
+		{"15m on 3-hour MonthFirst", d(12, 0), ZoomLevels[1], dateOrderMonthFirst, "12:00"},
+		{"15m on 3-hour DayFirst", d(12, 0), ZoomLevels[1], dateOrderDayFirst, "12:00"},
+		{"15m off-3-hour", d(13, 0), ZoomLevels[1], dateOrderMonthFirst, ""},
+		{"15m mid-window 09:00", d(9, 0), ZoomLevels[1], dateOrderMonthFirst, "09:00"},
+		{"1h today midnight Tue", day(5, 12), ZoomLevels[2], dateOrderMonthFirst, "Tue"},
+		{"1h yesterday Mon", day(5, 11), ZoomLevels[2], dateOrderMonthFirst, "Mon"},
+		{"1h 6 days ago Wed", day(5, 6), ZoomLevels[2], dateOrderMonthFirst, "Wed"},
+		// Updated: separator now '/' instead of '-' (issue #145).
+		{"1h 7 days ago MonthFirst → MM/DD", day(5, 5), ZoomLevels[2], dateOrderMonthFirst, "05/05"},
+		{"1h 7 days ago DayFirst → DD/MM (same digits)", day(5, 5), ZoomLevels[2], dateOrderDayFirst, "05/05"},
+		{"1h non-midnight returns empty", d(14, 0), ZoomLevels[2], dateOrderMonthFirst, ""},
+		// New: 5m midnight, distinct under each order.
+		{"5m midnight today recent → Tue", day(5, 12), ZoomLevels[0], dateOrderMonthFirst, "Tue"},
+		{"5m midnight yesterday recent → Mon", day(5, 11), ZoomLevels[0], dateOrderMonthFirst, "Mon"},
+		{"5m midnight 12 days ago MonthFirst → 04/30", day(4, 30), ZoomLevels[0], dateOrderMonthFirst, "04/30"},
+		{"5m midnight 12 days ago DayFirst → 30/04", day(4, 30), ZoomLevels[0], dateOrderDayFirst, "30/04"},
+		// New: 15m midnight, distinct under each order.
+		{"15m midnight today recent → Tue", day(5, 12), ZoomLevels[1], dateOrderDayFirst, "Tue"},
+		{"15m midnight 12 days ago MonthFirst → 04/30", day(4, 30), ZoomLevels[1], dateOrderMonthFirst, "04/30"},
+		{"15m midnight 12 days ago DayFirst → 30/04", day(4, 30), ZoomLevels[1], dateOrderDayFirst, "30/04"},
+		// New: 1h 12 days ago, distinct under each order.
+		{"1h 12 days ago MonthFirst → 04/30", day(4, 30), ZoomLevels[2], dateOrderMonthFirst, "04/30"},
+		{"1h 12 days ago DayFirst → 30/04", day(4, 30), ZoomLevels[2], dateOrderDayFirst, "30/04"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := formatXLabel(tt.t, tt.zoom, now)
+			got := formatXLabel(tt.t, tt.zoom, now, tt.order)
 			if got != tt.want {
-				t.Errorf("formatXLabel(%v, %s) = %q, want %q",
-					tt.t.Format(time.RFC3339), tt.zoom.Label, got, tt.want)
+				t.Errorf("formatXLabel(%v, %s, %v) = %q, want %q",
+					tt.t.Format(time.RFC3339), tt.zoom.Label, tt.order, got, tt.want)
 			}
 		})
 	}

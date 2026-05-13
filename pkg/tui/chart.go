@@ -73,7 +73,7 @@ func overlayYLabel(body string, peak float64, unit chartUnit, chartH int, fade f
 // overflow chartW on the right are dropped. Empty starts → "".
 // colorMuted foreground throughout — Y axis labels are default fg so the eye
 // distinguishes the two rows when they sit close together.
-func renderXLabels(starts []time.Time, chartW int, zoom ZoomLevel, now time.Time) string {
+func renderXLabels(starts []time.Time, chartW int, zoom ZoomLevel, now time.Time, order dateOrder) string {
 	if chartW < 1 || len(starts) == 0 {
 		return ""
 	}
@@ -86,7 +86,7 @@ func renderXLabels(starts []time.Time, chartW int, zoom ZoomLevel, now time.Time
 		if i >= chartW {
 			break
 		}
-		label := formatXLabel(t, zoom, now)
+		label := formatXLabel(t, zoom, now, order)
 		if label == "" {
 			continue
 		}
@@ -134,26 +134,29 @@ func dateLabel(t, now time.Time, order dateOrder) string {
 }
 
 // formatXLabel returns the X-axis tick label for bucket time t at the
-// given zoom; "" if t is not on a label boundary. Cadence is clock-aligned
-// (anchored to hour / 3-hour / day marks) so positions are stable across
-// refreshes. 1h zoom uses hybrid weekday/MM-DD: weekday short ("Mon", ...)
-// for buckets within the past 7 days; "MM-DD" for older.
-func formatXLabel(t time.Time, zoom ZoomLevel, now time.Time) string {
+// given zoom; "" if t is not on a label boundary. Cadence is clock-
+// aligned (anchored to hour / 3-hour / day marks) so positions are
+// stable across refreshes. At midnight, all three zooms route through
+// dateLabel(t, now, order) for a unified day-boundary stamp.
+func formatXLabel(t time.Time, zoom ZoomLevel, now time.Time, order dateOrder) string {
 	switch zoom.Label {
 	case "5m":
 		if t.Minute() == 0 {
+			if t.Hour() == 0 {
+				return dateLabel(t, now, order)
+			}
 			return t.Format("15:04")
 		}
 	case "15m":
 		if t.Hour()%3 == 0 && t.Minute() == 0 {
+			if t.Hour() == 0 {
+				return dateLabel(t, now, order)
+			}
 			return t.Format("15:04")
 		}
 	case "1h":
 		if t.Hour() == 0 && t.Minute() == 0 {
-			if t.After(now.AddDate(0, 0, -7)) {
-				return t.Format("Mon")
-			}
-			return t.Format("01-02")
+			return dateLabel(t, now, order)
 		}
 	}
 	return ""
@@ -278,7 +281,7 @@ func heatColor(ratio float64) lipgloss.TerminalColor {
 // unit is read by the Y-label overlay path in Model.View() — not
 // used directly here; passed through for symmetry with overlayYLabel.
 func buildChart(values []float64, starts []time.Time, peak float64,
-	chartW, chartH int, now time.Time, zoom ZoomLevel, unit chartUnit) string {
+	chartW, chartH int, now time.Time, zoom ZoomLevel, unit chartUnit, order dateOrder) string {
 	_ = unit // unit is consumed by overlayYLabel in Model.View(), not by buildChart itself
 	start := time.Now()
 	if chartH < 1 {
@@ -322,7 +325,7 @@ func buildChart(values []float64, starts []time.Time, peak float64,
 	body := bc.View()
 
 	if showXLabels {
-		body = lipgloss.JoinVertical(lipgloss.Left, body, renderXLabels(starts, chartW, zoom, now))
+		body = lipgloss.JoinVertical(lipgloss.Left, body, renderXLabels(starts, chartW, zoom, now, order))
 	}
 
 	slog.Debug("tui.buildChart",

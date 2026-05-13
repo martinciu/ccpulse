@@ -163,14 +163,21 @@ type Model struct {
 	peak float64
 
 	w, h int
+
+	// dateOrder is detected once at New() from LC_TIME / LC_ALL / LANG
+	// and never mutated — locale doesn't change at runtime. Threaded
+	// through buildChart → renderXLabels → formatXLabel → dateLabel
+	// to drive the day-boundary stamp's MM/DD vs DD/MM order.
+	dateOrder dateOrder
 }
 
 func New(d Deps) Model {
 	m := Model{
-		deps:    d,
-		keys:    defaultKeyMap(),
-		help:    help.New(),
-		zoomIdx: 1, // default: 15m
+		deps:      d,
+		keys:      defaultKeyMap(),
+		help:      help.New(),
+		zoomIdx:   1, // default: 15m
+		dateOrder: detectDateOrder(),
 	}
 	m.progress = newProgressBar(40)
 	m.progress7d = newProgressBar(40)
@@ -637,7 +644,7 @@ func (m *Model) renderSpringFrame() {
 	visibleRatios := m.springRatios[start:end]
 	visibleStarts := m.lastStarts[start:end]
 	m.viewport.SetContent(buildChart(visibleRatios, visibleStarts, 1.0,
-		len(visibleRatios), chartH, time.Now(), zoom, chartUnit(m.unitIdx)))
+		len(visibleRatios), chartH, time.Now(), zoom, chartUnit(m.unitIdx), m.dateOrder))
 	m.viewport.SetXOffset(0)
 }
 
@@ -769,7 +776,7 @@ func (m *Model) refreshChart() {
 
 	chartW := len(values)
 	chartH := m.chartHeight()
-	m.viewport.SetContent(buildChart(values, starts, peak, chartW, chartH, time.Now(), zoom, unit))
+	m.viewport.SetContent(buildChart(values, starts, peak, chartW, chartH, time.Now(), zoom, unit, m.dateOrder))
 
 	// Restore the user's anchor. Three cases:
 	//   - !hadAnchor (first load, or coming back from an empty-cache
