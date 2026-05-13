@@ -2,6 +2,7 @@ package cache
 
 import (
 	"database/sql"
+	"database/sql/driver"
 	_ "embed"
 	"errors"
 	"fmt"
@@ -12,8 +13,57 @@ import (
 	"github.com/martinciu/ccpulse/pkg/anthro"
 	"github.com/martinciu/ccpulse/pkg/parse"
 	"github.com/martinciu/ccpulse/pkg/pricing"
-	_ "modernc.org/sqlite"
+	"modernc.org/sqlite"
 )
+
+// tsFormat is the canonical layout for persisting and parsing
+// messages.ts. Every reader/writer path that touches the ts column MUST
+// use this const — format drift would silently misroute rows through
+// local_day's parse, dropping counts into a phantom "" day bucket.
+const tsFormat = "2006-01-02T15:04:05.000Z07:00"
+
+// init registers a deterministic local_day(ts) SQL scalar function. It
+// projects a tsFormat-encoded UTC timestamp string into the calendar
+// day of time.Local and returns "YYYY-MM-DD" — used by the 24h zoom
+// path to bucket messages by local-tz day.
+//
+// Why not SQLite's built-in `strftime('%Y-%m-%d', ts, 'localtime')`?
+// modernc.org/sqlite's transpiled libc reads tzdata differently per
+// platform. On Darwin, libc_darwin.go:Xlocaltime calls
+// getLocalLocation() which honors Go's time.Local. On Linux, the musl
+// transpilation routes through X__secs_to_zone, which reads tzdata
+// via libc's frozen os.Environ() snapshot — completely bypassing Go's
+// time.Local. Tests that mutate time.Local therefore work on Mac and
+// silently fall back to UTC on Linux. This Go-side function reads
+// time.Local at call time, behaving identically on both platforms.
+//
+// Deterministic flag contract: time.Local is treated as a
+// process-lifetime constant outside tests. Tests that mutate it (see
+// withTimeLocal in cache_test.go) open a fresh Cache per test, so
+// SQLite's per-statement function-call dedupe never spans a mutation.
+// Any future in-process tz mutation outside tests would surface as
+// stale bucket grouping.
+//
+// Errors are returned (not silently mapped to "") so a future format
+// drift between local_day and the writer at InsertMessages fails the
+// SELECT loudly rather than silently undercounting the chart.
+func init() {
+	sqlite.MustRegisterDeterministicScalarFunction(
+		"local_day",
+		1,
+		func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+			ts, ok := args[0].(string)
+			if !ok {
+				return nil, fmt.Errorf("local_day: ts arg is %T, want string", args[0])
+			}
+			t, err := time.Parse(tsFormat, ts)
+			if err != nil {
+				return nil, fmt.Errorf("local_day: parse ts %q: %w", ts, err)
+			}
+			return t.In(time.Local).Format("2006-01-02"), nil
+		},
+	)
+}
 
 //go:embed schema.sql
 var schemaSQL string
@@ -199,7 +249,7 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 			sub = 1
 		}
 		if _, err := stmt.Exec(
-			m.SessionID, m.ProjectSlug, m.Timestamp.UTC().Format("2006-01-02T15:04:05.000Z07:00"),
+			m.SessionID, m.ProjectSlug, m.Timestamp.UTC().Format(tsFormat),
 			m.Role, m.Model,
 			m.InputTokens, m.OutputTokens, m.CacheReadTokens,
 			m.CacheWrite5mTokens, m.CacheWrite1hTokens,
@@ -284,7 +334,20 @@ func BucketAlign(t time.Time, dur time.Duration) time.Time {
 	return time.Unix((t.Unix()/s)*s, 0).UTC()
 }
 
+// DayStartLocal returns local midnight of t's calendar day in time.Local.
+// The returned value's Location() is time.Local — callers should treat it
+// as a local-tz value, not UTC. Used by the 24h zoom path for from/to
+// computation; sub-day zooms use the UTC-aligned BucketAlign above.
+func DayStartLocal(t time.Time) time.Time {
+	y, mo, d := t.In(time.Local).Date()
+	return time.Date(y, mo, d, 0, 0, 0, 0, time.Local)
+}
+
 // TokenBucket is one time-bucketed total of token usage.
+//
+// For sub-day durations (15m/1h), BucketStart is in UTC. For the 24h
+// zoom, BucketStart is in time.Local (parsed via dayStartLocal). Callers
+// rendering the value should not assume Location() == time.UTC.
 type TokenBucket struct {
 	BucketStart time.Time
 	Tokens      int64
@@ -296,6 +359,9 @@ type TokenBucket struct {
 // Empty intervals are returned with Tokens == 0; output is ordered
 // oldest-first, len = (to.Sub(from) / dur).
 func (c *Cache) TokenBuckets(dur time.Duration, from, to time.Time) ([]TokenBucket, error) {
+	if dur == 24*time.Hour {
+		return c.tokenBucketsDaily(from, to)
+	}
 	start := time.Now()
 	from = BucketAlign(from, dur)
 	to = BucketAlign(to, dur)
@@ -303,8 +369,8 @@ func (c *Cache) TokenBuckets(dur time.Duration, from, to time.Time) ([]TokenBuck
 		return nil, nil
 	}
 	bucketSecs := int64(dur.Seconds())
-	fromStr := from.UTC().Format("2006-01-02T15:04:05.000Z07:00")
-	toStr := to.UTC().Format("2006-01-02T15:04:05.000Z07:00")
+	fromStr := from.UTC().Format(tsFormat)
+	toStr := to.UTC().Format(tsFormat)
 	rows, err := c.db.Query(`
 SELECT
   CAST(CAST(strftime('%s', ts) AS INTEGER) / ? AS INTEGER) * ? AS bucket_epoch,
@@ -349,7 +415,76 @@ ORDER BY bucket_epoch ASC
 	return out, nil
 }
 
+// dailySQL is the shared 24h-zoom SQL form used by both tokenBucketsDaily
+// and costBucketsDaily, parameterised by the aggregate expression. The
+// local_day(ts) call uses the Go-registered scalar function (see init()
+// above) so day grouping honours time.Local on every platform.
+//
+// tokenBucketsDaily returns one TokenBucket per local-tz calendar day in
+// [from, to). Bucket boundaries are local midnight; SQLite groups via
+// the registered local_day(ts) function. Iteration uses AddDate(0, 0, 1)
+// so DST transitions (spring-forward 23h day, fall-back 25h day) each
+// produce exactly one bucket.
+//
+// BucketStart values are in time.Local — callers must not assume UTC.
+func (c *Cache) tokenBucketsDaily(from, to time.Time) ([]TokenBucket, error) {
+	start := time.Now()
+	from = DayStartLocal(from)
+	to = DayStartLocal(to)
+	if !to.After(from) {
+		return nil, nil
+	}
+	fromStr := from.UTC().Format(tsFormat)
+	toStr := to.UTC().Format(tsFormat)
+	rows, err := c.db.Query(`
+SELECT
+  local_day(ts) AS day,
+  SUM(input_tokens + output_tokens + cache_read_tokens
+      + cache_write_5m_tokens + cache_write_1h_tokens)
+FROM messages
+WHERE ts >= ? AND ts < ?
+GROUP BY day
+ORDER BY day ASC
+`, fromStr, toStr)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	totals := make(map[string]int64)
+	for rows.Next() {
+		var day string
+		var tokens int64
+		if err := rows.Scan(&day, &tokens); err != nil {
+			return nil, err
+		}
+		totals[day] = tokens
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// AddDate(0, 0, 1) is load-bearing: it advances by one calendar day in
+	// time.Local, producing a single bucket per DST transition day (23h or
+	// 25h). Add(24*time.Hour) would drift by one hour across each
+	// transition and mis-bucket messages near local midnight.
+	out := make([]TokenBucket, 0, int(to.Sub(from)/(24*time.Hour))+1)
+	for d := from; d.Before(to); d = d.AddDate(0, 0, 1) {
+		key := d.Format("2006-01-02")
+		out = append(out, TokenBucket{BucketStart: d, Tokens: totals[key]})
+	}
+	slog.Debug("cache.tokenBucketsDaily",
+		"dur_ms", time.Since(start).Milliseconds(),
+		"buckets", len(out),
+		"rows_aggregated", len(totals))
+	return out, nil
+}
+
 // CostBucket is one time-bucketed total of USD cost.
+//
+// For sub-day durations (15m/1h), BucketStart is in UTC. For the 24h
+// zoom, BucketStart is in time.Local (parsed via dayStartLocal). Callers
+// rendering the value should not assume Location() == time.UTC.
 type CostBucket struct {
 	BucketStart time.Time
 	Cost        float64
@@ -361,6 +496,9 @@ type CostBucket struct {
 // to their bucket because cost_usd_estimate was stored as 0 at ingest;
 // no extra WHERE clause is needed.
 func (c *Cache) CostBuckets(dur time.Duration, from, to time.Time) ([]CostBucket, error) {
+	if dur == 24*time.Hour {
+		return c.costBucketsDaily(from, to)
+	}
 	start := time.Now()
 	from = BucketAlign(from, dur)
 	to = BucketAlign(to, dur)
@@ -368,8 +506,8 @@ func (c *Cache) CostBuckets(dur time.Duration, from, to time.Time) ([]CostBucket
 		return nil, nil
 	}
 	bucketSecs := int64(dur.Seconds())
-	fromStr := from.UTC().Format("2006-01-02T15:04:05.000Z07:00")
-	toStr := to.UTC().Format("2006-01-02T15:04:05.000Z07:00")
+	fromStr := from.UTC().Format(tsFormat)
+	toStr := to.UTC().Format(tsFormat)
 	rows, err := c.db.Query(`
 SELECT
   CAST(CAST(strftime('%s', ts) AS INTEGER) / ? AS INTEGER) * ? AS bucket_epoch,
@@ -415,20 +553,71 @@ ORDER BY bucket_epoch ASC
 	return out, nil
 }
 
+// costBucketsDaily mirrors tokenBucketsDaily for SUM(cost_usd_estimate).
+// See tokenBucketsDaily docs for the local-tz / DST / iteration rationale.
+func (c *Cache) costBucketsDaily(from, to time.Time) ([]CostBucket, error) {
+	start := time.Now()
+	from = DayStartLocal(from)
+	to = DayStartLocal(to)
+	if !to.After(from) {
+		return nil, nil
+	}
+	fromStr := from.UTC().Format(tsFormat)
+	toStr := to.UTC().Format(tsFormat)
+	rows, err := c.db.Query(`
+SELECT
+  local_day(ts) AS day,
+  SUM(cost_usd_estimate)
+FROM messages
+WHERE ts >= ? AND ts < ?
+GROUP BY day
+ORDER BY day ASC
+`, fromStr, toStr)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	totals := make(map[string]float64)
+	for rows.Next() {
+		var day string
+		var cost float64
+		if err := rows.Scan(&day, &cost); err != nil {
+			return nil, err
+		}
+		totals[day] = cost
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// See tokenBucketsDaily for the AddDate(0,0,1) DST-correctness rationale.
+	out := make([]CostBucket, 0, int(to.Sub(from)/(24*time.Hour))+1)
+	for d := from; d.Before(to); d = d.AddDate(0, 0, 1) {
+		key := d.Format("2006-01-02")
+		out = append(out, CostBucket{BucketStart: d, Cost: totals[key]})
+	}
+	slog.Debug("cache.costBucketsDaily",
+		"dur_ms", time.Since(start).Milliseconds(),
+		"buckets", len(out),
+		"rows_aggregated", len(totals))
+	return out, nil
+}
+
 // zoomLabel returns the compact human label that matches pkg/tui's
-// ZoomLevels labels ("5m", "15m", "1h") for the three known zoom
+// ZoomLevels labels ("15m", "1h", "24h") for the three known zoom
 // durations. Falls back to time.Duration.String() (e.g. "5m0s") for
 // any other value. Keeps the slog "zoom" field consistent across
 // pkg/cache and pkg/tui so a single grep correlates all four perf
 // timing sites.
 func zoomLabel(d time.Duration) string {
 	switch d {
-	case 5 * time.Minute:
-		return "5m"
 	case 15 * time.Minute:
 		return "15m"
 	case time.Hour:
 		return "1h"
+	case 24 * time.Hour:
+		return "24h"
 	}
 	return d.String()
 }
@@ -444,7 +633,7 @@ func (c *Cache) EarliestMessageTime() (time.Time, bool, error) {
 	if !s.Valid {
 		return time.Time{}, false, nil
 	}
-	t, err := time.Parse("2006-01-02T15:04:05.000Z07:00", s.String)
+	t, err := time.Parse(tsFormat, s.String)
 	if err != nil {
 		return time.Time{}, false, fmt.Errorf("parse earliest ts %q: %w", s.String, err)
 	}

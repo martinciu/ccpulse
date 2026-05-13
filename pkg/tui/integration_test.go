@@ -73,8 +73,8 @@ func TestProgram_HelpOverlayRender(t *testing.T) {
 // sequence: resize -> refresh -> zoom (z) -> scroll right -> quit.
 // Verifies state holds across the message sequence end to end.
 //
-// Zoom note: ZoomLevels = [5m, 15m, 1h], initial zoomIdx = 1 (15m).
-// One 'z' press cycles to index 2 (label "1h").
+// Zoom note: ZoomLevels = [15m, 1h, 24h], initial zoomIdx = 0 (15m).
+// One 'z' press cycles to index 1 (label "1h").
 //
 // Substitution note: the spec suggests asserting on the "1h" zoom label
 // in View output, but ZoomLevels[m.zoomIdx].Label flows only into
@@ -107,8 +107,8 @@ func TestProgram_MultiStepInteraction(t *testing.T) {
 	if !ok {
 		t.Fatalf("FinalModel: expected tui.Model, got %T", final)
 	}
-	if m.zoomIdx != 2 {
-		t.Errorf("expected zoomIdx=2 (1h) after one 'z' press, got %d", m.zoomIdx)
+	if m.zoomIdx != 1 {
+		t.Errorf("expected zoomIdx=1 (1h) after one 'z' press, got %d", m.zoomIdx)
 	}
 }
 

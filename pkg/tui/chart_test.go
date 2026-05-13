@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/martinciu/ccpulse/pkg/cache"
 )
 
@@ -121,8 +122,8 @@ func BenchmarkRenderXLabels(b *testing.B) {
 // the bar chart at the chart widths the animation will hit (the
 // harmonica spring rebuilds the chart canvas each tick — see #101).
 //
-// Sizes 100/1000/5000 cover narrow/normal/wide terminals with the
-// 5m zoom (288 buckets/day; 5000 ≈ 17 days). At 60 FPS the per-frame
+// Sizes 100/1000/5000 cover narrow/normal/wide terminals with 5-min
+// spaced data (5000 ≈ 17 days). At 60 FPS the per-frame
 // budget is ~16ms; if 5000 exceeds it, the spring tick rate falls
 // back to harmonica.FPS(30) per the spec's bench-gate rule.
 func BenchmarkBarChartRender(b *testing.B) {
@@ -155,32 +156,6 @@ func itoa3(n int) string {
 	return string(buf[i:])
 }
 
-func TestBuildChart_ContainsXLabelsAndNowMarker(t *testing.T) {
-	now := time.Now().UTC().Truncate(time.Hour)
-	bs := []cache.TokenBucket{
-		{BucketStart: now.Add(-30 * time.Minute), Tokens: 1000},
-		{BucketStart: now.Add(-25 * time.Minute), Tokens: 2000},
-		{BucketStart: now.Add(-20 * time.Minute), Tokens: 1500},
-		{BucketStart: now.Add(-15 * time.Minute), Tokens: 3000},
-		{BucketStart: now.Add(-10 * time.Minute), Tokens: 2500},
-		{BucketStart: now.Add(-5 * time.Minute), Tokens: 4500},
-		{BucketStart: now, Tokens: 3500},
-	}
-	values, starts, peak := projectBuckets(bs)
-	out := buildChart(values, starts, peak, len(bs), 10, now, ZoomLevels[0], chartUnitTokens, dateOrderMonthFirst)
-	if !strings.Contains(out, "▼ now") {
-		t.Errorf("expected '▼ now' marker in chart output:\n%s", out)
-	}
-	rows := strings.Split(out, "\n")
-	if len(rows) != 10 {
-		t.Errorf("expected 10 rows (chartH), got %d", len(rows))
-	}
-	if !strings.Contains(rows[len(rows)-1], "▼ now") {
-		t.Errorf("▼ now should be on the last row:\nlast row: %q\nfull:\n%s",
-			rows[len(rows)-1], out)
-	}
-}
-
 func TestBuildChart_ChartHTooShortDropsXLabels(t *testing.T) {
 	now := time.Now().UTC().Truncate(15 * time.Minute)
 	bs := []cache.TokenBucket{
@@ -192,27 +167,9 @@ func TestBuildChart_ChartHTooShortDropsXLabels(t *testing.T) {
 	// be dropped and bars should take all 5 rows.
 	values, starts, peak := projectBuckets(bs)
 	out := buildChart(values, starts, peak, len(bs), 5, now, ZoomLevels[0], chartUnitTokens, dateOrderMonthFirst)
-	if strings.Contains(out, "▼ now") {
-		t.Errorf("expected no '▼ now' marker when chartH=5; X labels should be dropped:\n%s", out)
-	}
 	rows := strings.Split(out, "\n")
 	if len(rows) != 5 {
 		t.Errorf("expected 5 rows (chartH), got %d", len(rows))
-	}
-}
-
-func TestRenderXLabels_NowTruncatesAtTinyChartW(t *testing.T) {
-	t.Parallel()
-	now := time.Now().UTC()
-	buckets := []cache.TokenBucket{{BucketStart: now}}
-	// chartW=1 can't fit "▼ now" (5 cols); only ▼ should appear.
-	_, starts, _ := projectBuckets(buckets)
-	got := renderXLabels(starts, 1, ZoomLevels[0], now, dateOrderMonthFirst)
-	if !strings.Contains(got, "▼") {
-		t.Errorf("expected ▼ at chartW=1, got %q", got)
-	}
-	if strings.Contains(got, "▼ now") {
-		t.Errorf("expected truncated ▼ at chartW=1, not full '▼ now', got %q", got)
 	}
 }
 
@@ -259,29 +216,29 @@ func TestRenderXLabels(t *testing.T) {
 			wantEmpty: true,
 		},
 		{
-			name: "5m hour label appears and now marker at right edge",
+			name: "15m hour label appears at 3-hour boundary",
 			buckets: mkBuckets(
-				time.Date(2026, 5, 12, 14, 0, 0, 0, time.UTC),
-				time.Date(2026, 5, 12, 14, 5, 0, 0, time.UTC),
-				time.Date(2026, 5, 12, 14, 10, 0, 0, time.UTC),
-				time.Date(2026, 5, 12, 14, 15, 0, 0, time.UTC),
-				time.Date(2026, 5, 12, 14, 20, 0, 0, time.UTC),
-				time.Date(2026, 5, 12, 14, 25, 0, 0, time.UTC),
-				time.Date(2026, 5, 12, 14, 30, 0, 0, time.UTC),
+				time.Date(2026, 5, 12, 12, 0, 0, 0, time.UTC),
+				time.Date(2026, 5, 12, 12, 15, 0, 0, time.UTC),
+				time.Date(2026, 5, 12, 12, 30, 0, 0, time.UTC),
+				time.Date(2026, 5, 12, 12, 45, 0, 0, time.UTC),
+				time.Date(2026, 5, 12, 13, 0, 0, 0, time.UTC),
+				time.Date(2026, 5, 12, 13, 15, 0, 0, time.UTC),
+				time.Date(2026, 5, 12, 13, 30, 0, 0, time.UTC),
 			),
 			chartW:      20,
 			zoom:        ZoomLevels[0],
-			wantSubstrs: []string{"14:00", "▼ now"},
+			wantSubstrs: []string{"12:00"},
 		},
 		{
-			name: "1h zoom shows weekday",
+			name: "24h zoom shows weekday",
 			buckets: mkBuckets(
 				time.Date(2026, 5, 12, 0, 0, 0, 0, time.UTC),
-				time.Date(2026, 5, 12, 1, 0, 0, 0, time.UTC),
+				time.Date(2026, 5, 11, 0, 0, 0, 0, time.UTC),
 			),
 			chartW:      30,
 			zoom:        ZoomLevels[2],
-			wantSubstrs: []string{"Tue", "▼ now"},
+			wantSubstrs: []string{"Tue"},
 		},
 	}
 	for _, tt := range tests {
@@ -317,6 +274,10 @@ func TestFormatXLabel(t *testing.T) {
 	day := func(month, day int) time.Time {
 		return time.Date(2026, time.Month(month), day, 0, 0, 0, 0, time.UTC)
 	}
+	zm15 := ZoomLevels[0] // "15m"
+	z1h := ZoomLevels[1]  // "1h"
+	z24 := ZoomLevels[2]  // "24h"
+
 	tests := []struct {
 		name  string
 		t     time.Time
@@ -324,34 +285,30 @@ func TestFormatXLabel(t *testing.T) {
 		order dateOrder
 		want  string
 	}{
-		// Existing cases — non-midnight slots, both orders should match.
-		{"5m on hour MonthFirst", d(13, 0), ZoomLevels[0], dateOrderMonthFirst, "13:00"},
-		{"5m on hour DayFirst", d(13, 0), ZoomLevels[0], dateOrderDayFirst, "13:00"},
-		{"5m mid-hour 15min", d(13, 15), ZoomLevels[0], dateOrderMonthFirst, ""},
-		{"5m mid-hour 5min", d(13, 5), ZoomLevels[0], dateOrderMonthFirst, ""},
-		{"15m on 3-hour MonthFirst", d(12, 0), ZoomLevels[1], dateOrderMonthFirst, "12:00"},
-		{"15m on 3-hour DayFirst", d(12, 0), ZoomLevels[1], dateOrderDayFirst, "12:00"},
-		{"15m off-3-hour", d(13, 0), ZoomLevels[1], dateOrderMonthFirst, ""},
-		{"15m mid-window 09:00", d(9, 0), ZoomLevels[1], dateOrderMonthFirst, "09:00"},
-		{"1h today midnight Tue", day(5, 12), ZoomLevels[2], dateOrderMonthFirst, "Tue"},
-		{"1h yesterday Mon", day(5, 11), ZoomLevels[2], dateOrderMonthFirst, "Mon"},
-		{"1h 6 days ago Wed", day(5, 6), ZoomLevels[2], dateOrderMonthFirst, "Wed"},
-		// Updated: separator now '/' instead of '-' (issue #145).
-		{"1h 7 days ago MonthFirst → MM/DD", day(5, 5), ZoomLevels[2], dateOrderMonthFirst, "05/05"},
-		{"1h 7 days ago DayFirst → DD/MM (same digits)", day(5, 5), ZoomLevels[2], dateOrderDayFirst, "05/05"},
-		{"1h non-midnight returns empty", d(14, 0), ZoomLevels[2], dateOrderMonthFirst, ""},
-		// New: 5m midnight, distinct under each order.
-		{"5m midnight today recent → Tue", day(5, 12), ZoomLevels[0], dateOrderMonthFirst, "Tue"},
-		{"5m midnight yesterday recent → Mon", day(5, 11), ZoomLevels[0], dateOrderMonthFirst, "Mon"},
-		{"5m midnight 12 days ago MonthFirst → 04/30", day(4, 30), ZoomLevels[0], dateOrderMonthFirst, "04/30"},
-		{"5m midnight 12 days ago DayFirst → 30/04", day(4, 30), ZoomLevels[0], dateOrderDayFirst, "30/04"},
-		// New: 15m midnight, distinct under each order.
-		{"15m midnight today recent → Tue", day(5, 12), ZoomLevels[1], dateOrderDayFirst, "Tue"},
-		{"15m midnight 12 days ago MonthFirst → 04/30", day(4, 30), ZoomLevels[1], dateOrderMonthFirst, "04/30"},
-		{"15m midnight 12 days ago DayFirst → 30/04", day(4, 30), ZoomLevels[1], dateOrderDayFirst, "30/04"},
-		// New: 1h 12 days ago, distinct under each order.
-		{"1h 12 days ago MonthFirst → 04/30", day(4, 30), ZoomLevels[2], dateOrderMonthFirst, "04/30"},
-		{"1h 12 days ago DayFirst → 30/04", day(4, 30), ZoomLevels[2], dateOrderDayFirst, "30/04"},
+		// 15m: 3-hour cadence
+		{"15m on 3-hour MonthFirst", d(12, 0), zm15, dateOrderMonthFirst, "12:00"},
+		{"15m on 3-hour DayFirst", d(12, 0), zm15, dateOrderDayFirst, "12:00"},
+		{"15m off-3-hour", d(13, 0), zm15, dateOrderMonthFirst, ""},
+		{"15m mid-window 09:00", d(9, 0), zm15, dateOrderMonthFirst, "09:00"},
+		{"15m midnight today recent → Tue", day(5, 12), zm15, dateOrderMonthFirst, "Tue"},
+		{"15m midnight 12 days ago MonthFirst → 04/30", day(4, 30), zm15, dateOrderMonthFirst, "04/30"},
+		{"15m midnight 12 days ago DayFirst → 30/04", day(4, 30), zm15, dateOrderDayFirst, "30/04"},
+
+		// 1h: midnight-only labels
+		{"1h today midnight Tue", day(5, 12), z1h, dateOrderMonthFirst, "Tue"},
+		{"1h yesterday Mon", day(5, 11), z1h, dateOrderMonthFirst, "Mon"},
+		{"1h 6 days ago Wed", day(5, 6), z1h, dateOrderMonthFirst, "Wed"},
+		{"1h 7 days ago MonthFirst → MM/DD", day(5, 5), z1h, dateOrderMonthFirst, "05/05"},
+		{"1h 7 days ago DayFirst → DD/MM", day(5, 5), z1h, dateOrderDayFirst, "05/05"},
+		{"1h non-midnight returns empty", d(14, 0), z1h, dateOrderMonthFirst, ""},
+		{"1h 12 days ago MonthFirst → 04/30", day(4, 30), z1h, dateOrderMonthFirst, "04/30"},
+		{"1h 12 days ago DayFirst → 30/04", day(4, 30), z1h, dateOrderDayFirst, "30/04"},
+
+		// 24h: every bucket labelled (no midnight gate)
+		{"24h today recent → Tue", day(5, 12), z24, dateOrderMonthFirst, "Tue"},
+		{"24h yesterday recent → Mon", day(5, 11), z24, dateOrderMonthFirst, "Mon"},
+		{"24h 12 days ago MonthFirst → 04/30", day(4, 30), z24, dateOrderMonthFirst, "04/30"},
+		{"24h 12 days ago DayFirst → 30/04", day(4, 30), z24, dateOrderDayFirst, "30/04"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -567,6 +524,293 @@ func TestFormatUnitValue(t *testing.T) {
 			got := formatUnitValue(tt.v, tt.unit)
 			if got != tt.want {
 				t.Errorf("formatUnitValue(%v, %v) = %q, want %q", tt.v, tt.unit, got, tt.want)
+			}
+		})
+	}
+}
+
+// stripANSIForTest removes lipgloss/ANSI escape sequences. Tests assert
+// against visible content only — coloring is verified elsewhere.
+func stripANSIForTest(s string) string {
+	return ansi.Strip(s)
+}
+
+func TestRenderXLabels_24h_PerBarLabel(t *testing.T) {
+	t.Parallel()
+	// Make "now" a Tuesday 14:30 UTC; older buckets get date labels.
+	now := time.Date(2026, 5, 12, 14, 30, 0, 0, time.UTC)
+	day := func(month, d int) time.Time {
+		return time.Date(2026, time.Month(month), d, 0, 0, 0, 0, time.UTC)
+	}
+	starts := []time.Time{
+		day(4, 30), // 12 days ago → date
+		day(5, 1),  // 11 days ago → date
+		day(5, 11), // yesterday → "Mon"
+		day(5, 12), // today → "Tue"
+	}
+	zoom := ZoomLevels[2] // 24h
+	chartW := zoom.CanvasWidth(len(starts))
+	got := renderXLabels(starts, chartW, zoom, now, dateOrderMonthFirst)
+
+	stripped := stripANSIForTest(got)
+
+	// Every bar gets a label, centered in its BarWidth-cols slot at
+	// col = i*(BarWidth+BarGap) + (BarWidth-labelW)/2. Bars stride by
+	// BarWidth+BarGap; the gap stays blank between them.
+	wantLabels := []string{"04/30", "05/01", "Mon", "Tue"}
+	stride := zoom.BarWidth + zoom.BarGap
+	for slot, want := range wantLabels {
+		col := slot*stride + (zoom.BarWidth-len(want))/2
+		if col+len(want) > len(stripped) {
+			t.Fatalf("slot %d: col %d + %d > len(stripped)=%d; output=%q",
+				slot, col, len(want), len(stripped), stripped)
+		}
+		if got := stripped[col : col+len(want)]; got != want {
+			t.Errorf("slot %d: at col %d expected %q, got %q\nfull: %q",
+				slot, col, want, got, stripped)
+		}
+	}
+}
+
+func TestZoomLevels_Shape(t *testing.T) {
+	t.Parallel()
+	if len(ZoomLevels) != 3 {
+		t.Fatalf("expected 3 zoom levels, got %d", len(ZoomLevels))
+	}
+	want := []ZoomLevel{
+		{"15m", 15 * time.Minute, 1, 0},
+		{"1h", time.Hour, 1, 0},
+		{"24h", 24 * time.Hour, 10, 2},
+	}
+	for i, w := range want {
+		got := ZoomLevels[i]
+		if got != w {
+			t.Errorf("ZoomLevels[%d] = %+v, want %+v", i, got, w)
+		}
+	}
+}
+
+func TestZoomLevels_BarWidthPositive(t *testing.T) {
+	t.Parallel()
+	for i, z := range ZoomLevels {
+		if z.BarWidth < 1 {
+			t.Errorf("ZoomLevels[%d].BarWidth = %d, want >= 1", i, z.BarWidth)
+		}
+	}
+}
+
+// TestZoomLevel_CanvasWidth_Defensive locks in CanvasWidth's own clamp
+// contract: BarWidth is treated as ≥1 and BarGap as ≥0 even when the
+// ZoomLevel literal is degenerate. The mirrored per-bar invariant
+// (stride ≥1) used by renderXLabels, model.visibleBuckets, and
+// model.setX is covered separately by TestZoomLevel_Stride_Defensive.
+// This test fails loudly if anyone removes CanvasWidth's max() guards.
+func TestZoomLevel_CanvasWidth_Defensive(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		zoom ZoomLevel
+		n    int
+		want int
+	}{
+		{"zero buckets", ZoomLevel{BarWidth: 10, BarGap: 2}, 0, 0},
+		{"negative buckets", ZoomLevel{BarWidth: 10, BarGap: 2}, -1, 0},
+		{"one bucket has no gap term", ZoomLevel{BarWidth: 10, BarGap: 2}, 1, 10},
+		{"two buckets adds one gap", ZoomLevel{BarWidth: 10, BarGap: 2}, 2, 22},
+		{"24h shape: 4 bars", ZoomLevel{BarWidth: 10, BarGap: 2}, 4, 46},
+		{"negative BarGap clamped to 0", ZoomLevel{BarWidth: 5, BarGap: -3}, 4, 20},
+		{"zero BarWidth clamped to 1", ZoomLevel{BarWidth: 0, BarGap: 2}, 3, 7},
+		{"negative BarWidth clamped to 1", ZoomLevel{BarWidth: -5, BarGap: 0}, 3, 3},
+		{"both negative still well-defined", ZoomLevel{BarWidth: -5, BarGap: -10}, 3, 3},
+		// The exact panic case the commit message calls out: stride
+		// would drop to 0 without the clamp at the per-bar sites.
+		{"BarGap negates BarWidth", ZoomLevel{BarWidth: 10, BarGap: -10}, 3, 30},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tt.zoom.CanvasWidth(tt.n); got != tt.want {
+				t.Errorf("CanvasWidth(%d) on %+v = %d, want %d",
+					tt.n, tt.zoom, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestZoomLevel_Stride_Defensive locks in stride()'s clamp contract:
+// stride is always ≥1 regardless of ZoomLevel inputs. The three per-bar
+// sites (renderXLabels, model.visibleBuckets, model.setX) route through
+// stride(), so removing this guard re-introduces the integer-divide
+// panic class flagged in the original safety review.
+func TestZoomLevel_Stride_Defensive(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		zoom ZoomLevel
+		want int
+	}{
+		{"15m shape", ZoomLevel{BarWidth: 1, BarGap: 0}, 1},
+		{"24h shape", ZoomLevel{BarWidth: 10, BarGap: 2}, 12},
+		{"zero BarWidth clamped to 1", ZoomLevel{BarWidth: 0, BarGap: 0}, 1},
+		{"negative BarWidth clamped to 1", ZoomLevel{BarWidth: -5, BarGap: 2}, 3},
+		{"negative BarGap clamped to 0", ZoomLevel{BarWidth: 5, BarGap: -3}, 5},
+		// The exact panic case: without the BarGap clamp, stride would
+		// be 10 + (-10) = 0 and visibleBuckets would divide by zero.
+		{"BarGap negates BarWidth (panic-class guard)", ZoomLevel{BarWidth: 10, BarGap: -10}, 10},
+		{"both negative", ZoomLevel{BarWidth: -5, BarGap: -10}, 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := tt.zoom.stride()
+			if got != tt.want {
+				t.Errorf("stride() on %+v = %d, want %d", tt.zoom, got, tt.want)
+			}
+			if got < 1 {
+				t.Errorf("stride() returned %d, must be ≥ 1 to avoid div-by-zero", got)
+			}
+		})
+	}
+}
+
+// TestBuildChart_24h_CanvasWidth verifies that a 24h-zoom call with
+// canvasW = zoom.CanvasWidth(n) produces output rows of exactly that
+// width. Exercises WithBarWidth + WithBarGap so ntcharts neither
+// auto-expands bars nor swallows the inter-bar gap.
+func TestBuildChart_24h_CanvasWidth(t *testing.T) {
+	t.Parallel()
+	zoom := ZoomLevels[2] // 24h
+	now := time.Date(2024, 5, 7, 12, 0, 0, 0, time.UTC)
+	n := 4
+	values := make([]float64, n)
+	starts := make([]time.Time, n)
+	for i := range values {
+		values[i] = float64((i + 1) * 100)
+		starts[i] = now.AddDate(0, 0, i-3)
+	}
+	peak := values[n-1]
+	canvasW := zoom.CanvasWidth(n)
+	out := buildChart(values, starts, peak, canvasW, 10, now, zoom, chartUnitTokens, dateOrderMonthFirst)
+	rows := strings.Split(out, "\n")
+	if len(rows) != 10 {
+		t.Fatalf("expected 10 rows, got %d", len(rows))
+	}
+	for i, row := range rows {
+		w := lipgloss.Width(row)
+		if w != canvasW {
+			t.Errorf("row %d: visual width=%d, want %d\n  %q", i, w, canvasW, row)
+		}
+	}
+}
+
+func TestComputeSpringSlice(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name           string
+		start          int
+		prevLongest    int
+		vpWidth        int
+		stride         int
+		wantSlice      int
+		wantSpringXOff int
+	}{
+		{
+			name:           "start=0 unclamped",
+			start:          0,
+			prevLongest:    4318,
+			vpWidth:        120,
+			stride:         12,
+			wantSlice:      0,
+			wantSpringXOff: 0,
+		},
+		{
+			name:           "mid-scroll unclamped",
+			start:          200,
+			prevLongest:    4318,
+			vpWidth:        120,
+			stride:         12,
+			wantSlice:      200,
+			wantSpringXOff: 0,
+		},
+		{
+			name:           "pinned-right slack in gap",
+			start:          350,
+			prevLongest:    4318,
+			vpWidth:        120,
+			stride:         12,
+			wantSlice:      349,
+			wantSpringXOff: 10,
+		},
+		{
+			name:           "pinned-right slack in bar (terminal 130)",
+			start:          350,
+			prevLongest:    4318,
+			vpWidth:        128,
+			stride:         12,
+			wantSlice:      349,
+			wantSpringXOff: 2,
+		},
+		{
+			name:           "canvas fits in viewport, start=0",
+			start:          0,
+			prevLongest:    60,
+			vpWidth:        120,
+			stride:         12,
+			wantSlice:      0,
+			wantSpringXOff: 0,
+		},
+		{
+			// Critical: exercises the defensive springXOff < 0 clamp.
+			// Without the clamp, springXOff would be:
+			//   desiredXOffset = 5*12 = 60
+			//   actualXOffset = min(60, max(0, 60-120)) = min(60, 0) = 0
+			//   sliceStart = 4, springXOff = 0 - 4*12 = -48
+			name:           "canvas fits in viewport, start=5 (negative-pre-clamp path)",
+			start:          5,
+			prevLongest:    60,
+			vpWidth:        120,
+			stride:         12,
+			wantSlice:      4,
+			wantSpringXOff: 0,
+		},
+		{
+			// start=1, tiny canvas: desiredXOffset = 1*12 = 12,
+			// actualXOffset = min(12, max(0, 14*12-120)) = min(12, max(0,-6)) = min(12,0) = 0.
+			// 0 < 12, so the if-branch fires: sliceStart = 0/12 = 0,
+			// springXOff = 0 - 0*12 = 0. The pre-clamp value is already 0,
+			// so the defensive springXOff < 0 clamp is NOT exercised here.
+			name:           "start=1 sliceStart drops to zero (if-branch arithmetic)",
+			start:          1,
+			prevLongest:    14,
+			vpWidth:        120,
+			stride:         12,
+			wantSlice:      0,
+			wantSpringXOff: 0,
+		},
+		{
+			// stride=1 (matches 15m/1h zoom shape: BarWidth=1, BarGap=0).
+			// desiredXOffset = 50*1 = 50,
+			// actualXOffset = min(50, max(0, 200*1-80)) = min(50, 120) = 50.
+			// 50 == 50, so the if-branch does NOT fire: sliceStart = 50,
+			// springXOff = 50 - 50*1 = 0.
+			name:           "stride=1 mid-scroll (15m/1h zoom shape)",
+			start:          50,
+			prevLongest:    200,
+			vpWidth:        80,
+			stride:         1,
+			wantSlice:      50,
+			wantSpringXOff: 0,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			gotSlice, gotXOff := computeSpringSlice(tt.start, tt.prevLongest, tt.vpWidth, tt.stride)
+			if gotSlice != tt.wantSlice {
+				t.Errorf("sliceStart = %d, want %d", gotSlice, tt.wantSlice)
+			}
+			if gotXOff != tt.wantSpringXOff {
+				t.Errorf("springXOff = %d, want %d", gotXOff, tt.wantSpringXOff)
 			}
 		})
 	}

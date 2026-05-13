@@ -12,19 +12,84 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// ZoomLevel maps a human label to a bucket duration. The chart's
-// horizontal extent is no longer per-zoom — it spans from the earliest
-// cached message to "now" at every zoom (see issue #53).
+// ZoomLevel maps a human label to a bucket duration and visual layout
+// parameters. The chart's horizontal extent is no longer per-zoom — it
+// spans from the earliest cached message to "now" at every zoom (see
+// issue #53).
+//
+// BarWidth is the column count each bar occupies. BarGap is the empty
+// column count between adjacent bars (no trailing gap after the last
+// bar). The X-axis label slot is BarWidth cols, positioned over the
+// bar itself (gaps stay blank). Tuning either is a single edit in
+// ZoomLevels.
 type ZoomLevel struct {
 	Label    string
 	Duration time.Duration
+	BarWidth int
+	BarGap   int
+}
+
+// CanvasWidth returns the total column count to render n bars at this
+// zoom: n*BarWidth + (n-1)*BarGap. Returns 0 for n<=0. Shared by
+// buildChart's caller (model.refreshChart) and the spring-frame path.
+//
+// BarWidth is clamped to ≥1 and BarGap to ≥0 so degenerate ZoomLevels
+// values (typos, future tuning slips) can't produce a negative or
+// stride-zero layout downstream — see stride() for the matching
+// per-bar invariant used by renderXLabels, model.visibleBuckets,
+// and model.setX.
+func (z ZoomLevel) CanvasWidth(n int) int {
+	if n <= 0 {
+		return 0
+	}
+	return n*max(z.BarWidth, 1) + (n-1)*max(z.BarGap, 0)
+}
+
+// stride returns the per-bar column distance: BarWidth + BarGap with
+// both terms defensively clamped (BarWidth≥1, BarGap≥0) so callers
+// can divide by stride without a panic. Bar i starts at column
+// i*stride; the bar itself occupies cols [i*stride, i*stride+BarWidth).
+//
+// Single source of truth for the per-bar invariant: any in-package
+// site that converts bucket-index → column count routes through this.
+// Renaming/removing this helper without updating all callers risks
+// re-introducing the integer-divide panic class.
+func (z ZoomLevel) stride() int {
+	return max(z.BarWidth, 1) + max(z.BarGap, 0)
 }
 
 // ZoomLevels are the available zoom steps, cycled with the z key.
+// Order matters: pkg/tui/model.go indexes by position (zoomIdx).
 var ZoomLevels = []ZoomLevel{
-	{"5m", 5 * time.Minute},
-	{"15m", 15 * time.Minute},
-	{"1h", time.Hour},
+	{"15m", 15 * time.Minute, 1, 0},
+	{"1h", time.Hour, 1, 0},
+	{"24h", 24 * time.Hour, 10, 2},
+}
+
+// computeSpringSlice returns the slice start (bucket-index) and viewport
+// xOffset (column-index) used by renderSpringFrame to reproduce the
+// pre-spring viewport position. Pre-spring's viewport.SetXOffset(K*stride)
+// is clamped to longestLineWidth-vpWidth at the right edge; when that
+// clamp doesn't align to a stride boundary, the spring canvas must
+// include bucket [start-1] as a leading bar and offset into it by the
+// slack so the partial-bar / gap content matches.
+//
+// Defensive: springXOff is clamped to ≥0 so a future degenerate state
+// (e.g. prevLongest < vpWidth mid-animation due to data shrinking)
+// cannot produce a negative offset that downstream callers would have
+// to handle.
+func computeSpringSlice(start, prevLongest, vpWidth, stride int) (sliceStart, springXOff int) {
+	desiredXOffset := start * stride
+	actualXOffset := min(desiredXOffset, max(0, prevLongest-vpWidth))
+	sliceStart = start
+	if start >= 1 && actualXOffset < desiredXOffset {
+		sliceStart = start - 1
+		springXOff = actualXOffset - sliceStart*stride
+	}
+	if springXOff < 0 {
+		springXOff = 0
+	}
+	return sliceStart, springXOff
 }
 
 // overlayYLabel splices `formatUnitValue(niceFloorFloat(peak), unit)` in
@@ -67,49 +132,44 @@ func overlayYLabel(body string, peak float64, unit chartUnit, chartH int, fade f
 }
 
 // renderXLabels returns a 1-row string of width chartW containing
-// clock-aligned tick labels placed at matching bucket columns, with
-// "▼ now" right-aligned at the rightmost columns (always wins on
-// collision). Later labels overwrite earlier ones; labels that would
-// overflow chartW on the right are dropped. Empty starts → "".
-// colorMuted foreground throughout — Y axis labels are default fg so the eye
-// distinguishes the two rows when they sit close together.
+// clock-aligned tick labels placed over each bucket's bar. Bar i starts
+// at column i*(BarWidth+BarGap); the label is centered inside the bar
+// itself (gaps stay blank). For BarWidth=1 / BarGap=0 the centering
+// math falls back to col (labelW ≥ 3 > 1, so (1-labelW)/2 < 0). Labels
+// that would overflow chartW on the right are dropped. Empty starts → "".
+// colorMuted foreground throughout — Y axis labels are default fg so
+// the eye distinguishes the two rows when they sit close.
 func renderXLabels(starts []time.Time, chartW int, zoom ZoomLevel, now time.Time, order dateOrder) string {
 	if chartW < 1 || len(starts) == 0 {
 		return ""
 	}
+	bw := max(zoom.BarWidth, 1)
+	stride := zoom.stride()
 	row := make([]rune, chartW)
 	for i := range row {
 		row[i] = ' '
 	}
 
 	for i, t := range starts {
-		if i >= chartW {
+		col := i * stride
+		if col >= chartW {
 			break
 		}
 		label := formatXLabel(t, zoom, now, order)
 		if label == "" {
 			continue
 		}
-		labelRunes := []rune(label)
-		if i+lipgloss.Width(label) > chartW {
+		labelW := lipgloss.Width(label)
+		start := col + (bw-labelW)/2
+		if start < 0 {
+			start = col
+		}
+		if start+labelW > chartW {
 			continue
 		}
-		for j, r := range labelRunes {
-			row[i+j] = r
-		}
-	}
-
-	const nowText = "▼ now"
-	nowRunes := []rune(nowText)
-	nowW := lipgloss.Width(nowText)
-	switch {
-	case nowW <= chartW:
-		start := chartW - nowW
-		for j, r := range nowRunes {
+		for j, r := range []rune(label) {
 			row[start+j] = r
 		}
-	case chartW >= 1:
-		row[chartW-1] = '▼'
 	}
 
 	return dimStyle.Render(string(row))
@@ -140,17 +200,11 @@ func dateLabel(t, now time.Time, order dateOrder) string {
 // formatXLabel returns the X-axis tick label for bucket time t at the
 // given zoom; "" if t is not on a label boundary. Cadence is clock-
 // aligned (anchored to hour / 3-hour / day marks) so positions are
-// stable across refreshes. At midnight, all three zooms route through
-// dateLabel(t, now, order) for a unified day-boundary stamp.
+// stable across refreshes. At midnight, the 15m/1h zooms route through
+// dateLabel(t, now, order) for a unified day-boundary stamp. At 24h,
+// every bucket is a midnight so dateLabel runs unconditionally.
 func formatXLabel(t time.Time, zoom ZoomLevel, now time.Time, order dateOrder) string {
 	switch zoom.Label {
-	case "5m":
-		if t.Minute() == 0 {
-			if t.Hour() == 0 {
-				return dateLabel(t, now, order)
-			}
-			return t.Format("15:04")
-		}
 	case "15m":
 		if t.Hour()%3 == 0 && t.Minute() == 0 {
 			if t.Hour() == 0 {
@@ -162,6 +216,8 @@ func formatXLabel(t time.Time, zoom ZoomLevel, now time.Time, order dateOrder) s
 		if t.Hour() == 0 && t.Minute() == 0 {
 			return dateLabel(t, now, order)
 		}
+	case "24h":
+		return dateLabel(t, now, order)
 	}
 	return ""
 }
@@ -320,9 +376,11 @@ func buildChart(values []float64, starts []time.Time, peak float64,
 		maxValue = 1 // ntcharts requires non-zero max; bars will all be empty anyway
 	}
 	bc := barchart.New(chartW, barsH,
-		barchart.WithBarGap(0),
+		barchart.WithBarGap(zoom.BarGap),
 		barchart.WithNoAxis(),
 		barchart.WithMaxValue(maxValue),
+		barchart.WithNoAutoBarWidth(),
+		barchart.WithBarWidth(zoom.BarWidth),
 	)
 	bc.PushAll(bars)
 	bc.Draw()

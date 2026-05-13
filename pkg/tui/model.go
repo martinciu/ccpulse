@@ -176,7 +176,7 @@ func New(d Deps) Model {
 		deps:      d,
 		keys:      defaultKeyMap(),
 		help:      help.New(),
-		zoomIdx:   1, // default: 15m
+		zoomIdx:   0, // default: 15m
 		dateOrder: detectDateOrder(),
 	}
 	m.progress = newProgressBar(40)
@@ -618,14 +618,15 @@ func (m *Model) beginUnitAnimation() {
 // bars are invisible anyway; their final positions are committed on
 // settle via the steady-state refreshChart call.
 //
-// Sets viewport.XOffset = 0 because the canvas is now exactly viewport-
-// wide; settle's refreshChart restores the full-canvas + XOffset state.
+// Sets viewport.XOffset = 0 because the windowed canvas is rendered
+// starting at slice col 0; the leadingPad below shifts content to
+// match the pre-spring viewport position.
 func (m *Model) renderSpringFrame() {
 	if len(m.springRatios) == 0 {
 		return
 	}
 	zoom := ZoomLevels[m.zoomIdx]
-	chartW := m.chartWidth()
+	nv := m.visibleBuckets()
 	chartH := m.chartHeight()
 
 	// Clamp the window to the actual ratios slice.
@@ -633,7 +634,7 @@ func (m *Model) renderSpringFrame() {
 	if start < 0 {
 		start = 0
 	}
-	end := start + chartW
+	end := start + nv
 	if end > len(m.springRatios) {
 		end = len(m.springRatios)
 	}
@@ -641,22 +642,40 @@ func (m *Model) renderSpringFrame() {
 		return
 	}
 
-	visibleRatios := m.springRatios[start:end]
-	visibleStarts := m.lastStarts[start:end]
+	// Pre-spring viewport.SetXOffset(K*stride) gets clamped to
+	// longestLineWidth-Width at the right edge whenever K*stride exceeds
+	// the canvas right edge. When the canvas right edge doesn't sit on a
+	// stride boundary (24h has BarGap=2 and viewport width is rarely a
+	// multiple of 12), the leading slack lands either in the gap before
+	// bucket K (visible as 1–2 blank cols) or mid-way through bucket K-1
+	// (visible as a partial bar at the left). Either way, the windowed
+	// spring canvas must reproduce that leading content so the user
+	// doesn't see a "jump left" or a vanishing partial bar on the
+	// steady-state ↔ spring transition. Include bucket [start-1] as a
+	// leading bar and offset into it by the same slack the viewport
+	// would have shown pre-spring.
+	stride := zoom.stride()
+	prevLongest := zoom.CanvasWidth(len(m.lastValues))
+	sliceStart, springXOff := computeSpringSlice(start, prevLongest, m.viewport.Width, stride)
+
+	visibleRatios := m.springRatios[sliceStart:end]
+	visibleStarts := m.lastStarts[sliceStart:end]
 	m.viewport.SetContent(buildChart(visibleRatios, visibleStarts, 1.0,
-		len(visibleRatios), chartH, time.Now(), zoom, chartUnit(m.unitIdx), m.dateOrder))
-	m.viewport.SetXOffset(0)
+		zoom.CanvasWidth(len(visibleRatios)), chartH, time.Now(), zoom, chartUnit(m.unitIdx), m.dateOrder))
+	m.viewport.SetXOffset(springXOff)
 }
 
 // setX is the single point of entry for changing the viewport's horizontal
-// scroll position. Clamps to the legal range against the latest lastStarts
-// length and chartWidth, then mirrors into the shadow. The viewport's own
-// SetXOffset also clamps internally; we clamp first so the shadow stays
-// truthful even if the library's clamp behaviour ever changes.
+// scroll position. n is a bucket index (not a column count); setX clamps
+// it against lastStarts and visibleBuckets, then multiplies by the per-
+// bar stride (BarWidth+BarGap, defensively clamped to ≥1) when
+// delegating to viewport.SetXOffset (which is column-indexed). The
+// shadow viewportXOffset stays in bucket-index space.
 func (m *Model) setX(n int) {
-	maxX := max(0, len(m.lastStarts)-m.chartWidth())
+	stride := ZoomLevels[m.zoomIdx].stride()
+	maxX := max(0, len(m.lastStarts)-m.visibleBuckets())
 	n = min(max(n, 0), maxX)
-	m.viewport.SetXOffset(n)
+	m.viewport.SetXOffset(n * stride)
 	m.viewportXOffset = n
 }
 
@@ -696,7 +715,7 @@ func (m *Model) refreshChart() {
 		wasPinned  bool
 	)
 	if len(m.lastStarts) > 0 {
-		prevMax := max(0, len(m.lastStarts)-m.chartWidth())
+		prevMax := max(0, len(m.lastStarts)-m.visibleBuckets())
 		wasPinned = m.viewportXOffset >= prevMax
 		if !wasPinned && m.viewportXOffset < len(m.lastStarts) {
 			anchorTime = m.lastStarts[m.viewportXOffset]
@@ -707,7 +726,13 @@ func (m *Model) refreshChart() {
 	zoom := ZoomLevels[m.zoomIdx]
 	// Right edge = the END of the bucket containing now, so the bucket
 	// itself is included in the half-open [from, to) window.
-	to := cache.BucketAlign(time.Now(), zoom.Duration).Add(zoom.Duration)
+	// 24h zoom uses local-midnight boundaries (DST-correct via AddDate).
+	var to time.Time
+	if zoom.Duration == 24*time.Hour {
+		to = cache.DayStartLocal(time.Now()).AddDate(0, 0, 1)
+	} else {
+		to = cache.BucketAlign(time.Now(), zoom.Duration).Add(zoom.Duration)
+	}
 
 	earliest, ok, err := m.deps.Cache.EarliestMessageTime()
 	if err != nil || !ok {
@@ -719,7 +744,12 @@ func (m *Model) refreshChart() {
 		return
 	}
 
-	from := cache.BucketAlign(earliest, zoom.Duration)
+	var from time.Time
+	if zoom.Duration == 24*time.Hour {
+		from = cache.DayStartLocal(earliest)
+	} else {
+		from = cache.BucketAlign(earliest, zoom.Duration)
+	}
 
 	var (
 		values []float64
@@ -774,9 +804,9 @@ func (m *Model) refreshChart() {
 	m.lastValues = values
 	m.lastStarts = starts
 
-	chartW := len(values)
+	canvasW := zoom.CanvasWidth(len(values))
 	chartH := m.chartHeight()
-	m.viewport.SetContent(buildChart(values, starts, peak, chartW, chartH, time.Now(), zoom, unit, m.dateOrder))
+	m.viewport.SetContent(buildChart(values, starts, peak, canvasW, chartH, time.Now(), zoom, unit, m.dateOrder))
 
 	// Restore the user's anchor. Three cases:
 	//   - !hadAnchor (first load, or coming back from an empty-cache
@@ -784,14 +814,20 @@ func (m *Model) refreshChart() {
 	//   - wasPinned: user was at "now", keep them at "now" against the
 	//     new right edge.
 	//   - else: translate the snapshotted anchor to its bucket index in
-	//     the new grid. BucketAlign(anchorTime, zoom.Duration) lands on
-	//     a bucket boundary; sort.Search finds the index of that boundary
-	//     in lastStarts. setX clamps if the cache shrank unexpectedly.
+	//     the new grid. For 24h zoom, DayStartLocal aligns to local
+	//     midnight; for sub-day zooms, BucketAlign uses UTC boundaries.
+	//     sort.Search finds the matching index in lastStarts. setX clamps
+	//     if the cache shrank unexpectedly.
 	switch {
 	case !hadAnchor, wasPinned:
-		m.setX(chartW)
+		m.setX(len(values))
 	default:
-		target := cache.BucketAlign(anchorTime, zoom.Duration)
+		var target time.Time
+		if zoom.Duration == 24*time.Hour {
+			target = cache.DayStartLocal(anchorTime)
+		} else {
+			target = cache.BucketAlign(anchorTime, zoom.Duration)
+		}
 		idx := sort.Search(len(m.lastStarts), func(i int) bool {
 			return !m.lastStarts[i].Before(target)
 		})
@@ -839,6 +875,27 @@ func (m Model) chartWidth() int {
 		return 10
 	}
 	return w
+}
+
+// visibleBuckets returns how many whole bars fit in the viewport at the
+// active zoom's BarWidth+BarGap layout. Bucket-indexed throughout: 1
+// unit = 1 bar. Derived from: n bars fit iff n*BarWidth + (n-1)*BarGap
+// <= chartWidth(), so n <= (chartWidth + BarGap) / (BarWidth + BarGap).
+// Floors at 1 so the chart never collapses to zero visible bars when
+// BarWidth > chartWidth() (degenerate terminal width).
+//
+// BarWidth is clamped to ≥1 and BarGap to ≥0 so stride is always ≥1 —
+// guards against a stride-zero divide panic if a future ZoomLevels
+// literal sets BarGap = -BarWidth.
+func (m Model) visibleBuckets() int {
+	z := ZoomLevels[m.zoomIdx]
+	stride := z.stride()
+	gap := max(z.BarGap, 0)
+	v := (m.chartWidth() + gap) / stride
+	if v < 1 {
+		return 1
+	}
+	return v
 }
 
 // chartHeight returns the available rows for the chart, leaving room for

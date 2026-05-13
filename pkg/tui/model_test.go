@@ -654,7 +654,7 @@ func TestRefreshChart_FromEarliest(t *testing.T) {
 	// message (aligned to the active zoom's bucket boundary) up to "now".
 	// We verify this by inserting a single message ~3 hours ago and
 	// confirming TokenBuckets returns at least the matching number of
-	// 15m buckets at zoom index 1 (15m bucket / no Lookback).
+	// 15m buckets at zoom index 0 (15m zoom, the default).
 	c, err := cache.Open(filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -674,7 +674,7 @@ func TestRefreshChart_FromEarliest(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	zoom := ZoomLevels[1] // 15m
+	zoom := ZoomLevels[0] // 15m
 	to := cache.BucketAlign(now, zoom.Duration).Add(zoom.Duration)
 	from := cache.BucketAlign(earliest, zoom.Duration)
 	wantMin := int(to.Sub(from)/zoom.Duration) - 1 // tolerate ±1 bucket on boundary
@@ -1457,13 +1457,13 @@ func TestScrollHelpers_UpdateShadowOffset(t *testing.T) {
 }
 
 // seedScrollTestModel builds a Model + Cache pair seeded with `count`
-// messages spaced 5 minutes apart ending now. With count=500 the cache
-// spans ~41h, which at 5m zoom (zoomIdx=0) produces ~500 buckets vs
-// chartWidth=118 at w=120 — plenty of scroll room. At 15m zoom the same
-// cache produces ~167 buckets, still overflowing chartWidth=118, so the
+// messages spaced 15 minutes apart ending now. With count=500 the cache
+// spans ~125h, which at 15m zoom (zoomIdx=0) produces ~500 buckets vs
+// chartWidth=118 at w=120 — plenty of scroll room. At 1h zoom the same
+// cache produces ~125 buckets, still overflowing chartWidth=118, so the
 // zoom-translation subtest also has somewhere to scroll.
 //
-// Returns the Model with chartWidth=118 (w=120) and zoom=5m (zoomIdx=0).
+// Returns the Model with chartWidth=118 (w=120) and zoom=15m (zoomIdx=0).
 // Caller is responsible for cache.Close via the returned cleanup.
 func seedScrollTestModel(t *testing.T, count int) (*Model, func()) {
 	t.Helper()
@@ -1476,14 +1476,14 @@ func seedScrollTestModel(t *testing.T, count int) (*Model, func()) {
 		c.Close()
 		t.Fatal(err)
 	}
-	now := time.Now().UTC().Truncate(5 * time.Minute)
+	now := time.Now().UTC().Truncate(15 * time.Minute)
 	msgs := make([]parse.Message, count)
 	for i := range msgs {
 		msgs[i] = parse.Message{
 			SessionID:   "s1",
 			ProjectSlug: "p",
 			Model:       "claude-opus-4-7",
-			Timestamp:   now.Add(time.Duration(-i*5) * time.Minute),
+			Timestamp:   now.Add(time.Duration(-i*15) * time.Minute),
 			InputTokens: int64(1000 + i*10),
 		}
 	}
@@ -1493,7 +1493,7 @@ func seedScrollTestModel(t *testing.T, count int) (*Model, func()) {
 	}
 	m := New(Deps{Cache: c})
 	m.w, m.h = 120, 40
-	m.zoomIdx = 0 // 5m zoom: count messages → ~count buckets, overflows chartWidth=118
+	m.zoomIdx = 0 // 15m zoom: count messages → ~count buckets, overflows chartWidth=118
 	m.viewport.Width = m.chartWidth()
 	m.viewport.Height = m.chartHeight()
 	m.refreshChart()
@@ -1523,11 +1523,11 @@ func TestRefreshChart_PreservesWallClockAnchor(t *testing.T) {
 	//
 	// Scroll amount and count are chosen so the anchor index remains
 	// within maxX after every trigger:
-	//   - count=500, zoomIdx=0 (5m): ~500 buckets, maxX≈382 at w=120
-	//   - scrollLeft(250): offset≈132, safely mid-chart
-	//   - after zoom to 15m: ~167 buckets, maxX≈49; BucketAlign(anchor,15m)
-	//     lands near now−(132×5m)=~11h ago, well within the 15m grid
-	//   - after resize w=160: chartWidth=158, maxX≈342; offset 132 < 342
+	//   - count=700, zoomIdx=0 (15m): ~700 buckets, maxX≈582 at w=120
+	//   - scrollLeft(450): offset≈132, safely mid-chart
+	//   - after zoom to 1h: ~175 buckets, maxX≈57; BucketAlign(anchor,1h)
+	//     lands near now−(568×15m)=~142h ago, well within the 1h grid
+	//   - after resize w=160: chartWidth=158, maxX≈542; offset 132 < 542
 	tests := []struct {
 		name        string
 		startPinned bool
@@ -1553,7 +1553,7 @@ func TestRefreshChart_PreservesWallClockAnchor(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			m, cleanup := seedScrollTestModel(t, 500)
+			m, cleanup := seedScrollTestModel(t, 700)
 			defer cleanup()
 
 			// Set up scroll precondition.
@@ -1564,11 +1564,12 @@ func TestRefreshChart_PreservesWallClockAnchor(t *testing.T) {
 					t.Fatalf("setup: expected pinned-right, got viewportXOffset=%d", m.viewportXOffset)
 				}
 			} else {
-				// Scroll left to a mid-chart position. Use 250 steps so the
-				// anchor (≈132 buckets from left at 5m) remains within maxX
-				// at every post-trigger zoom/size — including after zoom to
-				// 15m (maxX≈49) and resize to w=160 (maxX≈342).
-				m.scrollLeft(250)
+				// Scroll left to a mid-chart position. Use 450 steps so the
+				// anchor (≈132 buckets from left at 15m = ~142h ago) remains
+				// within maxX at every post-trigger zoom/size — including after
+				// zoom to 1h (maxX≈57, anchor at pos≈33) and resize to w=160
+				// (maxX≈542).
+				m.scrollLeft(450)
 				if m.viewportXOffset == 0 || m.viewportXOffset == max(0, len(m.lastStarts)-m.chartWidth()) {
 					t.Fatalf("setup: scroll should land mid-chart, got viewportXOffset=%d", m.viewportXOffset)
 				}
@@ -1618,6 +1619,53 @@ func TestRefreshChart_PreservesScroll_Issue134(t *testing.T) {
 	got := m.lastStarts[m.viewportXOffset]
 	if !got.Equal(anchorTime) {
 		t.Errorf("anchor drifted across refresh: %v → %v", anchorTime, got)
+	}
+}
+
+// TestRefreshChart_ScrollAnchorAcrossZooms verifies the 24h zoom path:
+// - tokenBucketsDaily returns day-aligned buckets (~24h apart)
+// - the anchor is preserved across a subsequent refreshChart in 24h zoom
+//
+// Seeds 40 days of data (40*24*4=3840 15m-spaced messages) so that 24h
+// zoom produces ~40 buckets with scroll room beyond visibleBuckets_24h=23.
+func TestRefreshChart_ScrollAnchorAcrossZooms(t *testing.T) {
+	const days = 40
+	m, cleanup := seedScrollTestModel(t, days*24*4)
+	defer cleanup()
+
+	// Switch to 24h zoom and rebuild.
+	m.zoomIdx = 2
+	m.refreshChart()
+
+	if len(m.lastStarts) == 0 {
+		t.Fatal("24h zoom: lastStarts empty")
+	}
+
+	// Each bucket must start exactly one local calendar day after the
+	// previous (23h≤gap≤25h covers DST spring/fall transitions).
+	for i := 1; i < len(m.lastStarts); i++ {
+		gap := m.lastStarts[i].Sub(m.lastStarts[i-1])
+		if gap < 23*time.Hour || gap > 25*time.Hour {
+			t.Errorf("bucket[%d] gap = %v, want 23h–25h (local day)", i, gap)
+		}
+	}
+
+	// Scroll to a mid-chart position and verify anchor persists across refresh.
+	nv := m.visibleBuckets()
+	if len(m.lastStarts) <= nv {
+		t.Skipf("not enough 24h buckets for scroll room: %d ≤ visibleBuckets %d", len(m.lastStarts), nv)
+	}
+	m.scrollLeft(5)
+	if m.viewportXOffset == 0 {
+		t.Fatal("scrollLeft(5) did not move; no scroll room")
+	}
+	anchorTime := m.lastStarts[m.viewportXOffset]
+
+	m.refreshChart()
+
+	got := m.lastStarts[m.viewportXOffset]
+	if !got.Equal(anchorTime) {
+		t.Errorf("anchor drifted at 24h zoom across refresh: %v → %v", anchorTime, got)
 	}
 }
 
@@ -2089,5 +2137,159 @@ func TestLabelFade_MidAnimationBinding(t *testing.T) {
 			t.Errorf("labelFadeStyle(%v).Render matches labelFadeStyle(1.0); expected distinct styling",
 				fade)
 		}
+	}
+}
+
+func TestVisibleBuckets_24hAtTinyWidths(t *testing.T) {
+	t.Parallel()
+	// 24h has BarWidth=10. chartWidth() floors at 10, so visibleBuckets
+	// is at least 1 at any terminal width. This guards the
+	// "never collapse to zero visible bars" invariant.
+	m := Model{w: 12, zoomIdx: 2} // chartWidth() = 10; 10/10 = 1
+	if got := m.visibleBuckets(); got != 1 {
+		t.Errorf("visibleBuckets w=12 24h = %d, want 1", got)
+	}
+
+	m = Model{w: 6, zoomIdx: 2} // chartWidth floors at 10; 10/10 = 1
+	if got := m.visibleBuckets(); got != 1 {
+		t.Errorf("visibleBuckets tiny w 24h = %d, want 1", got)
+	}
+}
+
+func TestVisibleBuckets_BarWidthOne(t *testing.T) {
+	t.Parallel()
+	m := Model{w: 22, zoomIdx: 0} // 15m, BarWidth=1; chartWidth() = 20
+	if got := m.visibleBuckets(); got != 20 {
+		t.Errorf("visibleBuckets w=22 15m = %d, want 20", got)
+	}
+}
+
+// TestRenderSpringFrame_MatchesPreSpringBoundary asserts that
+// renderSpringFrame with identity ratios (springRatios[i] = lastValues[i] /
+// peak) produces a viewport.View() that matches the pre-spring viewport
+// content set up by buildChart + setX at the same scroll position.
+//
+// At 24h zoom (BarGap=2, BarWidth=10, stride=12) the canvas right edge is
+// rarely a stride-multiple, so viewport.SetXOffset is clamped by the
+// longestLineWidth-Width boundary. The tested widths were chosen to exercise
+// the three slack variants that caused bugs before commit fa365d8:
+//
+//	w=122 → slack=2 (leading gap between buckets)
+//	w=130 → slack=10 (leading partial bar)
+//	w=131 → slack=11 (mostly-consumed partial bar)
+func TestRenderSpringFrame_MatchesPreSpringBoundary(t *testing.T) {
+	t.Parallel()
+	const (
+		N       = 60  // number of 24h buckets
+		zoomIdx = 2   // 24h zoom: BarWidth=10, BarGap=2, stride=12
+		chartH  = 20  // representative chart height
+	)
+
+	zoom := ZoomLevels[zoomIdx]
+
+	// Build deterministic synthetic values: bucket i gets value (i+1)*100,
+	// so peak = N*100 and every bucket has a non-zero distinct height.
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	lastValues := make([]float64, N)
+	lastStarts := make([]time.Time, N)
+	var peak float64
+	for i := range N {
+		lastValues[i] = float64((i + 1) * 100)
+		lastStarts[i] = now.AddDate(0, 0, i)
+		if lastValues[i] > peak {
+			peak = lastValues[i]
+		}
+	}
+
+	cases := []struct {
+		name       string
+		w          int
+		wantSlack  int // expected leading blank cols in pre-spring view
+	}{
+		{name: "slack=2_leading_gap", w: 122},
+		{name: "slack=10_partial_bar", w: 130},
+		{name: "slack=11_mostly_partial", w: 131},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			// ── Build model fields (no cache needed) ──────────────────────────
+			m := New(Deps{}) // deps.Cache = nil; we set fields manually
+			m.w = tc.w
+			m.h = chartH + 7 // chartHeight() = h-7, so h = chartH+7
+			m.zoomIdx = zoomIdx
+			m.viewport.Width = m.chartWidth()
+			m.viewport.Height = m.chartHeight()
+
+			m.peak = peak
+			m.lastValues = append([]float64(nil), lastValues...)
+			m.lastStarts = append([]time.Time(nil), lastStarts...)
+
+			// ── Pre-spring viewport: exactly what refreshChart produces ────────
+			// refreshChart calls buildChart on the full canvas then setX(len(values))
+			// which pins to the right edge.
+			canvasW := zoom.CanvasWidth(N)
+			m.viewport.SetContent(buildChart(
+				m.lastValues, m.lastStarts, peak,
+				canvasW, m.chartHeight(), now, zoom, chartUnitTokens, dateOrderMonthFirst,
+			))
+			m.setX(len(m.lastValues)) // pins to right edge
+
+			preSpringView := m.viewport.View()
+
+			// Sanity: pre-spring view must not be all-blank — we seeded real data.
+			if strings.TrimSpace(stripANSIForTest(preSpringView)) == "" {
+				t.Fatalf("pre-spring viewport unexpectedly blank (setup error?)")
+			}
+
+			// ── Spring setup: identity ratios (old values / peak) ─────────────
+			// springActive must be true so renderSpringFrame doesn't early-return.
+			// springXOffset is the viewportXOffset (the pinned-right bucket index).
+			n := len(m.lastValues)
+			m.springRatios = make([]float64, n)
+			for i := range n {
+				m.springRatios[i] = m.lastValues[i] / peak
+			}
+			m.springActive = true
+			m.springXOffset = m.viewportXOffset // shadow set by setX
+
+			// ── Spring frame ──────────────────────────────────────────────────
+			m.renderSpringFrame()
+			springView := m.viewport.View()
+
+			// ── Assert equality (ANSI-stripped, per-line, full bar rows) ────
+			// Skip the last row: it's the X-label row, which both pre-spring
+			// and spring compute via formatXLabel(bucket, zoom, time.Now(), …).
+			// Pre-spring uses the `now` constant above; renderSpringFrame
+			// calls time.Now() internally. The two timestamps are close but
+			// not identical, so day-boundary edge cases (weekday vs. MM/DD)
+			// can legitimately differ by one label format. The invariant we're
+			// locking is bar-height alignment, not X-label text.
+			preLines := strings.Split(stripANSIForTest(preSpringView), "\n")
+			sprLines := strings.Split(stripANSIForTest(springView), "\n")
+
+			if len(preLines) != len(sprLines) {
+				t.Fatalf("line count mismatch: pre-spring=%d spring=%d", len(preLines), len(sprLines))
+			}
+
+			// Bar rows are all rows except the last (X-labels).
+			barRowCount := len(preLines) - 1
+			if barRowCount < 1 {
+				t.Fatalf("no bar rows to compare (chartH too small?)")
+			}
+
+			// Compare each bar row in full. The bug class shifts every bar by
+			// a full stride; truncation isn't needed to catch it, and byte-
+			// slicing multi-byte UTF-8 block runes (█, ▄, etc.) is unsafe.
+			for i := range barRowCount {
+				pre := strings.TrimRight(preLines[i], " ")
+				spr := strings.TrimRight(sprLines[i], " ")
+				if pre != spr {
+					t.Errorf("subtest %s: bar row %d mismatch\n pre: %q\nspring: %q",
+						tc.name, i, pre, spr)
+				}
+			}
+		})
 	}
 }
