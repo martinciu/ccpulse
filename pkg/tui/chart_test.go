@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/martinciu/ccpulse/pkg/cache"
 )
 
@@ -259,25 +260,25 @@ func TestRenderXLabels(t *testing.T) {
 			wantEmpty: true,
 		},
 		{
-			name: "5m hour label appears and now marker at right edge",
+			name: "15m hour label appears and now marker at right edge",
 			buckets: mkBuckets(
-				time.Date(2026, 5, 12, 14, 0, 0, 0, time.UTC),
-				time.Date(2026, 5, 12, 14, 5, 0, 0, time.UTC),
-				time.Date(2026, 5, 12, 14, 10, 0, 0, time.UTC),
-				time.Date(2026, 5, 12, 14, 15, 0, 0, time.UTC),
-				time.Date(2026, 5, 12, 14, 20, 0, 0, time.UTC),
-				time.Date(2026, 5, 12, 14, 25, 0, 0, time.UTC),
-				time.Date(2026, 5, 12, 14, 30, 0, 0, time.UTC),
+				time.Date(2026, 5, 12, 12, 0, 0, 0, time.UTC),
+				time.Date(2026, 5, 12, 12, 15, 0, 0, time.UTC),
+				time.Date(2026, 5, 12, 12, 30, 0, 0, time.UTC),
+				time.Date(2026, 5, 12, 12, 45, 0, 0, time.UTC),
+				time.Date(2026, 5, 12, 13, 0, 0, 0, time.UTC),
+				time.Date(2026, 5, 12, 13, 15, 0, 0, time.UTC),
+				time.Date(2026, 5, 12, 13, 30, 0, 0, time.UTC),
 			),
 			chartW:      20,
 			zoom:        ZoomLevels[0],
-			wantSubstrs: []string{"14:00", "▼ now"},
+			wantSubstrs: []string{"12:00", "▼ now"},
 		},
 		{
-			name: "1h zoom shows weekday",
+			name: "24h zoom shows weekday",
 			buckets: mkBuckets(
 				time.Date(2026, 5, 12, 0, 0, 0, 0, time.UTC),
-				time.Date(2026, 5, 12, 1, 0, 0, 0, time.UTC),
+				time.Date(2026, 5, 11, 0, 0, 0, 0, time.UTC),
 			),
 			chartW:      30,
 			zoom:        ZoomLevels[2],
@@ -569,6 +570,45 @@ func TestFormatUnitValue(t *testing.T) {
 				t.Errorf("formatUnitValue(%v, %v) = %q, want %q", tt.v, tt.unit, got, tt.want)
 			}
 		})
+	}
+}
+
+// stripANSIForTest removes lipgloss/ANSI escape sequences. Tests assert
+// against visible content only — coloring is verified elsewhere.
+func stripANSIForTest(s string) string {
+	return ansi.Strip(s)
+}
+
+func TestRenderXLabels_24h_PerBarLabel(t *testing.T) {
+	t.Parallel()
+	// Make "now" a Tuesday 14:30 UTC; older buckets get date labels.
+	now := time.Date(2026, 5, 12, 14, 30, 0, 0, time.UTC)
+	day := func(month, d int) time.Time {
+		return time.Date(2026, time.Month(month), d, 0, 0, 0, 0, time.UTC)
+	}
+	starts := []time.Time{
+		day(4, 30), // 12 days ago → date
+		day(5, 1),  // 11 days ago → date
+		day(5, 11), // yesterday → "Mon"
+		day(5, 12), // today → "Tue"
+	}
+	zoom := ZoomLevels[2] // 24h, BarWidth=5
+	chartW := len(starts) * zoom.BarWidth // 20
+	got := renderXLabels(starts, chartW, zoom, now, dateOrderMonthFirst)
+
+	// Strip ANSI to test content/positioning.
+	stripped := stripANSIForTest(got)
+
+	// Each bar is 5 cols wide; date labels are exactly 5 chars so they
+	// fill their slot. Weekday labels are 3 chars centered → 1-col pad
+	// on each side. "▼ now" always wins on collision — it overwrites the
+	// rightmost bucket's label — so we check only the first three slots.
+	wantPrefix := "04/3005/01 Mon "
+	if !strings.HasPrefix(stripped, wantPrefix) {
+		t.Errorf("rendered prefix = %q, want prefix %q", stripped, wantPrefix)
+	}
+	if !strings.Contains(stripped, "▼ now") {
+		t.Errorf("expected '▼ now' in output, got %q", stripped)
 	}
 }
 

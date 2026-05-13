@@ -74,13 +74,19 @@ func overlayYLabel(body string, peak float64, unit chartUnit, chartH int, fade f
 // renderXLabels returns a 1-row string of width chartW containing
 // clock-aligned tick labels placed at matching bucket columns, with
 // "▼ now" right-aligned at the rightmost columns (always wins on
-// collision). Later labels overwrite earlier ones; labels that would
-// overflow chartW on the right are dropped. Empty starts → "".
-// colorMuted foreground throughout — Y axis labels are default fg so the eye
-// distinguishes the two rows when they sit close together.
+// collision). Each label is centered inside its bar's slot at
+// column i*BarWidth + (BarWidth-labelW)/2. For BarWidth=1 the centering
+// math falls back to col (labelW ≥ 3 > 1, so (1-labelW)/2 < 0).
+// Labels that would overflow chartW on the right are dropped. Empty
+// starts → "". colorMuted foreground throughout — Y axis labels are
+// default fg so the eye distinguishes the two rows when they sit close.
 func renderXLabels(starts []time.Time, chartW int, zoom ZoomLevel, now time.Time, order dateOrder) string {
 	if chartW < 1 || len(starts) == 0 {
 		return ""
+	}
+	bw := zoom.BarWidth
+	if bw < 1 {
+		bw = 1
 	}
 	row := make([]rune, chartW)
 	for i := range row {
@@ -88,19 +94,24 @@ func renderXLabels(starts []time.Time, chartW int, zoom ZoomLevel, now time.Time
 	}
 
 	for i, t := range starts {
-		if i >= chartW {
+		col := i * bw
+		if col >= chartW {
 			break
 		}
 		label := formatXLabel(t, zoom, now, order)
 		if label == "" {
 			continue
 		}
-		labelRunes := []rune(label)
-		if i+lipgloss.Width(label) > chartW {
+		labelW := lipgloss.Width(label)
+		start := col + (bw-labelW)/2
+		if start < 0 {
+			start = col
+		}
+		if start+labelW > chartW {
 			continue
 		}
-		for j, r := range labelRunes {
-			row[i+j] = r
+		for j, r := range []rune(label) {
+			row[start+j] = r
 		}
 	}
 
