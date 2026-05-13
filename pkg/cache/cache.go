@@ -284,6 +284,15 @@ func BucketAlign(t time.Time, dur time.Duration) time.Time {
 	return time.Unix((t.Unix()/s)*s, 0).UTC()
 }
 
+// dayStartLocal returns local midnight of t's calendar day in time.Local.
+// The returned value's Location() is time.Local — callers should treat it
+// as a local-tz value, not UTC. Used only by the 24h zoom path; sub-day
+// zooms continue to use the UTC-aligned BucketAlign above.
+func dayStartLocal(t time.Time) time.Time {
+	y, mo, d := t.In(time.Local).Date()
+	return time.Date(y, mo, d, 0, 0, 0, 0, time.Local)
+}
+
 // TokenBucket is one time-bucketed total of token usage.
 type TokenBucket struct {
 	BucketStart time.Time

@@ -984,6 +984,28 @@ func TestInsertMessages_PersistsCwdAndGitBranch(t *testing.T) {
 	}
 }
 
+func TestDayStartLocal(t *testing.T) {
+	prev := time.Local
+	loc, err := time.LoadLocation("Europe/Berlin")
+	if err != nil {
+		t.Fatalf("load tz: %v", err)
+	}
+	time.Local = loc
+	t.Cleanup(func() { time.Local = prev })
+
+	// 2026-05-13T22:00:00Z is 2026-05-14T00:00:00 CEST.
+	in := time.Date(2026, 5, 13, 22, 0, 0, 0, time.UTC)
+	got := dayStartLocal(in)
+
+	wantInstant := time.Date(2026, 5, 14, 0, 0, 0, 0, loc)
+	if !got.Equal(wantInstant) {
+		t.Errorf("dayStartLocal(%v) = %v, want %v", in, got, wantInstant)
+	}
+	if got.Location() != time.Local {
+		t.Errorf("dayStartLocal Location() = %v, want time.Local", got.Location())
+	}
+}
+
 func TestZoomLabel_DefaultFallback(t *testing.T) {
 	if got := zoomLabel(30 * time.Minute); got != "30m0s" {
 		t.Errorf("zoomLabel(30m) = %q, want %q (default fallback)", got, "30m0s")
