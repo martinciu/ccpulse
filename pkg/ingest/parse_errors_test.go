@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/martinciu/ccpulse/pkg/logfile"
 	"github.com/martinciu/ccpulse/pkg/parse"
 )
 
@@ -113,12 +114,12 @@ func TestAppendParseErrors_OpensLogOncePerCall(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "parse-errors.log")
 	var n int64
-	prev := openLogFile
-	openLogFile = func(path string) (*os.File, error) {
+	prev := logfile.OpenLogFile
+	logfile.OpenLogFile = func(path string) (*os.File, error) {
 		atomic.AddInt64(&n, 1)
 		return prev(path)
 	}
-	defer func() { openLogFile = prev }()
+	defer func() { logfile.OpenLogFile = prev }()
 
 	perrs := make([]parse.ParseError, 10)
 	for i := range perrs {
