@@ -284,11 +284,11 @@ func BucketAlign(t time.Time, dur time.Duration) time.Time {
 	return time.Unix((t.Unix()/s)*s, 0).UTC()
 }
 
-// dayStartLocal returns local midnight of t's calendar day in time.Local.
+// DayStartLocal returns local midnight of t's calendar day in time.Local.
 // The returned value's Location() is time.Local — callers should treat it
-// as a local-tz value, not UTC. Used only by the 24h zoom path; sub-day
-// zooms continue to use the UTC-aligned BucketAlign above.
-func dayStartLocal(t time.Time) time.Time {
+// as a local-tz value, not UTC. Used by the 24h zoom path for from/to
+// computation; sub-day zooms use the UTC-aligned BucketAlign above.
+func DayStartLocal(t time.Time) time.Time {
 	y, mo, d := t.In(time.Local).Date()
 	return time.Date(y, mo, d, 0, 0, 0, 0, time.Local)
 }
@@ -374,8 +374,8 @@ ORDER BY bucket_epoch ASC
 // BucketStart values are in time.Local — callers must not assume UTC.
 func (c *Cache) tokenBucketsDaily(from, to time.Time) ([]TokenBucket, error) {
 	start := time.Now()
-	from = dayStartLocal(from)
-	to = dayStartLocal(to)
+	from = DayStartLocal(from)
+	to = DayStartLocal(to)
 	if !to.After(from) {
 		return nil, nil
 	}
@@ -498,8 +498,8 @@ ORDER BY bucket_epoch ASC
 // See tokenBucketsDaily docs for the local-tz / DST / iteration rationale.
 func (c *Cache) costBucketsDaily(from, to time.Time) ([]CostBucket, error) {
 	start := time.Now()
-	from = dayStartLocal(from)
-	to = dayStartLocal(to)
+	from = DayStartLocal(from)
+	to = DayStartLocal(to)
 	if !to.After(from) {
 		return nil, nil
 	}

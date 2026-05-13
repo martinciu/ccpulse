@@ -1622,6 +1622,53 @@ func TestRefreshChart_PreservesScroll_Issue134(t *testing.T) {
 	}
 }
 
+// TestRefreshChart_ScrollAnchorAcrossZooms verifies the 24h zoom path:
+// - tokenBucketsDaily returns day-aligned buckets (~24h apart)
+// - the anchor is preserved across a subsequent refreshChart in 24h zoom
+//
+// Seeds 40 days of data (40*24*4=3840 15m-spaced messages) so that 24h
+// zoom produces ~40 buckets with scroll room beyond visibleBuckets_24h=23.
+func TestRefreshChart_ScrollAnchorAcrossZooms(t *testing.T) {
+	const days = 40
+	m, cleanup := seedScrollTestModel(t, days*24*4)
+	defer cleanup()
+
+	// Switch to 24h zoom and rebuild.
+	m.zoomIdx = 2
+	m.refreshChart()
+
+	if len(m.lastStarts) == 0 {
+		t.Fatal("24h zoom: lastStarts empty")
+	}
+
+	// Each bucket must start exactly one local calendar day after the
+	// previous (23h≤gap≤25h covers DST spring/fall transitions).
+	for i := 1; i < len(m.lastStarts); i++ {
+		gap := m.lastStarts[i].Sub(m.lastStarts[i-1])
+		if gap < 23*time.Hour || gap > 25*time.Hour {
+			t.Errorf("bucket[%d] gap = %v, want 23h–25h (local day)", i, gap)
+		}
+	}
+
+	// Scroll to a mid-chart position and verify anchor persists across refresh.
+	nv := m.visibleBuckets()
+	if len(m.lastStarts) <= nv {
+		t.Skipf("not enough 24h buckets for scroll room: %d ≤ visibleBuckets %d", len(m.lastStarts), nv)
+	}
+	m.scrollLeft(5)
+	if m.viewportXOffset == 0 {
+		t.Fatal("scrollLeft(5) did not move; no scroll room")
+	}
+	anchorTime := m.lastStarts[m.viewportXOffset]
+
+	m.refreshChart()
+
+	got := m.lastStarts[m.viewportXOffset]
+	if !got.Equal(anchorTime) {
+		t.Errorf("anchor drifted at 24h zoom across refresh: %v → %v", anchorTime, got)
+	}
+}
+
 func TestView_CostModeRendersDollarPrefix(t *testing.T) {
 	// End-to-end check that flipping unitIdx to cost causes the rendered
 	// View() to contain a "$"-prefixed Y label. Guards the path

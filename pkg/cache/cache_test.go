@@ -1007,11 +1007,11 @@ func TestDayStartLocal(t *testing.T) {
 	withTimeLocal(t, "Europe/Berlin")
 
 	in := time.Date(2026, 5, 13, 22, 0, 0, 0, time.UTC)
-	got := dayStartLocal(in)
+	got := DayStartLocal(in)
 
 	wantInstant := time.Date(2026, 5, 14, 0, 0, 0, 0, time.Local)
 	if !got.Equal(wantInstant) {
-		t.Errorf("dayStartLocal(%v) = %v, want %v", in, got, wantInstant)
+		t.Errorf("DayStartLocal(%v) = %v, want %v", in, got, wantInstant)
 	}
 	if got.Location() != time.Local {
 		t.Errorf("dayStartLocal Location() = %v, want time.Local", got.Location())
@@ -1053,8 +1053,8 @@ func TestTokenBuckets_24h_LocalAlignment(t *testing.T) {
 	insertMessage(t, c, time.Date(2026, 5, 13, 22, 0, 0, 0, time.UTC), 200)
 	insertMessage(t, c, time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC), 300)
 
-	from := dayStartLocal(time.Date(2026, 5, 13, 0, 0, 0, 0, time.Local))
-	to := dayStartLocal(time.Date(2026, 5, 15, 0, 0, 0, 0, time.Local))
+	from := DayStartLocal(time.Date(2026, 5, 13, 0, 0, 0, 0, time.Local))
+	to := DayStartLocal(time.Date(2026, 5, 15, 0, 0, 0, 0, time.Local))
 	buckets, err := c.TokenBuckets(24*time.Hour, from, to)
 	if err != nil {
 		t.Fatal(err)
@@ -1083,8 +1083,8 @@ func TestTokenBuckets_24h_EmptyDays(t *testing.T) {
 
 	insertMessage(t, c, time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC), 100)
 
-	from := dayStartLocal(time.Date(2026, 5, 13, 0, 0, 0, 0, time.Local))
-	to := dayStartLocal(time.Date(2026, 5, 16, 0, 0, 0, 0, time.Local))
+	from := DayStartLocal(time.Date(2026, 5, 13, 0, 0, 0, 0, time.Local))
+	to := DayStartLocal(time.Date(2026, 5, 16, 0, 0, 0, 0, time.Local))
 	buckets, err := c.TokenBuckets(24*time.Hour, from, to)
 	if err != nil {
 		t.Fatal(err)
@@ -1109,8 +1109,8 @@ func TestTokenBuckets_24h_UTCFallback(t *testing.T) {
 	insertMessage(t, c, time.Date(2026, 5, 13, 23, 59, 0, 0, time.UTC), 100)
 	insertMessage(t, c, time.Date(2026, 5, 14, 0, 1, 0, 0, time.UTC), 200)
 
-	from := dayStartLocal(time.Date(2026, 5, 13, 0, 0, 0, 0, time.Local))
-	to := dayStartLocal(time.Date(2026, 5, 15, 0, 0, 0, 0, time.Local))
+	from := DayStartLocal(time.Date(2026, 5, 13, 0, 0, 0, 0, time.Local))
+	to := DayStartLocal(time.Date(2026, 5, 15, 0, 0, 0, 0, time.Local))
 	buckets, err := c.TokenBuckets(24*time.Hour, from, to)
 	if err != nil {
 		t.Fatal(err)
@@ -1143,8 +1143,8 @@ func TestTokenBuckets_24h_DST_SpringForward(t *testing.T) {
 	// This one belongs to 2026-03-30 local (00:00 CEST).
 	insertMessage(t, c, time.Date(2026, 3, 29, 22, 0, 0, 0, time.UTC), 999)
 
-	from := dayStartLocal(time.Date(2026, 3, 29, 0, 0, 0, 0, time.Local))
-	to := dayStartLocal(time.Date(2026, 3, 31, 0, 0, 0, 0, time.Local))
+	from := DayStartLocal(time.Date(2026, 3, 29, 0, 0, 0, 0, time.Local))
+	to := DayStartLocal(time.Date(2026, 3, 31, 0, 0, 0, 0, time.Local))
 	buckets, err := c.TokenBuckets(24*time.Hour, from, to)
 	if err != nil {
 		t.Fatal(err)
@@ -1181,8 +1181,8 @@ func TestTokenBuckets_24h_DST_FallBack(t *testing.T) {
 	// Next day:
 	insertMessage(t, c, time.Date(2026, 10, 25, 23, 0, 0, 0, time.UTC), 999)
 
-	from := dayStartLocal(time.Date(2026, 10, 25, 0, 0, 0, 0, time.Local))
-	to := dayStartLocal(time.Date(2026, 10, 27, 0, 0, 0, 0, time.Local))
+	from := DayStartLocal(time.Date(2026, 10, 25, 0, 0, 0, 0, time.Local))
+	to := DayStartLocal(time.Date(2026, 10, 27, 0, 0, 0, 0, time.Local))
 	buckets, err := c.TokenBuckets(24*time.Hour, from, to)
 	if err != nil {
 		t.Fatal(err)
@@ -1211,8 +1211,8 @@ func TestTokenBuckets_24h_HalfHourOffsetTz(t *testing.T) {
 	insertMessage(t, c, time.Date(2026, 5, 13, 18, 29, 0, 0, time.UTC), 100)
 	insertMessage(t, c, time.Date(2026, 5, 13, 18, 30, 0, 0, time.UTC), 200)
 
-	from := dayStartLocal(time.Date(2026, 5, 13, 0, 0, 0, 0, time.Local))
-	to := dayStartLocal(time.Date(2026, 5, 15, 0, 0, 0, 0, time.Local))
+	from := DayStartLocal(time.Date(2026, 5, 13, 0, 0, 0, 0, time.Local))
+	to := DayStartLocal(time.Date(2026, 5, 15, 0, 0, 0, 0, time.Local))
 	buckets, err := c.TokenBuckets(24*time.Hour, from, to)
 	if err != nil {
 		t.Fatal(err)
@@ -1251,8 +1251,8 @@ func TestCostBuckets_24h_LocalAlignment(t *testing.T) {
 	insertMessageCost(t, c, time.Date(2026, 5, 13, 22, 0, 0, 0, time.UTC), 2.50)
 	insertMessageCost(t, c, time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC), 0.50)
 
-	from := dayStartLocal(time.Date(2026, 5, 13, 0, 0, 0, 0, time.Local))
-	to := dayStartLocal(time.Date(2026, 5, 15, 0, 0, 0, 0, time.Local))
+	from := DayStartLocal(time.Date(2026, 5, 13, 0, 0, 0, 0, time.Local))
+	to := DayStartLocal(time.Date(2026, 5, 15, 0, 0, 0, 0, time.Local))
 	buckets, err := c.CostBuckets(24*time.Hour, from, to)
 	if err != nil {
 		t.Fatal(err)
@@ -1284,8 +1284,8 @@ func TestCostBuckets_24h_DST_SpringForward(t *testing.T) {
 		insertMessageCost(t, c, ts, 1.0)
 	}
 
-	from := dayStartLocal(time.Date(2026, 3, 29, 0, 0, 0, 0, time.Local))
-	to := dayStartLocal(time.Date(2026, 3, 30, 0, 0, 0, 0, time.Local))
+	from := DayStartLocal(time.Date(2026, 3, 29, 0, 0, 0, 0, time.Local))
+	to := DayStartLocal(time.Date(2026, 3, 30, 0, 0, 0, 0, time.Local))
 	buckets, err := c.CostBuckets(24*time.Hour, from, to)
 	if err != nil {
 		t.Fatal(err)

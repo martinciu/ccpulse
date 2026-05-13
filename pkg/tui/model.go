@@ -176,7 +176,7 @@ func New(d Deps) Model {
 		deps:      d,
 		keys:      defaultKeyMap(),
 		help:      help.New(),
-		zoomIdx:   1, // default: 15m
+		zoomIdx:   0, // default: 15m
 		dateOrder: detectDateOrder(),
 	}
 	m.progress = newProgressBar(40)
@@ -625,7 +625,8 @@ func (m *Model) renderSpringFrame() {
 		return
 	}
 	zoom := ZoomLevels[m.zoomIdx]
-	chartW := m.chartWidth()
+	nv := m.visibleBuckets()
+	bw := zoom.BarWidth
 	chartH := m.chartHeight()
 
 	// Clamp the window to the actual ratios slice.
@@ -633,7 +634,7 @@ func (m *Model) renderSpringFrame() {
 	if start < 0 {
 		start = 0
 	}
-	end := start + chartW
+	end := start + nv
 	if end > len(m.springRatios) {
 		end = len(m.springRatios)
 	}
@@ -644,7 +645,7 @@ func (m *Model) renderSpringFrame() {
 	visibleRatios := m.springRatios[start:end]
 	visibleStarts := m.lastStarts[start:end]
 	m.viewport.SetContent(buildChart(visibleRatios, visibleStarts, 1.0,
-		len(visibleRatios), chartH, time.Now(), zoom, chartUnit(m.unitIdx), m.dateOrder))
+		len(visibleRatios)*bw, chartH, time.Now(), zoom, chartUnit(m.unitIdx), m.dateOrder))
 	m.viewport.SetXOffset(0)
 }
 
@@ -697,7 +698,7 @@ func (m *Model) refreshChart() {
 		wasPinned  bool
 	)
 	if len(m.lastStarts) > 0 {
-		prevMax := max(0, len(m.lastStarts)-m.chartWidth())
+		prevMax := max(0, len(m.lastStarts)-m.visibleBuckets())
 		wasPinned = m.viewportXOffset >= prevMax
 		if !wasPinned && m.viewportXOffset < len(m.lastStarts) {
 			anchorTime = m.lastStarts[m.viewportXOffset]
@@ -708,7 +709,13 @@ func (m *Model) refreshChart() {
 	zoom := ZoomLevels[m.zoomIdx]
 	// Right edge = the END of the bucket containing now, so the bucket
 	// itself is included in the half-open [from, to) window.
-	to := cache.BucketAlign(time.Now(), zoom.Duration).Add(zoom.Duration)
+	// 24h zoom uses local-midnight boundaries (DST-correct via AddDate).
+	var to time.Time
+	if zoom.Duration == 24*time.Hour {
+		to = cache.DayStartLocal(time.Now()).AddDate(0, 0, 1)
+	} else {
+		to = cache.BucketAlign(time.Now(), zoom.Duration).Add(zoom.Duration)
+	}
 
 	earliest, ok, err := m.deps.Cache.EarliestMessageTime()
 	if err != nil || !ok {
@@ -720,7 +727,12 @@ func (m *Model) refreshChart() {
 		return
 	}
 
-	from := cache.BucketAlign(earliest, zoom.Duration)
+	var from time.Time
+	if zoom.Duration == 24*time.Hour {
+		from = cache.DayStartLocal(earliest)
+	} else {
+		from = cache.BucketAlign(earliest, zoom.Duration)
+	}
 
 	var (
 		values []float64
@@ -775,9 +787,10 @@ func (m *Model) refreshChart() {
 	m.lastValues = values
 	m.lastStarts = starts
 
-	chartW := len(values)
+	numBuckets := len(values)
+	canvasW := numBuckets * zoom.BarWidth
 	chartH := m.chartHeight()
-	m.viewport.SetContent(buildChart(values, starts, peak, chartW, chartH, time.Now(), zoom, unit, m.dateOrder))
+	m.viewport.SetContent(buildChart(values, starts, peak, canvasW, chartH, time.Now(), zoom, unit, m.dateOrder))
 
 	// Restore the user's anchor. Three cases:
 	//   - !hadAnchor (first load, or coming back from an empty-cache
@@ -785,14 +798,20 @@ func (m *Model) refreshChart() {
 	//   - wasPinned: user was at "now", keep them at "now" against the
 	//     new right edge.
 	//   - else: translate the snapshotted anchor to its bucket index in
-	//     the new grid. BucketAlign(anchorTime, zoom.Duration) lands on
-	//     a bucket boundary; sort.Search finds the index of that boundary
-	//     in lastStarts. setX clamps if the cache shrank unexpectedly.
+	//     the new grid. For 24h zoom, DayStartLocal aligns to local
+	//     midnight; for sub-day zooms, BucketAlign uses UTC boundaries.
+	//     sort.Search finds the matching index in lastStarts. setX clamps
+	//     if the cache shrank unexpectedly.
 	switch {
 	case !hadAnchor, wasPinned:
-		m.setX(chartW)
+		m.setX(numBuckets)
 	default:
-		target := cache.BucketAlign(anchorTime, zoom.Duration)
+		var target time.Time
+		if zoom.Duration == 24*time.Hour {
+			target = cache.DayStartLocal(anchorTime)
+		} else {
+			target = cache.BucketAlign(anchorTime, zoom.Duration)
+		}
 		idx := sort.Search(len(m.lastStarts), func(i int) bool {
 			return !m.lastStarts[i].Before(target)
 		})
