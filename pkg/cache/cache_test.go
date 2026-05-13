@@ -1018,6 +1018,108 @@ func TestDayStartLocal(t *testing.T) {
 	}
 }
 
+// insertMessage is a thin test helper that writes one row into messages
+// with the given UTC timestamp and token count. Avoids exercising the
+// full InsertMessages path (parse.Message + pricing) for tests that only
+// care about token sums per ts.
+func insertMessage(t *testing.T, c *Cache, ts time.Time, tokens int64) {
+	t.Helper()
+	_, err := c.DB().Exec(`
+INSERT INTO messages
+(session_id, project_slug, ts, role, model,
+ input_tokens, output_tokens, cache_read_tokens,
+ cache_write_5m_tokens, cache_write_1h_tokens,
+ cost_usd_estimate, pricing_version, pricing_unknown,
+ is_subagent, parent_session_id, cwd, git_branch)
+VALUES('s','p',?,'assistant','m',?,0,0,0,0,0,'v1',0,0,'','','')`,
+		ts.UTC().Format("2006-01-02T15:04:05.000Z07:00"), tokens)
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+}
+
+func TestTokenBuckets_24h_LocalAlignment(t *testing.T) {
+	withTimeLocal(t, "Europe/Berlin")
+	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	// In CEST (UTC+2), local midnight 2026-05-14 corresponds to
+	// 2026-05-13T22:00:00Z. So 21:59Z belongs to 2026-05-13 local;
+	// 22:00Z belongs to 2026-05-14 local.
+	insertMessage(t, c, time.Date(2026, 5, 13, 21, 59, 0, 0, time.UTC), 100)
+	insertMessage(t, c, time.Date(2026, 5, 13, 22, 0, 0, 0, time.UTC), 200)
+	insertMessage(t, c, time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC), 300)
+
+	from := dayStartLocal(time.Date(2026, 5, 13, 0, 0, 0, 0, time.Local))
+	to := dayStartLocal(time.Date(2026, 5, 15, 0, 0, 0, 0, time.Local))
+	buckets, err := c.TokenBuckets(24*time.Hour, from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(buckets) != 2 {
+		t.Fatalf("got %d buckets, want 2: %+v", len(buckets), buckets)
+	}
+	if buckets[0].Tokens != 100 {
+		t.Errorf("2026-05-13 bucket tokens = %d, want 100", buckets[0].Tokens)
+	}
+	if buckets[1].Tokens != 500 {
+		t.Errorf("2026-05-14 bucket tokens = %d, want 500", buckets[1].Tokens)
+	}
+	if buckets[0].BucketStart.Location() != time.Local {
+		t.Errorf("BucketStart.Location() = %v, want time.Local", buckets[0].BucketStart.Location())
+	}
+}
+
+func TestTokenBuckets_24h_EmptyDays(t *testing.T) {
+	withTimeLocal(t, "Europe/Berlin")
+	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	insertMessage(t, c, time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC), 100)
+
+	from := dayStartLocal(time.Date(2026, 5, 13, 0, 0, 0, 0, time.Local))
+	to := dayStartLocal(time.Date(2026, 5, 16, 0, 0, 0, 0, time.Local))
+	buckets, err := c.TokenBuckets(24*time.Hour, from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(buckets) != 3 {
+		t.Fatalf("got %d buckets, want 3", len(buckets))
+	}
+	if buckets[0].Tokens != 100 || buckets[1].Tokens != 0 || buckets[2].Tokens != 0 {
+		t.Errorf("token totals = [%d %d %d], want [100 0 0]",
+			buckets[0].Tokens, buckets[1].Tokens, buckets[2].Tokens)
+	}
+}
+
+func TestTokenBuckets_24h_UTCFallback(t *testing.T) {
+	withTimeLocal(t, "UTC")
+	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	insertMessage(t, c, time.Date(2026, 5, 13, 23, 59, 0, 0, time.UTC), 100)
+	insertMessage(t, c, time.Date(2026, 5, 14, 0, 1, 0, 0, time.UTC), 200)
+
+	from := dayStartLocal(time.Date(2026, 5, 13, 0, 0, 0, 0, time.Local))
+	to := dayStartLocal(time.Date(2026, 5, 15, 0, 0, 0, 0, time.Local))
+	buckets, err := c.TokenBuckets(24*time.Hour, from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(buckets) != 2 || buckets[0].Tokens != 100 || buckets[1].Tokens != 200 {
+		t.Errorf("UTC-local bucketing failed: %+v", buckets)
+	}
+}
+
 func TestZoomLabel_DefaultFallback(t *testing.T) {
 	if got := zoomLabel(30 * time.Minute); got != "30m0s" {
 		t.Errorf("zoomLabel(30m) = %q, want %q (default fallback)", got, "30m0s")

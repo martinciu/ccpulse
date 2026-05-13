@@ -305,6 +305,9 @@ type TokenBucket struct {
 // Empty intervals are returned with Tokens == 0; output is ordered
 // oldest-first, len = (to.Sub(from) / dur).
 func (c *Cache) TokenBuckets(dur time.Duration, from, to time.Time) ([]TokenBucket, error) {
+	if dur == 24*time.Hour {
+		return c.tokenBucketsDaily(from, to)
+	}
 	start := time.Now()
 	from = BucketAlign(from, dur)
 	to = BucketAlign(to, dur)
@@ -354,6 +357,62 @@ ORDER BY bucket_epoch ASC
 		"dur_ms", time.Since(start).Milliseconds(),
 		"zoom", zoomLabel(dur),
 		"buckets", n,
+		"rows_aggregated", len(totals))
+	return out, nil
+}
+
+// tokenBucketsDaily returns one TokenBucket per local-tz calendar day in
+// [from, to). Bucket boundaries are local midnight; SQLite groups via
+// strftime('%Y-%m-%d', ts, 'localtime'). Iteration uses AddDate(0, 0, 1)
+// so DST transitions (spring-forward 23h day, fall-back 25h day) each
+// produce exactly one bucket.
+//
+// BucketStart values are in time.Local — callers must not assume UTC.
+func (c *Cache) tokenBucketsDaily(from, to time.Time) ([]TokenBucket, error) {
+	start := time.Now()
+	from = dayStartLocal(from)
+	to = dayStartLocal(to)
+	if !to.After(from) {
+		return nil, nil
+	}
+	fromStr := from.UTC().Format("2006-01-02T15:04:05.000Z07:00")
+	toStr := to.UTC().Format("2006-01-02T15:04:05.000Z07:00")
+	rows, err := c.db.Query(`
+SELECT
+  strftime('%Y-%m-%d', ts, 'localtime') AS day,
+  SUM(input_tokens + output_tokens + cache_read_tokens
+      + cache_write_5m_tokens + cache_write_1h_tokens)
+FROM messages
+WHERE ts >= ? AND ts < ?
+GROUP BY day
+ORDER BY day ASC
+`, fromStr, toStr)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	totals := make(map[string]int64)
+	for rows.Next() {
+		var day string
+		var tokens int64
+		if err := rows.Scan(&day, &tokens); err != nil {
+			return nil, err
+		}
+		totals[day] = tokens
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	out := []TokenBucket{}
+	for d := from; d.Before(to); d = d.AddDate(0, 0, 1) {
+		key := d.Format("2006-01-02")
+		out = append(out, TokenBucket{BucketStart: d, Tokens: totals[key]})
+	}
+	slog.Debug("cache.tokenBucketsDaily",
+		"dur_ms", time.Since(start).Milliseconds(),
+		"buckets", len(out),
 		"rows_aggregated", len(totals))
 	return out, nil
 }
