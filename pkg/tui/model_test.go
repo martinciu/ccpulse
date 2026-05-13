@@ -2091,3 +2091,25 @@ func TestLabelFade_MidAnimationBinding(t *testing.T) {
 		}
 	}
 }
+
+func TestRecomputeWindow_PopulatesRecentBuckets(t *testing.T) {
+	// recomputeWindow() must populate m.recentBuckets with exactly
+	// sparklineCells entries (30) every time it runs. This is the
+	// contract renderSparklineRow expects: len(buckets) ==
+	// sparklineCells. Asserting on length (not on values) keeps the
+	// test stable across cache-state variations.
+	path := filepath.Join(t.TempDir(), "state.db")
+	c, err := cache.Open(path)
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+
+	m := New(Deps{Cache: c})
+	m.w, m.h = 120, 40
+	m.recomputeWindow()
+
+	if got := len(m.recentBuckets); got != sparklineCells {
+		t.Errorf("len(recentBuckets) = %d, want %d", got, sparklineCells)
+	}
+}

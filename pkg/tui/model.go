@@ -147,6 +147,13 @@ type Model struct {
 	quotaSource    string
 	quotaUpdatedAt time.Time
 
+	// recentBuckets holds sparklineCells float64 values populated by
+	// recomputeWindow via cache.TokenBuckets(1m, now-30m, now). Stored
+	// as []float64 so the per-frame View() path is allocation-free.
+	// Never nil after the first recomputeWindow call — zeroed slice on
+	// error so renderSparklineRow always has something to draw.
+	recentBuckets []float64
+
 	indexActive bool
 	indexDone   int
 	indexTotal  int
@@ -827,6 +834,29 @@ func (m *Model) recomputeWindow() {
 	if w, err := status.Compute(m.deps.Cache.DB(), time.Now(), in); err == nil {
 		m.window = w
 	}
+
+	// Sparkline data: trailing sparklineWindow at sparklineBucket resolution.
+	// Errors yield a zeroed slice so renderSparklineRow draws a flat dim line.
+	now := time.Now()
+	bs, err := m.deps.Cache.TokenBuckets(sparklineBucket, now.Add(-sparklineWindow), now)
+	if err != nil || len(bs) == 0 {
+		m.recentBuckets = make([]float64, sparklineCells)
+	} else {
+		m.recentBuckets = make([]float64, len(bs))
+		for i, b := range bs {
+			m.recentBuckets[i] = float64(b.Tokens)
+		}
+		// Defensive: guarantee renderSparklineRow always receives exactly
+		// sparklineCells entries even if TokenBuckets drifts from its contract.
+		switch {
+		case len(m.recentBuckets) < sparklineCells:
+			pad := make([]float64, sparklineCells-len(m.recentBuckets))
+			m.recentBuckets = append(pad, m.recentBuckets...)
+		case len(m.recentBuckets) > sparklineCells:
+			m.recentBuckets = m.recentBuckets[len(m.recentBuckets)-sparklineCells:]
+		}
+	}
+
 	m.progress = newProgressBar(m.progressWidth())
 	m.progress7d = newProgressBar(m.progressWidth())
 }
