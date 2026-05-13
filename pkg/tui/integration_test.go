@@ -171,6 +171,7 @@ func newSeededCache(t *testing.T) *cache.Cache {
 // still pass.
 func TestProgram_BurnRateOverreach(t *testing.T) {
 	withForcedColor(t)
+	withForcedDarkBackground(t, true)
 	c := newSeededCache(t)
 	m := New(Deps{Cache: c})
 	tm := teatest.NewTestModel(t, m,
@@ -203,7 +204,7 @@ func TestProgram_BurnRateOverreach(t *testing.T) {
 	// Red style marker — produce the same envelope the renderer would use
 	// and check it appears somewhere in the frame. Avoids hard-coding
 	// escape bytes; survives lipgloss version bumps.
-	redMarker := lipgloss.NewStyle().Foreground(Red).Render(probeMarker)
+	redMarker := lipgloss.NewStyle().Foreground(colorDanger).Render(probeMarker)
 	openSeq, _, ok := splitANSIEnvelope(redMarker)
 	if !ok {
 		t.Fatalf("could not split red marker envelope from %q", redMarker)

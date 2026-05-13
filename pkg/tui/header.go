@@ -29,7 +29,7 @@ type IndexProgress struct {
 func renderHeader(width int, bars string) string {
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(Dim).
+		BorderForeground(colorMuted).
 		Padding(0, 1).
 		Width(width - 2)
 	return box.Render(bars)
@@ -91,7 +91,7 @@ const burnPad = "   "
 // Rendered width is always lipgloss.Width(label) + bar.Width +
 // 1 + statusBlockMaxW — composed via JoinHorizontal.
 //
-// label is rendered in Dim (ANSI 8) to match the
+// label is rendered in colorMuted to match the
 // divider's dim style. reset is variable-width output from durString
 // or formatReset7d.
 func renderQuotaSide(label string, bar progress.Model, fillRatio float64, reset string) string {
@@ -131,10 +131,10 @@ const (
 // isn't allocated on every View() frame (this code runs in the per-frame
 // hot path).
 var (
-	dimStyle        = lipgloss.NewStyle().Foreground(Dim)
-	burnSafeStyle   = lipgloss.NewStyle().Foreground(Green)
-	burnWatchStyle  = lipgloss.NewStyle().Foreground(Yellow)
-	burnDangerStyle = lipgloss.NewStyle().Foreground(Red)
+	dimStyle        = lipgloss.NewStyle().Foreground(colorMuted)
+	burnSafeStyle   = lipgloss.NewStyle().Foreground(colorSafe)
+	burnWatchStyle  = lipgloss.NewStyle().Foreground(colorWatch)
+	burnDangerStyle = lipgloss.NewStyle().Foreground(colorDanger)
 	timeSlotStyle   = lipgloss.NewStyle().Width(statusBlockMaxW).Align(lipgloss.Right)
 )
 
