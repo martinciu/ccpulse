@@ -1,6 +1,7 @@
 package anthro
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"log/slog"
@@ -785,6 +786,45 @@ func TestFetchLogs_WriteCacheFailure(t *testing.T) {
 	}
 	if _, ok := attrMap(*wc)["err"]; !ok {
 		t.Errorf("err attr missing on writeCache WARN")
+	}
+}
+
+// TestFetch_NoBearerTokenInLogs is the privacy guard for the only call
+// site in ccpulse that handles a credential: the Anthropic fetch path.
+// The Bearer token (privacyAccessToken) is set into Credential.AccessToken
+// and threaded through Fetch → fetchAPI → req.Header. None of those code
+// paths should emit the token to slog. The test renders captured records
+// to a real slog.TextHandler so the assertion is on the literal bytes
+// that would land in ccpulse.log.
+//
+// Scope deliberately narrow: this does NOT plant sentinels inside the
+// HTTP response body. body_snippet is logged on non-2xx and decode paths
+// (bounded and Quote'd per the design spec); planting body sentinels
+// would fail by design. See privacy_sentinels_test.go for the policy.
+func TestFetch_NoBearerTokenInLogs(t *testing.T) {
+	dir := t.TempDir()
+
+	srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(sampleAPIBody))
+	})
+	withTestEndpoint(t, srv.URL)
+
+	var buf bytes.Buffer
+	prev := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+	})))
+
+	_, err := Fetch(context.Background(),
+		Credential{AccessToken: privacyAccessToken},
+		dir)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+
+	if strings.Contains(buf.String(), privacyAccessToken) {
+		t.Errorf("slog output leaked Bearer token sentinel:\n%s", buf.String())
 	}
 }
 
