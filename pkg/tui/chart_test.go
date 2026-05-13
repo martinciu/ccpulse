@@ -705,14 +705,13 @@ func TestBuildChart_24h_CanvasWidth(t *testing.T) {
 
 func TestComputeSpringSlice(t *testing.T) {
 	t.Parallel()
-	// All cases use stride=12 (matches the 24h ZoomLevel: BarWidth=10, BarGap=2).
-	const stride = 12
 	tests := []struct {
-		name         string
-		start        int
-		prevLongest  int
-		vpWidth      int
-		wantSlice    int
+		name           string
+		start          int
+		prevLongest    int
+		vpWidth        int
+		stride         int
+		wantSlice      int
 		wantSpringXOff int
 	}{
 		{
@@ -720,6 +719,7 @@ func TestComputeSpringSlice(t *testing.T) {
 			start:          0,
 			prevLongest:    4318,
 			vpWidth:        120,
+			stride:         12,
 			wantSlice:      0,
 			wantSpringXOff: 0,
 		},
@@ -728,6 +728,7 @@ func TestComputeSpringSlice(t *testing.T) {
 			start:          200,
 			prevLongest:    4318,
 			vpWidth:        120,
+			stride:         12,
 			wantSlice:      200,
 			wantSpringXOff: 0,
 		},
@@ -736,6 +737,7 @@ func TestComputeSpringSlice(t *testing.T) {
 			start:          350,
 			prevLongest:    4318,
 			vpWidth:        120,
+			stride:         12,
 			wantSlice:      349,
 			wantSpringXOff: 10,
 		},
@@ -744,6 +746,7 @@ func TestComputeSpringSlice(t *testing.T) {
 			start:          350,
 			prevLongest:    4318,
 			vpWidth:        128,
+			stride:         12,
 			wantSlice:      349,
 			wantSpringXOff: 2,
 		},
@@ -752,6 +755,7 @@ func TestComputeSpringSlice(t *testing.T) {
 			start:          0,
 			prevLongest:    60,
 			vpWidth:        120,
+			stride:         12,
 			wantSlice:      0,
 			wantSpringXOff: 0,
 		},
@@ -765,24 +769,43 @@ func TestComputeSpringSlice(t *testing.T) {
 			start:          5,
 			prevLongest:    60,
 			vpWidth:        120,
+			stride:         12,
 			wantSlice:      4,
 			wantSpringXOff: 0,
 		},
 		{
-			// start=1 with clamp: canvas is tiny so actualXOffset=0,
-			// sliceStart drops to 0, springXOff = 0 - 0*12 = 0.
-			name:           "start=1 with clamp",
+			// start=1, tiny canvas: desiredXOffset = 1*12 = 12,
+			// actualXOffset = min(12, max(0, 14*12-120)) = min(12, max(0,-6)) = min(12,0) = 0.
+			// 0 < 12, so the if-branch fires: sliceStart = 0/12 = 0,
+			// springXOff = 0 - 0*12 = 0. The pre-clamp value is already 0,
+			// so the defensive springXOff < 0 clamp is NOT exercised here.
+			name:           "start=1 sliceStart drops to zero (if-branch arithmetic)",
 			start:          1,
 			prevLongest:    14,
 			vpWidth:        120,
+			stride:         12,
 			wantSlice:      0,
+			wantSpringXOff: 0,
+		},
+		{
+			// stride=1 (matches 15m/1h zoom shape: BarWidth=1, BarGap=0).
+			// desiredXOffset = 50*1 = 50,
+			// actualXOffset = min(50, max(0, 200*1-80)) = min(50, 120) = 50.
+			// 50 == 50, so the if-branch does NOT fire: sliceStart = 50,
+			// springXOff = 50 - 50*1 = 0.
+			name:           "stride=1 mid-scroll (15m/1h zoom shape)",
+			start:          50,
+			prevLongest:    200,
+			vpWidth:        80,
+			stride:         1,
+			wantSlice:      50,
 			wantSpringXOff: 0,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			gotSlice, gotXOff := computeSpringSlice(tt.start, tt.prevLongest, tt.vpWidth, stride)
+			gotSlice, gotXOff := computeSpringSlice(tt.start, tt.prevLongest, tt.vpWidth, tt.stride)
 			if gotSlice != tt.wantSlice {
 				t.Errorf("sliceStart = %d, want %d", gotSlice, tt.wantSlice)
 			}
