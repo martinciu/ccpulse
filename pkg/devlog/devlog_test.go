@@ -1,6 +1,7 @@
 package devlog
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -38,10 +39,49 @@ func TestInit_DevWritesDebugLog(t *testing.T) {
 }
 
 func TestInit_ReleaseAtLevelOff_NoFile(t *testing.T) {
-	// Skipped temporarily — covered in detail by Task 4 (LevelOff semantics).
-	// Re-implemented in the next commit; this stub preserves the test ID so
-	// `go test` output isn't surprising mid-task.
-	t.Skip("covered by TestInit_ReleaseAtLevelOff_NoFile after Task 4 lands")
+	prev := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	dir := t.TempDir()
+	closer, err := Init(Options{IsDev: false, CacheDir: dir, Level: LevelOff})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if closer != nil {
+		t.Errorf("Init(LevelOff) should return nil closer, got %T", closer)
+	}
+
+	slog.Info("should not appear anywhere")
+	slog.Error("not even errors")
+
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		t.Errorf("LevelOff created %s in cache dir; want no files", e.Name())
+	}
+	if slog.Default().Enabled(context.Background(), slog.LevelError) {
+		t.Errorf("default handler is enabled at LevelError under LevelOff; want disabled")
+	}
+}
+
+func TestInit_DevAtLevelOff_NoFile(t *testing.T) {
+	prev := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	dir := t.TempDir()
+	closer, err := Init(Options{IsDev: true, CacheDir: dir, Level: LevelOff})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if closer != nil {
+		t.Errorf("Init(LevelOff) should return nil closer, got %T", closer)
+	}
+
+	slog.Debug("should not appear anywhere")
+
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		t.Errorf("LevelOff created %s in cache dir; want no files", e.Name())
+	}
 }
 
 func TestInit_DevCreatesParentDir(t *testing.T) {
