@@ -71,7 +71,7 @@ func overlayYLabel(body string, peak float64, unit chartUnit, chartH int, fade f
 // "▼ now" right-aligned at the rightmost columns (always wins on
 // collision). Later labels overwrite earlier ones; labels that would
 // overflow chartW on the right are dropped. Empty starts → "".
-// Dim foreground throughout — Y axis labels are default fg so the eye
+// colorMuted foreground throughout — Y axis labels are default fg so the eye
 // distinguishes the two rows when they sit close together.
 func renderXLabels(starts []time.Time, chartW int, zoom ZoomLevel, now time.Time) string {
 	if chartW < 1 || len(starts) == 0 {

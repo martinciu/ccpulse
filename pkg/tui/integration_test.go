@@ -201,7 +201,7 @@ func TestProgram_BurnRateOverreach(t *testing.T) {
 	if !strings.Contains(final, "limit in") {
 		t.Errorf("expected 'limit in' copy after overreach QuotaMsg; got:\n%s", final)
 	}
-	// Red style marker — produce the same envelope the renderer would use
+	// Danger style marker — produce the same envelope the renderer would use
 	// and check it appears somewhere in the frame. Avoids hard-coding
 	// escape bytes; survives lipgloss version bumps.
 	redMarker := lipgloss.NewStyle().Foreground(colorDanger).Render(probeMarker)

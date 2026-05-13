@@ -19,15 +19,6 @@ var (
 	colorFaint  = lipgloss.AdaptiveColor{Light: "#bdbdbd", Dark: "#424242"} // fade-out endpoint (Material grey 400 / 800)
 )
 
-// Discrete TUI palette colors mapped to ANSI slots 0–15. Retained during
-// the #126 migration; removed in the final rename cleanup task.
-var (
-	Red    = lipgloss.Color("1") // severity: danger / over-limit
-	Yellow = lipgloss.Color("3") // severity: warning / watch
-	Green  = lipgloss.Color("2") // severity: safe / ok
-	Dim    = lipgloss.Color("8") // borders, separators, dim labels, empty-state copy
-)
-
 // Quota gradient stops. Hex (not ANSI slots) because bubbles/progress.WithGradient
 // requires hex for RGB interpolation — emits 24-bit truecolor escapes per cell,
 // palette-independent. Material Design 500 green/red: theme-neutral defaults that
@@ -39,10 +30,10 @@ const (
 
 // Index-completed fade animation. After backfill finishes, the indicator
 // shows "✓ indexed N" and steps through three foregrounds — default fg,
-// Dim (ANSI 8), ANSI 0 — over a 1.2 s window before disappearing. The fade
-// is a tick-driven state machine on Model (indexFadeStop), not harmonica;
-// the discrete stops match the issue spec and the per-stop dwell stays
-// uniform.
+// colorMuted, colorFaint — over a 1.2 s window before disappearing. The
+// fade is a tick-driven state machine on Model (indexFadeStop), not
+// harmonica; the discrete stops match the issue spec and the per-stop
+// dwell stays uniform.
 const (
 	indexFadeStopCount    = 3
 	indexFadeStepDuration = 400 * time.Millisecond
