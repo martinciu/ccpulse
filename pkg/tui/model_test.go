@@ -2163,3 +2163,139 @@ func TestVisibleBuckets_BarWidthOne(t *testing.T) {
 		t.Errorf("visibleBuckets w=22 15m = %d, want 20", got)
 	}
 }
+
+// TestRenderSpringFrame_MatchesPreSpringBoundary asserts that
+// renderSpringFrame with identity ratios (springRatios[i] = lastValues[i] /
+// peak) produces a viewport.View() that matches the pre-spring viewport
+// content set up by buildChart + setX at the same scroll position.
+//
+// At 24h zoom (BarGap=2, BarWidth=10, stride=12) the canvas right edge is
+// rarely a stride-multiple, so viewport.SetXOffset is clamped by the
+// longestLineWidth-Width boundary. The tested widths were chosen to exercise
+// the three slack variants that caused bugs before commit fa365d8:
+//
+//	w=122 → slack=2 (leading gap between buckets)
+//	w=130 → slack=10 (leading partial bar)
+//	w=131 → slack=11 (mostly-consumed partial bar)
+func TestRenderSpringFrame_MatchesPreSpringBoundary(t *testing.T) {
+	const (
+		N       = 60  // number of 24h buckets
+		zoomIdx = 2   // 24h zoom: BarWidth=10, BarGap=2, stride=12
+		chartH  = 20  // representative chart height
+	)
+
+	zoom := ZoomLevels[zoomIdx]
+
+	// Build deterministic synthetic values: bucket i gets value (i+1)*100,
+	// so peak = N*100 and every bucket has a non-zero distinct height.
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	lastValues := make([]float64, N)
+	lastStarts := make([]time.Time, N)
+	var peak float64
+	for i := range N {
+		lastValues[i] = float64((i + 1) * 100)
+		lastStarts[i] = now.AddDate(0, 0, i)
+		if lastValues[i] > peak {
+			peak = lastValues[i]
+		}
+	}
+
+	cases := []struct {
+		name       string
+		w          int
+		wantSlack  int // expected leading blank cols in pre-spring view
+	}{
+		{name: "slack=2_leading_gap", w: 122},
+		{name: "slack=10_partial_bar", w: 130},
+		{name: "slack=11_mostly_partial", w: 131},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// ── Build model fields (no cache needed) ──────────────────────────
+			m := New(Deps{}) // deps.Cache = nil; we set fields manually
+			m.w = tc.w
+			m.h = chartH + 7 // chartHeight() = h-7, so h = chartH+7
+			m.zoomIdx = zoomIdx
+			m.viewport.Width = m.chartWidth()
+			m.viewport.Height = m.chartHeight()
+
+			m.peak = peak
+			m.lastValues = append([]float64(nil), lastValues...)
+			m.lastStarts = append([]time.Time(nil), lastStarts...)
+
+			// ── Pre-spring viewport: exactly what refreshChart produces ────────
+			// refreshChart calls buildChart on the full canvas then setX(len(values))
+			// which pins to the right edge.
+			canvasW := zoom.CanvasWidth(N)
+			m.viewport.SetContent(buildChart(
+				m.lastValues, m.lastStarts, peak,
+				canvasW, m.chartHeight(), now, zoom, chartUnitTokens, dateOrderMonthFirst,
+			))
+			m.setX(len(m.lastValues)) // pins to right edge
+
+			preSpringView := m.viewport.View()
+
+			// Sanity: pre-spring view must not be all-blank — we seeded real data.
+			if strings.TrimSpace(stripANSIForTest(preSpringView)) == "" {
+				t.Fatalf("pre-spring viewport unexpectedly blank (setup error?)")
+			}
+
+			// ── Spring setup: identity ratios (old values / peak) ─────────────
+			// springActive must be true so renderSpringFrame doesn't early-return.
+			// springXOffset is the viewportXOffset (the pinned-right bucket index).
+			n := len(m.lastValues)
+			m.springRatios = make([]float64, n)
+			for i := range n {
+				m.springRatios[i] = m.lastValues[i] / peak
+			}
+			m.springActive = true
+			m.springXOffset = m.viewportXOffset // shadow set by setX
+
+			// ── Spring frame ──────────────────────────────────────────────────
+			m.renderSpringFrame()
+			springView := m.viewport.View()
+
+			// ── Assert equality (ANSI-stripped, per-line, first 30 cols) ─────
+			// Skip the last row: it's the X-label row, which both pre-spring
+			// and spring compute via formatXLabel(bucket, zoom, time.Now(), …).
+			// Pre-spring uses the `now` constant above; renderSpringFrame
+			// calls time.Now() internally. The two timestamps are close but
+			// not identical, so day-boundary edge cases (weekday vs. MM/DD)
+			// can legitimately differ by one label format. The invariant we're
+			// locking is bar-height alignment, not X-label text.
+			preLines := strings.Split(stripANSIForTest(preSpringView), "\n")
+			sprLines := strings.Split(stripANSIForTest(springView), "\n")
+
+			if len(preLines) != len(sprLines) {
+				t.Fatalf("line count mismatch: pre-spring=%d spring=%d", len(preLines), len(sprLines))
+			}
+
+			// Bar rows are all rows except the last (X-labels).
+			barRowCount := len(preLines) - 1
+			if barRowCount < 1 {
+				t.Fatalf("no bar rows to compare (chartH too small?)")
+			}
+
+			const cmpCols = 30 // compare leading portion of each line
+			for i := range barRowCount {
+				pre := preLines[i]
+				spr := sprLines[i]
+				// Truncate to cmpCols for comparison (handles line-length
+				// differences from windowed vs full canvas edge padding).
+				pCols := pre
+				if len(pCols) > cmpCols {
+					pCols = pCols[:cmpCols]
+				}
+				sCols := spr
+				if len(sCols) > cmpCols {
+					sCols = sCols[:cmpCols]
+				}
+				if pCols != sCols {
+					t.Errorf("bar row %d first %d cols mismatch:\n  pre-spring: %q\n  spring:     %q",
+						i, cmpCols, pCols, sCols)
+				}
+			}
+		})
+	}
+}
