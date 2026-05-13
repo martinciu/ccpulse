@@ -548,18 +548,19 @@ func TestRenderXLabels_24h_PerBarLabel(t *testing.T) {
 		day(5, 11), // yesterday → "Mon"
 		day(5, 12), // today → "Tue"
 	}
-	zoom := ZoomLevels[2] // 24h, BarWidth=10
-	chartW := len(starts) * zoom.BarWidth
+	zoom := ZoomLevels[2] // 24h
+	chartW := zoom.CanvasWidth(len(starts))
 	got := renderXLabels(starts, chartW, zoom, now, dateOrderMonthFirst)
 
 	stripped := stripANSIForTest(got)
 
 	// Every bar gets a label, centered in its BarWidth-cols slot at
-	// col = i*BarWidth + (BarWidth-labelW)/2. 5-char dates and 3-char
-	// weekdays are both expected at their computed centered offsets.
+	// col = i*(BarWidth+BarGap) + (BarWidth-labelW)/2. Bars stride by
+	// BarWidth+BarGap; the gap stays blank between them.
 	wantLabels := []string{"04/30", "05/01", "Mon", "Tue"}
+	stride := zoom.BarWidth + zoom.BarGap
 	for slot, want := range wantLabels {
-		col := slot*zoom.BarWidth + (zoom.BarWidth-len(want))/2
+		col := slot*stride + (zoom.BarWidth-len(want))/2
 		if col+len(want) > len(stripped) {
 			t.Fatalf("slot %d: col %d + %d > len(stripped)=%d; output=%q",
 				slot, col, len(want), len(stripped), stripped)
@@ -576,20 +577,15 @@ func TestZoomLevels_Shape(t *testing.T) {
 	if len(ZoomLevels) != 3 {
 		t.Fatalf("expected 3 zoom levels, got %d", len(ZoomLevels))
 	}
-	want := []struct {
-		Label    string
-		Duration time.Duration
-		BarWidth int
-	}{
-		{"15m", 15 * time.Minute, 1},
-		{"1h", time.Hour, 1},
-		{"24h", 24 * time.Hour, 10},
+	want := []ZoomLevel{
+		{"15m", 15 * time.Minute, 1, 0},
+		{"1h", time.Hour, 1, 0},
+		{"24h", 24 * time.Hour, 10, 2},
 	}
 	for i, w := range want {
 		got := ZoomLevels[i]
-		if got.Label != w.Label || got.Duration != w.Duration || got.BarWidth != w.BarWidth {
-			t.Errorf("ZoomLevels[%d] = %+v, want {%q, %v, %d}",
-				i, got, w.Label, w.Duration, w.BarWidth)
+		if got != w {
+			t.Errorf("ZoomLevels[%d] = %+v, want %+v", i, got, w)
 		}
 	}
 }
@@ -604,9 +600,9 @@ func TestZoomLevels_BarWidthPositive(t *testing.T) {
 }
 
 // TestBuildChart_24h_CanvasWidth verifies that a 24h-zoom call with
-// canvasW = len(values)*BarWidth produces output rows of exactly that
-// width. This exercises the WithBarWidth/WithNoAutoBarWidth path so
-// ntcharts does not auto-expand bar widths beyond the slot allocation.
+// canvasW = zoom.CanvasWidth(n) produces output rows of exactly that
+// width. Exercises WithBarWidth + WithBarGap so ntcharts neither
+// auto-expands bars nor swallows the inter-bar gap.
 func TestBuildChart_24h_CanvasWidth(t *testing.T) {
 	t.Parallel()
 	zoom := ZoomLevels[2] // 24h
@@ -619,7 +615,7 @@ func TestBuildChart_24h_CanvasWidth(t *testing.T) {
 		starts[i] = now.AddDate(0, 0, i-3)
 	}
 	peak := values[n-1]
-	canvasW := n * zoom.BarWidth
+	canvasW := zoom.CanvasWidth(n)
 	out := buildChart(values, starts, peak, canvasW, 10, now, zoom, chartUnitTokens, dateOrderMonthFirst)
 	rows := strings.Split(out, "\n")
 	if len(rows) != 10 {

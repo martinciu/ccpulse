@@ -626,7 +626,6 @@ func (m *Model) renderSpringFrame() {
 	}
 	zoom := ZoomLevels[m.zoomIdx]
 	nv := m.visibleBuckets()
-	bw := zoom.BarWidth
 	chartH := m.chartHeight()
 
 	// Clamp the window to the actual ratios slice.
@@ -645,20 +644,22 @@ func (m *Model) renderSpringFrame() {
 	visibleRatios := m.springRatios[start:end]
 	visibleStarts := m.lastStarts[start:end]
 	m.viewport.SetContent(buildChart(visibleRatios, visibleStarts, 1.0,
-		len(visibleRatios)*bw, chartH, time.Now(), zoom, chartUnit(m.unitIdx), m.dateOrder))
+		zoom.CanvasWidth(len(visibleRatios)), chartH, time.Now(), zoom, chartUnit(m.unitIdx), m.dateOrder))
 	m.viewport.SetXOffset(0)
 }
 
 // setX is the single point of entry for changing the viewport's horizontal
 // scroll position. n is a bucket index (not a column count); setX clamps
-// it against lastStarts and visibleBuckets, then multiplies by BarWidth
-// when delegating to viewport.SetXOffset (which is column-indexed). The
-// shadow viewportXOffset stays in bucket-index space.
+// it against lastStarts and visibleBuckets, then multiplies by the per-
+// bar stride (BarWidth+BarGap) when delegating to viewport.SetXOffset
+// (which is column-indexed). The shadow viewportXOffset stays in
+// bucket-index space.
 func (m *Model) setX(n int) {
-	bw := ZoomLevels[m.zoomIdx].BarWidth
+	z := ZoomLevels[m.zoomIdx]
+	stride := z.BarWidth + z.BarGap
 	maxX := max(0, len(m.lastStarts)-m.visibleBuckets())
 	n = min(max(n, 0), maxX)
-	m.viewport.SetXOffset(n * bw)
+	m.viewport.SetXOffset(n * stride)
 	m.viewportXOffset = n
 }
 
@@ -787,8 +788,7 @@ func (m *Model) refreshChart() {
 	m.lastValues = values
 	m.lastStarts = starts
 
-	numBuckets := len(values)
-	canvasW := numBuckets * zoom.BarWidth
+	canvasW := zoom.CanvasWidth(len(values))
 	chartH := m.chartHeight()
 	m.viewport.SetContent(buildChart(values, starts, peak, canvasW, chartH, time.Now(), zoom, unit, m.dateOrder))
 
@@ -804,7 +804,7 @@ func (m *Model) refreshChart() {
 	//     if the cache shrank unexpectedly.
 	switch {
 	case !hadAnchor, wasPinned:
-		m.setX(numBuckets)
+		m.setX(len(values))
 	default:
 		var target time.Time
 		if zoom.Duration == 24*time.Hour {
@@ -862,15 +862,16 @@ func (m Model) chartWidth() int {
 }
 
 // visibleBuckets returns how many whole bars fit in the viewport at the
-// active zoom's BarWidth. Bucket-indexed throughout: 1 unit = 1 bar.
+// active zoom's BarWidth+BarGap layout. Bucket-indexed throughout: 1
+// unit = 1 bar. Derived from: n bars fit iff n*BarWidth + (n-1)*BarGap
+// <= chartWidth(), so n <= (chartWidth + BarGap) / (BarWidth + BarGap).
 // Floors at 1 so the chart never collapses to zero visible bars when
 // BarWidth > chartWidth() (degenerate terminal width).
 func (m Model) visibleBuckets() int {
-	bw := ZoomLevels[m.zoomIdx].BarWidth
-	if bw < 1 {
-		bw = 1
-	}
-	v := m.chartWidth() / bw
+	z := ZoomLevels[m.zoomIdx]
+	bw := max(z.BarWidth, 1)
+	stride := bw + z.BarGap
+	v := (m.chartWidth() + z.BarGap) / stride
 	if v < 1 {
 		return 1
 	}

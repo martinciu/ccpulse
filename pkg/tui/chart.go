@@ -12,24 +12,39 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// ZoomLevel maps a human label to a bucket duration and a per-bar visual
-// width. The chart's horizontal extent is no longer per-zoom — it spans
-// from the earliest cached message to "now" at every zoom (see issue #53).
-// BarWidth is the column count each bar occupies in the rendered canvas;
-// the X-axis label slot for that bar is the same width. Tuning a zoom's
-// bar width is a single edit in ZoomLevels.
+// ZoomLevel maps a human label to a bucket duration and visual layout
+// parameters. The chart's horizontal extent is no longer per-zoom — it
+// spans from the earliest cached message to "now" at every zoom (see
+// issue #53).
+//
+// BarWidth is the column count each bar occupies. BarGap is the empty
+// column count between adjacent bars (no trailing gap after the last
+// bar). The X-axis label slot is BarWidth cols, positioned over the
+// bar itself (gaps stay blank). Tuning either is a single edit in
+// ZoomLevels.
 type ZoomLevel struct {
 	Label    string
 	Duration time.Duration
 	BarWidth int
+	BarGap   int
+}
+
+// CanvasWidth returns the total column count to render n bars at this
+// zoom: n*BarWidth + (n-1)*BarGap. Returns 0 for n<=0. Shared by
+// buildChart's caller (model.refreshChart) and the spring-frame path.
+func (z ZoomLevel) CanvasWidth(n int) int {
+	if n <= 0 {
+		return 0
+	}
+	return n*z.BarWidth + (n-1)*z.BarGap
 }
 
 // ZoomLevels are the available zoom steps, cycled with the z key.
 // Order matters: pkg/tui/model.go indexes by position (zoomIdx).
 var ZoomLevels = []ZoomLevel{
-	{"15m", 15 * time.Minute, 1},
-	{"1h", time.Hour, 1},
-	{"24h", 24 * time.Hour, 10},
+	{"15m", 15 * time.Minute, 1, 0},
+	{"1h", time.Hour, 1, 0},
+	{"24h", 24 * time.Hour, 10, 2},
 }
 
 // overlayYLabel splices `formatUnitValue(niceFloorFloat(peak), unit)` in
@@ -72,11 +87,11 @@ func overlayYLabel(body string, peak float64, unit chartUnit, chartH int, fade f
 }
 
 // renderXLabels returns a 1-row string of width chartW containing
-// clock-aligned tick labels placed at matching bucket columns. Each
-// label is centered inside its bar's slot at column
-// i*BarWidth + (BarWidth-labelW)/2. For BarWidth=1 the centering math
-// falls back to col (labelW ≥ 3 > 1, so (1-labelW)/2 < 0). Labels that
-// would overflow chartW on the right are dropped. Empty starts → "".
+// clock-aligned tick labels placed over each bucket's bar. Bar i starts
+// at column i*(BarWidth+BarGap); the label is centered inside the bar
+// itself (gaps stay blank). For BarWidth=1 / BarGap=0 the centering
+// math falls back to col (labelW ≥ 3 > 1, so (1-labelW)/2 < 0). Labels
+// that would overflow chartW on the right are dropped. Empty starts → "".
 // colorMuted foreground throughout — Y axis labels are default fg so
 // the eye distinguishes the two rows when they sit close.
 func renderXLabels(starts []time.Time, chartW int, zoom ZoomLevel, now time.Time, order dateOrder) string {
@@ -84,13 +99,14 @@ func renderXLabels(starts []time.Time, chartW int, zoom ZoomLevel, now time.Time
 		return ""
 	}
 	bw := max(zoom.BarWidth, 1)
+	stride := bw + zoom.BarGap
 	row := make([]rune, chartW)
 	for i := range row {
 		row[i] = ' '
 	}
 
 	for i, t := range starts {
-		col := i * bw
+		col := i * stride
 		if col >= chartW {
 			break
 		}
@@ -315,7 +331,7 @@ func buildChart(values []float64, starts []time.Time, peak float64,
 		maxValue = 1 // ntcharts requires non-zero max; bars will all be empty anyway
 	}
 	bc := barchart.New(chartW, barsH,
-		barchart.WithBarGap(0),
+		barchart.WithBarGap(zoom.BarGap),
 		barchart.WithNoAxis(),
 		barchart.WithMaxValue(maxValue),
 		barchart.WithNoAutoBarWidth(),
