@@ -76,14 +76,17 @@ func newDoctorCmd() *cobra.Command {
 				check(out, "parse-errors.log: not present", true, nil)
 			}
 
-			if channel.IsDev() {
-				debugPath := filepath.Join(cacheDir, "debug.log")
-				if info, err := os.Stat(debugPath); err == nil {
-					check(out, fmt.Sprintf("debug.log: %d bytes (%s old)",
-						info.Size(), time.Since(info.ModTime()).Truncate(time.Second)), true, nil)
-				} else {
-					check(out, "debug.log: not present", true, nil)
-				}
+			// Log file — show whichever channel is active.
+			logFileName := "debug.log"
+			if !channel.IsDev() {
+				logFileName = "ccpulse.log"
+			}
+			logPath := filepath.Join(cacheDir, logFileName)
+			if info, err := os.Stat(logPath); err == nil {
+				check(out, fmt.Sprintf("%s: %d bytes (%s old)",
+					logFileName, info.Size(), time.Since(info.ModTime()).Truncate(time.Second)), true, nil)
+			} else {
+				check(out, logFileName+": not present", true, nil)
 			}
 
 			return nil
