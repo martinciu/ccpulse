@@ -303,11 +303,12 @@ func TestRenderBurnRateSide(t *testing.T) {
 	// marker through the expected style and checking the marker's escape
 	// envelope appears in the output).
 	withForcedColor(t)
+	withForcedDarkBackground(t, true)
 	const slotW = 60
-	dim := lipgloss.NewStyle().Foreground(Dim)
-	safe := lipgloss.NewStyle().Foreground(Green)
-	watch := lipgloss.NewStyle().Foreground(Yellow)
-	danger := lipgloss.NewStyle().Foreground(Red)
+	dim := lipgloss.NewStyle().Foreground(colorMuted)
+	safe := lipgloss.NewStyle().Foreground(colorSafe)
+	watch := lipgloss.NewStyle().Foreground(colorWatch)
+	danger := lipgloss.NewStyle().Foreground(colorDanger)
 
 	min9 := 9
 	min41 := 41

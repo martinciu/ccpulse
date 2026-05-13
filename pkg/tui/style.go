@@ -7,15 +7,16 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// Discrete TUI palette colors mapped to ANSI slots 0–15. The terminal's
-// configured theme (Catppuccin, Dracula, Gruvbox, …) drives
-// the actual rendered RGB. Names are kept color-based at this layer;
-// semantic wrappers (burnSafeStyle, …) live where consumed.
+// Severity, chrome, and faint-stop tokens. Light/Dark stops feed
+// lipgloss.AdaptiveColor — termenv profile degradation handles 16-color
+// terminals automatically (no hand-mapped ANSI fallback needed). Promote to
+// lipgloss.CompleteAdaptiveColor only if a visual probe surfaces a problem.
 var (
-	Red    = lipgloss.Color("1") // severity: danger / over-limit
-	Yellow = lipgloss.Color("3") // severity: warning / watch
-	Green  = lipgloss.Color("2") // severity: safe / ok
-	Dim    = lipgloss.Color("8") // borders, separators, dim labels, empty-state copy
+	colorSafe   = lipgloss.AdaptiveColor{Light: "#2e7d32", Dark: "#81c784"} // Material green 700 / 300
+	colorWatch  = lipgloss.AdaptiveColor{Light: "#ef6c00", Dark: "#ffb74d"} // Material orange 700 / 300
+	colorDanger = lipgloss.AdaptiveColor{Light: "#c62828", Dark: "#e57373"} // Material red 700 / 300
+	colorMuted  = lipgloss.AdaptiveColor{Light: "#666666", Dark: "#9e9e9e"} // chrome, dim labels (Material grey 700 / 500)
+	colorFaint  = lipgloss.AdaptiveColor{Light: "#bdbdbd", Dark: "#424242"} // fade-out endpoint (Material grey 400 / 800)
 )
 
 // Quota gradient stops. Hex (not ANSI slots) because bubbles/progress.WithGradient
@@ -29,10 +30,10 @@ const (
 
 // Index-completed fade animation. After backfill finishes, the indicator
 // shows "✓ indexed N" and steps through three foregrounds — default fg,
-// Dim (ANSI 8), ANSI 0 — over a 1.2 s window before disappearing. The fade
-// is a tick-driven state machine on Model (indexFadeStop), not harmonica;
-// the discrete stops match the issue spec and the per-stop dwell stays
-// uniform.
+// colorMuted, colorFaint — over a 1.2 s window before disappearing. The
+// fade is a tick-driven state machine on Model (indexFadeStop), not
+// harmonica; the discrete stops match the issue spec and the per-stop
+// dwell stays uniform.
 const (
 	indexFadeStopCount    = 3
 	indexFadeStepDuration = 400 * time.Millisecond
@@ -40,40 +41,56 @@ const (
 
 // indexFadeStyle returns the lipgloss style for the supplied fade stop.
 // stop=1 uses the terminal's default foreground (no Foreground call);
-// stops 2 and 3 step down through Dim (ANSI 8) and ANSI 0. ANSI 0 sits
-// near the terminal's background on curated themes, intentionally chosen
-// as the penultimate near-invisible step before the indicator disappears.
-// Any out-of-range stop falls back to ANSI 0 — defensive only;
+// stops 2 and 3 step down through colorMuted (chrome) and colorFaint
+// (near-bg). The fade is consumed by the post-backfill "✓ indexed N"
+// indicator and runs over a 1.2 s window via tickFadeMsg.
+//
+// Any out-of-range stop falls back to colorFaint — defensive only;
 // renderIndicators gates on FadeStop > 0 && FadeStop <= indexFadeStopCount.
 func indexFadeStyle(stop int) lipgloss.Style {
 	switch stop {
 	case 1:
 		return lipgloss.NewStyle()
 	case 2:
-		return lipgloss.NewStyle().Foreground(Dim)
+		return lipgloss.NewStyle().Foreground(colorMuted)
 	case 3:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("0"))
+		return lipgloss.NewStyle().Foreground(colorFaint)
 	default:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("0"))
+		return lipgloss.NewStyle().Foreground(colorFaint)
 	}
 }
 
 // Y-label fade for the two-phase unit-toggle animation (issue #136).
-// 5 stops defined as lipgloss.CompleteColor so termenv picks the
-// highest-fidelity rendering the terminal advertises:
-//   - Truecolor / 256-color: smooth 5-level grey fade via hex / 232–255.
-//   - ANSI 16-color: pairs collapse to default fg / ANSI 8 / ANSI 0 —
-//     3 distinct visible levels, same granularity indexFadeStyle gives.
+// 5 stops defined as lipgloss.CompleteAdaptiveColor so termenv picks the
+// highest-fidelity rendering the terminal advertises AND picks a side
+// (Light/Dark) that fades toward the user's actual background:
+//   - Truecolor / 256-color: smooth 5-level grey fade. On dark themes the
+//     ramp descends toward near-black; on light themes it ascends toward
+//     near-white. Either way the faintest stop matches the background.
+//   - ANSI 16-color: stops collapse to default fg / ANSI 8 / ANSI 0 on
+//     dark and default fg / ANSI 8 / ANSI 7 / ANSI 15 on light.
 //
 // Stop 1 deliberately uses no Foreground call (matches indexFadeStyle's
 // stop-1 precedent) so the label at full opacity matches surrounding
 // chart text colour against the user's theme exactly.
-var labelFadeStops = []lipgloss.CompleteColor{
-	{},                                                // stop 1 — sentinel; no Foreground
-	{TrueColor: "#888888", ANSI256: "244", ANSI: "8"}, // stop 2
-	{TrueColor: "#555555", ANSI256: "240", ANSI: "8"}, // stop 3
-	{TrueColor: "#333333", ANSI256: "236", ANSI: "0"}, // stop 4
-	{TrueColor: "#111111", ANSI256: "232", ANSI: "0"}, // stop 5 — faintest
+var labelFadeStops = []lipgloss.CompleteAdaptiveColor{
+	{}, // stop 1 — sentinel; labelFadeStyle skips Foreground at stop 1
+	{
+		Light: lipgloss.CompleteColor{TrueColor: "#777777", ANSI256: "244", ANSI: "8"},
+		Dark:  lipgloss.CompleteColor{TrueColor: "#888888", ANSI256: "244", ANSI: "8"},
+	},
+	{
+		Light: lipgloss.CompleteColor{TrueColor: "#aaaaaa", ANSI256: "248", ANSI: "7"},
+		Dark:  lipgloss.CompleteColor{TrueColor: "#555555", ANSI256: "240", ANSI: "8"},
+	},
+	{
+		Light: lipgloss.CompleteColor{TrueColor: "#cccccc", ANSI256: "252", ANSI: "7"},
+		Dark:  lipgloss.CompleteColor{TrueColor: "#333333", ANSI256: "236", ANSI: "0"},
+	},
+	{
+		Light: lipgloss.CompleteColor{TrueColor: "#eeeeee", ANSI256: "255", ANSI: "15"},
+		Dark:  lipgloss.CompleteColor{TrueColor: "#111111", ANSI256: "232", ANSI: "0"},
+	},
 }
 
 const labelFadeStopCount = 5

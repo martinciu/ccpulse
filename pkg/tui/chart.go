@@ -71,7 +71,7 @@ func overlayYLabel(body string, peak float64, unit chartUnit, chartH int, fade f
 // "▼ now" right-aligned at the rightmost columns (always wins on
 // collision). Later labels overwrite earlier ones; labels that would
 // overflow chartW on the right are dropped. Empty starts → "".
-// Dim foreground throughout — Y axis labels are default fg so the eye
+// colorMuted foreground throughout — Y axis labels are default fg so the eye
 // distinguishes the two rows when they sit close together.
 func renderXLabels(starts []time.Time, chartW int, zoom ZoomLevel, now time.Time) string {
 	if chartW < 1 || len(starts) == 0 {
@@ -229,16 +229,18 @@ func formatUnitValue(v float64, unit chartUnit) string {
 	}
 }
 
-// heatColor returns a lipgloss color on a green→yellow→red ramp
-// based on ratio (0.0–1.0) of a bucket's tokens relative to the peak bucket.
-func heatColor(ratio float64) lipgloss.Color {
+// heatColor returns the adaptive-palette token on a safe → watch → danger
+// ramp based on ratio (0.0–1.0) of a bucket's tokens relative to the peak
+// bucket. Return type is lipgloss.TerminalColor (the interface satisfied
+// by lipgloss.AdaptiveColor) so callers can assign without a type assertion.
+func heatColor(ratio float64) lipgloss.TerminalColor {
 	switch {
 	case ratio >= 0.66:
-		return Red
+		return colorDanger
 	case ratio >= 0.33:
-		return Yellow
+		return colorWatch
 	default:
-		return Green
+		return colorSafe
 	}
 }
 

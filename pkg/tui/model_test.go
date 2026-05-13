@@ -392,14 +392,14 @@ func TestBuildChart_NoBaselineStrip(t *testing.T) {
 func TestHeatColor(t *testing.T) {
 	tests := []struct {
 		ratio float64
-		want  lipgloss.Color
+		want  lipgloss.AdaptiveColor
 	}{
-		{0.0, Green},
-		{0.32, Green},
-		{0.33, Yellow},
-		{0.65, Yellow},
-		{0.66, Red},
-		{1.0, Red},
+		{0.0, colorSafe},
+		{0.32, colorSafe},
+		{0.33, colorWatch},
+		{0.65, colorWatch},
+		{0.66, colorDanger},
+		{1.0, colorDanger},
 	}
 	for _, tt := range tests {
 		got := heatColor(tt.ratio)
@@ -858,16 +858,17 @@ func TestTickFadeMsg(t *testing.T) {
 
 func TestIndexFadeStyle(t *testing.T) {
 	// Verifies the three fade stops map to the expected foregrounds.
-	// Stop 1 is the default fg (no Foreground set, which lipgloss reports
-	// as NoColor{}); stops 2 and 3 step down through Dim (ANSI 8) and
-	// ANSI 0 — the indicator's final near-invisible step before disappearing.
+	// Stop 1 is the default fg (no Foreground set, which lipgloss reports as
+	// NoColor{}). Stops 2 and 3 step down through colorMuted and colorFaint —
+	// adaptive tokens that render brighter or darker depending on the
+	// terminal's background.
 	cases := []struct {
 		stop int
 		want lipgloss.TerminalColor
 	}{
 		{1, lipgloss.NoColor{}},
-		{2, Dim},
-		{3, lipgloss.Color("0")},
+		{2, colorMuted},
+		{3, colorFaint},
 	}
 	for _, c := range cases {
 		t.Run(fmt.Sprintf("stop_%d", c.stop), func(t *testing.T) {
@@ -2065,6 +2066,7 @@ func TestLabelFade_MidAnimationBinding(t *testing.T) {
 	// fade-related tests cover the empty-moment and content swap; this
 	// test pins the brightness binding.
 	withForcedColor(t)
+	withForcedDarkBackground(t, true)
 
 	const probe = "$1.23"
 	full := labelFadeStyle(1.0).Render(probe)
