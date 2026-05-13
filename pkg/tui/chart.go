@@ -12,19 +12,24 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// ZoomLevel maps a human label to a bucket duration. The chart's
-// horizontal extent is no longer per-zoom — it spans from the earliest
-// cached message to "now" at every zoom (see issue #53).
+// ZoomLevel maps a human label to a bucket duration and a per-bar visual
+// width. The chart's horizontal extent is no longer per-zoom — it spans
+// from the earliest cached message to "now" at every zoom (see issue #53).
+// BarWidth is the column count each bar occupies in the rendered canvas;
+// the X-axis label slot for that bar is the same width. Tuning a zoom's
+// bar width is a single edit in ZoomLevels.
 type ZoomLevel struct {
 	Label    string
 	Duration time.Duration
+	BarWidth int
 }
 
 // ZoomLevels are the available zoom steps, cycled with the z key.
+// Order matters: pkg/tui/model.go indexes by position (zoomIdx).
 var ZoomLevels = []ZoomLevel{
-	{"5m", 5 * time.Minute},
-	{"15m", 15 * time.Minute},
-	{"1h", time.Hour},
+	{"15m", 15 * time.Minute, 1},
+	{"1h", time.Hour, 1},
+	{"24h", 24 * time.Hour, 5},
 }
 
 // overlayYLabel splices `formatUnitValue(niceFloorFloat(peak), unit)` in

@@ -572,6 +572,38 @@ func TestFormatUnitValue(t *testing.T) {
 	}
 }
 
+func TestZoomLevels_Shape(t *testing.T) {
+	t.Parallel()
+	if len(ZoomLevels) != 3 {
+		t.Fatalf("expected 3 zoom levels, got %d", len(ZoomLevels))
+	}
+	want := []struct {
+		Label    string
+		Duration time.Duration
+		BarWidth int
+	}{
+		{"15m", 15 * time.Minute, 1},
+		{"1h", time.Hour, 1},
+		{"24h", 24 * time.Hour, 5},
+	}
+	for i, w := range want {
+		got := ZoomLevels[i]
+		if got.Label != w.Label || got.Duration != w.Duration || got.BarWidth != w.BarWidth {
+			t.Errorf("ZoomLevels[%d] = %+v, want {%q, %v, %d}",
+				i, got, w.Label, w.Duration, w.BarWidth)
+		}
+	}
+}
+
+func TestZoomLevels_BarWidthPositive(t *testing.T) {
+	t.Parallel()
+	for i, z := range ZoomLevels {
+		if z.BarWidth < 1 {
+			t.Errorf("ZoomLevels[%d].BarWidth = %d, want >= 1", i, z.BarWidth)
+		}
+	}
+}
+
 func TestOverlayYLabel_FadeZeroSkipsRender(t *testing.T) {
 	// fade == 0 (and fade < 0 by clamp) must short-circuit and return
 	// body unchanged. This is how the empty-moment frame ends up with
