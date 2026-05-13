@@ -16,10 +16,16 @@ import (
 	"modernc.org/sqlite"
 )
 
+// tsFormat is the canonical layout for persisting and parsing
+// messages.ts. Every reader/writer path that touches the ts column MUST
+// use this const — format drift would silently misroute rows through
+// local_day's parse, dropping counts into a phantom "" day bucket.
+const tsFormat = "2006-01-02T15:04:05.000Z07:00"
+
 // init registers a deterministic local_day(ts) SQL scalar function. It
-// projects a UTC RFC3339 timestamp string into the calendar day of
-// time.Local and returns "YYYY-MM-DD" — used by the 24h zoom path to
-// bucket messages by local-tz day.
+// projects a tsFormat-encoded UTC timestamp string into the calendar
+// day of time.Local and returns "YYYY-MM-DD" — used by the 24h zoom
+// path to bucket messages by local-tz day.
 //
 // Why not SQLite's built-in `strftime('%Y-%m-%d', ts, 'localtime')`?
 // modernc.org/sqlite's transpiled libc reads tzdata differently per
@@ -30,6 +36,17 @@ import (
 // time.Local. Tests that mutate time.Local therefore work on Mac and
 // silently fall back to UTC on Linux. This Go-side function reads
 // time.Local at call time, behaving identically on both platforms.
+//
+// Deterministic flag contract: time.Local is treated as a
+// process-lifetime constant outside tests. Tests that mutate it (see
+// withTimeLocal in cache_test.go) open a fresh Cache per test, so
+// SQLite's per-statement function-call dedupe never spans a mutation.
+// Any future in-process tz mutation outside tests would surface as
+// stale bucket grouping.
+//
+// Errors are returned (not silently mapped to "") so a future format
+// drift between local_day and the writer at InsertMessages fails the
+// SELECT loudly rather than silently undercounting the chart.
 func init() {
 	sqlite.MustRegisterDeterministicScalarFunction(
 		"local_day",
@@ -37,11 +54,11 @@ func init() {
 		func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
 			ts, ok := args[0].(string)
 			if !ok {
-				return "", nil
+				return nil, fmt.Errorf("local_day: ts arg is %T, want string", args[0])
 			}
-			t, err := time.Parse("2006-01-02T15:04:05.000Z07:00", ts)
+			t, err := time.Parse(tsFormat, ts)
 			if err != nil {
-				return "", nil
+				return nil, fmt.Errorf("local_day: parse ts %q: %w", ts, err)
 			}
 			return t.In(time.Local).Format("2006-01-02"), nil
 		},
@@ -232,7 +249,7 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 			sub = 1
 		}
 		if _, err := stmt.Exec(
-			m.SessionID, m.ProjectSlug, m.Timestamp.UTC().Format("2006-01-02T15:04:05.000Z07:00"),
+			m.SessionID, m.ProjectSlug, m.Timestamp.UTC().Format(tsFormat),
 			m.Role, m.Model,
 			m.InputTokens, m.OutputTokens, m.CacheReadTokens,
 			m.CacheWrite5mTokens, m.CacheWrite1hTokens,
@@ -352,8 +369,8 @@ func (c *Cache) TokenBuckets(dur time.Duration, from, to time.Time) ([]TokenBuck
 		return nil, nil
 	}
 	bucketSecs := int64(dur.Seconds())
-	fromStr := from.UTC().Format("2006-01-02T15:04:05.000Z07:00")
-	toStr := to.UTC().Format("2006-01-02T15:04:05.000Z07:00")
+	fromStr := from.UTC().Format(tsFormat)
+	toStr := to.UTC().Format(tsFormat)
 	rows, err := c.db.Query(`
 SELECT
   CAST(CAST(strftime('%s', ts) AS INTEGER) / ? AS INTEGER) * ? AS bucket_epoch,
@@ -417,8 +434,8 @@ func (c *Cache) tokenBucketsDaily(from, to time.Time) ([]TokenBucket, error) {
 	if !to.After(from) {
 		return nil, nil
 	}
-	fromStr := from.UTC().Format("2006-01-02T15:04:05.000Z07:00")
-	toStr := to.UTC().Format("2006-01-02T15:04:05.000Z07:00")
+	fromStr := from.UTC().Format(tsFormat)
+	toStr := to.UTC().Format(tsFormat)
 	rows, err := c.db.Query(`
 SELECT
   local_day(ts) AS day,
@@ -447,7 +464,11 @@ ORDER BY day ASC
 		return nil, err
 	}
 
-	out := []TokenBucket{}
+	// AddDate(0, 0, 1) is load-bearing: it advances by one calendar day in
+	// time.Local, producing a single bucket per DST transition day (23h or
+	// 25h). Add(24*time.Hour) would drift by one hour across each
+	// transition and mis-bucket messages near local midnight.
+	out := make([]TokenBucket, 0, int(to.Sub(from)/(24*time.Hour))+1)
 	for d := from; d.Before(to); d = d.AddDate(0, 0, 1) {
 		key := d.Format("2006-01-02")
 		out = append(out, TokenBucket{BucketStart: d, Tokens: totals[key]})
@@ -485,8 +506,8 @@ func (c *Cache) CostBuckets(dur time.Duration, from, to time.Time) ([]CostBucket
 		return nil, nil
 	}
 	bucketSecs := int64(dur.Seconds())
-	fromStr := from.UTC().Format("2006-01-02T15:04:05.000Z07:00")
-	toStr := to.UTC().Format("2006-01-02T15:04:05.000Z07:00")
+	fromStr := from.UTC().Format(tsFormat)
+	toStr := to.UTC().Format(tsFormat)
 	rows, err := c.db.Query(`
 SELECT
   CAST(CAST(strftime('%s', ts) AS INTEGER) / ? AS INTEGER) * ? AS bucket_epoch,
@@ -541,8 +562,8 @@ func (c *Cache) costBucketsDaily(from, to time.Time) ([]CostBucket, error) {
 	if !to.After(from) {
 		return nil, nil
 	}
-	fromStr := from.UTC().Format("2006-01-02T15:04:05.000Z07:00")
-	toStr := to.UTC().Format("2006-01-02T15:04:05.000Z07:00")
+	fromStr := from.UTC().Format(tsFormat)
+	toStr := to.UTC().Format(tsFormat)
 	rows, err := c.db.Query(`
 SELECT
   local_day(ts) AS day,
@@ -570,7 +591,8 @@ ORDER BY day ASC
 		return nil, err
 	}
 
-	out := []CostBucket{}
+	// See tokenBucketsDaily for the AddDate(0,0,1) DST-correctness rationale.
+	out := make([]CostBucket, 0, int(to.Sub(from)/(24*time.Hour))+1)
 	for d := from; d.Before(to); d = d.AddDate(0, 0, 1) {
 		key := d.Format("2006-01-02")
 		out = append(out, CostBucket{BucketStart: d, Cost: totals[key]})
@@ -611,7 +633,7 @@ func (c *Cache) EarliestMessageTime() (time.Time, bool, error) {
 	if !s.Valid {
 		return time.Time{}, false, nil
 	}
-	t, err := time.Parse("2006-01-02T15:04:05.000Z07:00", s.String)
+	t, err := time.Parse(tsFormat, s.String)
 	if err != nil {
 		return time.Time{}, false, fmt.Errorf("parse earliest ts %q: %w", s.String, err)
 	}

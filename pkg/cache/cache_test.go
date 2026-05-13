@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"testing"
 	"time"
 
@@ -33,6 +34,31 @@ func withTimeLocal(t *testing.T, name string) {
 	prev := time.Local
 	time.Local = loc
 	t.Cleanup(func() { time.Local = prev })
+}
+
+// TestNoParallelInCacheTests enforces the withTimeLocal contract: no
+// test in this file may opt into parallel execution. The helper mutates
+// the global time.Local; under -race, any concurrent tz-reading test
+// would race. The contract is documented in withTimeLocal's comment but
+// not statically checked by the language, so this self-greps the source
+// file at test time.
+//
+// The guard regex matches a leading-whitespace + literal "t.Parallel()"
+// pattern. Its source representation here uses backslash-escapes, so
+// this test does not match its own body.
+func TestNoParallelInCacheTests(t *testing.T) {
+	body, err := os.ReadFile("cache_test.go")
+	if err != nil {
+		t.Fatalf("read cache_test.go: %v", err)
+	}
+	re := regexp.MustCompile(`(?m)^\s*t\.Parallel\(\)`)
+	if locs := re.FindAllIndex(body, -1); len(locs) > 0 {
+		t.Fatalf("pkg/cache/cache_test.go contains %d t.Parallel call(s); "+
+			"withTimeLocal mutates the global time.Local and cannot race "+
+			"with parallel tests in the same package. Remove the call or "+
+			"move tz-mutating tests to a sub-package run with -p 1.",
+			len(locs))
+	}
 }
 
 func TestOpenAppliesSchema(t *testing.T) {
