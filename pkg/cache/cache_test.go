@@ -16,6 +16,25 @@ import (
 	"github.com/martinciu/ccpulse/pkg/pricing"
 )
 
+// withTimeLocal swaps time.Local for the duration of the test. Tests
+// calling this MUST NOT use t.Parallel() — mutating time.Local races
+// with any other tz-aware test in the same package.
+//
+// Used by 24h-zoom tests to drive SQLite's 'localtime' modifier
+// (modernc.org/sqlite reads Go's time.Local). t.Setenv("TZ", ...) is
+// insufficient: time.Local is resolved once at program init and does
+// not refresh from TZ mid-process.
+func withTimeLocal(t *testing.T, name string) {
+	t.Helper()
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		t.Fatalf("load tz %q: %v", name, err)
+	}
+	prev := time.Local
+	time.Local = loc
+	t.Cleanup(func() { time.Local = prev })
+}
+
 func TestOpenAppliesSchema(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "state.db")
@@ -985,19 +1004,12 @@ func TestInsertMessages_PersistsCwdAndGitBranch(t *testing.T) {
 }
 
 func TestDayStartLocal(t *testing.T) {
-	prev := time.Local
-	loc, err := time.LoadLocation("Europe/Berlin")
-	if err != nil {
-		t.Fatalf("load tz: %v", err)
-	}
-	time.Local = loc
-	t.Cleanup(func() { time.Local = prev })
+	withTimeLocal(t, "Europe/Berlin")
 
-	// 2026-05-13T22:00:00Z is 2026-05-14T00:00:00 CEST.
 	in := time.Date(2026, 5, 13, 22, 0, 0, 0, time.UTC)
 	got := dayStartLocal(in)
 
-	wantInstant := time.Date(2026, 5, 14, 0, 0, 0, 0, loc)
+	wantInstant := time.Date(2026, 5, 14, 0, 0, 0, 0, time.Local)
 	if !got.Equal(wantInstant) {
 		t.Errorf("dayStartLocal(%v) = %v, want %v", in, got, wantInstant)
 	}
