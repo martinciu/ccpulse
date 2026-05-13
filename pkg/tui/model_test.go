@@ -1457,13 +1457,13 @@ func TestScrollHelpers_UpdateShadowOffset(t *testing.T) {
 }
 
 // seedScrollTestModel builds a Model + Cache pair seeded with `count`
-// messages spaced 5 minutes apart ending now. With count=500 the cache
-// spans ~41h, which at 5m zoom (zoomIdx=0) produces ~500 buckets vs
-// chartWidth=118 at w=120 — plenty of scroll room. At 15m zoom the same
-// cache produces ~167 buckets, still overflowing chartWidth=118, so the
+// messages spaced 15 minutes apart ending now. With count=500 the cache
+// spans ~125h, which at 15m zoom (zoomIdx=0) produces ~500 buckets vs
+// chartWidth=118 at w=120 — plenty of scroll room. At 1h zoom the same
+// cache produces ~125 buckets, still overflowing chartWidth=118, so the
 // zoom-translation subtest also has somewhere to scroll.
 //
-// Returns the Model with chartWidth=118 (w=120) and zoom=5m (zoomIdx=0).
+// Returns the Model with chartWidth=118 (w=120) and zoom=15m (zoomIdx=0).
 // Caller is responsible for cache.Close via the returned cleanup.
 func seedScrollTestModel(t *testing.T, count int) (*Model, func()) {
 	t.Helper()
@@ -1476,14 +1476,14 @@ func seedScrollTestModel(t *testing.T, count int) (*Model, func()) {
 		c.Close()
 		t.Fatal(err)
 	}
-	now := time.Now().UTC().Truncate(5 * time.Minute)
+	now := time.Now().UTC().Truncate(15 * time.Minute)
 	msgs := make([]parse.Message, count)
 	for i := range msgs {
 		msgs[i] = parse.Message{
 			SessionID:   "s1",
 			ProjectSlug: "p",
 			Model:       "claude-opus-4-7",
-			Timestamp:   now.Add(time.Duration(-i*5) * time.Minute),
+			Timestamp:   now.Add(time.Duration(-i*15) * time.Minute),
 			InputTokens: int64(1000 + i*10),
 		}
 	}
@@ -1493,7 +1493,7 @@ func seedScrollTestModel(t *testing.T, count int) (*Model, func()) {
 	}
 	m := New(Deps{Cache: c})
 	m.w, m.h = 120, 40
-	m.zoomIdx = 0 // 5m zoom: count messages → ~count buckets, overflows chartWidth=118
+	m.zoomIdx = 0 // 15m zoom: count messages → ~count buckets, overflows chartWidth=118
 	m.viewport.Width = m.chartWidth()
 	m.viewport.Height = m.chartHeight()
 	m.refreshChart()
@@ -1523,11 +1523,11 @@ func TestRefreshChart_PreservesWallClockAnchor(t *testing.T) {
 	//
 	// Scroll amount and count are chosen so the anchor index remains
 	// within maxX after every trigger:
-	//   - count=500, zoomIdx=0 (5m): ~500 buckets, maxX≈382 at w=120
-	//   - scrollLeft(250): offset≈132, safely mid-chart
-	//   - after zoom to 15m: ~167 buckets, maxX≈49; BucketAlign(anchor,15m)
-	//     lands near now−(132×5m)=~11h ago, well within the 15m grid
-	//   - after resize w=160: chartWidth=158, maxX≈342; offset 132 < 342
+	//   - count=700, zoomIdx=0 (15m): ~700 buckets, maxX≈582 at w=120
+	//   - scrollLeft(450): offset≈132, safely mid-chart
+	//   - after zoom to 1h: ~175 buckets, maxX≈57; BucketAlign(anchor,1h)
+	//     lands near now−(568×15m)=~142h ago, well within the 1h grid
+	//   - after resize w=160: chartWidth=158, maxX≈542; offset 132 < 542
 	tests := []struct {
 		name        string
 		startPinned bool
@@ -1553,7 +1553,7 @@ func TestRefreshChart_PreservesWallClockAnchor(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			m, cleanup := seedScrollTestModel(t, 500)
+			m, cleanup := seedScrollTestModel(t, 700)
 			defer cleanup()
 
 			// Set up scroll precondition.
@@ -1564,11 +1564,12 @@ func TestRefreshChart_PreservesWallClockAnchor(t *testing.T) {
 					t.Fatalf("setup: expected pinned-right, got viewportXOffset=%d", m.viewportXOffset)
 				}
 			} else {
-				// Scroll left to a mid-chart position. Use 250 steps so the
-				// anchor (≈132 buckets from left at 5m) remains within maxX
-				// at every post-trigger zoom/size — including after zoom to
-				// 15m (maxX≈49) and resize to w=160 (maxX≈342).
-				m.scrollLeft(250)
+				// Scroll left to a mid-chart position. Use 450 steps so the
+				// anchor (≈132 buckets from left at 15m = ~142h ago) remains
+				// within maxX at every post-trigger zoom/size — including after
+				// zoom to 1h (maxX≈57, anchor at pos≈33) and resize to w=160
+				// (maxX≈542).
+				m.scrollLeft(450)
 				if m.viewportXOffset == 0 || m.viewportXOffset == max(0, len(m.lastStarts)-m.chartWidth()) {
 					t.Fatalf("setup: scroll should land mid-chart, got viewportXOffset=%d", m.viewportXOffset)
 				}

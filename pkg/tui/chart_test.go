@@ -644,6 +644,36 @@ func TestZoomLevels_BarWidthPositive(t *testing.T) {
 	}
 }
 
+// TestBuildChart_24h_CanvasWidth verifies that a 24h-zoom call with
+// canvasW = len(values)*BarWidth produces output rows of exactly that
+// width. This exercises the WithBarWidth/WithNoAutoBarWidth path so
+// ntcharts does not auto-expand bar widths beyond the slot allocation.
+func TestBuildChart_24h_CanvasWidth(t *testing.T) {
+	t.Parallel()
+	zoom := ZoomLevels[2] // 24h, BarWidth=5
+	now := time.Date(2024, 5, 7, 12, 0, 0, 0, time.UTC)
+	n := 4
+	values := make([]float64, n)
+	starts := make([]time.Time, n)
+	for i := range values {
+		values[i] = float64((i + 1) * 100)
+		starts[i] = now.AddDate(0, 0, i-3)
+	}
+	peak := values[n-1]
+	canvasW := n * zoom.BarWidth // 20
+	out := buildChart(values, starts, peak, canvasW, 10, now, zoom, chartUnitTokens, dateOrderMonthFirst)
+	rows := strings.Split(out, "\n")
+	if len(rows) != 10 {
+		t.Fatalf("expected 10 rows, got %d", len(rows))
+	}
+	for i, row := range rows {
+		w := lipgloss.Width(row)
+		if w != canvasW {
+			t.Errorf("row %d: visual width=%d, want %d\n  %q", i, w, canvasW, row)
+		}
+	}
+}
+
 func TestOverlayYLabel_FadeZeroSkipsRender(t *testing.T) {
 	// fade == 0 (and fade < 0 by clamp) must short-circuit and return
 	// body unchanged. This is how the empty-moment frame ends up with

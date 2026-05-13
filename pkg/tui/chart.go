@@ -84,10 +84,7 @@ func renderXLabels(starts []time.Time, chartW int, zoom ZoomLevel, now time.Time
 	if chartW < 1 || len(starts) == 0 {
 		return ""
 	}
-	bw := zoom.BarWidth
-	if bw < 1 {
-		bw = 1
-	}
+	bw := max(zoom.BarWidth, 1)
 	row := make([]rune, chartW)
 	for i := range row {
 		row[i] = ' '
@@ -335,6 +332,8 @@ func buildChart(values []float64, starts []time.Time, peak float64,
 		barchart.WithBarGap(0),
 		barchart.WithNoAxis(),
 		barchart.WithMaxValue(maxValue),
+		barchart.WithNoAutoBarWidth(),
+		barchart.WithBarWidth(zoom.BarWidth),
 	)
 	bc.PushAll(bars)
 	bc.Draw()
