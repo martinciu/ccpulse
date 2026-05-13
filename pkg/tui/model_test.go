@@ -858,16 +858,17 @@ func TestTickFadeMsg(t *testing.T) {
 
 func TestIndexFadeStyle(t *testing.T) {
 	// Verifies the three fade stops map to the expected foregrounds.
-	// Stop 1 is the default fg (no Foreground set, which lipgloss reports
-	// as NoColor{}); stops 2 and 3 step down through Dim (ANSI 8) and
-	// ANSI 0 — the indicator's final near-invisible step before disappearing.
+	// Stop 1 is the default fg (no Foreground set, which lipgloss reports as
+	// NoColor{}). Stops 2 and 3 step down through colorMuted and colorFaint —
+	// adaptive tokens that render brighter or darker depending on the
+	// terminal's background.
 	cases := []struct {
 		stop int
 		want lipgloss.TerminalColor
 	}{
 		{1, lipgloss.NoColor{}},
-		{2, Dim},
-		{3, lipgloss.Color("0")},
+		{2, colorMuted},
+		{3, colorFaint},
 	}
 	for _, c := range cases {
 		t.Run(fmt.Sprintf("stop_%d", c.stop), func(t *testing.T) {

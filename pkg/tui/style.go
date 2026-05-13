@@ -50,21 +50,22 @@ const (
 
 // indexFadeStyle returns the lipgloss style for the supplied fade stop.
 // stop=1 uses the terminal's default foreground (no Foreground call);
-// stops 2 and 3 step down through Dim (ANSI 8) and ANSI 0. ANSI 0 sits
-// near the terminal's background on curated themes, intentionally chosen
-// as the penultimate near-invisible step before the indicator disappears.
-// Any out-of-range stop falls back to ANSI 0 — defensive only;
+// stops 2 and 3 step down through colorMuted (chrome) and colorFaint
+// (near-bg). The fade is consumed by the post-backfill "✓ indexed N"
+// indicator and runs over a 1.2 s window via tickFadeMsg.
+//
+// Any out-of-range stop falls back to colorFaint — defensive only;
 // renderIndicators gates on FadeStop > 0 && FadeStop <= indexFadeStopCount.
 func indexFadeStyle(stop int) lipgloss.Style {
 	switch stop {
 	case 1:
 		return lipgloss.NewStyle()
 	case 2:
-		return lipgloss.NewStyle().Foreground(Dim)
+		return lipgloss.NewStyle().Foreground(colorMuted)
 	case 3:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("0"))
+		return lipgloss.NewStyle().Foreground(colorFaint)
 	default:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("0"))
+		return lipgloss.NewStyle().Foreground(colorFaint)
 	}
 }
 
