@@ -1,5 +1,11 @@
 package devlog
 
+// Tests in this file mutate slog.SetDefault and must NOT call t.Parallel().
+// slog.Default is process-global, so concurrent tests would cross-
+// contaminate the captured handler — debug.log content from one test
+// could land mid-assertion in another. Mirrors the constraint documented
+// for pkg/anthro's captureLogs helper.
+
 import (
 	"context"
 	"log/slog"

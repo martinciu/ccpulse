@@ -789,19 +789,32 @@ func TestFetchLogs_WriteCacheFailure(t *testing.T) {
 	}
 }
 
-// TestFetch_NoBearerTokenInLogs is the privacy guard for the only call
-// site in ccpulse that handles a credential: the Anthropic fetch path.
-// The Bearer token (privacyAccessToken) is set into Credential.AccessToken
-// and threaded through Fetch → fetchAPI → req.Header. None of those code
-// paths should emit the token to slog. The test renders captured records
-// to a real slog.TextHandler so the assertion is on the literal bytes
-// that would land in ccpulse.log.
+// TestFetch_NoCredentialFieldsInLogs is the privacy guard for the only
+// call site in ccpulse that handles a credential: the Anthropic fetch
+// path. Every string-shaped Credential field is planted with a sentinel
+// (Bearer/refresh tokens, subscription type, rate-limit tier, scope) and
+// the credential is threaded through Fetch → fetchAPI → req.Header. None
+// of those code paths should emit any sentinel to slog. The test renders
+// captured records to a real slog.TextHandler so the assertion is on the
+// literal bytes that would land in ccpulse.log.
 //
 // Scope deliberately narrow: this does NOT plant sentinels inside the
 // HTTP response body. body_snippet is logged on non-2xx and decode paths
 // (bounded and Quote'd per the design spec); planting body sentinels
 // would fail by design. See privacy_sentinels_test.go for the policy.
-func TestFetch_NoBearerTokenInLogs(t *testing.T) {
+//
+// Verifying this test is not vacuous after a refactor: temporarily add
+//
+//	slog.Info("probe", "tok", token)
+//
+// inside fetchAPI between req.Header.Set("Authorization", ...) and the
+// http.DefaultClient.Do call. Run:
+//
+//	go test ./pkg/anthro/ -run TestFetch_NoCredentialFieldsInLogs
+//
+// Expect FAIL with the planted Bearer sentinel visible in the rendered
+// TextHandler output. Revert the probe afterwards.
+func TestFetch_NoCredentialFieldsInLogs(t *testing.T) {
 	dir := t.TempDir()
 
 	srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
@@ -816,15 +829,29 @@ func TestFetch_NoBearerTokenInLogs(t *testing.T) {
 		Level: slog.LevelDebug,
 	})))
 
-	_, err := Fetch(context.Background(),
-		Credential{AccessToken: privacyAccessToken},
-		dir)
+	cred := Credential{
+		AccessToken:      privacyAccessToken,
+		RefreshToken:     privacyRefreshToken,
+		Scopes:           []string{privacyScope},
+		SubscriptionType: privacySubscriptionType,
+		RateLimitTier:    privacyRateLimitTier,
+	}
+	_, err := Fetch(context.Background(), cred, dir)
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
 
-	if strings.Contains(buf.String(), privacyAccessToken) {
-		t.Errorf("slog output leaked Bearer token sentinel:\n%s", buf.String())
+	out := buf.String()
+	for _, sentinel := range []string{
+		privacyAccessToken,
+		privacyRefreshToken,
+		privacySubscriptionType,
+		privacyRateLimitTier,
+		privacyScope,
+	} {
+		if strings.Contains(out, sentinel) {
+			t.Errorf("slog output leaked credential sentinel %q:\n%s", sentinel, out)
+		}
 	}
 }
 

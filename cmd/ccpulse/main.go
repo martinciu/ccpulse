@@ -40,9 +40,15 @@ var (
 // logLevelFlag is the raw value of --log-level after cobra parses.
 // resolvedLogLevel is the slog.Level it parsed to; written by
 // PersistentPreRunE on the root cmd, read by runTUI and doctor.
+//
+// Initialized to devlog.LevelOff so that if anything ever bypasses
+// PersistentPreRunE (a direct runTUI call from a test, a future
+// subcommand that replaces the root's PersistentPreRunE), the failure
+// mode is "silent log handler, no file opened" rather than "wrong
+// level + a file gets opened against the user's intent".
 var (
 	logLevelFlag     string
-	resolvedLogLevel slog.Level
+	resolvedLogLevel = devlog.LevelOff
 )
 
 // defaultLogLevelFlag returns the channel-aware default for --log-level.
