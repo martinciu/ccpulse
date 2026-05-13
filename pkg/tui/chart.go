@@ -29,7 +29,7 @@ type ZoomLevel struct {
 var ZoomLevels = []ZoomLevel{
 	{"15m", 15 * time.Minute, 1},
 	{"1h", time.Hour, 1},
-	{"24h", 24 * time.Hour, 5},
+	{"24h", 24 * time.Hour, 10},
 }
 
 // overlayYLabel splices `formatUnitValue(niceFloorFloat(peak), unit)` in
@@ -72,14 +72,13 @@ func overlayYLabel(body string, peak float64, unit chartUnit, chartH int, fade f
 }
 
 // renderXLabels returns a 1-row string of width chartW containing
-// clock-aligned tick labels placed at matching bucket columns, with
-// "▼ now" right-aligned at the rightmost columns (always wins on
-// collision). Each label is centered inside its bar's slot at
-// column i*BarWidth + (BarWidth-labelW)/2. For BarWidth=1 the centering
-// math falls back to col (labelW ≥ 3 > 1, so (1-labelW)/2 < 0).
-// Labels that would overflow chartW on the right are dropped. Empty
-// starts → "". colorMuted foreground throughout — Y axis labels are
-// default fg so the eye distinguishes the two rows when they sit close.
+// clock-aligned tick labels placed at matching bucket columns. Each
+// label is centered inside its bar's slot at column
+// i*BarWidth + (BarWidth-labelW)/2. For BarWidth=1 the centering math
+// falls back to col (labelW ≥ 3 > 1, so (1-labelW)/2 < 0). Labels that
+// would overflow chartW on the right are dropped. Empty starts → "".
+// colorMuted foreground throughout — Y axis labels are default fg so
+// the eye distinguishes the two rows when they sit close.
 func renderXLabels(starts []time.Time, chartW int, zoom ZoomLevel, now time.Time, order dateOrder) string {
 	if chartW < 1 || len(starts) == 0 {
 		return ""
@@ -110,19 +109,6 @@ func renderXLabels(starts []time.Time, chartW int, zoom ZoomLevel, now time.Time
 		for j, r := range []rune(label) {
 			row[start+j] = r
 		}
-	}
-
-	const nowText = "▼ now"
-	nowRunes := []rune(nowText)
-	nowW := lipgloss.Width(nowText)
-	switch {
-	case nowW <= chartW:
-		start := chartW - nowW
-		for j, r := range nowRunes {
-			row[start+j] = r
-		}
-	case chartW >= 1:
-		row[chartW-1] = '▼'
 	}
 
 	return dimStyle.Render(string(row))

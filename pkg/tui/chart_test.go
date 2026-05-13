@@ -156,32 +156,6 @@ func itoa3(n int) string {
 	return string(buf[i:])
 }
 
-func TestBuildChart_ContainsXLabelsAndNowMarker(t *testing.T) {
-	now := time.Now().UTC().Truncate(time.Hour)
-	bs := []cache.TokenBucket{
-		{BucketStart: now.Add(-30 * time.Minute), Tokens: 1000},
-		{BucketStart: now.Add(-25 * time.Minute), Tokens: 2000},
-		{BucketStart: now.Add(-20 * time.Minute), Tokens: 1500},
-		{BucketStart: now.Add(-15 * time.Minute), Tokens: 3000},
-		{BucketStart: now.Add(-10 * time.Minute), Tokens: 2500},
-		{BucketStart: now.Add(-5 * time.Minute), Tokens: 4500},
-		{BucketStart: now, Tokens: 3500},
-	}
-	values, starts, peak := projectBuckets(bs)
-	out := buildChart(values, starts, peak, len(bs), 10, now, ZoomLevels[0], chartUnitTokens, dateOrderMonthFirst)
-	if !strings.Contains(out, "▼ now") {
-		t.Errorf("expected '▼ now' marker in chart output:\n%s", out)
-	}
-	rows := strings.Split(out, "\n")
-	if len(rows) != 10 {
-		t.Errorf("expected 10 rows (chartH), got %d", len(rows))
-	}
-	if !strings.Contains(rows[len(rows)-1], "▼ now") {
-		t.Errorf("▼ now should be on the last row:\nlast row: %q\nfull:\n%s",
-			rows[len(rows)-1], out)
-	}
-}
-
 func TestBuildChart_ChartHTooShortDropsXLabels(t *testing.T) {
 	now := time.Now().UTC().Truncate(15 * time.Minute)
 	bs := []cache.TokenBucket{
@@ -193,27 +167,9 @@ func TestBuildChart_ChartHTooShortDropsXLabels(t *testing.T) {
 	// be dropped and bars should take all 5 rows.
 	values, starts, peak := projectBuckets(bs)
 	out := buildChart(values, starts, peak, len(bs), 5, now, ZoomLevels[0], chartUnitTokens, dateOrderMonthFirst)
-	if strings.Contains(out, "▼ now") {
-		t.Errorf("expected no '▼ now' marker when chartH=5; X labels should be dropped:\n%s", out)
-	}
 	rows := strings.Split(out, "\n")
 	if len(rows) != 5 {
 		t.Errorf("expected 5 rows (chartH), got %d", len(rows))
-	}
-}
-
-func TestRenderXLabels_NowTruncatesAtTinyChartW(t *testing.T) {
-	t.Parallel()
-	now := time.Now().UTC()
-	buckets := []cache.TokenBucket{{BucketStart: now}}
-	// chartW=1 can't fit "▼ now" (5 cols); only ▼ should appear.
-	_, starts, _ := projectBuckets(buckets)
-	got := renderXLabels(starts, 1, ZoomLevels[0], now, dateOrderMonthFirst)
-	if !strings.Contains(got, "▼") {
-		t.Errorf("expected ▼ at chartW=1, got %q", got)
-	}
-	if strings.Contains(got, "▼ now") {
-		t.Errorf("expected truncated ▼ at chartW=1, not full '▼ now', got %q", got)
 	}
 }
 
@@ -260,7 +216,7 @@ func TestRenderXLabels(t *testing.T) {
 			wantEmpty: true,
 		},
 		{
-			name: "15m hour label appears and now marker at right edge",
+			name: "15m hour label appears at 3-hour boundary",
 			buckets: mkBuckets(
 				time.Date(2026, 5, 12, 12, 0, 0, 0, time.UTC),
 				time.Date(2026, 5, 12, 12, 15, 0, 0, time.UTC),
@@ -272,7 +228,7 @@ func TestRenderXLabels(t *testing.T) {
 			),
 			chartW:      20,
 			zoom:        ZoomLevels[0],
-			wantSubstrs: []string{"12:00", "▼ now"},
+			wantSubstrs: []string{"12:00"},
 		},
 		{
 			name: "24h zoom shows weekday",
@@ -282,7 +238,7 @@ func TestRenderXLabels(t *testing.T) {
 			),
 			chartW:      30,
 			zoom:        ZoomLevels[2],
-			wantSubstrs: []string{"Tue", "▼ now"},
+			wantSubstrs: []string{"Tue"},
 		},
 	}
 	for _, tt := range tests {
@@ -592,23 +548,26 @@ func TestRenderXLabels_24h_PerBarLabel(t *testing.T) {
 		day(5, 11), // yesterday → "Mon"
 		day(5, 12), // today → "Tue"
 	}
-	zoom := ZoomLevels[2] // 24h, BarWidth=5
-	chartW := len(starts) * zoom.BarWidth // 20
+	zoom := ZoomLevels[2] // 24h, BarWidth=10
+	chartW := len(starts) * zoom.BarWidth
 	got := renderXLabels(starts, chartW, zoom, now, dateOrderMonthFirst)
 
-	// Strip ANSI to test content/positioning.
 	stripped := stripANSIForTest(got)
 
-	// Each bar is 5 cols wide; date labels are exactly 5 chars so they
-	// fill their slot. Weekday labels are 3 chars centered → 1-col pad
-	// on each side. "▼ now" always wins on collision — it overwrites the
-	// rightmost bucket's label — so we check only the first three slots.
-	wantPrefix := "04/3005/01 Mon "
-	if !strings.HasPrefix(stripped, wantPrefix) {
-		t.Errorf("rendered prefix = %q, want prefix %q", stripped, wantPrefix)
-	}
-	if !strings.Contains(stripped, "▼ now") {
-		t.Errorf("expected '▼ now' in output, got %q", stripped)
+	// Every bar gets a label, centered in its BarWidth-cols slot at
+	// col = i*BarWidth + (BarWidth-labelW)/2. 5-char dates and 3-char
+	// weekdays are both expected at their computed centered offsets.
+	wantLabels := []string{"04/30", "05/01", "Mon", "Tue"}
+	for slot, want := range wantLabels {
+		col := slot*zoom.BarWidth + (zoom.BarWidth-len(want))/2
+		if col+len(want) > len(stripped) {
+			t.Fatalf("slot %d: col %d + %d > len(stripped)=%d; output=%q",
+				slot, col, len(want), len(stripped), stripped)
+		}
+		if got := stripped[col : col+len(want)]; got != want {
+			t.Errorf("slot %d: at col %d expected %q, got %q\nfull: %q",
+				slot, col, want, got, stripped)
+		}
 	}
 }
 
@@ -624,7 +583,7 @@ func TestZoomLevels_Shape(t *testing.T) {
 	}{
 		{"15m", 15 * time.Minute, 1},
 		{"1h", time.Hour, 1},
-		{"24h", 24 * time.Hour, 5},
+		{"24h", 24 * time.Hour, 10},
 	}
 	for i, w := range want {
 		got := ZoomLevels[i]
@@ -650,7 +609,7 @@ func TestZoomLevels_BarWidthPositive(t *testing.T) {
 // ntcharts does not auto-expand bar widths beyond the slot allocation.
 func TestBuildChart_24h_CanvasWidth(t *testing.T) {
 	t.Parallel()
-	zoom := ZoomLevels[2] // 24h, BarWidth=5
+	zoom := ZoomLevels[2] // 24h
 	now := time.Date(2024, 5, 7, 12, 0, 0, 0, time.UTC)
 	n := 4
 	values := make([]float64, n)
@@ -660,7 +619,7 @@ func TestBuildChart_24h_CanvasWidth(t *testing.T) {
 		starts[i] = now.AddDate(0, 0, i-3)
 	}
 	peak := values[n-1]
-	canvasW := n * zoom.BarWidth // 20
+	canvasW := n * zoom.BarWidth
 	out := buildChart(values, starts, peak, canvasW, 10, now, zoom, chartUnitTokens, dateOrderMonthFirst)
 	rows := strings.Split(out, "\n")
 	if len(rows) != 10 {
