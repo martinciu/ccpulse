@@ -12,6 +12,7 @@ import (
 	"github.com/martinciu/ccpulse/pkg/cache"
 	"github.com/martinciu/ccpulse/pkg/channel"
 	"github.com/martinciu/ccpulse/pkg/config"
+	"github.com/martinciu/ccpulse/pkg/devlog"
 	"github.com/martinciu/ccpulse/pkg/pricing"
 	"github.com/spf13/cobra"
 )
@@ -76,13 +77,21 @@ func newDoctorCmd() *cobra.Command {
 				check(out, "parse-errors.log: not present", true, nil)
 			}
 
-			if channel.IsDev() {
-				debugPath := filepath.Join(cacheDir, "debug.log")
-				if info, err := os.Stat(debugPath); err == nil {
-					check(out, fmt.Sprintf("debug.log: %d bytes (%s old)",
-						info.Size(), time.Since(info.ModTime()).Truncate(time.Second)), true, nil)
+			// Log file: location and level depend on channel + --log-level.
+			if resolvedLogLevel == devlog.LevelOff {
+				fmt.Fprintf(out, "ℹ log file: (disabled — --log-level off)\n")
+			} else {
+				logName := "ccpulse.log"
+				if channel.IsDev() {
+					logName = "debug.log"
+				}
+				logPath := filepath.Join(cacheDir, logName)
+				fmt.Fprintf(out, "ℹ log file: %s [level=%s]\n", logPath, logLevelFlag)
+				if info, err := os.Stat(logPath); err == nil {
+					check(out, fmt.Sprintf("%s: %d bytes (%s old)",
+						logName, info.Size(), time.Since(info.ModTime()).Truncate(time.Second)), true, nil)
 				} else {
-					check(out, "debug.log: not present", true, nil)
+					check(out, fmt.Sprintf("%s: not present", logName), true, nil)
 				}
 			}
 

@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/martinciu/ccpulse/pkg/devlog"
 )
 
 func TestVersionString(t *testing.T) {
@@ -75,7 +77,7 @@ func TestInitDevlog_WarnsOnError(t *testing.T) {
 
 	cacheDir := filepath.Join(parent, "denied")
 	var buf bytes.Buffer
-	closer := initDevlog(true, cacheDir, &buf)
+	closer := initDevlog(true, cacheDir, slog.LevelDebug, &buf)
 	if closer != nil {
 		closer.Close()
 	}
@@ -84,7 +86,7 @@ func TestInitDevlog_WarnsOnError(t *testing.T) {
 	if !strings.Contains(out, "devlog init failed") {
 		t.Errorf("missing failure prefix in %q", out)
 	}
-	if !strings.Contains(out, "debug log disabled") {
+	if !strings.Contains(out, "log disabled") {
 		t.Errorf("missing remediation hint in %q", out)
 	}
 	if !strings.Contains(out, "check "+cacheDir+" permissions") {
@@ -97,7 +99,7 @@ func TestInitDevlog_QuietOnSuccess(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
 	var buf bytes.Buffer
-	closer := initDevlog(true, t.TempDir(), &buf)
+	closer := initDevlog(true, t.TempDir(), slog.LevelDebug, &buf)
 	if closer != nil {
 		defer closer.Close()
 	}
@@ -106,16 +108,18 @@ func TestInitDevlog_QuietOnSuccess(t *testing.T) {
 	}
 }
 
-func TestInitDevlog_ReleaseQuiet(t *testing.T) {
+func TestInitDevlog_LevelOffQuiet(t *testing.T) {
 	prev := slog.Default()
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
+	// At LevelOff, devlog.Init short-circuits: no file opened, nil closer,
+	// no stderr output. Matches the pre-#138 release-mode behaviour.
 	var buf bytes.Buffer
-	closer := initDevlog(false, t.TempDir(), &buf)
+	closer := initDevlog(false, t.TempDir(), devlog.LevelOff, &buf)
 	if closer != nil {
-		t.Errorf("release Init should return nil closer, got %T", closer)
+		t.Errorf("LevelOff should return nil closer, got %T", closer)
 	}
 	if buf.Len() != 0 {
-		t.Errorf("release should not write to w: %q", buf.String())
+		t.Errorf("LevelOff should not write to w: %q", buf.String())
 	}
 }

@@ -70,3 +70,34 @@ func TestLeafCommandsRejectExtraArgs(t *testing.T) {
 		})
 	}
 }
+
+func TestRoot_RejectsBogusLogLevel(t *testing.T) {
+	root := newRootCmd()
+	var out, errOut bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&errOut)
+	root.SetArgs([]string{"--log-level", "trace", "version"})
+
+	err := root.Execute()
+	if err == nil {
+		t.Fatalf("expected error from --log-level=trace, got nil")
+	}
+	if !strings.Contains(err.Error(), "log-level") {
+		t.Errorf("error %q does not mention log-level", err.Error())
+	}
+}
+
+func TestRoot_AcceptsValidLogLevels(t *testing.T) {
+	for _, lvl := range []string{"off", "error", "warn", "info", "debug", "DEBUG"} {
+		t.Run(lvl, func(t *testing.T) {
+			root := newRootCmd()
+			var out, errOut bytes.Buffer
+			root.SetOut(&out)
+			root.SetErr(&errOut)
+			root.SetArgs([]string{"--log-level", lvl, "version"})
+			if err := root.Execute(); err != nil {
+				t.Fatalf("unexpected error for --log-level=%s: %v", lvl, err)
+			}
+		})
+	}
+}

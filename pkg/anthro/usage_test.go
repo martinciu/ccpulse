@@ -1,6 +1,7 @@
 package anthro
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"log/slog"
@@ -785,6 +786,72 @@ func TestFetchLogs_WriteCacheFailure(t *testing.T) {
 	}
 	if _, ok := attrMap(*wc)["err"]; !ok {
 		t.Errorf("err attr missing on writeCache WARN")
+	}
+}
+
+// TestFetch_NoCredentialFieldsInLogs is the privacy guard for the only
+// call site in ccpulse that handles a credential: the Anthropic fetch
+// path. Every string-shaped Credential field is planted with a sentinel
+// (Bearer/refresh tokens, subscription type, rate-limit tier, scope) and
+// the credential is threaded through Fetch → fetchAPI → req.Header. None
+// of those code paths should emit any sentinel to slog. The test renders
+// captured records to a real slog.TextHandler so the assertion is on the
+// literal bytes that would land in ccpulse.log.
+//
+// Scope deliberately narrow: this does NOT plant sentinels inside the
+// HTTP response body. body_snippet is logged on non-2xx and decode paths
+// (bounded and Quote'd per the design spec); planting body sentinels
+// would fail by design. See privacy_sentinels_test.go for the policy.
+//
+// Verifying this test is not vacuous after a refactor: temporarily add
+//
+//	slog.Info("probe", "tok", token)
+//
+// inside fetchAPI between req.Header.Set("Authorization", ...) and the
+// http.DefaultClient.Do call. Run:
+//
+//	go test ./pkg/anthro/ -run TestFetch_NoCredentialFieldsInLogs
+//
+// Expect FAIL with the planted Bearer sentinel visible in the rendered
+// TextHandler output. Revert the probe afterwards.
+func TestFetch_NoCredentialFieldsInLogs(t *testing.T) {
+	dir := t.TempDir()
+
+	srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(sampleAPIBody))
+	})
+	withTestEndpoint(t, srv.URL)
+
+	var buf bytes.Buffer
+	prev := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+	})))
+
+	cred := Credential{
+		AccessToken:      privacyAccessToken,
+		RefreshToken:     privacyRefreshToken,
+		Scopes:           []string{privacyScope},
+		SubscriptionType: privacySubscriptionType,
+		RateLimitTier:    privacyRateLimitTier,
+	}
+	_, err := Fetch(context.Background(), cred, dir)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+
+	out := buf.String()
+	for _, sentinel := range []string{
+		privacyAccessToken,
+		privacyRefreshToken,
+		privacySubscriptionType,
+		privacyRateLimitTier,
+		privacyScope,
+	} {
+		if strings.Contains(out, sentinel) {
+			t.Errorf("slog output leaked credential sentinel %q:\n%s", sentinel, out)
+		}
 	}
 }
 

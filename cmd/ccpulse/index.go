@@ -45,7 +45,11 @@ func runIndex(ctx context.Context, rebuild bool) error {
 	if err := secfile.MkdirAll(cacheDir); err != nil {
 		return err
 	}
-	if logCloser, err := devlog.Init(channel.IsDev(), cacheDir); err == nil && logCloser != nil {
+	if logCloser, err := devlog.Init(devlog.Options{
+		IsDev:    channel.IsDev(),
+		CacheDir: cacheDir,
+		Level:    resolvedLogLevel,
+	}); err == nil && logCloser != nil {
 		defer logCloser.Close()
 	}
 	dbPath := filepath.Join(cacheDir, "state.db")

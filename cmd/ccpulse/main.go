@@ -37,6 +37,30 @@ var (
 	buildChannel = "dev"
 )
 
+// logLevelFlag is the raw value of --log-level after cobra parses.
+// resolvedLogLevel is the slog.Level it parsed to; written by
+// PersistentPreRunE on the root cmd, read by runTUI and doctor.
+//
+// Initialized to devlog.LevelOff so that if anything ever bypasses
+// PersistentPreRunE (a direct runTUI call from a test, a future
+// subcommand that replaces the root's PersistentPreRunE), the failure
+// mode is "silent log handler, no file opened" rather than "wrong
+// level + a file gets opened against the user's intent".
+var (
+	logLevelFlag     string
+	resolvedLogLevel = devlog.LevelOff
+)
+
+// defaultLogLevelFlag returns the channel-aware default for --log-level.
+// Read at flag-registration time; channel.Set(buildChannel) must have run
+// before newRootCmd() is called (main() guarantees this).
+func defaultLogLevelFlag() string {
+	if channel.IsDev() {
+		return "debug"
+	}
+	return "info"
+}
+
 // newTeaProgram is the constructor for the TUI program. Tests
 // override this to inject WithoutRenderer / WithInput / WithOutput
 // options and exercise the full runTUI lifecycle without a real TTY.
@@ -58,10 +82,24 @@ func newRootCmd() *cobra.Command {
 		Short:         "Claude Code usage TUI dashboard",
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			lvl, err := devlog.ParseLevel(logLevelFlag)
+			if err != nil {
+				return fmt.Errorf("--log-level: %w", err)
+			}
+			resolvedLogLevel = lvl
+			return nil
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runTUI(cmd.Context())
 		},
 	}
+	root.PersistentFlags().StringVar(
+		&logLevelFlag,
+		"log-level",
+		defaultLogLevelFlag(),
+		"logging verbosity: off | error | warn | info | debug",
+	)
 	root.AddCommand(newStatusCmd())
 	root.AddCommand(newIndexCmd())
 	root.AddCommand(newConfigCmd())
@@ -151,10 +189,14 @@ func ensureConfigFile(path string) error {
 // os.Stderr) along with a remediation hint. Devlog is best-effort, so
 // errors are non-fatal — they only mean slog output is now going to
 // io.Discard for the rest of the run.
-func initDevlog(isDev bool, cacheDir string, w io.Writer) io.Closer {
-	closer, err := devlog.Init(isDev, cacheDir)
+func initDevlog(isDev bool, cacheDir string, level slog.Level, w io.Writer) io.Closer {
+	closer, err := devlog.Init(devlog.Options{
+		IsDev:    isDev,
+		CacheDir: cacheDir,
+		Level:    level,
+	})
 	if err != nil {
-		fmt.Fprintf(w, "devlog init failed: %v (debug log disabled; check %s permissions)\n", err, cacheDir)
+		fmt.Fprintf(w, "devlog init failed: %v (log disabled; check %s permissions)\n", err, cacheDir)
 	}
 	return closer
 }
@@ -170,7 +212,7 @@ func runTUI(ctx context.Context) error {
 	if err := secfile.MkdirAll(cacheDir); err != nil {
 		return err
 	}
-	if logCloser := initDevlog(channel.IsDev(), cacheDir, os.Stderr); logCloser != nil {
+	if logCloser := initDevlog(channel.IsDev(), cacheDir, resolvedLogLevel, os.Stderr); logCloser != nil {
 		defer logCloser.Close()
 	}
 	dbPath := filepath.Join(cacheDir, "state.db")

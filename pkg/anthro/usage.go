@@ -272,9 +272,13 @@ func fetchAPI(ctx context.Context, token string) (Usage, error) {
 		// a sentinel error for caller branching. Not a duplicate-handling
 		// violation — upstream layers log different content at different
 		// severity.
-		// strconv.Quote escapes ANSI/CR/control bytes so a malicious or
-		// MitM'd response can't inject terminal-escape sequences into the
-		// log file (which is plain bytes; `tail`/`cat` would interpret).
+		// strconv.Quote escapes ANSI/CR/control bytes in body_snippet so a
+		// malicious or MitM'd response can't inject terminal-escape
+		// sequences into the log file (which is plain bytes; `tail`/`cat`
+		// would interpret). The "err" attribute is intentionally not
+		// Quote'd: error strings here surface only Go-internal text
+		// (status code, decode-offset, url.Error with host but no body
+		// bytes), not attacker-controlled response payload.
 		slog.Warn("anthro.fetchAPI non-2xx",
 			"status", resp.StatusCode,
 			"dur_ms", durMS,
