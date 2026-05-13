@@ -61,21 +61,36 @@ func indexFadeStyle(stop int) lipgloss.Style {
 }
 
 // Y-label fade for the two-phase unit-toggle animation (issue #136).
-// 5 stops defined as lipgloss.CompleteColor so termenv picks the
-// highest-fidelity rendering the terminal advertises:
-//   - Truecolor / 256-color: smooth 5-level grey fade via hex / 232–255.
-//   - ANSI 16-color: pairs collapse to default fg / ANSI 8 / ANSI 0 —
-//     3 distinct visible levels, same granularity indexFadeStyle gives.
+// 5 stops defined as lipgloss.CompleteAdaptiveColor so termenv picks the
+// highest-fidelity rendering the terminal advertises AND picks a side
+// (Light/Dark) that fades toward the user's actual background:
+//   - Truecolor / 256-color: smooth 5-level grey fade. On dark themes the
+//     ramp descends toward near-black; on light themes it ascends toward
+//     near-white. Either way the faintest stop matches the background.
+//   - ANSI 16-color: stops collapse to default fg / ANSI 8 / ANSI 0 on
+//     dark and default fg / ANSI 8 / ANSI 7 / ANSI 15 on light.
 //
 // Stop 1 deliberately uses no Foreground call (matches indexFadeStyle's
 // stop-1 precedent) so the label at full opacity matches surrounding
 // chart text colour against the user's theme exactly.
-var labelFadeStops = []lipgloss.CompleteColor{
-	{},                                                // stop 1 — sentinel; no Foreground
-	{TrueColor: "#888888", ANSI256: "244", ANSI: "8"}, // stop 2
-	{TrueColor: "#555555", ANSI256: "240", ANSI: "8"}, // stop 3
-	{TrueColor: "#333333", ANSI256: "236", ANSI: "0"}, // stop 4
-	{TrueColor: "#111111", ANSI256: "232", ANSI: "0"}, // stop 5 — faintest
+var labelFadeStops = []lipgloss.CompleteAdaptiveColor{
+	{}, // stop 1 — sentinel; labelFadeStyle skips Foreground at stop 1
+	{
+		Light: lipgloss.CompleteColor{TrueColor: "#777777", ANSI256: "244", ANSI: "8"},
+		Dark:  lipgloss.CompleteColor{TrueColor: "#888888", ANSI256: "244", ANSI: "8"},
+	},
+	{
+		Light: lipgloss.CompleteColor{TrueColor: "#aaaaaa", ANSI256: "248", ANSI: "7"},
+		Dark:  lipgloss.CompleteColor{TrueColor: "#555555", ANSI256: "240", ANSI: "8"},
+	},
+	{
+		Light: lipgloss.CompleteColor{TrueColor: "#cccccc", ANSI256: "252", ANSI: "7"},
+		Dark:  lipgloss.CompleteColor{TrueColor: "#333333", ANSI256: "236", ANSI: "0"},
+	},
+	{
+		Light: lipgloss.CompleteColor{TrueColor: "#eeeeee", ANSI256: "255", ANSI: "15"},
+		Dark:  lipgloss.CompleteColor{TrueColor: "#111111", ANSI256: "232", ANSI: "0"},
+	},
 }
 
 const labelFadeStopCount = 5

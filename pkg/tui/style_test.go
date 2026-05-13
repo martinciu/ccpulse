@@ -9,6 +9,7 @@ import (
 
 func TestLabelFadeStyle_Quantisation(t *testing.T) {
 	withForcedColor(t)
+	withForcedDarkBackground(t, true)
 
 	const probe = "12.3k"
 	plain := probe
