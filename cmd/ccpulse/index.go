@@ -1,13 +1,11 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 
 	"github.com/martinciu/ccpulse/pkg/cache"
-	"github.com/martinciu/ccpulse/pkg/channel"
 	"github.com/martinciu/ccpulse/pkg/config"
 	"github.com/martinciu/ccpulse/pkg/devlog"
 	"github.com/martinciu/ccpulse/pkg/ingest"
@@ -23,14 +21,14 @@ func newIndexCmd() *cobra.Command {
 		Short: "Rebuild SQLite cache from JSONL",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runIndex(cmd.Context(), rebuild)
+			return runIndex(cmd, rebuild)
 		},
 	}
 	c.Flags().BoolVar(&rebuild, "rebuild", false, "Drop the cache before scanning")
 	return c
 }
 
-func runIndex(ctx context.Context, rebuild bool) error {
+func runIndex(cmd *cobra.Command, rebuild bool) error {
 	if !rebuild {
 		return fmt.Errorf("`ccpulse index` (no flag) was removed; the TUI now backfills on launch. Use `ccpulse index --rebuild` to drop and rebuild the cache from JSONL")
 	}
@@ -45,7 +43,8 @@ func runIndex(ctx context.Context, rebuild bool) error {
 	if err := secfile.MkdirAll(cacheDir); err != nil {
 		return err
 	}
-	if logCloser, err := devlog.Init(channel.IsDev(), cacheDir); err == nil && logCloser != nil {
+	levelFlag, _ := cmd.Flags().GetString("log-level")
+	if logCloser, err := devlog.Init(cacheDir, levelFlag); err == nil && logCloser != nil {
 		defer logCloser.Close()
 	}
 	dbPath := filepath.Join(cacheDir, "state.db")
@@ -71,13 +70,13 @@ func runIndex(ctx context.Context, rebuild bool) error {
 	}
 	bf := &ingest.Backfill{Ingester: ing}
 
-	if err := bf.Run(ctx, nil); err != nil {
+	if err := bf.Run(cmd.Context(), nil); err != nil {
 		return err
 	}
 
 	// Surface SIGINT/SIGTERM as a non-zero exit. Backfill.Run returns
 	// nil on context cancel, so we check ctx ourselves.
-	if err := ctx.Err(); err != nil {
+	if err := cmd.Context().Err(); err != nil {
 		return err
 	}
 
