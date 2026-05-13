@@ -655,8 +655,7 @@ func (m *Model) renderSpringFrame() {
 // delegating to viewport.SetXOffset (which is column-indexed). The
 // shadow viewportXOffset stays in bucket-index space.
 func (m *Model) setX(n int) {
-	z := ZoomLevels[m.zoomIdx]
-	stride := max(z.BarWidth, 1) + max(z.BarGap, 0)
+	stride := ZoomLevels[m.zoomIdx].stride()
 	maxX := max(0, len(m.lastStarts)-m.visibleBuckets())
 	n = min(max(n, 0), maxX)
 	m.viewport.SetXOffset(n * stride)
@@ -873,9 +872,8 @@ func (m Model) chartWidth() int {
 // literal sets BarGap = -BarWidth.
 func (m Model) visibleBuckets() int {
 	z := ZoomLevels[m.zoomIdx]
-	bw := max(z.BarWidth, 1)
+	stride := z.stride()
 	gap := max(z.BarGap, 0)
-	stride := bw + gap
 	v := (m.chartWidth() + gap) / stride
 	if v < 1 {
 		return 1

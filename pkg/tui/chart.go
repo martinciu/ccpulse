@@ -35,13 +35,27 @@ type ZoomLevel struct {
 //
 // BarWidth is clamped to ≥1 and BarGap to ≥0 so degenerate ZoomLevels
 // values (typos, future tuning slips) can't produce a negative or
-// stride-zero layout downstream — see the matching clamps in
-// renderXLabels, model.visibleBuckets, and model.setX.
+// stride-zero layout downstream — see stride() for the matching
+// per-bar invariant used by renderXLabels, model.visibleBuckets,
+// and model.setX.
 func (z ZoomLevel) CanvasWidth(n int) int {
 	if n <= 0 {
 		return 0
 	}
 	return n*max(z.BarWidth, 1) + (n-1)*max(z.BarGap, 0)
+}
+
+// stride returns the per-bar column distance: BarWidth + BarGap with
+// both terms defensively clamped (BarWidth≥1, BarGap≥0) so callers
+// can divide by stride without a panic. Bar i starts at column
+// i*stride; the bar itself occupies cols [i*stride, i*stride+BarWidth).
+//
+// Single source of truth for the per-bar invariant: any in-package
+// site that converts bucket-index → column count routes through this.
+// Renaming/removing this helper without updating all callers risks
+// re-introducing the integer-divide panic class.
+func (z ZoomLevel) stride() int {
+	return max(z.BarWidth, 1) + max(z.BarGap, 0)
 }
 
 // ZoomLevels are the available zoom steps, cycled with the z key.
@@ -104,7 +118,7 @@ func renderXLabels(starts []time.Time, chartW int, zoom ZoomLevel, now time.Time
 		return ""
 	}
 	bw := max(zoom.BarWidth, 1)
-	stride := bw + max(zoom.BarGap, 0)
+	stride := zoom.stride()
 	row := make([]rune, chartW)
 	for i := range row {
 		row[i] = ' '

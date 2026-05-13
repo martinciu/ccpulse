@@ -599,13 +599,12 @@ func TestZoomLevels_BarWidthPositive(t *testing.T) {
 	}
 }
 
-// TestZoomLevel_CanvasWidth_Defensive locks in CanvasWidth's clamp
+// TestZoomLevel_CanvasWidth_Defensive locks in CanvasWidth's own clamp
 // contract: BarWidth is treated as ≥1 and BarGap as ≥0 even when the
-// ZoomLevel literal is degenerate. Same clamp logic is mirrored in
-// renderXLabels, model.visibleBuckets, and model.setX — if a future
-// edit drops the max() guards there, stride drops to 0 and the
-// chartWidth-divided callers panic. This test fails loudly if anyone
-// removes the CanvasWidth guards.
+// ZoomLevel literal is degenerate. The mirrored per-bar invariant
+// (stride ≥1) used by renderXLabels, model.visibleBuckets, and
+// model.setX is covered separately by TestZoomLevel_Stride_Defensive.
+// This test fails loudly if anyone removes CanvasWidth's max() guards.
 func TestZoomLevel_CanvasWidth_Defensive(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -623,6 +622,9 @@ func TestZoomLevel_CanvasWidth_Defensive(t *testing.T) {
 		{"zero BarWidth clamped to 1", ZoomLevel{BarWidth: 0, BarGap: 2}, 3, 7},
 		{"negative BarWidth clamped to 1", ZoomLevel{BarWidth: -5, BarGap: 0}, 3, 3},
 		{"both negative still well-defined", ZoomLevel{BarWidth: -5, BarGap: -10}, 3, 3},
+		// The exact panic case the commit message calls out: stride
+		// would drop to 0 without the clamp at the per-bar sites.
+		{"BarGap negates BarWidth", ZoomLevel{BarWidth: 10, BarGap: -10}, 3, 30},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -630,6 +632,42 @@ func TestZoomLevel_CanvasWidth_Defensive(t *testing.T) {
 			if got := tt.zoom.CanvasWidth(tt.n); got != tt.want {
 				t.Errorf("CanvasWidth(%d) on %+v = %d, want %d",
 					tt.n, tt.zoom, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestZoomLevel_Stride_Defensive locks in stride()'s clamp contract:
+// stride is always ≥1 regardless of ZoomLevel inputs. The three per-bar
+// sites (renderXLabels, model.visibleBuckets, model.setX) route through
+// stride(), so removing this guard re-introduces the integer-divide
+// panic class flagged in the original safety review.
+func TestZoomLevel_Stride_Defensive(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		zoom ZoomLevel
+		want int
+	}{
+		{"15m shape", ZoomLevel{BarWidth: 1, BarGap: 0}, 1},
+		{"24h shape", ZoomLevel{BarWidth: 10, BarGap: 2}, 12},
+		{"zero BarWidth clamped to 1", ZoomLevel{BarWidth: 0, BarGap: 0}, 1},
+		{"negative BarWidth clamped to 1", ZoomLevel{BarWidth: -5, BarGap: 2}, 3},
+		{"negative BarGap clamped to 0", ZoomLevel{BarWidth: 5, BarGap: -3}, 5},
+		// The exact panic case: without the BarGap clamp, stride would
+		// be 10 + (-10) = 0 and visibleBuckets would divide by zero.
+		{"BarGap negates BarWidth (panic-class guard)", ZoomLevel{BarWidth: 10, BarGap: -10}, 10},
+		{"both negative", ZoomLevel{BarWidth: -5, BarGap: -10}, 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := tt.zoom.stride()
+			if got != tt.want {
+				t.Errorf("stride() on %+v = %d, want %d", tt.zoom, got, tt.want)
+			}
+			if got < 1 {
+				t.Errorf("stride() returned %d, must be ≥ 1 to avoid div-by-zero", got)
 			}
 		})
 	}
