@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -560,5 +561,28 @@ func TestRenderQuotaSide_ProducesExactSlotWidth(t *testing.T) {
 				t.Errorf("renderQuotaSide fillRatio=%v reset=%q: width %d, want %d", tt.fillRatio, tt.reset, w, expectedW)
 			}
 		})
+	}
+}
+
+func BenchmarkSparklineRender(b *testing.B) {
+	// Production config: 30 cells of 1-minute buckets, rendered at
+	// inner width 120 (representative for an 80–120 col terminal). The
+	// per-frame budget is 5ms total (viewLogThreshold); the spec's
+	// acceptance criterion is < 1ms p99 for this helper alone, leaving
+	// 4ms headroom for the rest of View().
+	buckets := make([]float64, sparklineCells)
+	for i := range buckets {
+		// Realistic distribution: mostly low with one spike. Avoids the
+		// trivial all-zero case which may have a different code path
+		// in ntcharts.
+		buckets[i] = float64(i % 7)
+	}
+	buckets[sparklineCells/2] = 1000
+
+	b.ReportAllocs()
+	runtime.GC()
+	b.ResetTimer()
+	for b.Loop() {
+		sinkString = renderSparklineRow(buckets, 120)
 	}
 }
