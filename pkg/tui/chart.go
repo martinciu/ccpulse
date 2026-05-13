@@ -28,7 +28,7 @@ var ZoomLevels = []ZoomLevel{
 }
 
 // overlayYLabel splices `formatUnitValue(niceFloorFloat(peak), unit)` in
-// the chosen fade style into the niceFloor row of an already-rendered
+// the chosen fade style into the niceFloorFloat(peak) row of an already-rendered
 // chart string, replacing the first 5 visible columns of that row.
 // Operates ANSI-aware on the post-scroll viewport output so the label
 // stays pinned to the viewport's left edge regardless of horizontal
@@ -141,33 +141,6 @@ func formatXLabel(t time.Time, zoom ZoomLevel, now time.Time) string {
 	return ""
 }
 
-// niceFloor returns the largest "nice" value <= peak from the sequence
-// {1, 2, 3, 5, 7} × 10^k. Used to pick the Y label for the bar chart
-// (issue #132). The set is integer-only so formatTokenCount always
-// produces an integer label (e.g. "75k", "50M") — no "7.5k" / "2.5M".
-// Returns 0 when peak <= 0 so the caller can guard the overlay write.
-func niceFloor(peak int64) int64 {
-	if peak <= 0 {
-		return 0
-	}
-	mag := math.Pow10(int(math.Floor(math.Log10(float64(peak)))))
-	norm := float64(peak) / mag
-	var nice float64
-	switch {
-	case norm >= 7.0:
-		nice = 7.0
-	case norm >= 5.0:
-		nice = 5.0
-	case norm >= 3.0:
-		nice = 3.0
-	case norm >= 2.0:
-		nice = 2.0
-	default:
-		nice = 1.0
-	}
-	return int64(math.Round(nice * mag))
-}
-
 // chartUnit selects what `peak` and bar values represent. Used by
 // formatUnitValue to pick the right Y-label format. Spring-animation
 // rendering also reads this through Model.unitIdx.
@@ -178,10 +151,12 @@ const (
 	chartUnitCost
 )
 
-// niceFloorFloat is the float64 generalisation of niceFloor, supporting
-// sub-1 peaks (cost-mode shows e.g. $0.45 buckets). Same {1, 2, 3, 5, 7}
-// mantissa set, but the exponent k may be negative. Returns 0 when
-// peak <= 0 so callers can guard the overlay write.
+// niceFloorFloat returns the largest "nice" value <= peak from the
+// sequence {1, 2, 3, 5, 7} × 10ᵏ, where k may be negative to support
+// sub-1 peaks (cost-mode shows e.g. $0.45 buckets). The integer-only
+// mantissa set keeps formatTokenCount labels integer-shaped (no
+// "7.5k" / "2.5M"). Returns 0 when peak <= 0 so callers can guard
+// the overlay write.
 func niceFloorFloat(peak float64) float64 {
 	if peak <= 0 {
 		return 0
@@ -207,7 +182,7 @@ func niceFloorFloat(peak float64) float64 {
 // formatTokenCount renders an int64 token count compactly with a k/M
 // suffix, suitable for the Y label and other in-chart annotations.
 // Always returns an integer label (no fractional digits). Pair with
-// niceFloor so the integer-rounded label exactly matches its row.
+// niceFloorFloat so the integer-rounded label exactly matches its row.
 //
 //	n <= 0     -> "0"
 //	n < 1000   -> raw integer
