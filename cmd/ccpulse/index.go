@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 
@@ -45,7 +46,15 @@ func runIndex(ctx context.Context, rebuild bool) error {
 	if err := secfile.MkdirAll(cacheDir); err != nil {
 		return err
 	}
-	if logCloser, err := devlog.Init(channel.IsDev(), cacheDir); err == nil && logCloser != nil {
+	defaultLvl := slog.LevelInfo
+	if channel.IsDev() {
+		defaultLvl = slog.LevelDebug
+	}
+	if logCloser, err := devlog.Init(devlog.Options{
+		IsDev:    channel.IsDev(),
+		CacheDir: cacheDir,
+		Level:    defaultLvl,
+	}); err == nil && logCloser != nil {
 		defer logCloser.Close()
 	}
 	dbPath := filepath.Join(cacheDir, "state.db")

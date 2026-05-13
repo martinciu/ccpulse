@@ -151,10 +151,14 @@ func ensureConfigFile(path string) error {
 // os.Stderr) along with a remediation hint. Devlog is best-effort, so
 // errors are non-fatal — they only mean slog output is now going to
 // io.Discard for the rest of the run.
-func initDevlog(isDev bool, cacheDir string, w io.Writer) io.Closer {
-	closer, err := devlog.Init(isDev, cacheDir)
+func initDevlog(isDev bool, cacheDir string, level slog.Level, w io.Writer) io.Closer {
+	closer, err := devlog.Init(devlog.Options{
+		IsDev:    isDev,
+		CacheDir: cacheDir,
+		Level:    level,
+	})
 	if err != nil {
-		fmt.Fprintf(w, "devlog init failed: %v (debug log disabled; check %s permissions)\n", err, cacheDir)
+		fmt.Fprintf(w, "devlog init failed: %v (log disabled; check %s permissions)\n", err, cacheDir)
 	}
 	return closer
 }
@@ -170,7 +174,11 @@ func runTUI(ctx context.Context) error {
 	if err := secfile.MkdirAll(cacheDir); err != nil {
 		return err
 	}
-	if logCloser := initDevlog(channel.IsDev(), cacheDir, os.Stderr); logCloser != nil {
+	defaultLvl := slog.LevelInfo
+	if channel.IsDev() {
+		defaultLvl = slog.LevelDebug
+	}
+	if logCloser := initDevlog(channel.IsDev(), cacheDir, defaultLvl, os.Stderr); logCloser != nil {
 		defer logCloser.Close()
 	}
 	dbPath := filepath.Join(cacheDir, "state.db")
