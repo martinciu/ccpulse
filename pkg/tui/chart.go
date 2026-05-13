@@ -254,16 +254,18 @@ func formatUnitValue(v float64, unit chartUnit) string {
 	}
 }
 
-// heatColor returns a lipgloss color on a green→yellow→red ramp
-// based on ratio (0.0–1.0) of a bucket's tokens relative to the peak bucket.
-func heatColor(ratio float64) lipgloss.Color {
+// heatColor returns the adaptive-palette token on a safe → watch → danger
+// ramp based on ratio (0.0–1.0) of a bucket's tokens relative to the peak
+// bucket. Return type is lipgloss.TerminalColor (the interface satisfied
+// by lipgloss.AdaptiveColor) so callers can assign without a type assertion.
+func heatColor(ratio float64) lipgloss.TerminalColor {
 	switch {
 	case ratio >= 0.66:
-		return Red
+		return colorDanger
 	case ratio >= 0.33:
-		return Yellow
+		return colorWatch
 	default:
-		return Green
+		return colorSafe
 	}
 }
 

@@ -392,14 +392,14 @@ func TestBuildChart_NoBaselineStrip(t *testing.T) {
 func TestHeatColor(t *testing.T) {
 	tests := []struct {
 		ratio float64
-		want  lipgloss.Color
+		want  lipgloss.AdaptiveColor
 	}{
-		{0.0, Green},
-		{0.32, Green},
-		{0.33, Yellow},
-		{0.65, Yellow},
-		{0.66, Red},
-		{1.0, Red},
+		{0.0, colorSafe},
+		{0.32, colorSafe},
+		{0.33, colorWatch},
+		{0.65, colorWatch},
+		{0.66, colorDanger},
+		{1.0, colorDanger},
 	}
 	for _, tt := range tests {
 		got := heatColor(tt.ratio)
