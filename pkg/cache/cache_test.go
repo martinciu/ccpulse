@@ -1120,6 +1120,108 @@ func TestTokenBuckets_24h_UTCFallback(t *testing.T) {
 	}
 }
 
+func TestTokenBuckets_24h_DST_SpringForward(t *testing.T) {
+	withTimeLocal(t, "Europe/Berlin")
+	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	// 2026-03-29 Europe/Berlin: clocks jump 02:00 -> 03:00. Local day is
+	// 23h long, from 2026-03-28T23:00:00Z to 2026-03-29T22:00:00Z.
+	// All five timestamps below fall inside 2026-03-29 local.
+	for _, ts := range []time.Time{
+		time.Date(2026, 3, 28, 23, 0, 0, 0, time.UTC),  // 00:00 CET
+		time.Date(2026, 3, 29, 0, 59, 0, 0, time.UTC),  // 01:59 CET (right before jump)
+		time.Date(2026, 3, 29, 1, 0, 0, 0, time.UTC),   // 03:00 CEST (right after jump)
+		time.Date(2026, 3, 29, 12, 0, 0, 0, time.UTC),  // 14:00 CEST
+		time.Date(2026, 3, 29, 21, 59, 0, 0, time.UTC), // 23:59 CEST
+	} {
+		insertMessage(t, c, ts, 100)
+	}
+	// This one belongs to 2026-03-30 local (00:00 CEST).
+	insertMessage(t, c, time.Date(2026, 3, 29, 22, 0, 0, 0, time.UTC), 999)
+
+	from := dayStartLocal(time.Date(2026, 3, 29, 0, 0, 0, 0, time.Local))
+	to := dayStartLocal(time.Date(2026, 3, 31, 0, 0, 0, 0, time.Local))
+	buckets, err := c.TokenBuckets(24*time.Hour, from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(buckets) != 2 {
+		t.Fatalf("got %d buckets, want 2", len(buckets))
+	}
+	if buckets[0].Tokens != 500 {
+		t.Errorf("2026-03-29 (23h day) tokens = %d, want 500", buckets[0].Tokens)
+	}
+	if buckets[1].Tokens != 999 {
+		t.Errorf("2026-03-30 tokens = %d, want 999", buckets[1].Tokens)
+	}
+}
+
+func TestTokenBuckets_24h_DST_FallBack(t *testing.T) {
+	withTimeLocal(t, "Europe/Berlin")
+	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	// 2026-10-25 Europe/Berlin: clocks fall 03:00 CEST -> 02:00 CET.
+	// Local day is 25h, from 2026-10-24T22:00:00Z to 2026-10-25T23:00:00Z.
+	for _, ts := range []time.Time{
+		time.Date(2026, 10, 24, 22, 0, 0, 0, time.UTC), // 00:00 CEST
+		time.Date(2026, 10, 25, 0, 30, 0, 0, time.UTC), // 02:30 CEST (first 02:xx)
+		time.Date(2026, 10, 25, 1, 30, 0, 0, time.UTC), // 02:30 CET  (second 02:xx after fall-back)
+		time.Date(2026, 10, 25, 22, 59, 0, 0, time.UTC), // 23:59 CET
+	} {
+		insertMessage(t, c, ts, 100)
+	}
+	// Next day:
+	insertMessage(t, c, time.Date(2026, 10, 25, 23, 0, 0, 0, time.UTC), 999)
+
+	from := dayStartLocal(time.Date(2026, 10, 25, 0, 0, 0, 0, time.Local))
+	to := dayStartLocal(time.Date(2026, 10, 27, 0, 0, 0, 0, time.Local))
+	buckets, err := c.TokenBuckets(24*time.Hour, from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(buckets) != 2 {
+		t.Fatalf("got %d buckets, want 2", len(buckets))
+	}
+	if buckets[0].Tokens != 400 {
+		t.Errorf("2026-10-25 (25h day) tokens = %d, want 400", buckets[0].Tokens)
+	}
+	if buckets[1].Tokens != 999 {
+		t.Errorf("2026-10-26 tokens = %d, want 999", buckets[1].Tokens)
+	}
+}
+
+func TestTokenBuckets_24h_HalfHourOffsetTz(t *testing.T) {
+	withTimeLocal(t, "Asia/Kolkata") // UTC+5:30, no DST
+	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	// 2026-05-13T18:29:00Z = 2026-05-13T23:59:00 IST (still local day -13).
+	// 2026-05-13T18:30:00Z = 2026-05-14T00:00:00 IST (local day -14).
+	insertMessage(t, c, time.Date(2026, 5, 13, 18, 29, 0, 0, time.UTC), 100)
+	insertMessage(t, c, time.Date(2026, 5, 13, 18, 30, 0, 0, time.UTC), 200)
+
+	from := dayStartLocal(time.Date(2026, 5, 13, 0, 0, 0, 0, time.Local))
+	to := dayStartLocal(time.Date(2026, 5, 15, 0, 0, 0, 0, time.Local))
+	buckets, err := c.TokenBuckets(24*time.Hour, from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(buckets) != 2 || buckets[0].Tokens != 100 || buckets[1].Tokens != 200 {
+		t.Errorf("IST 30-min offset: %+v, want [100 200]", buckets)
+	}
+}
+
 func TestZoomLabel_DefaultFallback(t *testing.T) {
 	if got := zoomLabel(30 * time.Minute); got != "30m0s" {
 		t.Errorf("zoomLabel(30m) = %q, want %q (default fallback)", got, "30m0s")
