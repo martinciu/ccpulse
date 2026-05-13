@@ -115,6 +115,24 @@ func renderXLabels(starts []time.Time, chartW int, zoom ZoomLevel, now time.Time
 	return dimStyle.Render(string(row))
 }
 
+// dateLabel renders the day-boundary stamp shown at midnight slots
+// across all three zooms: weekday short ("Mon") for buckets within
+// the past 7 days, locale-aware short date ("05/09" or "09/05") for
+// older buckets. Both forms fit the 5-col label slot.
+//
+// Cheap path per issue #145: weekday/month names stay ASCII English;
+// only date order is locale-aware. Native-language names depend on
+// the wide-rune-aware renderXLabels writer tracked in #130.
+func dateLabel(t, now time.Time, order dateOrder) string {
+	if t.After(now.AddDate(0, 0, -7)) {
+		return t.Format("Mon")
+	}
+	if order == dateOrderMonthFirst {
+		return t.Format("01/02")
+	}
+	return t.Format("02/01")
+}
+
 // formatXLabel returns the X-axis tick label for bucket time t at the
 // given zoom; "" if t is not on a label boundary. Cadence is clock-aligned
 // (anchored to hour / 3-hour / day marks) so positions are stable across

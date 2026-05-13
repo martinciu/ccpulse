@@ -347,6 +347,43 @@ func TestFormatXLabel(t *testing.T) {
 	}
 }
 
+func TestDateLabel(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 5, 12, 14, 30, 0, 0, time.UTC) // Tue
+	day := func(month, day int) time.Time {
+		return time.Date(2026, time.Month(month), day, 0, 0, 0, 0, time.UTC)
+	}
+	tests := []struct {
+		name  string
+		t     time.Time
+		order dateOrder
+		want  string
+	}{
+		// Recent (within past 7 days): weekday short, both orders.
+		{"6 days ago MonthFirst → weekday", day(5, 6), dateOrderMonthFirst, "Wed"},
+		{"6 days ago DayFirst → weekday", day(5, 6), dateOrderDayFirst, "Wed"},
+		{"1 day ago MonthFirst → weekday", day(5, 11), dateOrderMonthFirst, "Mon"},
+		{"1 day ago DayFirst → weekday", day(5, 11), dateOrderDayFirst, "Mon"},
+		// Boundary: exactly 7 days ago (May 5 00:00, with now = May 12 14:30,
+		// the "7 days ago" point is May 5 14:30 — May 5 00:00 is older).
+		{"exactly 7 days ago MonthFirst → date", day(5, 5), dateOrderMonthFirst, "05/05"},
+		{"exactly 7 days ago DayFirst → date", day(5, 5), dateOrderDayFirst, "05/05"},
+		// Older: locale-aware date.
+		{"12 days ago MonthFirst → MM/DD", day(4, 30), dateOrderMonthFirst, "04/30"},
+		{"12 days ago DayFirst → DD/MM", day(4, 30), dateOrderDayFirst, "30/04"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := dateLabel(tt.t, now, tt.order)
+			if got != tt.want {
+				t.Errorf("dateLabel(%s, _, %v) = %q, want %q",
+					tt.t.Format("2006-01-02"), tt.order, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestOverlayYLabel_InjectsAtNiceFloorRow(t *testing.T) {
 	t.Parallel()
 	// peak = 87000 → niceFloorFloat(87000) = 70000 → label "70k".
