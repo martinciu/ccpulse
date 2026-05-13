@@ -317,6 +317,10 @@ func TestFormatXLabel(t *testing.T) {
 	day := func(month, day int) time.Time {
 		return time.Date(2026, time.Month(month), day, 0, 0, 0, 0, time.UTC)
 	}
+	zm15 := ZoomLevels[0] // "15m"
+	z1h := ZoomLevels[1]  // "1h"
+	z24 := ZoomLevels[2]  // "24h"
+
 	tests := []struct {
 		name  string
 		t     time.Time
@@ -324,34 +328,30 @@ func TestFormatXLabel(t *testing.T) {
 		order dateOrder
 		want  string
 	}{
-		// Existing cases — non-midnight slots, both orders should match.
-		{"5m on hour MonthFirst", d(13, 0), ZoomLevels[0], dateOrderMonthFirst, "13:00"},
-		{"5m on hour DayFirst", d(13, 0), ZoomLevels[0], dateOrderDayFirst, "13:00"},
-		{"5m mid-hour 15min", d(13, 15), ZoomLevels[0], dateOrderMonthFirst, ""},
-		{"5m mid-hour 5min", d(13, 5), ZoomLevels[0], dateOrderMonthFirst, ""},
-		{"15m on 3-hour MonthFirst", d(12, 0), ZoomLevels[1], dateOrderMonthFirst, "12:00"},
-		{"15m on 3-hour DayFirst", d(12, 0), ZoomLevels[1], dateOrderDayFirst, "12:00"},
-		{"15m off-3-hour", d(13, 0), ZoomLevels[1], dateOrderMonthFirst, ""},
-		{"15m mid-window 09:00", d(9, 0), ZoomLevels[1], dateOrderMonthFirst, "09:00"},
-		{"1h today midnight Tue", day(5, 12), ZoomLevels[2], dateOrderMonthFirst, "Tue"},
-		{"1h yesterday Mon", day(5, 11), ZoomLevels[2], dateOrderMonthFirst, "Mon"},
-		{"1h 6 days ago Wed", day(5, 6), ZoomLevels[2], dateOrderMonthFirst, "Wed"},
-		// Updated: separator now '/' instead of '-' (issue #145).
-		{"1h 7 days ago MonthFirst → MM/DD", day(5, 5), ZoomLevels[2], dateOrderMonthFirst, "05/05"},
-		{"1h 7 days ago DayFirst → DD/MM (same digits)", day(5, 5), ZoomLevels[2], dateOrderDayFirst, "05/05"},
-		{"1h non-midnight returns empty", d(14, 0), ZoomLevels[2], dateOrderMonthFirst, ""},
-		// New: 5m midnight, distinct under each order.
-		{"5m midnight today recent → Tue", day(5, 12), ZoomLevels[0], dateOrderMonthFirst, "Tue"},
-		{"5m midnight yesterday recent → Mon", day(5, 11), ZoomLevels[0], dateOrderMonthFirst, "Mon"},
-		{"5m midnight 12 days ago MonthFirst → 04/30", day(4, 30), ZoomLevels[0], dateOrderMonthFirst, "04/30"},
-		{"5m midnight 12 days ago DayFirst → 30/04", day(4, 30), ZoomLevels[0], dateOrderDayFirst, "30/04"},
-		// New: 15m midnight, distinct under each order.
-		{"15m midnight today recent → Tue", day(5, 12), ZoomLevels[1], dateOrderDayFirst, "Tue"},
-		{"15m midnight 12 days ago MonthFirst → 04/30", day(4, 30), ZoomLevels[1], dateOrderMonthFirst, "04/30"},
-		{"15m midnight 12 days ago DayFirst → 30/04", day(4, 30), ZoomLevels[1], dateOrderDayFirst, "30/04"},
-		// New: 1h 12 days ago, distinct under each order.
-		{"1h 12 days ago MonthFirst → 04/30", day(4, 30), ZoomLevels[2], dateOrderMonthFirst, "04/30"},
-		{"1h 12 days ago DayFirst → 30/04", day(4, 30), ZoomLevels[2], dateOrderDayFirst, "30/04"},
+		// 15m: 3-hour cadence
+		{"15m on 3-hour MonthFirst", d(12, 0), zm15, dateOrderMonthFirst, "12:00"},
+		{"15m on 3-hour DayFirst", d(12, 0), zm15, dateOrderDayFirst, "12:00"},
+		{"15m off-3-hour", d(13, 0), zm15, dateOrderMonthFirst, ""},
+		{"15m mid-window 09:00", d(9, 0), zm15, dateOrderMonthFirst, "09:00"},
+		{"15m midnight today recent → Tue", day(5, 12), zm15, dateOrderMonthFirst, "Tue"},
+		{"15m midnight 12 days ago MonthFirst → 04/30", day(4, 30), zm15, dateOrderMonthFirst, "04/30"},
+		{"15m midnight 12 days ago DayFirst → 30/04", day(4, 30), zm15, dateOrderDayFirst, "30/04"},
+
+		// 1h: midnight-only labels
+		{"1h today midnight Tue", day(5, 12), z1h, dateOrderMonthFirst, "Tue"},
+		{"1h yesterday Mon", day(5, 11), z1h, dateOrderMonthFirst, "Mon"},
+		{"1h 6 days ago Wed", day(5, 6), z1h, dateOrderMonthFirst, "Wed"},
+		{"1h 7 days ago MonthFirst → MM/DD", day(5, 5), z1h, dateOrderMonthFirst, "05/05"},
+		{"1h 7 days ago DayFirst → DD/MM", day(5, 5), z1h, dateOrderDayFirst, "05/05"},
+		{"1h non-midnight returns empty", d(14, 0), z1h, dateOrderMonthFirst, ""},
+		{"1h 12 days ago MonthFirst → 04/30", day(4, 30), z1h, dateOrderMonthFirst, "04/30"},
+		{"1h 12 days ago DayFirst → 30/04", day(4, 30), z1h, dateOrderDayFirst, "30/04"},
+
+		// 24h: every bucket labelled (no midnight gate)
+		{"24h today recent → Tue", day(5, 12), z24, dateOrderMonthFirst, "Tue"},
+		{"24h yesterday recent → Mon", day(5, 11), z24, dateOrderMonthFirst, "Mon"},
+		{"24h 12 days ago MonthFirst → 04/30", day(4, 30), z24, dateOrderMonthFirst, "04/30"},
+		{"24h 12 days ago DayFirst → 30/04", day(4, 30), z24, dateOrderDayFirst, "30/04"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

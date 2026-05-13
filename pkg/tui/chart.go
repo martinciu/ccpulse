@@ -145,17 +145,11 @@ func dateLabel(t, now time.Time, order dateOrder) string {
 // formatXLabel returns the X-axis tick label for bucket time t at the
 // given zoom; "" if t is not on a label boundary. Cadence is clock-
 // aligned (anchored to hour / 3-hour / day marks) so positions are
-// stable across refreshes. At midnight, all three zooms route through
-// dateLabel(t, now, order) for a unified day-boundary stamp.
+// stable across refreshes. At midnight, the 15m/1h zooms route through
+// dateLabel(t, now, order) for a unified day-boundary stamp. At 24h,
+// every bucket is a midnight so dateLabel runs unconditionally.
 func formatXLabel(t time.Time, zoom ZoomLevel, now time.Time, order dateOrder) string {
 	switch zoom.Label {
-	case "5m":
-		if t.Minute() == 0 {
-			if t.Hour() == 0 {
-				return dateLabel(t, now, order)
-			}
-			return t.Format("15:04")
-		}
 	case "15m":
 		if t.Hour()%3 == 0 && t.Minute() == 0 {
 			if t.Hour() == 0 {
@@ -167,6 +161,8 @@ func formatXLabel(t time.Time, zoom ZoomLevel, now time.Time, order dateOrder) s
 		if t.Hour() == 0 && t.Minute() == 0 {
 			return dateLabel(t, now, order)
 		}
+	case "24h":
+		return dateLabel(t, now, order)
 	}
 	return ""
 }
