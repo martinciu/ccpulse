@@ -291,3 +291,39 @@ func TestProgram_EmptyToFirstChart(t *testing.T) {
 		t.Errorf("final frame missing footer text 'z zoom' — program may not have rendered:\n%s", final)
 	}
 }
+
+func TestProgram_EmptyCacheRendersSparklineFlatLine(t *testing.T) {
+	// When the cache is empty (or has no activity in the trailing 30
+	// minutes), the sparkline row must still render — as a flat dim
+	// line. Vanishing would jump the layout the moment activity
+	// returned. This is the no-glitch acceptance criterion from the
+	// spec.
+	withForcedColor(t)
+	withForcedDarkBackground(t, true)
+	path := filepath.Join(t.TempDir(), "state.db")
+	c, err := cache.Open(path)
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+
+	m := New(Deps{Cache: c})
+	tm := teatest.NewTestModel(t, m,
+		teatest.WithInitialTermSize(120, 40))
+	t.Cleanup(func() { _ = tm.Quit() })
+
+	tm.Send(RefreshMsg{})
+	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	tm.WaitFinished(t, teatest.WithFinalTimeout(1*time.Second))
+
+	out, err := io.ReadAll(tm.FinalOutput(t))
+	if err != nil {
+		t.Fatalf("FinalOutput read: %v", err)
+	}
+	final := string(out)
+
+	// The "rate " label must appear — the row renders flat, not vanish.
+	if !strings.Contains(final, "rate ") {
+		t.Errorf("empty-cache final frame missing 'rate ' sparkline label — row should render flat, not vanish:\n%s", final)
+	}
+}
