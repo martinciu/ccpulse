@@ -392,42 +392,6 @@ func TestOverlayYLabel_HeightTooSmall(t *testing.T) {
 	}
 }
 
-func TestNiceFloor(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name string
-		peak int64
-		want int64
-	}{
-		{"zero returns zero", 0, 0},
-		{"negative returns zero", -10, 0},
-		{"one", 1, 1},
-		{"99 falls to 70", 99, 70},
-		{"exactly 100", 100, 100},
-		{"exactly 1000", 1000, 1000},
-		{"4999 falls to 3k", 4_999, 3_000},
-		{"exactly 7k", 7_000, 7_000},
-		{"9k falls to 7k", 9_000, 7_000},
-		{"23k falls to 20k", 23_000, 20_000},
-		{"49k falls to 30k", 49_000, 30_000},
-		{"87k falls to 70k", 87_000, 70_000},
-		{"exactly 100k", 100_000, 100_000},
-		{"123456 falls to 100k", 123_456, 100_000},
-		{"999999 falls to 700k", 999_999, 700_000},
-		{"exactly 1M", 1_000_000, 1_000_000},
-		{"50M stays 50M", 50_000_000, 50_000_000},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			got := niceFloor(tt.peak)
-			if got != tt.want {
-				t.Errorf("niceFloor(%d) = %d, want %d", tt.peak, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestNiceFloorFloat(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -448,7 +412,9 @@ func TestNiceFloorFloat(t *testing.T) {
 		{"4.7 falls to 3", 4.7, 3.0},
 		{"7.1 falls to 7", 7.1, 7.0},
 		// k = 1.
+		{"23 falls to 20", 23, 20.0},
 		{"45.7 falls to 30", 45.7, 30.0},
+		{"66 falls to 50", 66, 50.0},
 		{"99 falls to 70", 99, 70.0},
 		// k = 2.
 		{"123 falls to 100", 123, 100.0},
