@@ -165,9 +165,9 @@ func newSeededCache(t *testing.T) *cache.Cache {
 //
 // Why this test: the unit tests cover renderBurnRateSide in isolation,
 // but only this scenario verifies the full wiring (QuotaMsg →
-// recomputeWindow → Compute → Projection → quotaBars two-row layout).
+// recomputeWindow → Compute → Projection → headerRows two-row layout).
 // A wiring regression (e.g. the burn-rate row not being joined into
-// quotaBars output) would fail this test even though all unit tests
+// headerRows output) would fail this test even though all unit tests
 // still pass.
 func TestProgram_BurnRateOverreach(t *testing.T) {
 	withForcedColor(t)

@@ -515,7 +515,7 @@ func TestSevenDayBarRendered(t *testing.T) {
 }
 
 func TestQuotaBarsSymmetric(t *testing.T) {
-	// The bars-row produced by quotaBars() must be symmetric across the
+	// The bars-row produced by headerRows() must be symmetric across the
 	// dim " │ " divider: lipgloss.Width(left) == lipgloss.Width(right).
 	// This is the centring property — equivalent to "divider visually
 	// centred" but more testable than checking an integer-rounded column
@@ -584,8 +584,8 @@ func TestQuotaBarsSymmetric(t *testing.T) {
 			m.progress = newProgressBar(m.progressWidth())
 			m.progress7d = newProgressBar(m.progressWidth())
 
-			bars := m.quotaBars()
-			// quotaBars stacks two rows (bars + burn-rate) via JoinVertical
+			bars := m.headerRows()
+			// headerRows stacks two rows (bars + burn-rate) via JoinVertical
 			// — check symmetry on each row independently. Both share the
 			// same chrome math, so a width drift in either is a real bug.
 			// Split on the full " │ " divider per row rather than the bare
@@ -593,11 +593,11 @@ func TestQuotaBarsSymmetric(t *testing.T) {
 			for i, row := range strings.Split(bars, "\n") {
 				left, right, ok := strings.Cut(row, " │ ")
 				if !ok {
-					t.Fatalf("no ' │ ' divider found in quotaBars row %d: %q", i, row)
+					t.Fatalf("no ' │ ' divider found in headerRows row %d: %q", i, row)
 				}
 				lw, rw := lipgloss.Width(left), lipgloss.Width(right)
 				if lw != rw {
-					t.Errorf("asymmetric quotaBars row %d at w=%d: left width %d, right width %d\nrow: %q", i, tt.w, lw, rw, row)
+					t.Errorf("asymmetric headerRows row %d at w=%d: left width %d, right width %d\nrow: %q", i, tt.w, lw, rw, row)
 				}
 			}
 		})

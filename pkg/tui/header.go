@@ -187,7 +187,7 @@ func severityFor(p *status.Projection, window time.Duration) burnSeverity {
 //	[dim label][padded burn-rate text within slotW]
 //
 // The slotW cap ensures lipgloss truncates rather than overflows at
-// narrow terminals; layout above (model.quotaBars) sizes slotW to match
+// narrow terminals; layout above (model.headerRows) sizes slotW to match
 // the bars row above it for visual symmetry.
 //
 // State dispatch is delegated to severityFor; this function owns only

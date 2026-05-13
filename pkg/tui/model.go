@@ -348,7 +348,7 @@ func (m Model) View() string {
 		return "" // pre-init; don't time
 	}
 	start := time.Now()
-	header := renderHeader(m.w, m.quotaBars())
+	header := renderHeader(m.w, m.headerRows())
 	sep := lipgloss.NewStyle().Foreground(colorMuted).Render(strings.Repeat("─", m.w))
 	var body string
 	if m.showHelp {
@@ -436,7 +436,7 @@ func renderIndicators(isDev bool, idx IndexProgress, w status.Window) string {
 	return strings.Join(parts, sep)
 }
 
-// quotaBars renders the two content rows that live inside the bordered
+// headerRows renders the two content rows that live inside the bordered
 // header box: the existing 5h / 7d quota bars row and the new burn-rate
 // row beneath it. Both rows are separated by a dim " │ " divider and
 // use symmetric chrome so the divider sits at the true midpoint. When
@@ -446,7 +446,7 @@ func renderIndicators(isDev bool, idx IndexProgress, w status.Window) string {
 //
 // The burn-rate row pulls projection data from the same status.Window
 // the bars row uses — no separate compute path.
-func (m Model) quotaBars() string {
+func (m Model) headerRows() string {
 	left := renderQuotaSide(
 		"5h ",
 		m.progress,
