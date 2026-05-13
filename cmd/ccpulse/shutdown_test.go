@@ -67,9 +67,11 @@ func TestRunTUIQuitsCleanly(t *testing.T) {
 
 	// We exit via the `q` keypress, not via signal — context.Background
 	// is fine here.
+	cmd := newRootCmd()
+	cmd.SetContext(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- runTUI(context.Background())
+		done <- runTUI(cmd)
 	}()
 
 	select {

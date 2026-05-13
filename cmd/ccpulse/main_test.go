@@ -75,7 +75,7 @@ func TestInitDevlog_WarnsOnError(t *testing.T) {
 
 	cacheDir := filepath.Join(parent, "denied")
 	var buf bytes.Buffer
-	closer := initDevlog(true, cacheDir, &buf)
+	closer := initDevlog("", cacheDir, &buf)
 	if closer != nil {
 		closer.Close()
 	}
@@ -97,7 +97,7 @@ func TestInitDevlog_QuietOnSuccess(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
 	var buf bytes.Buffer
-	closer := initDevlog(true, t.TempDir(), &buf)
+	closer := initDevlog("", t.TempDir(), &buf)
 	if closer != nil {
 		defer closer.Close()
 	}
@@ -106,16 +106,16 @@ func TestInitDevlog_QuietOnSuccess(t *testing.T) {
 	}
 }
 
-func TestInitDevlog_ReleaseQuiet(t *testing.T) {
+func TestInitDevlog_OffLevelReturnsNil(t *testing.T) {
 	prev := slog.Default()
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
 	var buf bytes.Buffer
-	closer := initDevlog(false, t.TempDir(), &buf)
+	closer := initDevlog("off", t.TempDir(), &buf)
 	if closer != nil {
-		t.Errorf("release Init should return nil closer, got %T", closer)
+		t.Errorf("off level should return nil closer, got %T", closer)
 	}
 	if buf.Len() != 0 {
-		t.Errorf("release should not write to w: %q", buf.String())
+		t.Errorf("off level should not write to w: %q", buf.String())
 	}
 }

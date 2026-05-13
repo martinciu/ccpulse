@@ -59,7 +59,7 @@ func newRootCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runTUI(cmd.Context())
+			return runTUI(cmd)
 		},
 	}
 	root.AddCommand(newStatusCmd())
@@ -148,12 +148,12 @@ func ensureConfigFile(path string) error {
 	}
 	return secfile.WriteFile(path, defaultTOMLBytes())
 }
-// initDevlog wraps devlog.Init and surfaces failures to w (typically
-// os.Stderr) along with a remediation hint. Devlog is best-effort, so
-// errors are non-fatal — they only mean slog output is now going to
-// io.Discard for the rest of the run.
-func initDevlog(isDev bool, cacheDir string, w io.Writer) io.Closer {
-	closer, err := devlog.Init(isDev, cacheDir)
+// initDevlog calls devlog.Init with the supplied level override and surfaces
+// failures to w (typically os.Stderr). Devlog is best-effort, so errors are
+// non-fatal — they only mean slog output goes to io.Discard for the rest of
+// the run.
+func initDevlog(levelOverride, cacheDir string, w io.Writer) io.Closer {
+	closer, err := devlog.Init(cacheDir, levelOverride)
 	if err != nil {
 		fmt.Fprintf(w, "devlog init failed: %v (debug log disabled; check %s permissions)\n", err, cacheDir)
 	}
@@ -161,17 +161,19 @@ func initDevlog(isDev bool, cacheDir string, w io.Writer) io.Closer {
 }
 
 // runTUI launches the Bubble Tea program with the TUI model. The
-// passed ctx is the signal-aware root context — used as the parent
+// cmd's context is the signal-aware root context — used as the parent
 // for the quota poller's context and for the startup backfill, so
 // SIGINT/SIGTERM cancels in-flight work even before the user quits
 // the TUI itself.
-func runTUI(ctx context.Context) error {
+func runTUI(cmd *cobra.Command) error {
+	ctx := cmd.Context()
 	cfg, _ := config.Load(config.DefaultPath())
 	cacheDir := envOr("CCPULSE_CACHE_DIR", expand(cfg.Paths.CacheDir))
 	if err := secfile.MkdirAll(cacheDir); err != nil {
 		return err
 	}
-	if logCloser := initDevlog(channel.IsDev(), cacheDir, os.Stderr); logCloser != nil {
+	levelFlag, _ := cmd.Flags().GetString("log-level")
+	if logCloser := initDevlog(levelFlag, cacheDir, os.Stderr); logCloser != nil {
 		defer logCloser.Close()
 	}
 	dbPath := filepath.Join(cacheDir, "state.db")
