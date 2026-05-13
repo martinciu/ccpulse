@@ -391,6 +391,7 @@ func TestOverlayYLabel_HeightTooSmall(t *testing.T) {
 		t.Errorf("expected body untouched at chartH=5, got %q", got)
 	}
 }
+
 func TestNiceFloorFloat(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -411,7 +412,9 @@ func TestNiceFloorFloat(t *testing.T) {
 		{"4.7 falls to 3", 4.7, 3.0},
 		{"7.1 falls to 7", 7.1, 7.0},
 		// k = 1.
+		{"23 falls to 20", 23, 20.0},
 		{"45.7 falls to 30", 45.7, 30.0},
+		{"66 falls to 50", 66, 50.0},
 		{"99 falls to 70", 99, 70.0},
 		// k = 2.
 		{"123 falls to 100", 123, 100.0},
