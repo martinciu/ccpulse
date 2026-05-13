@@ -48,3 +48,20 @@ func withForcedColor(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
 }
+
+// withForcedDarkBackground pins lipgloss.DefaultRenderer's HasDarkBackground
+// for the duration of a test, restoring on cleanup. Mirrors withForcedColor's
+// shape and inherits the same t.Parallel() footgun (mutates a process-global
+// renderer). Use in tests that assert on rendered output of AdaptiveColor or
+// CompleteAdaptiveColor tokens, so the resolved side is deterministic.
+//
+// NOT SAFE WITH t.Parallel(): same reason as withForcedColor — mutates the
+// global default renderer. If adding t.Parallel() to any tui test, refactor
+// to use a private lipgloss.NewRenderer.
+func withForcedDarkBackground(t *testing.T, dark bool) {
+	t.Helper()
+	r := lipgloss.DefaultRenderer()
+	prev := r.HasDarkBackground()
+	r.SetHasDarkBackground(dark)
+	t.Cleanup(func() { r.SetHasDarkBackground(prev) })
+}
