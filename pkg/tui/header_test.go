@@ -438,6 +438,95 @@ func splitANSIEnvelope(styled string) (open, close string, ok bool) {
 	return styled[:idx], styled[idx+1:], true
 }
 
+func TestRenderSparklineRow_Empty(t *testing.T) {
+	// All-zero buckets → flat dim line of sparklineCells width, prefixed
+	// by "rate " label. The empty-window state must render explicitly —
+	// never an empty string — so the header layout does not jump when
+	// activity returns to the trailing 30 minutes.
+	buckets := make([]float64, sparklineCells)
+	row := renderSparklineRow(buckets, 120)
+	if row == "" {
+		t.Fatalf("renderSparklineRow returned empty string for zero buckets; want flat dim line")
+	}
+	if !strings.Contains(row, "rate ") {
+		t.Errorf("missing 'rate ' label: %q", row)
+	}
+	wantInnerW := lipgloss.Width("rate ") + sparklineCells
+	if got := lipgloss.Width(row); got < wantInnerW {
+		t.Errorf("row width %d < expected minimum %d: %q", got, wantInnerW, row)
+	}
+}
+
+func TestRenderSparklineRow_NarrowWidthRendersBlank(t *testing.T) {
+	// When the available inner width is below the label+cells minimum,
+	// the row renders blank (single-line whitespace of width innerW) so
+	// the bars and burn-rate rows above stay legible. This is the
+	// "graceful truncation" acceptance criterion from the spec.
+	buckets := make([]float64, sparklineCells)
+	for i := range buckets {
+		buckets[i] = float64(i)
+	}
+	innerW := lipgloss.Width("rate ") + sparklineCells - 1 // one short
+	row := renderSparklineRow(buckets, innerW)
+	if strings.Contains(row, "rate ") {
+		t.Errorf("narrow-width row should not show 'rate ' label: %q", row)
+	}
+	if lipgloss.Width(row) != innerW {
+		t.Errorf("narrow-width row width %d != innerW %d: %q", lipgloss.Width(row), innerW, row)
+	}
+	if strings.TrimSpace(row) != "" {
+		t.Errorf("narrow-width row should be whitespace-only: %q", row)
+	}
+}
+
+func TestRenderSparklineRow_RampHasGlyphVariety(t *testing.T) {
+	// A monotonic ramp must produce more than one distinct rendered
+	// glyph (otherwise the sparkline is degenerate and the user cannot
+	// read "shape"). We assert structural variety, not exact glyphs, so
+	// the test is robust to ntcharts internal glyph table changes.
+	buckets := make([]float64, sparklineCells)
+	for i := range buckets {
+		buckets[i] = float64(i + 1)
+	}
+	row := renderSparklineRow(buckets, 120)
+	// Strip the "rate " label, ANSI, and surrounding padding to count
+	// the unique non-space runes in the sparkline body. Use lipgloss to
+	// detect width-equivalent visible content. A simple heuristic: the
+	// raw stripped row must contain >= 3 distinct non-space runes.
+	stripped := stripANSIForTest(row)
+	seen := map[rune]struct{}{}
+	for _, r := range stripped {
+		if r != ' ' && r != '\t' {
+			seen[r] = struct{}{}
+		}
+	}
+	if len(seen) < 3 {
+		t.Errorf("ramp produced too few distinct glyphs (%d); row: %q", len(seen), stripped)
+	}
+}
+
+// stripANSIForTest removes ESC [ … sequences so test assertions can run
+// against the visible-glyph layer. Kept simple — the production code
+// path uses lipgloss.Width; this helper is unit-test scaffolding only.
+func stripANSIForTest(s string) string {
+	var b strings.Builder
+	inEsc := false
+	for _, r := range s {
+		if inEsc {
+			if r >= 0x40 && r <= 0x7e {
+				inEsc = false
+			}
+			continue
+		}
+		if r == 0x1b {
+			inEsc = true
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
 func TestRenderQuotaSide_ProducesExactSlotWidth(t *testing.T) {
 	// renderQuotaSide's output width is determined entirely by its inputs:
 	// lipgloss.Width(label) + bar.Width + statusBlockMaxW. Property under

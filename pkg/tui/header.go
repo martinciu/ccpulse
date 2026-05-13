@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/NimbleMarkets/ntcharts/sparkline"
 	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/lipgloss"
 
@@ -78,6 +79,17 @@ const barTimeGap = " "
 // as the progress bar above it. Three spaces match lipgloss.Width("5h ").
 const burnPad = "   "
 
+const sparklineWindow = 30 * time.Minute
+const sparklineBucket = time.Minute
+
+// sparklineCells is the fixed visual width of the rendered sparkline
+// (= sparklineWindow / sparklineBucket = 30). Each cell maps to one minute.
+const sparklineCells = 30
+
+// sparklineLabel is the dim row prefix. Trailing space provides the
+// 1-col gap between label and glyphs without an extra JoinHorizontal.
+const sparklineLabel = "rate "
+
 // renderQuotaSide composes one side of the quota bars row:
 //
 //	[dim label] [bar] [1-col gap] [right-aligned time slot]
@@ -136,6 +148,7 @@ var (
 	burnWatchStyle  = lipgloss.NewStyle().Foreground(colorWatch)
 	burnDangerStyle = lipgloss.NewStyle().Foreground(colorDanger)
 	timeSlotStyle   = lipgloss.NewStyle().Width(statusBlockMaxW).Align(lipgloss.Right)
+	sparklineStyle  = lipgloss.NewStyle().Foreground(colorMuted)
 )
 
 // burnImminentRatio is the fraction of a bucket's window below which an
@@ -219,4 +232,25 @@ func renderBurnRateSide(label string, p *status.Projection, slotW int, window ti
 		// empty string into the header.
 		panic(fmt.Sprintf("renderBurnRateSide: unhandled burnSeverity %d", severityFor(p, window)))
 	}
+}
+
+// renderSparklineRow renders the third header row: the trailing-30min
+// activity sparkline. Layout is sparklineLabel + sparkline (sparklineCells
+// wide), left-anchored within innerW.
+//
+// buckets must have length sparklineCells. Self-normalised: ntcharts
+// AutoMaxValue scales heights to the slice's own max.
+//
+// When innerW is below the label+cells minimum, the row renders as innerW
+// spaces — the sparkline hides until the terminal is wide enough.
+func renderSparklineRow(buckets []float64, innerW int) string {
+	labelW := lipgloss.Width(sparklineLabel)
+	if innerW < labelW+sparklineCells {
+		return strings.Repeat(" ", innerW)
+	}
+	sl := sparkline.New(sparklineCells, 1, sparkline.WithStyle(sparklineStyle))
+	sl.PushAll(buckets)
+	sl.Draw()
+	row := dimStyle.Render(sparklineLabel) + sl.View()
+	return lipgloss.PlaceHorizontal(innerW, lipgloss.Left, row)
 }
