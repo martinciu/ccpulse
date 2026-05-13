@@ -335,7 +335,7 @@ func (m Model) View() string {
 	}
 	start := time.Now()
 	header := renderHeader(m.w, m.quotaBars())
-	sep := lipgloss.NewStyle().Foreground(Dim).Render(strings.Repeat("─", m.w))
+	sep := lipgloss.NewStyle().Foreground(colorMuted).Render(strings.Repeat("─", m.w))
 	var body string
 	if m.showHelp {
 		body = m.help.FullHelpView(m.keys.FullHelp())
@@ -793,7 +793,7 @@ func (m *Model) refreshChart() {
 }
 
 // emptyPlaceholder returns a w×h block with "no Claude sessions yet"
-// centered in Dim (ANSI 8) — the empty-cache state of the chart viewport.
+// centered in colorMuted — the empty-cache state of the chart viewport.
 func emptyPlaceholder(w, h int) string {
 	if h < 1 {
 		h = 1
@@ -801,7 +801,7 @@ func emptyPlaceholder(w, h int) string {
 	if w < 1 {
 		w = 1
 	}
-	msg := lipgloss.NewStyle().Foreground(Dim).Render("no Claude sessions yet")
+	msg := lipgloss.NewStyle().Foreground(colorMuted).Render("no Claude sessions yet")
 	return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, msg)
 }
 
