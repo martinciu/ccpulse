@@ -67,6 +67,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newConfigCmd())
 	root.AddCommand(newDoctorCmd())
 	root.AddCommand(newVersionCmd())
+	root.PersistentFlags().String("log-level", "", "set log level (debug|info|warn|error|off); overrides channel default")
 	return root
 }
 
