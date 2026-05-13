@@ -104,6 +104,14 @@ func TestDetectDateOrder(t *testing.T) {
 			want:    dateOrderMonthFirst,
 			comment: "fail-closed to legacy en_US",
 		},
+		{
+			name:    "LC_TIME unparseable still wins, LANG not consulted",
+			lcTime:  "garbage",
+			lcAll:   "",
+			lang:    "pl_PL.UTF-8",
+			want:    dateOrderMonthFirst,
+			comment: "first non-empty env wins; unparseable falls closed to MonthFirst",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

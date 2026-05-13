@@ -123,6 +123,10 @@ func renderXLabels(starts []time.Time, chartW int, zoom ZoomLevel, now time.Time
 // Cheap path per issue #145: weekday/month names stay ASCII English;
 // only date order is locale-aware. Native-language names depend on
 // the wide-rune-aware renderXLabels writer tracked in #130.
+//
+// t.Format reads t's zone fields. Buckets are persisted as UTC in
+// pkg/cache, so the chart renders UTC weekdays/dates — a user in a
+// non-UTC zone may see a label off-by-one near local midnight.
 func dateLabel(t, now time.Time, order dateOrder) string {
 	if t.After(now.AddDate(0, 0, -7)) {
 		return t.Format("Mon")

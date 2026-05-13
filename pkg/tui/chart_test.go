@@ -382,10 +382,15 @@ func TestDateLabel(t *testing.T) {
 		{"6 days ago DayFirst → weekday", day(5, 6), dateOrderDayFirst, "Wed"},
 		{"1 day ago MonthFirst → weekday", day(5, 11), dateOrderMonthFirst, "Mon"},
 		{"1 day ago DayFirst → weekday", day(5, 11), dateOrderDayFirst, "Mon"},
-		// Boundary: exactly 7 days ago (May 5 00:00, with now = May 12 14:30,
-		// the "7 days ago" point is May 5 14:30 — May 5 00:00 is older).
-		{"exactly 7 days ago MonthFirst → date", day(5, 5), dateOrderMonthFirst, "05/05"},
-		{"exactly 7 days ago DayFirst → date", day(5, 5), dateOrderDayFirst, "05/05"},
+		// 7d 14h ago (May 5 00:00, with now = May 12 14:30, the 7-day
+		// mark is May 5 14:30 — May 5 00:00 is older than the window).
+		{"7d 14h ago MonthFirst → date", day(5, 5), dateOrderMonthFirst, "05/05"},
+		{"7d 14h ago DayFirst → date", day(5, 5), dateOrderDayFirst, "05/05"},
+		// Strict-After boundary: t.After(now-7d) is `>`, not `>=`, so t
+		// at exactly the 7-day mark falls to the date branch; one ns
+		// later flips to weekday. Locks the contract for future edits.
+		{"exact 7-day boundary → date (After is strict)", now.AddDate(0, 0, -7), dateOrderMonthFirst, "05/05"},
+		{"1ns inside 7-day window → weekday", now.AddDate(0, 0, -7).Add(time.Nanosecond), dateOrderMonthFirst, "Tue"},
 		// Older: locale-aware date.
 		{"12 days ago MonthFirst → MM/DD", day(4, 30), dateOrderMonthFirst, "04/30"},
 		{"12 days ago DayFirst → DD/MM", day(4, 30), dateOrderDayFirst, "30/04"},
