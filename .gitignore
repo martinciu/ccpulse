@@ -2,6 +2,7 @@
 /ccpulse
 /bin/
 /dist/
+/completions/
 
 # editor + os
 .DS_Store
