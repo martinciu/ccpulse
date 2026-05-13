@@ -2066,6 +2066,7 @@ func TestLabelFade_MidAnimationBinding(t *testing.T) {
 	// fade-related tests cover the empty-moment and content swap; this
 	// test pins the brightness binding.
 	withForcedColor(t)
+	withForcedDarkBackground(t, true)
 
 	const probe = "$1.23"
 	full := labelFadeStyle(1.0).Render(probe)
