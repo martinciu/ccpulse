@@ -2178,6 +2178,7 @@ func TestVisibleBuckets_BarWidthOne(t *testing.T) {
 //	w=130 → slack=10 (leading partial bar)
 //	w=131 → slack=11 (mostly-consumed partial bar)
 func TestRenderSpringFrame_MatchesPreSpringBoundary(t *testing.T) {
+	t.Parallel()
 	const (
 		N       = 60  // number of 24h buckets
 		zoomIdx = 2   // 24h zoom: BarWidth=10, BarGap=2, stride=12
@@ -2212,6 +2213,7 @@ func TestRenderSpringFrame_MatchesPreSpringBoundary(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			// ── Build model fields (no cache needed) ──────────────────────────
 			m := New(Deps{}) // deps.Cache = nil; we set fields manually
 			m.w = tc.w
@@ -2256,7 +2258,7 @@ func TestRenderSpringFrame_MatchesPreSpringBoundary(t *testing.T) {
 			m.renderSpringFrame()
 			springView := m.viewport.View()
 
-			// ── Assert equality (ANSI-stripped, per-line, first 30 cols) ─────
+			// ── Assert equality (ANSI-stripped, per-line, full bar rows) ────
 			// Skip the last row: it's the X-label row, which both pre-spring
 			// and spring compute via formatXLabel(bucket, zoom, time.Now(), …).
 			// Pre-spring uses the `now` constant above; renderSpringFrame
@@ -2277,23 +2279,15 @@ func TestRenderSpringFrame_MatchesPreSpringBoundary(t *testing.T) {
 				t.Fatalf("no bar rows to compare (chartH too small?)")
 			}
 
-			const cmpCols = 30 // compare leading portion of each line
+			// Compare each bar row in full. The bug class shifts every bar by
+			// a full stride; truncation isn't needed to catch it, and byte-
+			// slicing multi-byte UTF-8 block runes (█, ▄, etc.) is unsafe.
 			for i := range barRowCount {
-				pre := preLines[i]
-				spr := sprLines[i]
-				// Truncate to cmpCols for comparison (handles line-length
-				// differences from windowed vs full canvas edge padding).
-				pCols := pre
-				if len(pCols) > cmpCols {
-					pCols = pCols[:cmpCols]
-				}
-				sCols := spr
-				if len(sCols) > cmpCols {
-					sCols = sCols[:cmpCols]
-				}
-				if pCols != sCols {
-					t.Errorf("bar row %d first %d cols mismatch:\n  pre-spring: %q\n  spring:     %q",
-						i, cmpCols, pCols, sCols)
+				pre := strings.TrimRight(preLines[i], " ")
+				spr := strings.TrimRight(sprLines[i], " ")
+				if pre != spr {
+					t.Errorf("subtest %s: bar row %d mismatch\n pre: %q\nspring: %q",
+						tc.name, i, pre, spr)
 				}
 			}
 		})
