@@ -599,6 +599,42 @@ func TestZoomLevels_BarWidthPositive(t *testing.T) {
 	}
 }
 
+// TestZoomLevel_CanvasWidth_Defensive locks in CanvasWidth's clamp
+// contract: BarWidth is treated as ≥1 and BarGap as ≥0 even when the
+// ZoomLevel literal is degenerate. Same clamp logic is mirrored in
+// renderXLabels, model.visibleBuckets, and model.setX — if a future
+// edit drops the max() guards there, stride drops to 0 and the
+// chartWidth-divided callers panic. This test fails loudly if anyone
+// removes the CanvasWidth guards.
+func TestZoomLevel_CanvasWidth_Defensive(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		zoom ZoomLevel
+		n    int
+		want int
+	}{
+		{"zero buckets", ZoomLevel{BarWidth: 10, BarGap: 2}, 0, 0},
+		{"negative buckets", ZoomLevel{BarWidth: 10, BarGap: 2}, -1, 0},
+		{"one bucket has no gap term", ZoomLevel{BarWidth: 10, BarGap: 2}, 1, 10},
+		{"two buckets adds one gap", ZoomLevel{BarWidth: 10, BarGap: 2}, 2, 22},
+		{"24h shape: 4 bars", ZoomLevel{BarWidth: 10, BarGap: 2}, 4, 46},
+		{"negative BarGap clamped to 0", ZoomLevel{BarWidth: 5, BarGap: -3}, 4, 20},
+		{"zero BarWidth clamped to 1", ZoomLevel{BarWidth: 0, BarGap: 2}, 3, 7},
+		{"negative BarWidth clamped to 1", ZoomLevel{BarWidth: -5, BarGap: 0}, 3, 3},
+		{"both negative still well-defined", ZoomLevel{BarWidth: -5, BarGap: -10}, 3, 3},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tt.zoom.CanvasWidth(tt.n); got != tt.want {
+				t.Errorf("CanvasWidth(%d) on %+v = %d, want %d",
+					tt.n, tt.zoom, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestBuildChart_24h_CanvasWidth verifies that a 24h-zoom call with
 // canvasW = zoom.CanvasWidth(n) produces output rows of exactly that
 // width. Exercises WithBarWidth + WithBarGap so ntcharts neither

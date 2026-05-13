@@ -32,11 +32,16 @@ type ZoomLevel struct {
 // CanvasWidth returns the total column count to render n bars at this
 // zoom: n*BarWidth + (n-1)*BarGap. Returns 0 for n<=0. Shared by
 // buildChart's caller (model.refreshChart) and the spring-frame path.
+//
+// BarWidth is clamped to ≥1 and BarGap to ≥0 so degenerate ZoomLevels
+// values (typos, future tuning slips) can't produce a negative or
+// stride-zero layout downstream — see the matching clamps in
+// renderXLabels, model.visibleBuckets, and model.setX.
 func (z ZoomLevel) CanvasWidth(n int) int {
 	if n <= 0 {
 		return 0
 	}
-	return n*z.BarWidth + (n-1)*z.BarGap
+	return n*max(z.BarWidth, 1) + (n-1)*max(z.BarGap, 0)
 }
 
 // ZoomLevels are the available zoom steps, cycled with the z key.
@@ -99,7 +104,7 @@ func renderXLabels(starts []time.Time, chartW int, zoom ZoomLevel, now time.Time
 		return ""
 	}
 	bw := max(zoom.BarWidth, 1)
-	stride := bw + zoom.BarGap
+	stride := bw + max(zoom.BarGap, 0)
 	row := make([]rune, chartW)
 	for i := range row {
 		row[i] = ' '

@@ -651,12 +651,12 @@ func (m *Model) renderSpringFrame() {
 // setX is the single point of entry for changing the viewport's horizontal
 // scroll position. n is a bucket index (not a column count); setX clamps
 // it against lastStarts and visibleBuckets, then multiplies by the per-
-// bar stride (BarWidth+BarGap) when delegating to viewport.SetXOffset
-// (which is column-indexed). The shadow viewportXOffset stays in
-// bucket-index space.
+// bar stride (BarWidth+BarGap, defensively clamped to ≥1) when
+// delegating to viewport.SetXOffset (which is column-indexed). The
+// shadow viewportXOffset stays in bucket-index space.
 func (m *Model) setX(n int) {
 	z := ZoomLevels[m.zoomIdx]
-	stride := z.BarWidth + z.BarGap
+	stride := max(z.BarWidth, 1) + max(z.BarGap, 0)
 	maxX := max(0, len(m.lastStarts)-m.visibleBuckets())
 	n = min(max(n, 0), maxX)
 	m.viewport.SetXOffset(n * stride)
@@ -867,11 +867,16 @@ func (m Model) chartWidth() int {
 // <= chartWidth(), so n <= (chartWidth + BarGap) / (BarWidth + BarGap).
 // Floors at 1 so the chart never collapses to zero visible bars when
 // BarWidth > chartWidth() (degenerate terminal width).
+//
+// BarWidth is clamped to ≥1 and BarGap to ≥0 so stride is always ≥1 —
+// guards against a stride-zero divide panic if a future ZoomLevels
+// literal sets BarGap = -BarWidth.
 func (m Model) visibleBuckets() int {
 	z := ZoomLevels[m.zoomIdx]
 	bw := max(z.BarWidth, 1)
-	stride := bw + z.BarGap
-	v := (m.chartWidth() + z.BarGap) / stride
+	gap := max(z.BarGap, 0)
+	stride := bw + gap
+	v := (m.chartWidth() + gap) / stride
 	if v < 1 {
 		return 1
 	}
