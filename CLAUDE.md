@@ -59,7 +59,7 @@ These env vars override `config.toml` at runtime — useful for testing against 
 | `pkg/tui` | Bubble Tea model: bordered header (5h+7d quota bars), horizontally-scrollable token histogram, full-help overlay, lipgloss styling, `bubbles/{help,key,progress,viewport}` + `ntcharts/barchart` |
 | `pkg/config` | TOML config at `~/.config/ccpulse/config.toml` (respects `XDG_CONFIG_HOME`); `config.Load("")` returns safe defaults |
 | `pkg/channel` | Build-channel flag (`dev` / `release`) set once at startup from `main.buildChannel` via ldflag; unknown values normalise to `dev` |
-| `pkg/devlog` | Wires `slog.Default()` to `<cacheDir>/debug.log` in dev, `io.Discard` in release; uses `charmbracelet/log` for `YYYY-MM-DD HH:MM:SS.mmm DEBU <file:line>` formatted output with caller info; best-effort (falls back to discard on any setup error) |
+| `pkg/devlog` | Wires `slog.Default()` per `--log-level <off\|error\|warn\|info\|debug>` (channel-aware default: debug on dev, info on release). Writes `<cacheDir>/debug.log` in dev, `<cacheDir>/ccpulse.log` in release. `--log-level off` short-circuits to a discard handler with no file opened. `charmbracelet/log` text format with caller info; best-effort (falls back to discard on any setup error). Rotation is external — no internal rotation. |
 | `pkg/secfile` | Filesystem helpers enforcing 0700 dirs / 0600 files; chmods pre-existing entries tighter on access |
 
 ### SQLite schema
@@ -124,3 +124,13 @@ When wiring harmonica directly: drive it from a `tea.Tick` command returned by `
 ### v1 line — don't introduce v2 imports
 
 All four libraries have shipped stable v2 majors (`charm.land/bubbletea/v2`, `charmbracelet/{bubbles,lipgloss}/v2`, `NimbleMarkets/ntcharts/v2`). ccpulse stays on the v1 line until a deliberate migration. Don't add v2 imports as part of unrelated work — the v2 cutover is a planned, separate effort because it touches every `pkg/tui/*.go` file (`View() string` → `View() tea.View`, key-message types split, import path changes).
+
+## Logging — privacy audit on every slog change
+
+ccpulse writes `slog` records to `<cacheDir>/ccpulse.log` on release builds (level controlled by `--log-level`, default `info`). Every new `slog.{Debug,Info,Warn,Error}` call site is a privacy surface — reviewers must audit:
+
+- ❌ **Never log:** bearer tokens, OAuth refresh tokens, full credential JSON, raw HTTP response bodies (workspace name / email can hide in error bodies).
+- ⚠️ **Care:** project paths (`~/.claude/projects/...` reveals home dir + workspace topology), HTTP status codes alongside URL fragments (usually fine).
+- ✅ **OK:** durations, byte counts, bucket counts, source field (`api`/`cache_fresh`/`cache_stale`), error type names without bodies.
+
+The `TestFetch_NoBearerTokenInLogs` test (`pkg/anthro/usage_test.go`) guards the credential surface (Bearer token). If you add a slog call that handles credentials or full response payloads, extend that test (or write a sibling using the constant in `pkg/anthro/privacy_sentinels_test.go`) so the new path is covered. The current `body_snippet` attribute on `fetchAPI` non-2xx / decode paths is intentionally exempt from the guard — it is bounded by `maxBodySnippet` and `strconv.Quote`'d.
