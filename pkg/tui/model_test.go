@@ -1178,20 +1178,30 @@ func TestPhaseTransition_AtThreshold(t *testing.T) {
 	if m.springPhase == springShrinking {
 		t.Fatalf("Phase 1 did not exit within %d ticks", maxTicks)
 	}
-	if m.springPhase != springGrowing {
-		t.Fatalf("springPhase = %d after Phase 1 exit, want springGrowing (%d)", m.springPhase, springGrowing)
+	// Phase 1 → Hold handoff: ratios are zero but Phase 2 is NOT seeded
+	// yet (that work moves to the springHolding case, fired by the hold
+	// tick below) — see #163 and TestUnitToggleAnimation_HoldPhaseTransitions
+	// for the dedicated hold-phase coverage.
+	if m.springPhase != springHolding {
+		t.Fatalf("springPhase = %d after Phase 1 exit, want springHolding (%d)", m.springPhase, springHolding)
 	}
-
-	// At the handoff, springRatios must be zero (snapped).
 	for i, r := range m.springRatios {
 		if r != 0 {
-			t.Errorf("springRatios[%d] = %v after handoff, want 0", i, r)
+			t.Errorf("springRatios[%d] = %v after Phase 1 handoff, want 0", i, r)
 		}
+	}
+
+	// Deliver the hold tick to transition Hold → Phase 2 and seed it.
+	updated, _ = m.Update(springTickMsg{})
+	m = updated.(Model)
+
+	if m.springPhase != springGrowing {
+		t.Fatalf("springPhase = %d after hold tick, want springGrowing (%d)", m.springPhase, springGrowing)
 	}
 	// springTargetRatios must now hold the Phase 2 destination.
 	for i, want := range expectedTargets {
 		if m.springTargetRatios[i] != want {
-			t.Errorf("springTargetRatios[%d] = %v after handoff, want %v",
+			t.Errorf("springTargetRatios[%d] = %v after hold tick, want %v",
 				i, m.springTargetRatios[i], want)
 		}
 	}
@@ -1933,16 +1943,16 @@ func TestLabelFade_SyncedWithMaxRatio(t *testing.T) {
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
 	m = updated.(Model)
 
-	// Drive ticks until exactly the moment Phase 2 starts. At that
-	// tick, m.springRatios were just snapped to zero (max == 0); the
-	// growing-Phase Update will fire next tick.
+	// Drive ticks until the Hold phase (ratios snapped to zero, no Phase
+	// 2 grow tick yet). The growing-Phase Update will fire on the next
+	// tick after the hold tick arrives (#163).
 	const maxTicks = 50
 	for i := 0; i < maxTicks && m.springPhase == springShrinking; i++ {
 		updated, _ = m.Update(springTickMsg{})
 		m = updated.(Model)
 	}
-	if m.springPhase != springGrowing {
-		t.Fatalf("did not reach Phase 2 in %d ticks", maxTicks)
+	if m.springPhase != springHolding {
+		t.Fatalf("did not reach Hold phase in %d ticks, got phase %d", maxTicks, m.springPhase)
 	}
 
 	// At this exact moment springRatios were snapped to zero but no
@@ -2031,26 +2041,29 @@ func TestRefreshMsg_AbortsBothPhases(t *testing.T) {
 	// RefreshMsg arriving in either phase must hard-cut the animation:
 	// springActive=false and springPhase=springIdle. Driven by the
 	// existing refreshChart chokepoint (Task 7 extends it).
-	for _, phase := range []springPhase{springShrinking, springGrowing} {
-		name := "Phase1"
-		if phase == springGrowing {
-			name = "Phase2"
-		}
-		t.Run(name, func(t *testing.T) {
+	cases := []struct {
+		name  string
+		phase springPhase
+	}{
+		{"Phase1", springShrinking},
+		{"Hold", springHolding},
+		{"Phase2", springGrowing},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
 			m := seedTwoPhaseAnimationModel(t)
 			updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
 			m = updated.(Model)
 
-			if phase == springGrowing {
-				// Drive ticks until we cross into Phase 2.
-				const maxTicks = 100
-				for i := 0; i < maxTicks && m.springPhase != springGrowing; i++ {
-					updated, _ = m.Update(springTickMsg{})
-					m = updated.(Model)
-				}
-				if m.springPhase != springGrowing {
-					t.Fatalf("never reached Phase 2 in %d ticks", maxTicks)
-				}
+			// Drive ticks until we reach the target phase. Phase 1 is the
+			// initial state after 'u', so the loop is a no-op for it.
+			const maxTicks = 100
+			for i := 0; i < maxTicks && m.springPhase != tc.phase; i++ {
+				updated, _ = m.Update(springTickMsg{})
+				m = updated.(Model)
+			}
+			if m.springPhase != tc.phase {
+				t.Fatalf("never reached %s in %d ticks", tc.name, maxTicks)
 			}
 
 			// Now in the target phase. Deliver RefreshMsg.
@@ -2058,10 +2071,10 @@ func TestRefreshMsg_AbortsBothPhases(t *testing.T) {
 			m = updated.(Model)
 
 			if m.springActive {
-				t.Errorf("springActive = true after RefreshMsg in %s; expected hard-cut", name)
+				t.Errorf("springActive = true after RefreshMsg in %s; expected hard-cut", tc.name)
 			}
 			if m.springPhase != springIdle {
-				t.Errorf("springPhase = %d after RefreshMsg in %s; expected springIdle", m.springPhase, name)
+				t.Errorf("springPhase = %d after RefreshMsg in %s; expected springIdle", m.springPhase, tc.name)
 			}
 		})
 	}
@@ -2083,8 +2096,11 @@ func TestVisualProbe_PhaseHandoffIsClean(t *testing.T) {
 		updated, _ = m.Update(springTickMsg{})
 		m = updated.(Model)
 	}
-	if m.springPhase != springGrowing {
-		t.Fatalf("did not reach Phase 2 in %d ticks", maxTicks)
+	// Loop exits at the Phase 1 → Hold handoff. springRatios are snapped
+	// to zero; no Phase 2 grow tick has run yet. This is exactly the
+	// "empty moment" the probe is asserting on (#163).
+	if m.springPhase != springHolding {
+		t.Fatalf("did not reach Hold phase in %d ticks, got phase %d", maxTicks, m.springPhase)
 	}
 	// At this moment springRatios were just snapped to 0; no growing
 	// tick has yet rendered new bars.
