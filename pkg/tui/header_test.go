@@ -451,6 +451,81 @@ func splitANSIEnvelope(styled string) (open, close string, ok bool) {
 	return styled[:idx], styled[idx+1:], true
 }
 
+func TestRenderBurnRateSide_PerDay(t *testing.T) {
+	// The 7d side uses burnRateUnitPerDay so the rate token reads as
+	// "%/day" with the slope scaled by 24. Everything else (severity
+	// colour, projection/limit-in tail, layout) is identical to the
+	// per-hour case covered by TestRenderBurnRateSide.
+	withForcedColor(t)
+	withForcedDarkBackground(t, true)
+	const slotW = 60
+	dim := lipgloss.NewStyle().Foreground(colorMuted)
+	safe := lipgloss.NewStyle().Foreground(colorSafe)
+
+	tests := []struct {
+		name        string
+		p           *status.Projection
+		wantSubstrs []string
+		notSubstrs  []string
+		wantStyle   lipgloss.Style
+	}{
+		{
+			name:        "nil projection still renders (no data), unit irrelevant",
+			p:           nil,
+			wantSubstrs: []string{"(no data)"},
+			notSubstrs:  []string{"%/day", "%/h"},
+			wantStyle:   dim,
+		},
+		{
+			name: "warming-up renders dim text, no rate token",
+			p: &status.Projection{
+				SlopePctPerHour:     0.5,
+				ProjectedPctAtReset: 60,
+				Confidence:          "low",
+			},
+			wantSubstrs: []string{"warming up"},
+			notSubstrs:  []string{"12%/day", "%/h"},
+			wantStyle:   dim,
+		},
+		{
+			name: "safe per-day scales slope by 24",
+			p: &status.Projection{
+				SlopePctPerHour:     0.5, // 0.5 * 24 = 12 → "12%/day"
+				ProjectedPctAtReset: 60,
+				WillOverreach:       false,
+				Confidence:          "ok",
+			},
+			wantSubstrs: []string{"12%/day", "projecting 60%"},
+			notSubstrs:  []string{"%/h", "limit in"},
+			wantStyle:   safe,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := renderBurnRateSide("7d ", tt.p, slotW, 7*24*time.Hour, burnRateUnitPerDay)
+			for _, sub := range tt.wantSubstrs {
+				if !strings.Contains(got, sub) {
+					t.Errorf("output missing substring %q\nfull output: %q", sub, got)
+				}
+			}
+			for _, sub := range tt.notSubstrs {
+				if strings.Contains(got, sub) {
+					t.Errorf("output unexpectedly contains substring %q\nfull output: %q", sub, got)
+				}
+			}
+			marker := tt.wantStyle.Render(probeMarker)
+			openSeq, closeSeq, ok := splitANSIEnvelope(marker)
+			if !ok {
+				t.Fatalf("could not split ANSI envelope from marker %q", marker)
+			}
+			if !strings.Contains(got, openSeq) || !strings.Contains(got, closeSeq) {
+				t.Errorf("output missing expected style envelope (open=%q, close=%q)\nfull output: %q",
+					openSeq, closeSeq, got)
+			}
+		})
+	}
+}
+
 func TestRenderQuotaSide_ProducesExactSlotWidth(t *testing.T) {
 	// renderQuotaSide's output width is determined entirely by its inputs:
 	// lipgloss.Width(label) + bar.Width + statusBlockMaxW. Property under
