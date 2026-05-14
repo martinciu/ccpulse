@@ -16,10 +16,10 @@ import (
 var sinkString string
 
 // syntheticChartInput produces n contiguous 5-minute chart inputs with
-// deterministic, varied values so heatColor exercises all three colour
-// bands. Anchored to a 3-hour clock boundary so the 15m zoom (used by
-// BenchmarkBuildChart and BenchmarkRenderXLabels) hits a label tick
-// every 36th bucket — exercising renderXLabels' label-write loop.
+// deterministic, varied values. Anchored to a 3-hour clock boundary so
+// the 15m zoom (used by BenchmarkBuildChart and BenchmarkRenderXLabels)
+// hits a label tick every 36th bucket — exercising renderXLabels'
+// label-write loop.
 // Without this anchor, formatXLabel would return "" for nearly every
 // bucket and the label-write path would be under-measured.
 func syntheticChartInput(n int) (values []float64, starts []time.Time, peak float64) {

@@ -79,6 +79,8 @@ func TestAdaptiveTokens_LightDark(t *testing.T) {
 		{"colorDanger", colorDanger, "#c62828", "#e57373"},
 		{"colorMuted", colorMuted, "#666666", "#9e9e9e"},
 		{"colorFaint", colorFaint, "#bdbdbd", "#424242"},
+		{"colorChartTokens", colorChartTokens, "#1565c0", "#64b5f6"},
+		{"colorChartCost", colorChartCost, "#ff8f00", "#ffca28"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

@@ -17,6 +17,13 @@ var (
 	colorDanger = lipgloss.AdaptiveColor{Light: "#c62828", Dark: "#e57373"} // Material red 700 / 300
 	colorMuted  = lipgloss.AdaptiveColor{Light: "#666666", Dark: "#9e9e9e"} // chrome, dim labels (Material grey 700 / 500)
 	colorFaint  = lipgloss.AdaptiveColor{Light: "#bdbdbd", Dark: "#424242"} // fade-out endpoint (Material grey 400 / 800)
+
+	// Unit-keyed chart bar colors — NOT severity. buildChart picks one
+	// per chartUnit so the bar color tells the user which axis is plotted
+	// (tokens vs cost), independent of bucket height. The header quota
+	// bars keep the green→red gradient where the ramp IS meaningful.
+	colorChartTokens = lipgloss.AdaptiveColor{Light: "#1565c0", Dark: "#64b5f6"} // Material Blue 800 / 300
+	colorChartCost   = lipgloss.AdaptiveColor{Light: "#ff8f00", Dark: "#ffca28"} // Material Amber 800 / 400
 )
 
 // Quota gradient stops. Hex (not ANSI slots) because bubbles/progress.WithGradient

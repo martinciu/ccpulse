@@ -389,23 +389,43 @@ func TestBuildChart_NoBaselineStrip(t *testing.T) {
 	}
 }
 
-func TestHeatColor(t *testing.T) {
-	tests := []struct {
-		ratio float64
-		want  lipgloss.AdaptiveColor
-	}{
-		{0.0, colorSafe},
-		{0.32, colorSafe},
-		{0.33, colorWatch},
-		{0.65, colorWatch},
-		{0.66, colorDanger},
-		{1.0, colorDanger},
+// TestBuildChart_BarColorByUnit pins issue #162: bars render in the
+// unit-keyed AdaptiveColor (Blue for tokens, Amber for cost), independent
+// of bucket height. We probe by rendering the chart with each unit and
+// asserting the unit's Light hex appears in the ANSI-stripped style escape,
+// and the OTHER unit's hex does not.
+func TestBuildChart_BarColorByUnit(t *testing.T) {
+	withForcedColor(t)
+	withForcedDarkBackground(t, false) // probe Light stops: #1565c0 and #ff8f00
+	values := []float64{1, 2, 3, 4, 5}
+	starts := make([]time.Time, len(values))
+	now := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+	for i := range starts {
+		starts[i] = now.Add(time.Duration(i) * time.Hour)
 	}
-	for _, tt := range tests {
-		got := heatColor(tt.ratio)
-		if got != tt.want {
-			t.Errorf("heatColor(%v) = %v, want %v", tt.ratio, got, tt.want)
-		}
+	peak := 5.0
+
+	// lipgloss renders AdaptiveColor as truecolor SGR escapes; the hex
+	// digits appear (as decimal RGB triplets) inside the escape sequence.
+	// Probe with the Light stops since the test process has no TTY and
+	// termenv reports "no color preference" → lipgloss picks Light.
+	tokensRGB := "21;101;192" // #1565c0 → 0x15=21, 0x65=101, 0xc0=192
+	costRGB := "255;143;0"    // #ff8f00 → 255, 143, 0
+
+	tokensOut := buildChart(values, starts, peak, 30, 10, now, ZoomLevels[1], chartUnitTokens, dateOrderMonthFirst)
+	if !strings.Contains(tokensOut, tokensRGB) {
+		t.Errorf("chartUnitTokens render missing Blue RGB %q in output:\n%s", tokensRGB, tokensOut)
+	}
+	if strings.Contains(tokensOut, costRGB) {
+		t.Errorf("chartUnitTokens render unexpectedly contains Amber RGB %q (should be unit-keyed, not heat-ramped):\n%s", costRGB, tokensOut)
+	}
+
+	costOut := buildChart(values, starts, peak, 30, 10, now, ZoomLevels[1], chartUnitCost, dateOrderMonthFirst)
+	if !strings.Contains(costOut, costRGB) {
+		t.Errorf("chartUnitCost render missing Amber RGB %q in output:\n%s", costRGB, costOut)
+	}
+	if strings.Contains(costOut, tokensRGB) {
+		t.Errorf("chartUnitCost render unexpectedly contains Blue RGB %q:\n%s", tokensRGB, costOut)
 	}
 }
 
@@ -2111,8 +2131,8 @@ func TestVisualProbe_PhaseHandoffIsClean(t *testing.T) {
 	}
 
 	view := m.View()
-	// ANSI bar cells inside the chart use SGR colour escapes (heatColor
-	// + lipgloss). The empty-moment frame must contain NO foreground-
+	// ANSI bar cells inside the chart use SGR colour escapes (unit-keyed
+	// color + lipgloss). The empty-moment frame must contain NO foreground-
 	// background SGR pairs in the chart-body region.
 	//
 	// Heuristic: count the number of chart cells (█ or other heavy
