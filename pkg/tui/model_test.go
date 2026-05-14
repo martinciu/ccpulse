@@ -2460,3 +2460,104 @@ func TestRefreshChart_RemainingMode(t *testing.T) {
 		t.Error("View returned empty string in remaining mode")
 	}
 }
+
+func TestBeginUnitAnimation_BarToLine(t *testing.T) {
+	dir := t.TempDir()
+	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	defer c.Close()
+
+	tab, _ := pricing.Load()
+	now := time.Now().UTC().Truncate(time.Minute)
+	msgs := []parse.Message{{
+		SessionID: "s1", ProjectSlug: "p", Model: "claude-sonnet-4-6",
+		Timestamp: now.Add(-30 * time.Minute), InputTokens: 5000,
+	}}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	u := anthro.Usage{
+		FiveHour: &anthro.Bucket{Utilization: 50.0, ResetsAt: now.Add(time.Hour)},
+		SevenDay: &anthro.Bucket{Utilization: 25.0, ResetsAt: now.Add(24 * time.Hour)},
+	}
+	if err := c.RecordUsageSample(u, now); err != nil {
+		t.Fatalf("RecordUsageSample: %v", err)
+	}
+
+	m := New(Deps{Cache: c})
+	m.w, m.h = 120, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	m.refreshChart() // tokens mode
+
+	// Toggle to cost (bar→bar), then to remaining (bar→line).
+	m.unitIdx = int(chartUnitCost)
+	m.refreshChart()
+	m.unitIdx = int(chartUnitRemaining)
+	m.beginUnitAnimation()
+
+	if !m.springActive {
+		t.Fatal("expected springActive=true after bar→line toggle")
+	}
+	if m.springPhase != springShrinking {
+		t.Errorf("expected springShrinking, got %d", m.springPhase)
+	}
+	if !m.newIsLine {
+		t.Error("expected newIsLine=true")
+	}
+	if m.oldIsLine {
+		t.Error("expected oldIsLine=false")
+	}
+}
+
+func TestBeginUnitAnimation_LineToBar(t *testing.T) {
+	dir := t.TempDir()
+	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	defer c.Close()
+
+	tab, _ := pricing.Load()
+	now := time.Now().UTC().Truncate(time.Minute)
+	msgs := []parse.Message{{
+		SessionID: "s1", ProjectSlug: "p", Model: "claude-sonnet-4-6",
+		Timestamp: now.Add(-30 * time.Minute), InputTokens: 5000,
+	}}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	u := anthro.Usage{
+		FiveHour: &anthro.Bucket{Utilization: 50.0, ResetsAt: now.Add(time.Hour)},
+	}
+	if err := c.RecordUsageSample(u, now); err != nil {
+		t.Fatalf("RecordUsageSample: %v", err)
+	}
+
+	m := New(Deps{Cache: c})
+	m.w, m.h = 120, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+
+	// Start in remaining mode.
+	m.unitIdx = int(chartUnitRemaining)
+	m.refreshChart()
+
+	// Toggle to tokens (line→bar).
+	m.unitIdx = int(chartUnitTokens)
+	m.beginUnitAnimation()
+
+	if !m.springActive {
+		t.Fatal("expected springActive=true")
+	}
+	if !m.oldIsLine {
+		t.Error("expected oldIsLine=true")
+	}
+	if m.newIsLine {
+		t.Error("expected newIsLine=false")
+	}
+}
