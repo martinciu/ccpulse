@@ -1635,3 +1635,44 @@ func TestSevenDaySamplesSince_NullPctExcluded(t *testing.T) {
 		t.Errorf("pct = %v, want 25.0", got[0].Pct)
 	}
 }
+
+func TestSevenDaySamplesSince_ResetsAtNormalized(t *testing.T) {
+	// The Anthropic API returns slightly different nanosecond timestamps for the
+	// same logical reset boundary on each call. Without normalization the equality
+	// filter in projectSevenDay treats every sample as its own bucket, leaving
+	// <2 filtered samples and silently falling back to the linear projection.
+	// This test pins the fix: sub-second jitter must be collapsed to second precision.
+	dir := t.TempDir()
+	c, err := Open(dir + "/state.db")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+
+	now := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+	// Same logical reset (2026-05-17T09:00:00) but nanoseconds differ per sample.
+	resets1 := time.Date(2026, 5, 17, 9, 0, 0, 745677000, time.UTC)
+	resets2 := time.Date(2026, 5, 17, 9, 0, 0, 719504000, time.UTC)
+
+	if err := c.RecordUsageSample(anthro.Usage{
+		SevenDay: &anthro.Bucket{Utilization: 70.0, ResetsAt: resets1},
+	}, now.Add(-12*time.Hour)); err != nil {
+		t.Fatalf("Record 1: %v", err)
+	}
+	if err := c.RecordUsageSample(anthro.Usage{
+		SevenDay: &anthro.Bucket{Utilization: 80.0, ResetsAt: resets2},
+	}, now); err != nil {
+		t.Fatalf("Record 2: %v", err)
+	}
+
+	got, err := c.SevenDaySamplesSince(now.Add(-24 * time.Hour))
+	if err != nil {
+		t.Fatalf("SevenDaySamplesSince: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2", len(got))
+	}
+	if got[0].ResetsAt != got[1].ResetsAt {
+		t.Errorf("ResetsAt not normalized: %q vs %q (nanosecond jitter survived)", got[0].ResetsAt, got[1].ResetsAt)
+	}
+}
