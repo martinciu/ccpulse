@@ -3,6 +3,7 @@ package pricing
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/martinciu/ccpulse/pkg/parse"
 )
@@ -163,5 +164,82 @@ func TestParseTable(t *testing.T) {
 				t.Errorf("error = %q, want substring %q", err.Error(), tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestHistory_TableAt(t *testing.T) {
+	h, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	mustTime := func(s string) time.Time {
+		ts, err := time.Parse(time.RFC3339, s)
+		if err != nil {
+			t.Fatalf("parse %s: %v", s, err)
+		}
+		return ts
+	}
+
+	cases := []struct {
+		name        string
+		ts          time.Time
+		wantVersion string
+	}{
+		{"before earliest -> earliest", mustTime("2025-01-01T00:00:00Z"), "2026-05-09"},
+		{"exact earliest", mustTime("2026-05-09T00:00:00Z"), "2026-05-09"},
+		{"between versions -> preceding", mustTime("2026-05-09T23:59:59Z"), "2026-05-09"},
+		{"exact later version", mustTime("2026-05-10T00:00:00Z"), "2026-05-10"},
+		{"after latest -> latest", mustTime("2099-01-01T00:00:00Z"), "2026-05-10"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := h.TableAt(c.ts).Version
+			if got != c.wantVersion {
+				t.Errorf("TableAt(%s).Version = %q, want %q", c.ts.Format(time.RFC3339), got, c.wantVersion)
+			}
+		})
+	}
+}
+
+func TestHistory_CostFor_StampsResolvedVersion(t *testing.T) {
+	h, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	m := parse.Message{
+		Timestamp:   time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC),
+		Model:       "claude-opus-4-7",
+		InputTokens: 1_000_000,
+	}
+	cost, version, unknown := h.CostFor(m)
+	if unknown {
+		t.Fatalf("expected model known in 2026-05-09 table")
+	}
+	if version != "2026-05-09" {
+		t.Errorf("version = %q, want 2026-05-09 (resolved, not latest)", version)
+	}
+	if cost <= 0 {
+		t.Errorf("cost = %v, want positive", cost)
+	}
+}
+
+func TestHistory_CostFor_UnknownModel(t *testing.T) {
+	h, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	m := parse.Message{
+		Timestamp: time.Date(2026, 5, 10, 0, 0, 0, 0, time.UTC),
+		Model:     "no-such-model-xyz",
+	}
+	cost, version, unknown := h.CostFor(m)
+	if !unknown {
+		t.Errorf("expected unknown=true for missing model, got false")
+	}
+	if cost != 0 {
+		t.Errorf("expected cost=0 for unknown model, got %v", cost)
+	}
+	if version != "2026-05-10" {
+		t.Errorf("version = %q, want 2026-05-10 (still resolves)", version)
 	}
 }
