@@ -61,6 +61,7 @@ type springPhase int
 const (
 	springIdle      springPhase = iota
 	springShrinking             // Phase 1: bars fall to zero (Projectile, ease-in)
+	springHolding               // Hold: bars rest at zero so the eye registers the beat (#163)
 	springGrowing               // Phase 2: bars grow from zero to target (Spring with Vi, ease-out)
 )
 
@@ -530,6 +531,10 @@ const (
 	phase2Damping            = springDamping   // 1.0
 	phase2InitialVelocityV0  = 5.0
 	phaseTransitionThreshold = 0.01
+	// phaseHoldDuration is the all-zero pause between Phase 1 (fall) and
+	// Phase 2 (grow) in the 'u' unit-toggle animation. Long enough to
+	// read the unit change, short enough to feel snappy (#163).
+	phaseHoldDuration = 150 * time.Millisecond
 )
 
 // beginUnitAnimation primes the two-phase unit-toggle animation. It
