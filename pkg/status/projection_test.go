@@ -365,6 +365,7 @@ func TestProjectSevenDay_SlopeCases(t *testing.T) {
 		currentPct       float64
 		wantSlopeApprox  float64
 		wantOverreach    bool
+		wantConfidence   string
 		wantMinutesTo100 bool
 	}{
 		{
@@ -373,6 +374,7 @@ func TestProjectSevenDay_SlopeCases(t *testing.T) {
 			currentPct:      50.0,
 			wantSlopeApprox: 0.0,
 			wantOverreach:   false,
+			wantConfidence:  "ok",
 		},
 		{
 			name:             "back-loaded: 0→50 over 24h → slope ≈ 2.083%/h",
@@ -380,6 +382,7 @@ func TestProjectSevenDay_SlopeCases(t *testing.T) {
 			currentPct:       50.0,
 			wantSlopeApprox:  50.0 / 24.0,
 			wantOverreach:    true,
+			wantConfidence:   "ok",
 			wantMinutesTo100: true,
 		},
 		{
@@ -388,6 +391,7 @@ func TestProjectSevenDay_SlopeCases(t *testing.T) {
 			currentPct:      25.0,
 			wantSlopeApprox: 1.0 / 24.0,
 			wantOverreach:   false,
+			wantConfidence:  "ok",
 		},
 		{
 			name: "recent spike: flat at 30% for 20h, +20% in last 4h",
@@ -401,6 +405,7 @@ func TestProjectSevenDay_SlopeCases(t *testing.T) {
 			currentPct:       50.0,
 			wantSlopeApprox:  20.0 / 24.0,
 			wantOverreach:    true,
+			wantConfidence:   "ok",
 			wantMinutesTo100: true,
 		},
 		{
@@ -409,6 +414,7 @@ func TestProjectSevenDay_SlopeCases(t *testing.T) {
 			currentPct:      30.0,
 			wantSlopeApprox: 0.0,
 			wantOverreach:   false,
+			wantConfidence:  "ok",
 		},
 		{
 			name: "sparse window: two samples 24h apart",
@@ -419,6 +425,7 @@ func TestProjectSevenDay_SlopeCases(t *testing.T) {
 			currentPct:      30.0,
 			wantSlopeApprox: 20.0 / 24.0,
 			wantOverreach:   false, // 30 + 0.833*72 ≈ 90
+			wantConfidence:  "ok",
 		},
 		{
 			name: "reset inside window: pre-reset samples filtered out",
@@ -431,6 +438,7 @@ func TestProjectSevenDay_SlopeCases(t *testing.T) {
 			currentPct:      5.0,
 			wantSlopeApprox: 5.0 / 4.0, // 1.25%/h
 			wantOverreach:   false,      // 5 + 1.25*72 = 95
+			wantConfidence:  "ok",
 		},
 		{
 			name: "negative-Δ noise: clamped to 0",
@@ -441,6 +449,19 @@ func TestProjectSevenDay_SlopeCases(t *testing.T) {
 			currentPct:      29.7,
 			wantSlopeApprox: 0.0,
 			wantOverreach:   false,
+			wantConfidence:  "ok",
+		},
+		{
+			name: "NaN sample is filtered, surrounding samples drive slope",
+			samples: []cache.SevenDaySample{
+				{At: now.Add(-24 * time.Hour), Pct: 10.0, ResetsAt: bucketA},
+				{At: now.Add(-12 * time.Hour), Pct: math.NaN(), ResetsAt: bucketA},
+				{At: now, Pct: 30.0, ResetsAt: bucketA},
+			},
+			currentPct:      30.0,
+			wantSlopeApprox: 20.0 / 24.0,
+			wantOverreach:   false,
+			wantConfidence:  "ok",
 		},
 	}
 
@@ -452,6 +473,9 @@ func TestProjectSevenDay_SlopeCases(t *testing.T) {
 			}
 			if got.WillOverreach != tc.wantOverreach {
 				t.Errorf("WillOverreach = %v, want %v", got.WillOverreach, tc.wantOverreach)
+			}
+			if got.Confidence != tc.wantConfidence {
+				t.Errorf("Confidence = %q, want %q", got.Confidence, tc.wantConfidence)
 			}
 			if tc.wantMinutesTo100 && got.MinutesTo100Pct == nil {
 				t.Errorf("MinutesTo100Pct = nil, want non-nil")

@@ -74,7 +74,7 @@ func round2(f float64) float64 {
 const (
 	sevenDayTrailingWindow = 24 * time.Hour
 	minSamplesForSlope     = 2
-	minSpanForSlope        = 4 * time.Hour
+	minSpanForSlope        = 4 * time.Hour // must match sevenDayLowConfidenceCutoff
 )
 
 func projectSevenDay(

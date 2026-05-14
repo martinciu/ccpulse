@@ -227,9 +227,10 @@ func (c *Cache) PruneUsageSamples(cutoff time.Time) (int64, error) {
 }
 
 // SevenDaySample is a single usage_samples row projected to the columns
-// needed by status.projectSevenDay. ResetsAt is the raw stored value
-// (RFC3339Nano string) and is treated as an opaque equality key for
-// bucket-membership filtering — no parsing.
+// needed by status.projectSevenDay. ResetsAt is normalized to second
+// precision (RFC3339, UTC) so sub-second jitter in the API response
+// doesn't fragment otherwise-equal bucket boundaries; consumers treat
+// it as an opaque equality key for bucket-membership filtering.
 type SevenDaySample struct {
 	At       time.Time
 	Pct      float64
