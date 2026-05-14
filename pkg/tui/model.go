@@ -103,6 +103,13 @@ type Model struct {
 	lastValues []float64
 	lastStarts []time.Time
 
+	// lastPts5h / lastPts7d hold the raw utilization points for the
+	// remaining-quota line chart. Populated by refreshChart when
+	// unitIdx == chartUnitRemaining; nil otherwise. Used by
+	// renderSpringFrame for the line-mode animation path.
+	lastPts5h []cache.UtilizationPoint
+	lastPts7d []cache.UtilizationPoint
+
 	// viewportXOffset shadows m.viewport's unexported xOffset. We need a
 	// readable scroll position to preserve the wall-clock anchor across
 	// refreshes; v1 viewport only exposes a setter. Maintained by
@@ -388,7 +395,12 @@ func (m Model) View() string {
 				labelPeak = m.oldPeak
 			}
 		}
-		body = overlayYLabel(m.viewport.View(), labelPeak, labelUnit, m.chartHeight(), fade)
+		rawBody := m.viewport.View()
+		if !m.springActive && chartUnit(m.unitIdx) == chartUnitRemaining {
+			body = overlayYTicks(rawBody, m.chartHeight(), 1.0)
+		} else {
+			body = overlayYLabel(rawBody, labelPeak, labelUnit, m.chartHeight(), fade)
+		}
 	}
 	footer := m.renderFooter()
 	out := lipgloss.JoinVertical(lipgloss.Left, header, sep, body, sep, footer)
@@ -797,7 +809,7 @@ func (m *Model) refreshChart() {
 		unit   chartUnit
 	)
 	switch m.unitIdx {
-	case 1: // cost
+	case int(chartUnitCost): // cost
 		buckets, err := m.deps.Cache.CostBuckets(zoom.Duration, from, to)
 		if err != nil || len(buckets) == 0 {
 			m.viewport.SetContent(emptyPlaceholder(m.chartWidth(), m.chartHeight()))
@@ -817,6 +829,39 @@ func (m *Model) refreshChart() {
 			}
 		}
 		unit = chartUnitCost
+	case int(chartUnitRemaining): // remaining quota line chart
+		pts5h, err5h := m.deps.Cache.UtilizationSince("five_hour_pct", from)
+		pts7d, err7d := m.deps.Cache.UtilizationSince("seven_day_pct", from)
+		if err5h != nil && err7d != nil {
+			m.viewport.SetContent(emptyPlaceholder(m.chartWidth(), m.chartHeight()))
+			m.lastValues = nil
+			m.lastStarts = nil
+			m.lastPts5h = nil
+			m.lastPts7d = nil
+			m.peak = 0
+			m.setX(0)
+			return
+		}
+		if err5h != nil {
+			pts5h = nil
+		}
+		if err7d != nil {
+			pts7d = nil
+		}
+		m.lastPts5h = pts5h
+		m.lastPts7d = pts7d
+		peak = 1.0
+		anchor := pts5h
+		if len(anchor) == 0 {
+			anchor = pts7d
+		}
+		values = make([]float64, len(anchor))
+		starts = make([]time.Time, len(anchor))
+		for i, p := range anchor {
+			values[i] = max(0, 1.0-p.Pct/100.0)
+			starts[i] = p.At
+		}
+		unit = chartUnitRemaining
 	default: // tokens
 		buckets, err := m.deps.Cache.TokenBuckets(zoom.Duration, from, to)
 		if err != nil || len(buckets) == 0 {
@@ -843,9 +888,14 @@ func (m *Model) refreshChart() {
 	m.lastValues = values
 	m.lastStarts = starts
 
-	canvasW := zoom.CanvasWidth(len(values))
 	chartH := m.chartHeight()
-	m.viewport.SetContent(buildChart(values, starts, peak, canvasW, chartH, time.Now(), zoom, unit, m.dateOrder))
+	if unit == chartUnitRemaining {
+		canvasW := m.chartWidth()
+		m.viewport.SetContent(buildLineChart(m.lastPts5h, m.lastPts7d, from, to, canvasW, chartH, time.Now(), zoom, m.dateOrder))
+	} else {
+		canvasW := zoom.CanvasWidth(len(values))
+		m.viewport.SetContent(buildChart(values, starts, peak, canvasW, chartH, time.Now(), zoom, unit, m.dateOrder))
+	}
 
 	// Restore the user's anchor. Three cases:
 	//   - !hadAnchor (first load, or coming back from an empty-cache

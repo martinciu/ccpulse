@@ -2413,3 +2413,50 @@ func TestRenderSpringFrame_MatchesPreSpringBoundary(t *testing.T) {
 		})
 	}
 }
+
+func TestRefreshChart_RemainingMode(t *testing.T) {
+	dir := t.TempDir()
+	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	defer c.Close()
+
+	now := time.Now().UTC().Truncate(time.Minute)
+	for i := 0; i < 10; i++ {
+		u := anthro.Usage{
+			FiveHour: &anthro.Bucket{Utilization: float64(i * 10), ResetsAt: now.Add(time.Hour)},
+			SevenDay: &anthro.Bucket{Utilization: float64(i * 5), ResetsAt: now.Add(24 * time.Hour)},
+		}
+		if err := c.RecordUsageSample(u, now.Add(time.Duration(-i)*3*time.Minute)); err != nil {
+			t.Fatalf("RecordUsageSample: %v", err)
+		}
+	}
+
+	tab, _ := pricing.Load()
+	msgs := []parse.Message{{
+		SessionID: "s1", ProjectSlug: "p", Model: "claude-sonnet-4-6",
+		Timestamp: now.Add(-30 * time.Minute), InputTokens: 100,
+	}}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	m := New(Deps{Cache: c})
+	m.w, m.h = 120, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	m.unitIdx = int(chartUnitRemaining)
+	m.refreshChart()
+
+	if m.peak != 1.0 {
+		t.Errorf("peak = %f, want 1.0", m.peak)
+	}
+	if len(m.lastPts5h) == 0 {
+		t.Error("expected non-empty lastPts5h")
+	}
+	view := m.View()
+	if view == "" {
+		t.Error("View returned empty string in remaining mode")
+	}
+}
