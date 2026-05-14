@@ -104,14 +104,35 @@ func renderQuotaSide(label string, bar progress.Model, fillRatio float64, reset 
 	)
 }
 
-// formatBurnRate renders a percent-per-hour slope for the burn-rate row.
-// Uses %.1f then strips a trailing ".0" so integer rates display as "12%/h"
-// while sub-1 fractional rates keep their digit ("0.4%/h"). This keeps the
-// header line compact without losing information on slow-burn windows.
-func formatBurnRate(slope float64) string {
-	s := fmt.Sprintf("%.1f", slope)
+// burnRateUnit selects the time unit used by formatBurnRate to render a
+// projection slope. The 5h side uses burnRateUnitPerHour (slope is already
+// %/h); the 7d side uses burnRateUnitPerDay, which scales the input by 24
+// before formatting so the number reads as "burn per day" against the 7d
+// ceiling. The unit only changes the displayed rate token — projection,
+// severity, and layout are identical across both.
+type burnRateUnit int
+
+const (
+	burnRateUnitPerHour burnRateUnit = iota
+	burnRateUnitPerDay
+)
+
+// formatBurnRate renders a projection slope for the burn-rate row. Uses
+// %.1f then strips a trailing ".0" so integer rates display as "12%/h" or
+// "12%/day" while sub-1 fractional rates keep their digit ("0.4%/h").
+// For burnRateUnitPerDay the slope is multiplied by 24 before formatting,
+// converting the underlying %/h figure into a %/day reading against the
+// same denominator (the 7d ceiling).
+func formatBurnRate(slope float64, unit burnRateUnit) string {
+	value := slope
+	suffix := "%/h"
+	if unit == burnRateUnitPerDay {
+		value = slope * 24
+		suffix = "%/day"
+	}
+	s := fmt.Sprintf("%.1f", value)
 	s = strings.TrimSuffix(s, ".0")
-	return s + "%/h"
+	return s + suffix
 }
 
 // burnSeverity is the rendering classification for a status.Projection.
@@ -185,7 +206,7 @@ func severityFor(p *status.Projection, window time.Duration) burnSeverity {
 //
 // window is the bucket's full duration (5h or 7d), forwarded to
 // severityFor so the imminent threshold scales per bucket.
-func renderBurnRateSide(label string, p *status.Projection, slotW int, window time.Duration) string {
+func renderBurnRateSide(label string, p *status.Projection, slotW int, window time.Duration, unit burnRateUnit) string {
 	labelW := lipgloss.Width(label)
 	textSlot := max(slotW-labelW, 1)
 	render := func(text string, style lipgloss.Style) string {
@@ -197,19 +218,19 @@ func renderBurnRateSide(label string, p *status.Projection, slotW int, window ti
 	case burnSeverityWarmingUp:
 		return render("warming up", dimStyle)
 	case burnSeveritySafe:
-		text := fmt.Sprintf("%s • projecting %d%%", formatBurnRate(p.SlopePctPerHour), p.ProjectedPctAtReset)
+		text := fmt.Sprintf("%s • projecting %d%%", formatBurnRate(p.SlopePctPerHour, unit), p.ProjectedPctAtReset)
 		return render(text, burnSafeStyle)
 	case burnSeverityWatch:
 		text := fmt.Sprintf("%s • projecting %d%% • limit in %s",
-			formatBurnRate(p.SlopePctPerHour), p.ProjectedPctAtReset, durString(*p.MinutesTo100Pct))
+			formatBurnRate(p.SlopePctPerHour, unit), p.ProjectedPctAtReset, durString(*p.MinutesTo100Pct))
 		return render(text, burnWatchStyle)
 	case burnSeverityDanger:
 		var text string
 		if p.MinutesTo100Pct == nil {
-			text = fmt.Sprintf("%s • already at limit", formatBurnRate(p.SlopePctPerHour))
+			text = fmt.Sprintf("%s • already at limit", formatBurnRate(p.SlopePctPerHour, unit))
 		} else {
 			text = fmt.Sprintf("%s • projecting %d%% • limit in %s",
-				formatBurnRate(p.SlopePctPerHour), p.ProjectedPctAtReset, durString(*p.MinutesTo100Pct))
+				formatBurnRate(p.SlopePctPerHour, unit), p.ProjectedPctAtReset, durString(*p.MinutesTo100Pct))
 		}
 		return render(text, burnDangerStyle)
 	default:

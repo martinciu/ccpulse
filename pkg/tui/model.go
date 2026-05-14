@@ -511,8 +511,8 @@ func (m Model) quotaBars() string {
 		fiveHourProj = m.window.Projection.FiveHour
 		sevenDayProj = m.window.Projection.SevenDay
 	}
-	burnLeft := renderBurnRateSide(burnPad, fiveHourProj, slotW, 5*time.Hour)
-	burnRight := renderBurnRateSide(burnPad, sevenDayProj, slotW, 7*24*time.Hour)
+	burnLeft := renderBurnRateSide(burnPad, fiveHourProj, slotW, 5*time.Hour, burnRateUnitPerHour)
+	burnRight := renderBurnRateSide(burnPad, sevenDayProj, slotW, 7*24*time.Hour, burnRateUnitPerDay)
 	burnRow := lipgloss.JoinHorizontal(lipgloss.Top, burnLeft, divider, burnRight)
 
 	return lipgloss.JoinVertical(lipgloss.Left, barsRow, burnRow)

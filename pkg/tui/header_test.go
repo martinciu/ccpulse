@@ -75,25 +75,38 @@ func TestDurString(t *testing.T) {
 func TestFormatBurnRate(t *testing.T) {
 	// formatBurnRate is the slope formatter for the burn-rate row.
 	// Rule: %.1f then strip trailing ".0" so integer rates read clean
-	// while sub-1 rates keep their fractional digit.
+	// while sub-1 rates keep their fractional digit. The unit decides
+	// whether the input slope is interpreted as %/h directly (5h side)
+	// or scaled by 24 for %/day (7d side).
 	tests := []struct {
+		name  string
 		slope float64
+		unit  burnRateUnit
 		want  string
 	}{
-		{0, "0%/h"},
-		{0.4, "0.4%/h"},
-		{1.0, "1%/h"},
-		{12.0, "12%/h"},
-		{12.5, "12.5%/h"},
-		{23.0, "23%/h"},
-		{100.0, "100%/h"},
-		{105.7, "105.7%/h"},
+		// per-hour cases — preserve existing behaviour exactly.
+		{"per-hour zero", 0, burnRateUnitPerHour, "0%/h"},
+		{"per-hour fractional", 0.4, burnRateUnitPerHour, "0.4%/h"},
+		{"per-hour integer", 1.0, burnRateUnitPerHour, "1%/h"},
+		{"per-hour twelve", 12.0, burnRateUnitPerHour, "12%/h"},
+		{"per-hour 12.5", 12.5, burnRateUnitPerHour, "12.5%/h"},
+		{"per-hour twenty-three", 23.0, burnRateUnitPerHour, "23%/h"},
+		{"per-hour hundred", 100.0, burnRateUnitPerHour, "100%/h"},
+		{"per-hour 105.7", 105.7, burnRateUnitPerHour, "105.7%/h"},
+
+		// per-day cases — slope is multiplied by 24 before formatting.
+		{"per-day zero", 0, burnRateUnitPerDay, "0%/day"},
+		{"per-day sustainable", 0.5, burnRateUnitPerDay, "12%/day"}, // 0.5 * 24 = 12.0 -> "12"
+		{"per-day on-track", 0.6, burnRateUnitPerDay, "14.4%/day"}, // 0.6 * 24 = 14.4
+		{"per-day overreach", 1.0, burnRateUnitPerDay, "24%/day"},  // 1 * 24
+		{"per-day hot", 5.0, burnRateUnitPerDay, "120%/day"},
+		{"per-day rounds to integer", 0.04166667, burnRateUnitPerDay, "1%/day"}, // 0.04166667 * 24 = 1.0
 	}
 	for _, tt := range tests {
-		t.Run(fmt.Sprintf("%g", tt.slope), func(t *testing.T) {
-			got := formatBurnRate(tt.slope)
+		t.Run(tt.name, func(t *testing.T) {
+			got := formatBurnRate(tt.slope, tt.unit)
 			if got != tt.want {
-				t.Errorf("formatBurnRate(%g) = %q, want %q", tt.slope, got, tt.want)
+				t.Errorf("formatBurnRate(%g, %v) = %q, want %q", tt.slope, tt.unit, got, tt.want)
 			}
 		})
 	}
@@ -390,7 +403,7 @@ func TestRenderBurnRateSide(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := renderBurnRateSide("5h ", tt.p, slotW, 5*time.Hour)
+			got := renderBurnRateSide("5h ", tt.p, slotW, 5*time.Hour, burnRateUnitPerHour)
 			for _, sub := range tt.wantSubstrs {
 				if !strings.Contains(got, sub) {
 					t.Errorf("output missing substring %q\nfull output: %q", sub, got)
