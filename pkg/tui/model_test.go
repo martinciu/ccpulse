@@ -917,9 +917,8 @@ func TestViewRendersFadeIndicator(t *testing.T) {
 }
 
 func TestUnitKeyToggles(t *testing.T) {
-	// Pressing 'u' must flip unitIdx between 0 (tokens) and 1 (cost).
-	// Two presses must return to 0. Initial state is 0 (default reset
-	// per spec — no persistence across launches).
+	// Pressing 'u' cycles unitIdx through 0 (tokens) → 1 (cost) → 2 (remaining) → 0.
+	// Initial state is 0 (default reset per spec — no persistence across launches).
 	m := New(Deps{})
 	m.w, m.h = 120, 40
 
@@ -935,8 +934,14 @@ func TestUnitKeyToggles(t *testing.T) {
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
 	m = updated.(Model)
+	if m.unitIdx != 2 {
+		t.Errorf("after second 'u', unitIdx = %d, want 2", m.unitIdx)
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	m = updated.(Model)
 	if m.unitIdx != 0 {
-		t.Errorf("after second 'u', unitIdx = %d, want 0", m.unitIdx)
+		t.Errorf("after third 'u', unitIdx = %d, want 0", m.unitIdx)
 	}
 }
 
@@ -953,15 +958,15 @@ func TestUnitKeyInHelp(t *testing.T) {
 	// bare "u" also appears in "quit" and "scroll" so the substring is
 	// vacuous on its own.
 	footer := m.help.View(m.keys)
-	if !strings.Contains(footer, "u tokens/cost") {
-		t.Errorf("footer help missing 'u tokens/cost' binding:\n%s", footer)
+	if !strings.Contains(footer, "u tokens/cost/remaining") {
+		t.Errorf("footer help missing 'u tokens/cost/remaining' binding:\n%s", footer)
 	}
 
 	// Help overlay: triggered by '?'. Asserts on the FullHelp view.
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
 	overlay := updated.(Model).View()
-	if !strings.Contains(overlay, "tokens/cost") {
-		t.Errorf("help overlay missing 'tokens/cost' binding:\n%s", overlay)
+	if !strings.Contains(overlay, "tokens/cost/remaining") {
+		t.Errorf("help overlay missing 'tokens/cost/remaining' binding:\n%s", overlay)
 	}
 }
 

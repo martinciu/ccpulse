@@ -336,7 +336,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.zoomIdx = (m.zoomIdx + 1) % len(ZoomLevels)
 			m.refreshChart()
 		case key.Matches(msg, m.keys.Unit):
-			m.unitIdx = (m.unitIdx + 1) % 2
+			m.unitIdx = (m.unitIdx + 1) % int(chartUnitCount)
 			m.beginUnitAnimation()
 			if m.springActive {
 				// After beginUnitAnimation, viewport content is the new
@@ -588,7 +588,7 @@ func (m *Model) beginUnitAnimation() {
 
 	oldValues := m.lastValues
 	m.oldPeak = m.peak
-	m.oldUnitIdx = (m.unitIdx + 1) % 2
+	m.oldUnitIdx = (m.unitIdx + int(chartUnitCount) - 1) % int(chartUnitCount)
 
 	m.refreshChart()
 	newValues := m.lastValues

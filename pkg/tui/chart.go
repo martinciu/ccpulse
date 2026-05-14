@@ -228,8 +228,10 @@ func formatXLabel(t time.Time, zoom ZoomLevel, now time.Time, order dateOrder) s
 type chartUnit int
 
 const (
-	chartUnitTokens chartUnit = iota
+	chartUnitTokens    chartUnit = iota
 	chartUnitCost
+	chartUnitRemaining
+	chartUnitCount // sentinel — cycle modulus
 )
 
 // niceFloorFloat returns the largest "nice" value <= peak from the
