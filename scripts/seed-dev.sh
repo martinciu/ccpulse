@@ -72,10 +72,11 @@ seed_cache() {
   # (e.g. /Users/o'malley/.cache). sqlite3 dot-commands don't support
   # SQL-style '' quote escaping, but they DO support \\ and \" inside
   # double-quoted args. Wrap in double quotes; escape \ and " in the path.
-  local bs='\'
-  local dq='"'
-  local dst_escaped="${dst//$bs/$bs$bs}"
-  dst_escaped="${dst_escaped//$dq/$bs$dq}"
+  # sed is used because bash's ${var//\/\\} replacement collapses \\ back
+  # to a single backslash via the replacement-string's own backslash
+  # processing — so the no-op result fails to double-escape backslashes.
+  local dst_escaped
+  dst_escaped=$(printf '%s' "$dst" | sed -e 's|\\|\\\\|g' -e 's|"|\\"|g')
   if command -v sqlite3 >/dev/null 2>&1 && sqlite3 "$src" ".backup \"$dst_escaped\""; then
     echo "seeded $dst from $src (sqlite3 online backup)"
   else

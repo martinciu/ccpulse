@@ -102,8 +102,8 @@ func TestSeedDevCache_CopiesReleasedDB(t *testing.T) {
 	}
 }
 
-func TestSeedDevCache_SurvivesSingleQuoteInCachePath(t *testing.T) {
-	// Cache dir literally contains a single quote — exercises the .backup
+func TestSeedDevCache_SurvivesMetacharsInCachePath(t *testing.T) {
+	// Cache dir contains shell metacharacters — exercises the .backup
 	// dot-command quoting path. The source DB is a real SQLite file so
 	// sqlite3 will actually run .backup (rather than failing and falling
 	// through to cp); without escaping, the broken SQL string would error
@@ -111,64 +111,78 @@ func TestSeedDevCache_SurvivesSingleQuoteInCachePath(t *testing.T) {
 	// the bug we're guarding against. The marker row below lets the test
 	// verify the sqlite3 path actually ran.
 	if _, err := exec.LookPath("sqlite3"); err != nil {
-		t.Skip("sqlite3 not on PATH; .backup path can't be exercised")
-	}
-	base := t.TempDir()
-	quoted := filepath.Join(base, "o'malley")
-	if err := os.MkdirAll(quoted, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	cacheHome := filepath.Join(quoted, ".cache")
-	releasedCache := filepath.Join(cacheHome, "ccpulse")
-	if err := os.MkdirAll(releasedCache, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	releasedDB := filepath.Join(releasedCache, "state.db")
-
-	db, err := sql.Open("sqlite", releasedDB)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`CREATE TABLE marker (note TEXT); INSERT INTO marker VALUES ('hello-quote');`); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
+		t.Fatal("sqlite3 must be on PATH for this test; install sqlite3 in CI")
 	}
 
-	cmd := exec.Command(scriptPath(t), "cache")
-	cmd.Env = []string{
-		"HOME=" + quoted,
-		"XDG_CONFIG_HOME=" + filepath.Join(quoted, ".config"),
-		"XDG_CACHE_HOME=" + cacheHome,
-		"PATH=" + os.Getenv("PATH"),
-	}
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("seed-dev.sh cache failed on quoted path: %v\n%s", err, out)
+	cases := []struct {
+		name      string
+		dirSuffix string
+	}{
+		{"single quote", "o'malley"},
+		{"double quote", "o\"malley"},
+		{"backslash", "o\\malley"},
 	}
 
-	// The script prints distinct success markers for each branch:
-	//   "(sqlite3 online backup)" vs "(cp fallback)". The fix is only
-	//   exercised when the sqlite3 branch wins; otherwise the test would
-	//   pass even without the escape because cp doesn't care about quoting.
-	outStr := string(out)
-	if !strings.Contains(outStr, "sqlite3 online backup") {
-		t.Fatalf("expected sqlite3 .backup branch to run, but did not — quoting fix not exercised.\noutput:\n%s", outStr)
-	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			base := t.TempDir()
+			quoted := filepath.Join(base, tc.dirSuffix)
+			if err := os.MkdirAll(quoted, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			cacheHome := filepath.Join(quoted, ".cache")
+			releasedCache := filepath.Join(cacheHome, "ccpulse")
+			if err := os.MkdirAll(releasedCache, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			releasedDB := filepath.Join(releasedCache, "state.db")
 
-	devDB := filepath.Join(cacheHome, "ccpulse-dev", "state.db")
-	got, err := sql.Open("sqlite", devDB)
-	if err != nil {
-		t.Fatalf("dev cache db not openable: %v", err)
-	}
-	defer got.Close()
-	var note string
-	if err := got.QueryRow("SELECT note FROM marker").Scan(&note); err != nil {
-		t.Fatalf("marker row missing from dev db: %v", err)
-	}
-	if note != "hello-quote" {
-		t.Errorf("marker mismatch: got %q want %q", note, "hello-quote")
+			db, err := sql.Open("sqlite", releasedDB)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.Exec(`CREATE TABLE marker (note TEXT); INSERT INTO marker VALUES ('hello-quote');`); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			cmd := exec.Command(scriptPath(t), "cache")
+			cmd.Env = []string{
+				"HOME=" + quoted,
+				"XDG_CONFIG_HOME=" + filepath.Join(quoted, ".config"),
+				"XDG_CACHE_HOME=" + cacheHome,
+				"PATH=" + os.Getenv("PATH"),
+			}
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("seed-dev.sh cache failed on quoted path: %v\n%s", err, out)
+			}
+
+			// The script prints distinct success markers for each branch:
+			//   "(sqlite3 online backup)" vs "(cp fallback)". The fix is only
+			//   exercised when the sqlite3 branch wins; otherwise the test would
+			//   pass even without the escape because cp doesn't care about quoting.
+			outStr := string(out)
+			if !strings.Contains(outStr, "sqlite3 online backup") {
+				t.Fatalf("expected sqlite3 .backup branch to run, but did not — quoting fix not exercised.\noutput:\n%s", outStr)
+			}
+
+			devDB := filepath.Join(cacheHome, "ccpulse-dev", "state.db")
+			got, err := sql.Open("sqlite", devDB)
+			if err != nil {
+				t.Fatalf("dev cache db not openable: %v", err)
+			}
+			defer got.Close()
+			var note string
+			if err := got.QueryRow("SELECT note FROM marker").Scan(&note); err != nil {
+				t.Fatalf("marker row missing from dev db: %v", err)
+			}
+			if note != "hello-quote" {
+				t.Errorf("marker mismatch: got %q want %q", note, "hello-quote")
+			}
+		})
 	}
 }
 
