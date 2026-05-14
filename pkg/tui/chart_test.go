@@ -474,6 +474,11 @@ func TestFormatTokenCount(t *testing.T) {
 		{"M mid", 45_000_000, "45M"},
 		{"M 50M", 50_000_000, "50M"},
 		{"M 100M", 100_000_000, "100M"},
+		{"M high", 999_000_000, "999M"},
+		{"M just below G", 999_999_999, "1000M"},
+		{"exactly G", 1_000_000_000, "1G"},
+		{"G mid", 45_000_000_000, "45G"},
+		{"G high", 999_000_000_000, "999G"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -517,6 +522,8 @@ func TestFormatUnitValue(t *testing.T) {
 		{"cost exactly 1k", 1000.0, chartUnitCost, "$1k"},
 		{"cost 45k", 45000.0, chartUnitCost, "$45k"},
 		{"cost 1M", 1_000_000.0, chartUnitCost, "$1M"},
+		{"cost 1G", 1_000_000_000.0, chartUnitCost, "$1G"},
+		{"cost 45G", 45_000_000_000.0, chartUnitCost, "$45G"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
