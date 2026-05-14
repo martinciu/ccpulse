@@ -3,6 +3,7 @@ package cache_test
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -254,9 +255,12 @@ func TestRecost_ContextCancellation(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := c.Recost(ctx, hist, cache.RecostOpts{})
+	stats, err := c.Recost(ctx, hist, cache.RecostOpts{})
 	if err == nil {
 		t.Errorf("recost with cancelled ctx returned nil error, want non-nil")
+	}
+	if stats.Queued < 0 {
+		t.Errorf("stats.Queued = %d, want >= 0", stats.Queued)
 	}
 	var stale int
 	if err := c.DB().QueryRow(`SELECT COUNT(*) FROM messages WHERE pricing_version = '2026-05-10'`).Scan(&stale); err != nil {
@@ -281,7 +285,7 @@ func TestAutoRecost_SkipsWhenFingerprintMatches(t *testing.T) {
 		t.Fatalf("seed stale version: %v", err)
 	}
 	// Pre-write the matching fingerprint into meta so AutoRecost short-circuits.
-	fp := "2026-05-09,2026-05-10" // matches twoVersionHistory versions joined
+	fp := strings.Join(hist.Versions(), ",")
 	if _, err := c.DB().Exec(`INSERT OR REPLACE INTO meta(key,value) VALUES('last_recost_history_fingerprint',?)`, fp); err != nil {
 		t.Fatalf("seed fingerprint: %v", err)
 	}
@@ -315,7 +319,7 @@ func TestRecost_WritesFingerprintOnCommit(t *testing.T) {
 	if err := c.DB().QueryRow(`SELECT value FROM meta WHERE key = 'last_recost_history_fingerprint'`).Scan(&got); err != nil {
 		t.Fatalf("read fingerprint: %v", err)
 	}
-	want := "2026-05-09,2026-05-10"
+	want := strings.Join(hist.Versions(), ",")
 	if got != want {
 		t.Errorf("fingerprint = %q, want %q", got, want)
 	}

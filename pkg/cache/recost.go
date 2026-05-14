@@ -19,6 +19,10 @@ const metaKeyRecostFingerprint = "last_recost_history_fingerprint"
 type RecostStats struct {
 	Scanned       int
 	Updated       int
+	// Queued is the number of rows that were detected as needing an update and
+	// added to the in-flight batch but not yet flushed when Recost returned
+	// (relevant on the cancellation/timeout path).
+	Queued        int
 	UnknownBefore int
 	UnknownAfter  int
 	ByVersion     map[string]int
@@ -97,6 +101,7 @@ FROM messages`)
 			unkStored           int
 		)
 		if err := rows.Scan(&id, &tsStr, &model, &in, &out, &cr, &cw5, &cw1, &costStored, &verStored, &unkStored); err != nil {
+			stats.Queued = len(batch)
 			return stats, fmt.Errorf("recost: scan row: %w", err)
 		}
 		stats.Scanned++
@@ -105,6 +110,7 @@ FROM messages`)
 		}
 		ts, err := time.Parse(tsFormat, tsStr)
 		if err != nil {
+			stats.Queued = len(batch)
 			return stats, fmt.Errorf("recost: parse ts on row id=%d: invalid format", id)
 		}
 		m := parse.Message{
@@ -133,6 +139,7 @@ FROM messages`)
 		})
 		if len(batch) >= recostBatchSize {
 			if err := flushRecostBatch(ctx, updateStmt, batch, opts.DryRun); err != nil {
+				stats.Queued = len(batch)
 				return stats, err
 			}
 			for _, u := range batch {
@@ -141,23 +148,28 @@ FROM messages`)
 			}
 			batch = batch[:0]
 			if err := ctx.Err(); err != nil {
+				// batch is already empty after the flush above; Queued stays 0.
 				return stats, fmt.Errorf("recost: ctx: %w", err)
 			}
 		}
 	}
 	if err := rows.Err(); err != nil {
+		stats.Queued = len(batch)
 		return stats, fmt.Errorf("recost: iterate: %w", err)
 	}
 
 	if len(batch) > 0 {
 		if err := flushRecostBatch(ctx, updateStmt, batch, opts.DryRun); err != nil {
+			stats.Queued = len(batch)
 			return stats, err
 		}
 		for _, u := range batch {
 			stats.Updated++
 			stats.ByVersion[u.newVersion]++
 		}
+		batch = batch[:0]
 	}
+	// stats.Queued remains 0: all batches were flushed successfully.
 
 	if !opts.DryRun {
 		fp := strings.Join(hist.Versions(), ",")
@@ -197,6 +209,7 @@ func (c *Cache) AutoRecost(ctx context.Context, hist pricing.History) {
 			"err", err.Error(),
 			"scanned", stats.Scanned,
 			"updated", stats.Updated,
+			"queued", stats.Queued,
 			"elapsed", stats.Elapsed,
 		)
 		return
