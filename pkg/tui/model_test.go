@@ -1205,6 +1205,85 @@ func TestPhaseTransition_AtThreshold(t *testing.T) {
 	}
 }
 
+func TestUnitToggleAnimation_HoldPhaseTransitions(t *testing.T) {
+	// Verifies the springHolding phase between Phase 1 (fall) and Phase 2
+	// (grow). After Phase 1 hits threshold:
+	//   - springPhase = springHolding (NOT springGrowing).
+	//   - springRatios snapped to 0.
+	//   - Phase 2 state (springTargetRatios, springVelocities) NOT yet
+	//     seeded — that work moves to the springHolding handler.
+	// One more tick (the hold tick) transitions to springGrowing and
+	// seeds Phase 2.
+	m := seedTwoPhaseAnimationModel(t)
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	m = updated.(Model)
+	if m.springPhase != springShrinking {
+		t.Fatalf("springPhase = %d after 'u' press, want springShrinking (%d)", m.springPhase, springShrinking)
+	}
+
+	// Capture the Phase 2 targets we expect after the hold tick.
+	expectedTargets := append([]float64(nil), m.springFinalTargets...)
+
+	// Drive ticks while still in Phase 1.
+	const maxTicks = 100
+	for i := 0; i < maxTicks && m.springPhase == springShrinking; i++ {
+		updated, _ = m.Update(springTickMsg{})
+		m = updated.(Model)
+	}
+	if m.springPhase == springShrinking {
+		t.Fatalf("Phase 1 did not exit within %d ticks", maxTicks)
+	}
+
+	// After Phase 1 exit: must be in springHolding, NOT springGrowing.
+	if m.springPhase != springHolding {
+		t.Fatalf("springPhase = %d after Phase 1 exit, want springHolding (%d)", m.springPhase, springHolding)
+	}
+
+	// Ratios snapped to zero.
+	for i, r := range m.springRatios {
+		if r != 0 {
+			t.Errorf("springRatios[%d] = %v during springHolding, want 0", i, r)
+		}
+	}
+
+	// Phase 2 state NOT yet seeded.
+	for i, v := range m.springVelocities {
+		if v != 0 {
+			t.Errorf("springVelocities[%d] = %v during springHolding, want 0 (Phase 2 not seeded yet)", i, v)
+		}
+	}
+	for i, tr := range m.springTargetRatios {
+		if tr != 0 {
+			t.Errorf("springTargetRatios[%d] = %v during springHolding, want 0 (Phase 2 not seeded yet)", i, tr)
+		}
+	}
+
+	// Deliver the hold tick. This is the springTickMsg the one-shot
+	// tea.Tick(phaseHoldDuration) would have produced.
+	updated, _ = m.Update(springTickMsg{})
+	m = updated.(Model)
+
+	// Now in springGrowing.
+	if m.springPhase != springGrowing {
+		t.Fatalf("springPhase = %d after hold tick, want springGrowing (%d)", m.springPhase, springGrowing)
+	}
+
+	// Phase 2 targets and velocities seeded.
+	for i, want := range expectedTargets {
+		if m.springTargetRatios[i] != want {
+			t.Errorf("springTargetRatios[%d] = %v after hold tick, want %v",
+				i, m.springTargetRatios[i], want)
+		}
+		exp := phase2InitialVelocityV0 * want
+		got := m.springVelocities[i]
+		if diff := got - exp; diff < -1e-9 || diff > 1e-9 {
+			t.Errorf("springVelocities[%d] = %v after hold tick, want %v (V0 * springFinalTargets[%d])",
+				i, got, exp, i)
+		}
+	}
+}
+
 func TestPhase2Settle_ClearsState(t *testing.T) {
 	// Drive ticks all the way through both phases. After settle:
 	//   - springActive = false.
