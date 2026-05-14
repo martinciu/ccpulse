@@ -232,7 +232,7 @@ func runTUI(ctx context.Context) error {
 	}
 	defer c.Close()
 
-	tab, err := pricing.Load()
+	hist, err := pricing.Load()
 	if err != nil {
 		return err
 	}
@@ -240,7 +240,7 @@ func runTUI(ctx context.Context) error {
 
 	ing := &ingest.Ingester{
 		Cache:          c,
-		Pricing:        tab,
+		Pricing:        hist,
 		ProjectsRoot:   projectsRoot,
 		ParseErrorsLog: filepath.Join(cacheDir, "parse-errors.log"),
 	}

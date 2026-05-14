@@ -111,7 +111,7 @@ func runSeed(opts seedOpts) (inserted int64, total int64, err error) {
 	}
 	defer c.Close()
 
-	priceTable, err := pricing.Load()
+	hist, err := pricing.Load()
 	if err != nil {
 		return 0, 0, fmt.Errorf("load pricing: %w", err)
 	}
@@ -126,7 +126,7 @@ func runSeed(opts seedOpts) (inserted int64, total int64, err error) {
 
 	for start := 0; start < len(msgs); start += batchSize {
 		end := min(start+batchSize, len(msgs))
-		if err := c.InsertMessages(msgs[start:end], priceTable); err != nil {
+		if err := c.InsertMessages(msgs[start:end], hist); err != nil {
 			return 0, 0, fmt.Errorf("insert batch [%d:%d]: %w", start, end, err)
 		}
 	}

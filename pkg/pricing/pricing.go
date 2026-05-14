@@ -117,6 +117,18 @@ func (h History) CostFor(m parse.Message) (cost float64, version string, unknown
 	return c, tab.Version, u
 }
 
+// HistoryForTest builds a History from a caller-provided slice. Intended
+// only for tests in other packages; production code uses Load().
+func HistoryForTest(entries []Table) (History, error) {
+	if len(entries) == 0 {
+		return History{}, fmt.Errorf("pricing: HistoryForTest: empty entries")
+	}
+	cp := make([]Table, len(entries))
+	copy(cp, entries)
+	sort.Slice(cp, func(i, j int) bool { return cp[i].Version < cp[j].Version })
+	return History{entries: cp}, nil
+}
+
 // CostFor returns USD estimate for the message and whether the model rate
 // was missing from this Table.
 func (t Table) CostFor(m parse.Message) (float64, bool) {
