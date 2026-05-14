@@ -2561,3 +2561,46 @@ func TestBeginUnitAnimation_LineToBar(t *testing.T) {
 		t.Error("expected newIsLine=false")
 	}
 }
+
+func TestView_RemainingModeShowsYTicks(t *testing.T) {
+	dir := t.TempDir()
+	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	defer c.Close()
+
+	tab, _ := pricing.Load()
+	now := time.Now().UTC().Truncate(time.Minute)
+	msgs := []parse.Message{{
+		SessionID: "s1", ProjectSlug: "p", Model: "claude-sonnet-4-6",
+		Timestamp: now.Add(-30 * time.Minute), InputTokens: 5000,
+	}}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	u := anthro.Usage{
+		FiveHour: &anthro.Bucket{Utilization: 40.0, ResetsAt: now.Add(time.Hour)},
+		SevenDay: &anthro.Bucket{Utilization: 20.0, ResetsAt: now.Add(24 * time.Hour)},
+	}
+	if err := c.RecordUsageSample(u, now); err != nil {
+		t.Fatalf("RecordUsageSample: %v", err)
+	}
+
+	m := New(Deps{Cache: c})
+	m.w, m.h = 120, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+
+	m.unitIdx = int(chartUnitRemaining)
+	m.refreshChart()
+
+	view := m.View()
+	if !strings.Contains(view, "100%") {
+		t.Error("View in remaining mode should contain 100% Y-tick")
+	}
+	if !strings.Contains(view, "0%") {
+		t.Error("View in remaining mode should contain 0% Y-tick")
+	}
+}

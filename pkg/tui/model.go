@@ -401,22 +401,35 @@ func (m Model) View() string {
 		fade := 1.0
 		labelUnit := chartUnit(m.unitIdx)
 		labelPeak := m.peak
+		rawBody := m.viewport.View()
 		if m.springActive {
 			var maxR float64
 			for _, r := range m.springRatios {
 				maxR = max(maxR, r)
 			}
 			fade = maxR
-			if m.springPhase == springShrinking {
-				labelUnit = chartUnit(m.oldUnitIdx)
-				labelPeak = m.oldPeak
+			// Determine whether the current rendered frame is a line chart.
+			// Exit phase shows OLD type; hold/enter shows NEW type.
+			renderingLine := false
+			switch m.springPhase {
+			case springShrinking:
+				renderingLine = m.oldIsLine
+				if !renderingLine {
+					labelUnit = chartUnit(m.oldUnitIdx)
+					labelPeak = m.oldPeak
+				}
+			default: // springHolding, springGrowing
+				renderingLine = m.newIsLine
 			}
-		}
-		rawBody := m.viewport.View()
-		if !m.springActive && chartUnit(m.unitIdx) == chartUnitRemaining {
+			if renderingLine {
+				body = overlayYTicks(rawBody, m.chartHeight(), fade)
+			} else {
+				body = overlayYLabel(rawBody, labelPeak, labelUnit, m.chartHeight(), fade)
+			}
+		} else if chartUnit(m.unitIdx) == chartUnitRemaining {
 			body = overlayYTicks(rawBody, m.chartHeight(), 1.0)
 		} else {
-			body = overlayYLabel(rawBody, labelPeak, labelUnit, m.chartHeight(), fade)
+			body = overlayYLabel(rawBody, m.peak, chartUnit(m.unitIdx), m.chartHeight(), 1.0)
 		}
 	}
 	footer := m.renderFooter()
