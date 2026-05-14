@@ -116,6 +116,14 @@ func Open(path string) (*Cache, error) {
 	return &Cache{db: db}, nil
 }
 
+// NewFromDB wraps an already-open *sql.DB in a *Cache without re-running
+// the schema apply / version check that Open does. Used by callers that
+// receive the raw *sql.DB (e.g. status.Compute) and need Cache methods
+// without re-opening the file.
+func NewFromDB(db *sql.DB) *Cache {
+	return &Cache{db: db}
+}
+
 func (c *Cache) DB() *sql.DB { return c.db }
 
 func (c *Cache) Close() error { return c.db.Close() }
@@ -216,6 +224,55 @@ func (c *Cache) PruneUsageSamples(cutoff time.Time) (int64, error) {
 		return 0, err
 	}
 	return res.RowsAffected()
+}
+
+// SevenDaySample is a single usage_samples row projected to the columns
+// needed by status.projectSevenDay. ResetsAt is the raw stored value
+// (RFC3339Nano string) and is treated as an opaque equality key for
+// bucket-membership filtering — no parsing.
+type SevenDaySample struct {
+	At       time.Time
+	Pct      float64
+	ResetsAt string
+}
+
+// SevenDaySamplesSince returns ordered (At, Pct, ResetsAt) tuples for
+// usage_samples rows where ts >= since.UTC().Unix() and seven_day_pct
+// IS NOT NULL, oldest-first. Used by status.Compute to derive the
+// trailing-window slope for the 7d projection.
+//
+// On any SQL error the caller should fall back to the linear projection.
+func (c *Cache) SevenDaySamplesSince(since time.Time) ([]SevenDaySample, error) {
+	rows, err := c.db.Query(`
+SELECT ts, seven_day_pct, seven_day_resets_at
+FROM usage_samples
+WHERE ts >= ? AND seven_day_pct IS NOT NULL
+ORDER BY ts ASC`, since.UTC().Unix())
+	if err != nil {
+		return nil, fmt.Errorf("query usage_samples: %w", err)
+	}
+	defer rows.Close()
+
+	var out []SevenDaySample
+	for rows.Next() {
+		var (
+			ts       int64
+			pct      float64
+			resetsAt sql.NullString
+		)
+		if err := rows.Scan(&ts, &pct, &resetsAt); err != nil {
+			return nil, fmt.Errorf("scan usage_samples row: %w", err)
+		}
+		out = append(out, SevenDaySample{
+			At:       time.Unix(ts, 0).UTC(),
+			Pct:      pct,
+			ResetsAt: resetsAt.String, // empty string when SQL NULL
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate usage_samples rows: %w", err)
+	}
+	return out, nil
 }
 
 func (c *Cache) InsertMessages(msgs []parse.Message, tab pricing.Table) error {
