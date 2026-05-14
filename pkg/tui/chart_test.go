@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"runtime"
 	"strings"
 	"testing"
@@ -838,5 +839,83 @@ func TestOverlayYLabel_FadeZeroSkipsRender(t *testing.T) {
 	// Sanity: fade == 1.0 still renders the label.
 	if got := overlayYLabel(body, 100_000, chartUnitTokens, 7, 1.0); got == body {
 		t.Errorf("overlayYLabel(fade=1.0) returned body unchanged; expected label to be spliced in")
+	}
+}
+
+func TestBuildLineChart_NonEmpty(t *testing.T) {
+	now := time.Now().UTC()
+	from := now.Add(-2 * time.Hour)
+	to := now
+
+	pts5h := []cache.UtilizationPoint{
+		{At: from, Pct: 10.0},
+		{At: from.Add(30 * time.Minute), Pct: 30.0},
+		{At: from.Add(time.Hour), Pct: 50.0},
+		{At: from.Add(90 * time.Minute), Pct: 20.0},
+	}
+	pts7d := []cache.UtilizationPoint{
+		{At: from, Pct: 5.0},
+		{At: from.Add(time.Hour), Pct: 15.0},
+	}
+
+	chartW := 60
+	chartH := 12
+	body := buildLineChart(pts5h, pts7d, from, to, chartW, chartH, now, ZoomLevels[0], dateOrderMonthFirst)
+	if body == "" {
+		t.Fatal("buildLineChart returned empty string")
+	}
+	lines := strings.Split(body, "\n")
+	if len(lines) < 5 {
+		t.Errorf("expected at least 5 lines, got %d", len(lines))
+	}
+}
+
+func TestBuildLineChart_EmptyPoints(t *testing.T) {
+	now := time.Now().UTC()
+	body := buildLineChart(nil, nil, now.Add(-time.Hour), now, 60, 12, now, ZoomLevels[0], dateOrderMonthFirst)
+	if body == "" {
+		t.Fatal("expected non-empty output for empty points (flat 100% line)")
+	}
+}
+
+func TestOverlayYTicks(t *testing.T) {
+	chartH := 12
+	lines := make([]string, chartH)
+	for i := range lines {
+		lines[i] = strings.Repeat(" ", 60)
+	}
+	body := strings.Join(lines, "\n")
+
+	result := overlayYTicks(body, chartH, 1.0)
+	if !strings.Contains(result, "100%") {
+		t.Error("expected 100% label in output")
+	}
+	if !strings.Contains(result, "50%") {
+		t.Error("expected 50% label in output")
+	}
+	if !strings.Contains(result, "0%") {
+		t.Error("expected 0% label in output")
+	}
+}
+
+func BenchmarkBuildLineChart(b *testing.B) {
+	now := time.Now().UTC()
+	from := now.Add(-10 * 24 * time.Hour)
+	for _, n := range []int{500, 2000, 5000} {
+		pts5h := make([]cache.UtilizationPoint, n)
+		pts7d := make([]cache.UtilizationPoint, n)
+		for i := range n {
+			t := from.Add(time.Duration(i) * 3 * time.Minute)
+			pts5h[i] = cache.UtilizationPoint{At: t, Pct: float64(i % 100)}
+			pts7d[i] = cache.UtilizationPoint{At: t, Pct: float64((i * 3) % 100)}
+		}
+		b.Run(fmt.Sprintf("pts=%d", n), func(b *testing.B) {
+			b.ReportAllocs()
+			runtime.GC()
+			b.ResetTimer()
+			for b.Loop() {
+				sinkString = buildLineChart(pts5h, pts7d, from, now, 200, 20, now, ZoomLevels[0], dateOrderMonthFirst)
+			}
+		})
 	}
 }
