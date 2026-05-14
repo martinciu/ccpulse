@@ -2036,8 +2036,8 @@ func TestVisualProbe_PhaseHandoffIsClean(t *testing.T) {
 	}
 
 	view := m.View()
-	// ANSI bar cells inside the chart use SGR colour escapes (heatColor
-	// + lipgloss). The empty-moment frame must contain NO foreground-
+	// ANSI bar cells inside the chart use SGR colour escapes (unit-keyed
+	// color + lipgloss). The empty-moment frame must contain NO foreground-
 	// background SGR pairs in the chart-body region.
 	//
 	// Heuristic: count the number of chart cells (█ or other heavy

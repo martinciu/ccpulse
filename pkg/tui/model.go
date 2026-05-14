@@ -323,6 +323,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// scroll position as the spring's window so the animated
 				// slice matches what the user is actually looking at.
 				m.springXOffset = m.viewportXOffset
+				// Paint spring-frame-0 (old heights, old unit, old color)
+				// synchronously so the next View() call doesn't show one
+				// frame of refreshChart's new-unit content before the
+				// first tick paints the falling old-unit chart.
+				m.renderSpringFrame()
 				return m, tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
 					return springTickMsg{}
 				})
@@ -660,8 +665,16 @@ func (m *Model) renderSpringFrame() {
 
 	visibleRatios := m.springRatios[sliceStart:end]
 	visibleStarts := m.lastStarts[sliceStart:end]
+	// During the shrinking phase the bars are still showing OLD-unit data
+	// falling toward zero, so render them in the OLD unit's color. Only
+	// after the handoff (springGrowing onward) does the color switch to
+	// the new unit. Mirrors the labelUnit logic in Model.View().
+	frameUnit := chartUnit(m.unitIdx)
+	if m.springPhase == springShrinking {
+		frameUnit = chartUnit(m.oldUnitIdx)
+	}
 	m.viewport.SetContent(buildChart(visibleRatios, visibleStarts, 1.0,
-		zoom.CanvasWidth(len(visibleRatios)), chartH, time.Now(), zoom, chartUnit(m.unitIdx), m.dateOrder))
+		zoom.CanvasWidth(len(visibleRatios)), chartH, time.Now(), zoom, frameUnit, m.dateOrder))
 	m.viewport.SetXOffset(springXOff)
 }
 
