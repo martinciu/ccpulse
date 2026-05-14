@@ -36,16 +36,41 @@ func newDoctorCmd() *cobra.Command {
 			fmt.Fprintf(out, "ℹ config path: %s\n", config.DefaultPath())
 			fmt.Fprintf(out, "ℹ cache dir:   %s\n", cacheDir)
 			dbPath := filepath.Join(cacheDir, "state.db")
-			c, err := cache.Open(dbPath)
-			check(out, "cache db opens: "+dbPath, err == nil, err)
-			if err == nil {
+			c, cacheErr := cache.Open(dbPath)
+			check(out, "cache db opens: "+dbPath, cacheErr == nil, cacheErr)
+			if cacheErr == nil {
+				defer c.Close()
 				_, ierr := c.DB().Exec(`PRAGMA integrity_check`)
 				check(out, "integrity_check", ierr == nil, ierr)
-				c.Close()
 			}
 
-			tab, err := pricing.Load()
-			check(out, "pricing loads (v="+tab.Version+")", err == nil, err)
+			hist, err := pricing.Load()
+			version := ""
+			if err == nil {
+				version = hist.Latest().Version
+			}
+			check(out, "pricing loads (v="+version+")", err == nil, err)
+
+			if cacheErr == nil && err == nil {
+				pvStats, pvErr := c.PricingVersionStats(cmd.Context(), hist)
+				if pvErr != nil {
+					fmt.Fprintf(out, "  pricing versions: ERR %v\n", pvErr)
+				} else if len(pvStats) > 0 {
+					fmt.Fprintln(out, "")
+					fmt.Fprintln(out, "Pricing versions in DB:")
+					for _, s := range pvStats {
+						tag := ""
+						if s.IsCurrent {
+							tag = "  (current)"
+						}
+						line := fmt.Sprintf("  %s%s   %d rows", s.Version, tag, s.Rows)
+						if s.Stale > 0 {
+							line += fmt.Sprintf("  <- %d stale (auto-recost on next start)", s.Stale)
+						}
+						fmt.Fprintln(out, line)
+					}
+				}
+			}
 
 			// OAuth credential check
 			cred, credErr := anthro.LoadCredential()

@@ -3,15 +3,17 @@ package pricing
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/martinciu/ccpulse/pkg/parse"
 )
 
 func TestLoadEmbedded(t *testing.T) {
-	tab, err := Load()
+	h, err := Load()
 	if err != nil {
 		t.Fatal(err)
 	}
+	tab := h.Latest()
 	if tab.Version == "" {
 		t.Error("Version empty")
 	}
@@ -25,7 +27,8 @@ func TestLoadEmbedded(t *testing.T) {
 }
 
 func TestCostFor(t *testing.T) {
-	tab, _ := Load()
+	h, _ := Load()
+	tab := h.Latest()
 	m := parse.Message{
 		Model:              "claude-opus-4-7",
 		InputTokens:        1_000_000, // 1 Mtok
@@ -45,7 +48,8 @@ func TestCostFor(t *testing.T) {
 }
 
 func TestCostForUnknown(t *testing.T) {
-	tab, _ := Load()
+	h, _ := Load()
+	tab := h.Latest()
 	m := parse.Message{Model: "claude-future-9-9", InputTokens: 100}
 	cost, unknown := tab.CostFor(m)
 	if !unknown {
@@ -53,6 +57,37 @@ func TestCostForUnknown(t *testing.T) {
 	}
 	if cost != 0 {
 		t.Errorf("cost = %v, want 0", cost)
+	}
+}
+
+func TestHistory_Load_AllEmbedded(t *testing.T) {
+	h, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	versions := h.Versions()
+	if len(versions) < 2 {
+		t.Fatalf("expected at least 2 history entries, got %d: %v", len(versions), versions)
+	}
+	for i := 1; i < len(versions); i++ {
+		if versions[i-1] >= versions[i] {
+			t.Errorf("Versions() not strictly ascending: %v", versions)
+		}
+	}
+}
+
+func TestHistory_Latest(t *testing.T) {
+	h, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	latest := h.Latest()
+	versions := h.Versions()
+	if latest.Version != versions[len(versions)-1] {
+		t.Errorf("Latest().Version = %q, want last of Versions() = %q", latest.Version, versions[len(versions)-1])
+	}
+	if latest.Currency != "USD" {
+		t.Errorf("Latest().Currency = %q, want USD", latest.Currency)
 	}
 }
 
@@ -82,22 +117,22 @@ func TestParseTable(t *testing.T) {
 		{
 			name:    "non_usd_rejected",
 			data:    `{"version":"test","currency":"EUR","models":{}}`,
-			wantErr: `pricing.json: unsupported currency "EUR" (expected USD)`,
+			wantErr: `unsupported currency "EUR" (expected USD)`,
 		},
 		{
 			name:    "missing_currency_rejected",
 			data:    `{"version":"test","models":{}}`,
-			wantErr: `pricing.json: unsupported currency "" (expected USD)`,
+			wantErr: `unsupported currency "" (expected USD)`,
 		},
 		{
 			name:    "missing_version_rejected",
 			data:    `{"currency":"USD","models":{}}`,
-			wantErr: "pricing.json: missing version field",
+			wantErr: "missing version field",
 		},
 		{
 			name:    "malformed_json_rejected",
 			data:    `{not json`,
-			wantErr: "pricing.json:",
+			wantErr: "unmarshal:",
 		},
 	}
 
@@ -129,5 +164,82 @@ func TestParseTable(t *testing.T) {
 				t.Errorf("error = %q, want substring %q", err.Error(), tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestHistory_TableAt(t *testing.T) {
+	h, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	mustTime := func(s string) time.Time {
+		ts, err := time.Parse(time.RFC3339, s)
+		if err != nil {
+			t.Fatalf("parse %s: %v", s, err)
+		}
+		return ts
+	}
+
+	cases := []struct {
+		name        string
+		ts          time.Time
+		wantVersion string
+	}{
+		{"before earliest -> earliest", mustTime("2025-01-01T00:00:00Z"), "2026-05-09"},
+		{"exact earliest", mustTime("2026-05-09T00:00:00Z"), "2026-05-09"},
+		{"between versions -> preceding", mustTime("2026-05-09T23:59:59Z"), "2026-05-09"},
+		{"exact later version", mustTime("2026-05-10T00:00:00Z"), "2026-05-10"},
+		{"after latest -> latest", mustTime("2099-01-01T00:00:00Z"), "2026-05-10"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := h.TableAt(c.ts).Version
+			if got != c.wantVersion {
+				t.Errorf("TableAt(%s).Version = %q, want %q", c.ts.Format(time.RFC3339), got, c.wantVersion)
+			}
+		})
+	}
+}
+
+func TestHistory_CostFor_StampsResolvedVersion(t *testing.T) {
+	h, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	m := parse.Message{
+		Timestamp:   time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC),
+		Model:       "claude-opus-4-7",
+		InputTokens: 1_000_000,
+	}
+	cost, version, unknown := h.CostFor(m)
+	if unknown {
+		t.Fatalf("expected model known in 2026-05-09 table")
+	}
+	if version != "2026-05-09" {
+		t.Errorf("version = %q, want 2026-05-09 (resolved, not latest)", version)
+	}
+	if cost <= 0 {
+		t.Errorf("cost = %v, want positive", cost)
+	}
+}
+
+func TestHistory_CostFor_UnknownModel(t *testing.T) {
+	h, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	m := parse.Message{
+		Timestamp: time.Date(2026, 5, 10, 0, 0, 0, 0, time.UTC),
+		Model:     "no-such-model-xyz",
+	}
+	cost, version, unknown := h.CostFor(m)
+	if !unknown {
+		t.Errorf("expected unknown=true for missing model, got false")
+	}
+	if cost != 0 {
+		t.Errorf("expected cost=0 for unknown model, got %v", cost)
+	}
+	if version != "2026-05-10" {
+		t.Errorf("version = %q, want 2026-05-10 (still resolves)", version)
 	}
 }

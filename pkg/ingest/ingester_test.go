@@ -317,12 +317,12 @@ func openTestCache(t *testing.T, cacheDir string) (*cache.Cache, error) {
 	return c, err
 }
 
-func mustPricing(t *testing.T) pricing.Table {
+func mustPricing(t *testing.T) pricing.History {
 	t.Helper()
-	tab, err := pricing.Load()
+	h, err := pricing.Load()
 	if err != nil {
 		t.Fatal(err)
 	}
-	return tab
+	return h
 }
 

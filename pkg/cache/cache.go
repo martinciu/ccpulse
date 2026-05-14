@@ -285,10 +285,10 @@ ORDER BY ts ASC`, since.UTC().Unix())
 	return out, nil
 }
 
-func (c *Cache) InsertMessages(msgs []parse.Message, tab pricing.Table) error {
+func (c *Cache) InsertMessages(msgs []parse.Message, hist pricing.History) error {
 	tx, err := c.db.Begin()
 	if err != nil {
-		return err
+		return fmt.Errorf("insert messages: begin tx: %w", err)
 	}
 	defer tx.Rollback()
 
@@ -301,12 +301,12 @@ INSERT OR IGNORE INTO messages
  is_subagent, parent_session_id, cwd, git_branch)
 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 	if err != nil {
-		return err
+		return fmt.Errorf("insert messages: prepare: %w", err)
 	}
 	defer stmt.Close()
 
 	for _, m := range msgs {
-		cost, unknown := tab.CostFor(m)
+		cost, version, unknown := hist.CostFor(m)
 		unk := 0
 		if unknown {
 			unk = 1
@@ -320,9 +320,9 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 			m.Role, m.Model,
 			m.InputTokens, m.OutputTokens, m.CacheReadTokens,
 			m.CacheWrite5mTokens, m.CacheWrite1hTokens,
-			cost, tab.Version, unk, sub, m.ParentSessionID, m.Cwd, m.GitBranch,
+			cost, version, unk, sub, m.ParentSessionID, m.Cwd, m.GitBranch,
 		); err != nil {
-			return err
+			return fmt.Errorf("insert messages: exec: %w", err)
 		}
 	}
 	return tx.Commit()

@@ -16,7 +16,7 @@ var errTruncated = errors.New("recorded offset past EOF; resetting and re-parsin
 // fsnotify event) and from the startup Backfill (every .jsonl).
 type Ingester struct {
 	Cache          *cache.Cache
-	Pricing        pricing.Table
+	Pricing        pricing.History
 	ProjectsRoot   string
 	ParseErrorsLog string
 }

@@ -1334,12 +1334,16 @@ func TestInsertMessages_StampsPricingVersion(t *testing.T) {
 	}
 	defer c.Close()
 
-	tab := pricing.Table{
+	entry := pricing.Table{
 		Version:  "test-version-2026-05-11",
 		Currency: "USD",
 		Models: map[string]pricing.ModelRate{
 			"claude-opus-4-7": {InputPerMtok: 5.00},
 		},
+	}
+	hist, err := pricing.HistoryForTest([]pricing.Table{entry})
+	if err != nil {
+		t.Fatalf("HistoryForTest: %v", err)
 	}
 	msg := parse.Message{
 		SessionID:   "s1",
@@ -1348,7 +1352,7 @@ func TestInsertMessages_StampsPricingVersion(t *testing.T) {
 		Timestamp:   time.Now(),
 		InputTokens: 1000,
 	}
-	if err := c.InsertMessages([]parse.Message{msg}, tab); err != nil {
+	if err := c.InsertMessages([]parse.Message{msg}, hist); err != nil {
 		t.Fatalf("InsertMessages: %v", err)
 	}
 
@@ -1359,8 +1363,8 @@ func TestInsertMessages_StampsPricingVersion(t *testing.T) {
 	).Scan(&got); err != nil {
 		t.Fatalf("query pricing_version: %v", err)
 	}
-	if got != tab.Version {
-		t.Errorf("pricing_version = %q, want %q", got, tab.Version)
+	if got != entry.Version {
+		t.Errorf("pricing_version = %q, want %q", got, entry.Version)
 	}
 }
 
@@ -1411,9 +1415,9 @@ func TestCostBuckets_ContiguousRange(t *testing.T) {
 	// Compute the expected per-bucket cost from the same pricing.Table the
 	// production code uses, so a pricing.json change doesn't make this test
 	// drift; we just want to assert the SUM aggregator matches CostFor.
-	cost1, _ := tab.CostFor(msgs[0])
-	cost2, _ := tab.CostFor(msgs[1])
-	cost3, _ := tab.CostFor(msgs[2])
+	cost1, _, _ := tab.CostFor(msgs[0])
+	cost2, _, _ := tab.CostFor(msgs[1])
+	cost3, _, _ := tab.CostFor(msgs[2])
 	wantBucket10 := cost1
 	wantBucket11 := cost2 + cost3
 	for i, b := range buckets {

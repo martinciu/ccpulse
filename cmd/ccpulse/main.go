@@ -104,6 +104,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newIndexCmd())
 	root.AddCommand(newConfigCmd())
 	root.AddCommand(newDoctorCmd())
+	root.AddCommand(newRecostCmd())
 	root.AddCommand(newVersionCmd())
 	return root
 }
@@ -232,15 +233,16 @@ func runTUI(ctx context.Context) error {
 	}
 	defer c.Close()
 
-	tab, err := pricing.Load()
+	hist, err := pricing.Load()
 	if err != nil {
 		return err
 	}
 	projectsRoot := envOr("CCPULSE_PROJECTS_ROOT", expand(cfg.Paths.ProjectsRoot))
+	c.AutoRecost(ctx, hist)
 
 	ing := &ingest.Ingester{
 		Cache:          c,
-		Pricing:        tab,
+		Pricing:        hist,
 		ProjectsRoot:   projectsRoot,
 		ParseErrorsLog: filepath.Join(cacheDir, "parse-errors.log"),
 	}
