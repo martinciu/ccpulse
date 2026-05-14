@@ -2,10 +2,12 @@ package status
 
 import (
 	"database/sql"
+	"log/slog"
 	"math"
 	"time"
 
 	"github.com/martinciu/ccpulse/pkg/anthro"
+	"github.com/martinciu/ccpulse/pkg/cache"
 )
 
 // QuotaInput carries server-side quota data into Compute.
@@ -89,12 +91,22 @@ FROM messages WHERE ts >= ?`, cutoff)
 			p.FiveHour = &fh
 		}
 		if q.Usage.SevenDay != nil {
-			sd := projectBucket(
+			var samples []cache.SevenDaySample
+			if db != nil {
+				cc := cache.NewFromDB(db)
+				var serr error
+				samples, serr = cc.SevenDaySamplesSince(now.Add(-sevenDayTrailingWindow))
+				if serr != nil {
+					slog.Debug("status.Compute: SevenDaySamplesSince failed; falling back to linear",
+						"err", serr)
+					samples = nil
+				}
+			}
+			sd := projectSevenDay(
+				samples,
 				q.Usage.SevenDay.Utilization,
 				q.Usage.SevenDay.ResetsAt,
 				now,
-				sevenDayWindow,
-				sevenDayLowConfidenceCutoff,
 			)
 			p.SevenDay = &sd
 		}

@@ -10,6 +10,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/martinciu/ccpulse/pkg/anthro"
+	"github.com/martinciu/ccpulse/pkg/cache"
 )
 
 func freshDB(t *testing.T) *sql.DB {
@@ -273,5 +274,53 @@ func TestJSONOutputOmitsProjectionWhenNil(t *testing.T) {
 	}
 	if strings.Contains(out, "projection") {
 		t.Errorf("JSON should omit projection when Projection is nil: %s", out)
+	}
+}
+
+func TestCompute_SevenDayUsesRecencyWeightedProjection(t *testing.T) {
+	dir := t.TempDir()
+	c, err := cache.Open(dir + "/state.db")
+	if err != nil {
+		t.Fatalf("Open cache: %v", err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+
+	now := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+	resetsAt := now.Add(72 * time.Hour)
+
+	// Front-loaded shape: pct at 50% for the last 24h (slope ≈ 0).
+	for _, hoursBack := range []int{24, 18, 12, 6, 0} {
+		when := now.Add(-time.Duration(hoursBack) * time.Hour)
+		if err := c.RecordUsageSample(anthro.Usage{
+			SevenDay: &anthro.Bucket{Utilization: 50.0, ResetsAt: resetsAt},
+		}, when); err != nil {
+			t.Fatalf("RecordUsageSample: %v", err)
+		}
+	}
+
+	q := QuotaInput{
+		Usage: &anthro.Usage{
+			SevenDay: &anthro.Bucket{Utilization: 50.0, ResetsAt: resetsAt},
+		},
+		Source:    "api",
+		UpdatedAt: now,
+	}
+
+	w, err := Compute(c.DB(), now, q)
+	if err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+	if w.Projection == nil || w.Projection.SevenDay == nil {
+		t.Fatalf("Projection.SevenDay nil")
+	}
+	got := w.Projection.SevenDay
+	if got.SlopePctPerHour != 0 {
+		t.Errorf("front-loaded SlopePctPerHour = %v, want 0 (recency-weighted, not linear)", got.SlopePctPerHour)
+	}
+	if got.WillOverreach {
+		t.Errorf("WillOverreach = true, want false (50 + 0*72 = 50)")
+	}
+	if got.ProjectedPctAtReset != 50 {
+		t.Errorf("ProjectedPctAtReset = %d, want 50", got.ProjectedPctAtReset)
 	}
 }
