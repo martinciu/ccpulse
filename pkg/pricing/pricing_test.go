@@ -8,10 +8,11 @@ import (
 )
 
 func TestLoadEmbedded(t *testing.T) {
-	tab, err := Load()
+	h, err := Load()
 	if err != nil {
 		t.Fatal(err)
 	}
+	tab := h.Latest()
 	if tab.Version == "" {
 		t.Error("Version empty")
 	}
@@ -25,7 +26,8 @@ func TestLoadEmbedded(t *testing.T) {
 }
 
 func TestCostFor(t *testing.T) {
-	tab, _ := Load()
+	h, _ := Load()
+	tab := h.Latest()
 	m := parse.Message{
 		Model:              "claude-opus-4-7",
 		InputTokens:        1_000_000, // 1 Mtok
@@ -45,7 +47,8 @@ func TestCostFor(t *testing.T) {
 }
 
 func TestCostForUnknown(t *testing.T) {
-	tab, _ := Load()
+	h, _ := Load()
+	tab := h.Latest()
 	m := parse.Message{Model: "claude-future-9-9", InputTokens: 100}
 	cost, unknown := tab.CostFor(m)
 	if !unknown {
@@ -53,6 +56,37 @@ func TestCostForUnknown(t *testing.T) {
 	}
 	if cost != 0 {
 		t.Errorf("cost = %v, want 0", cost)
+	}
+}
+
+func TestHistory_Load_AllEmbedded(t *testing.T) {
+	h, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	versions := h.Versions()
+	if len(versions) < 2 {
+		t.Fatalf("expected at least 2 history entries, got %d: %v", len(versions), versions)
+	}
+	for i := 1; i < len(versions); i++ {
+		if versions[i-1] >= versions[i] {
+			t.Errorf("Versions() not strictly ascending: %v", versions)
+		}
+	}
+}
+
+func TestHistory_Latest(t *testing.T) {
+	h, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	latest := h.Latest()
+	versions := h.Versions()
+	if latest.Version != versions[len(versions)-1] {
+		t.Errorf("Latest().Version = %q, want last of Versions() = %q", latest.Version, versions[len(versions)-1])
+	}
+	if latest.Currency != "USD" {
+		t.Errorf("Latest().Currency = %q, want USD", latest.Currency)
 	}
 }
 
@@ -82,22 +116,22 @@ func TestParseTable(t *testing.T) {
 		{
 			name:    "non_usd_rejected",
 			data:    `{"version":"test","currency":"EUR","models":{}}`,
-			wantErr: `pricing.json: unsupported currency "EUR" (expected USD)`,
+			wantErr: `unsupported currency "EUR" (expected USD)`,
 		},
 		{
 			name:    "missing_currency_rejected",
 			data:    `{"version":"test","models":{}}`,
-			wantErr: `pricing.json: unsupported currency "" (expected USD)`,
+			wantErr: `unsupported currency "" (expected USD)`,
 		},
 		{
 			name:    "missing_version_rejected",
 			data:    `{"currency":"USD","models":{}}`,
-			wantErr: "pricing.json: missing version field",
+			wantErr: "missing version field",
 		},
 		{
 			name:    "malformed_json_rejected",
 			data:    `{not json`,
-			wantErr: "pricing.json:",
+			wantErr: "unmarshal:",
 		},
 	}
 
