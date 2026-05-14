@@ -73,6 +73,13 @@ FROM messages`)
 	}
 	defer rows.Close()
 
+	updateStmt, err := tx.PrepareContext(ctx,
+		`UPDATE messages SET cost_usd_estimate = ?, pricing_version = ?, pricing_unknown = ? WHERE id = ?`)
+	if err != nil {
+		return stats, fmt.Errorf("recost: prepare update: %w", err)
+	}
+	defer updateStmt.Close()
+
 	var batch []recostUpdate
 
 	for rows.Next() {
@@ -95,7 +102,7 @@ FROM messages`)
 		}
 		ts, err := time.Parse(tsFormat, tsStr)
 		if err != nil {
-			return stats, fmt.Errorf("recost: parse ts %q on row id=%d: %w", tsStr, id, err)
+			return stats, fmt.Errorf("recost: parse ts on row id=%d: %w", id, err)
 		}
 		m := parse.Message{
 			Timestamp:          ts,
@@ -122,7 +129,7 @@ FROM messages`)
 			newUnknown: newUnk,
 		})
 		if len(batch) >= recostBatchSize {
-			if err := flushRecostBatch(ctx, tx, batch, opts.DryRun); err != nil {
+			if err := flushRecostBatch(ctx, updateStmt, batch, opts.DryRun); err != nil {
 				return stats, err
 			}
 			for _, u := range batch {
@@ -140,7 +147,7 @@ FROM messages`)
 	}
 
 	if len(batch) > 0 {
-		if err := flushRecostBatch(ctx, tx, batch, opts.DryRun); err != nil {
+		if err := flushRecostBatch(ctx, updateStmt, batch, opts.DryRun); err != nil {
 			return stats, err
 		}
 		for _, u := range batch {
@@ -250,14 +257,12 @@ func (c *Cache) PricingVersionStats(hist pricing.History) ([]PricingVersionStat,
 	return out, nil
 }
 
-func flushRecostBatch(ctx context.Context, tx *sql.Tx, batch []recostUpdate, dryRun bool) error {
+func flushRecostBatch(ctx context.Context, stmt *sql.Stmt, batch []recostUpdate, dryRun bool) error {
 	if dryRun {
 		return nil
 	}
 	for _, u := range batch {
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE messages SET cost_usd_estimate = ?, pricing_version = ?, pricing_unknown = ? WHERE id = ?`,
-			u.newCost, u.newVersion, u.newUnknown, u.id); err != nil {
+		if _, err := stmt.ExecContext(ctx, u.newCost, u.newVersion, u.newUnknown, u.id); err != nil {
 			return fmt.Errorf("recost: update row id=%d: %w", u.id, err)
 		}
 	}

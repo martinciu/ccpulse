@@ -20,7 +20,7 @@ func newRecostCmd() *cobra.Command {
 		Hidden: true,
 		Args:   cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.Load(config.DefaultPath())
+			cfg, err := config.Load("")
 			if err != nil {
 				return fmt.Errorf("load config: %w", err)
 			}
@@ -37,7 +37,7 @@ func newRecostCmd() *cobra.Command {
 
 			stats, err := ca.Recost(cmd.Context(), hist, cache.RecostOpts{DryRun: dryRun})
 			if err != nil {
-				return fmt.Errorf("recost: %w", err)
+				return err
 			}
 
 			out := cmd.OutOrStdout()
