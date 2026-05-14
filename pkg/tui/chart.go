@@ -260,15 +260,16 @@ func niceFloorFloat(peak float64) float64 {
 	return nice * mag
 }
 
-// formatTokenCount renders an int64 token count compactly with a k/M
+// formatTokenCount renders an int64 token count compactly with a k/M/G
 // suffix, suitable for the Y label and other in-chart annotations.
 // Always returns an integer label (no fractional digits). Pair with
 // niceFloorFloat so the integer-rounded label exactly matches its row.
 //
-//	n <= 0     -> "0"
-//	n < 1000   -> raw integer
-//	n < 1e6    -> rounded thousands with "k" (e.g. "75k", "100k")
-//	n >= 1e6   -> rounded millions with "M" (e.g. "50M", "1M")
+//	n <= 0       -> "0"
+//	n < 1000     -> raw integer
+//	n < 1e6      -> rounded thousands with "k" (e.g. "75k", "100k")
+//	n < 1e9      -> rounded millions with "M" (e.g. "50M", "1M")
+//	n >= 1e9     -> rounded billions with "G" (e.g. "1G", "9G")
 func formatTokenCount(n int64) string {
 	if n <= 0 {
 		return "0"
@@ -279,7 +280,10 @@ func formatTokenCount(n int64) string {
 	if n < 1_000_000 {
 		return strconv.FormatFloat(float64(n)/1000, 'f', 0, 64) + "k"
 	}
-	return strconv.FormatFloat(float64(n)/1_000_000, 'f', 0, 64) + "M"
+	if n < 1_000_000_000 {
+		return strconv.FormatFloat(float64(n)/1_000_000, 'f', 0, 64) + "M"
+	}
+	return strconv.FormatFloat(float64(n)/1_000_000_000, 'f', 0, 64) + "G"
 }
 
 // formatUnitValue renders v in the active unit's compact Y-label form.
@@ -302,7 +306,10 @@ func formatUnitValue(v float64, unit chartUnit) string {
 		if v < 1_000_000 {
 			return "$" + strconv.FormatFloat(v/1000, 'f', 0, 64) + "k"
 		}
-		return "$" + strconv.FormatFloat(v/1_000_000, 'f', 0, 64) + "M"
+		if v < 1_000_000_000 {
+			return "$" + strconv.FormatFloat(v/1_000_000, 'f', 0, 64) + "M"
+		}
+		return "$" + strconv.FormatFloat(v/1_000_000_000, 'f', 0, 64) + "G"
 	default: // chartUnitTokens
 		// Reuse formatTokenCount's exact behaviour by casting to int64
 		// after the niceFloorFloat path has already snapped to an integer.
