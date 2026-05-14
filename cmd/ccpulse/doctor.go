@@ -45,8 +45,11 @@ func newDoctorCmd() *cobra.Command {
 			}
 
 			hist, err := pricing.Load()
-			latest := hist.Latest()
-			check(out, "pricing loads (v="+latest.Version+")", err == nil, err)
+			version := ""
+			if err == nil {
+				version = hist.Latest().Version
+			}
+			check(out, "pricing loads (v="+version+")", err == nil, err)
 
 			// OAuth credential check
 			cred, credErr := anthro.LoadCredential()
