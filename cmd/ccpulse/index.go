@@ -66,7 +66,6 @@ func runIndex(ctx context.Context, rebuild bool) error {
 	if err != nil {
 		return err
 	}
-	c.AutoRecost(ctx, hist)
 
 	ing := &ingest.Ingester{
 		Cache:          c,
