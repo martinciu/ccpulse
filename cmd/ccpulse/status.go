@@ -11,6 +11,7 @@ import (
 	"github.com/martinciu/ccpulse/pkg/anthro"
 	"github.com/martinciu/ccpulse/pkg/cache"
 	"github.com/martinciu/ccpulse/pkg/config"
+	"github.com/martinciu/ccpulse/pkg/pricing"
 	"github.com/martinciu/ccpulse/pkg/status"
 	"github.com/spf13/cobra"
 )
@@ -38,6 +39,12 @@ func runStatus(cmd *cobra.Command, asJSON bool) error {
 		return err
 	}
 	defer c.Close()
+
+	hist, err := pricing.Load()
+	if err != nil {
+		return err
+	}
+	c.AutoRecost(cmd.Context(), hist)
 
 	q := buildQuotaInput(cmd.Context(), cacheDir, time.Now())
 

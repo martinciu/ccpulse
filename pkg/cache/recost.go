@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/martinciu/ccpulse/pkg/parse"
@@ -155,6 +156,27 @@ FROM messages`)
 	}
 	stats.Elapsed = time.Since(start)
 	return stats, nil
+}
+
+// AutoRecost runs Recost with a bounded timeout and emits a single slog line
+// when rows were updated. Intended for command entrypoints that should never
+// block the UI on a malformed DB.
+func (c *Cache) AutoRecost(ctx context.Context, hist pricing.History) {
+	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	stats, err := c.Recost(cctx, hist, RecostOpts{})
+	if err != nil {
+		slog.Warn("recost", "err", err.Error(), "elapsed", stats.Elapsed)
+		return
+	}
+	if stats.Updated > 0 {
+		slog.Info("recost",
+			"scanned", stats.Scanned,
+			"updated", stats.Updated,
+			"unknown_cleared", stats.UnknownBefore-stats.UnknownAfter,
+			"elapsed", stats.Elapsed,
+		)
+	}
 }
 
 func flushRecostBatch(ctx context.Context, tx *sql.Tx, batch []recostUpdate, dryRun bool) error {

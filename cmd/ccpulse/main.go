@@ -237,6 +237,7 @@ func runTUI(ctx context.Context) error {
 		return err
 	}
 	projectsRoot := envOr("CCPULSE_PROJECTS_ROOT", expand(cfg.Paths.ProjectsRoot))
+	c.AutoRecost(ctx, hist)
 
 	ing := &ingest.Ingester{
 		Cache:          c,
