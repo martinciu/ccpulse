@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"sort"
 	"time"
 
 	"github.com/martinciu/ccpulse/pkg/parse"
@@ -177,6 +178,76 @@ func (c *Cache) AutoRecost(ctx context.Context, hist pricing.History) {
 			"elapsed", stats.Elapsed,
 		)
 	}
+}
+
+// PricingVersionStat summarizes one distinct pricing_version stamp present
+// in the messages table.
+type PricingVersionStat struct {
+	Version   string
+	Rows      int
+	IsCurrent bool
+	Stale     int
+}
+
+// PricingVersionStats returns one entry per distinct pricing_version found in
+// messages, plus a per-version count of rows that disagree with
+// hist.TableAt(ts).Version. Entries are sorted by Version ascending.
+func (c *Cache) PricingVersionStats(hist pricing.History) ([]PricingVersionStat, error) {
+	rows, err := c.db.Query(`SELECT pricing_version, COUNT(*) FROM messages GROUP BY pricing_version`)
+	if err != nil {
+		return nil, fmt.Errorf("pricing version stats: query: %w", err)
+	}
+	defer rows.Close()
+
+	current := hist.Latest().Version
+	totals := map[string]int{}
+	for rows.Next() {
+		var ver string
+		var n int
+		if err := rows.Scan(&ver, &n); err != nil {
+			return nil, fmt.Errorf("pricing version stats: scan: %w", err)
+		}
+		totals[ver] = n
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("pricing version stats: iterate: %w", err)
+	}
+
+	// Per-row stale check: compare stamped version to resolved version.
+	staleRows, err := c.db.Query(`SELECT pricing_version, ts FROM messages`)
+	if err != nil {
+		return nil, fmt.Errorf("pricing version stats: stale query: %w", err)
+	}
+	defer staleRows.Close()
+	staleByVer := map[string]int{}
+	for staleRows.Next() {
+		var ver, tsStr string
+		if err := staleRows.Scan(&ver, &tsStr); err != nil {
+			return nil, fmt.Errorf("pricing version stats: stale scan: %w", err)
+		}
+		ts, err := time.Parse(tsFormat, tsStr)
+		if err != nil {
+			continue
+		}
+		if hist.TableAt(ts).Version != ver {
+			staleByVer[ver]++
+		}
+	}
+	if err := staleRows.Err(); err != nil {
+		return nil, fmt.Errorf("pricing version stats: stale iterate: %w", err)
+	}
+
+	out := make([]PricingVersionStat, 0, len(totals))
+	for ver, n := range totals {
+		out = append(out, PricingVersionStat{
+			Version:   ver,
+			Rows:      n,
+			IsCurrent: ver == current,
+			Stale:     staleByVer[ver],
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Version < out[j].Version })
+	return out, nil
 }
 
 func flushRecostBatch(ctx context.Context, tx *sql.Tx, batch []recostUpdate, dryRun bool) error {

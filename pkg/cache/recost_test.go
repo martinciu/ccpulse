@@ -197,6 +197,48 @@ func TestRecost_DryRunNoWrites(t *testing.T) {
 	}
 }
 
+func TestPricingVersionStats(t *testing.T) {
+	c := mustOpenTempCache(t)
+	hist := twoVersionHistory(t)
+	seedRow(t, c, hist, parse.Message{
+		SessionID: "s1", ProjectSlug: "p", Role: "assistant",
+		Model: "claude-opus-4-7", InputTokens: 1_000_000,
+		Timestamp: time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC),
+	})
+	seedRow(t, c, hist, parse.Message{
+		SessionID: "s2", ProjectSlug: "p", Role: "assistant",
+		Model: "claude-opus-4-7", InputTokens: 1_000_000,
+		Timestamp: time.Date(2026, 5, 10, 0, 0, 0, 0, time.UTC),
+	})
+	// Stamp one row with a stale version.
+	if _, err := c.DB().Exec(`UPDATE messages SET pricing_version = '1999-01-01' WHERE session_id = 's1'`); err != nil {
+		t.Fatalf("seed stale: %v", err)
+	}
+
+	got, err := c.PricingVersionStats(hist)
+	if err != nil {
+		t.Fatalf("PricingVersionStats: %v", err)
+	}
+	var seenStale, seenCurrent bool
+	for _, s := range got {
+		switch s.Version {
+		case "1999-01-01":
+			seenStale = true
+			if s.Rows != 1 || s.Stale != 1 || s.IsCurrent {
+				t.Errorf("stale entry = %+v", s)
+			}
+		case "2026-05-10":
+			seenCurrent = true
+			if s.Rows != 1 || s.Stale != 0 || !s.IsCurrent {
+				t.Errorf("current entry = %+v", s)
+			}
+		}
+	}
+	if !seenStale || !seenCurrent {
+		t.Errorf("missing expected entries; got %+v", got)
+	}
+}
+
 func TestRecost_ContextCancellation(t *testing.T) {
 	c := mustOpenTempCache(t)
 	hist := twoVersionHistory(t)
