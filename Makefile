@@ -1,4 +1,4 @@
-.PHONY: build install seed-dev seed-dev-config seed-dev-cache reset-dev test lint snapshot
+.PHONY: build install seed-dev seed-dev-config seed-dev-cache seed-front-loaded reset-dev test lint snapshot
 
 BIN := ccpulse
 INSTALL_DIR := $(HOME)/.local/bin
@@ -29,3 +29,6 @@ lint:
 
 snapshot:
 	HOMEBREW_TAP_GITHUB_TOKEN=dummy goreleaser release --snapshot --clean
+
+seed-front-loaded: ## Populate usage_samples with a front-loaded shape (issue #170 probe)
+	@scripts/seed-front-loaded.sh
