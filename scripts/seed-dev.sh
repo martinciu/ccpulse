@@ -67,7 +67,16 @@ seed_cache() {
 
   mkdir -p "$(dirname "$dst")"
 
-  if command -v sqlite3 >/dev/null 2>&1 && sqlite3 "$src" ".backup '$dst'"; then
+  # Escape $dst for sqlite3's .backup dot-command. XDG_CACHE_HOME is
+  # user-controlled and could contain quote-like characters
+  # (e.g. /Users/o'malley/.cache). sqlite3 dot-commands don't support
+  # SQL-style '' quote escaping, but they DO support \\ and \" inside
+  # double-quoted args. Wrap in double quotes; escape \ and " in the path.
+  local bs='\'
+  local dq='"'
+  local dst_escaped="${dst//$bs/$bs$bs}"
+  dst_escaped="${dst_escaped//$dq/$bs$dq}"
+  if command -v sqlite3 >/dev/null 2>&1 && sqlite3 "$src" ".backup \"$dst_escaped\""; then
     echo "seeded $dst from $src (sqlite3 online backup)"
   else
     echo "seed-dev.sh: sqlite3 unavailable or backup failed (see message above); falling back to cp (released ccpulse must be paused for consistency)" >&2
