@@ -90,7 +90,7 @@ func TestRecost_FixesStaleVersion(t *testing.T) {
 	}
 	seedRow(t, c, hist, m)
 	// Simulate a stale stamp written before history existed.
-	if _, err := c.RawDB().Exec(`UPDATE messages SET pricing_version = '2026-05-10', cost_usd_estimate = 5.0 WHERE session_id = ?`, m.SessionID); err != nil {
+	if _, err := c.DB().Exec(`UPDATE messages SET pricing_version = '2026-05-10', cost_usd_estimate = 5.0 WHERE session_id = ?`, m.SessionID); err != nil {
 		t.Fatalf("seed stale version: %v", err)
 	}
 
@@ -103,7 +103,7 @@ func TestRecost_FixesStaleVersion(t *testing.T) {
 	}
 	var ver string
 	var cost float64
-	if err := c.RawDB().QueryRow(`SELECT pricing_version, cost_usd_estimate FROM messages WHERE session_id = ?`, m.SessionID).Scan(&ver, &cost); err != nil {
+	if err := c.DB().QueryRow(`SELECT pricing_version, cost_usd_estimate FROM messages WHERE session_id = ?`, m.SessionID).Scan(&ver, &cost); err != nil {
 		t.Fatalf("read row: %v", err)
 	}
 	if ver != "2026-05-09" {
@@ -125,7 +125,7 @@ func TestRecost_ClearsUnknownWhenModelAdded(t *testing.T) {
 	}
 	seedRow(t, c, hist, m)
 	var unk int
-	if err := c.RawDB().QueryRow(`SELECT pricing_unknown FROM messages WHERE session_id = ?`, m.SessionID).Scan(&unk); err != nil {
+	if err := c.DB().QueryRow(`SELECT pricing_unknown FROM messages WHERE session_id = ?`, m.SessionID).Scan(&unk); err != nil {
 		t.Fatalf("read row: %v", err)
 	}
 	if unk != 1 {
@@ -133,7 +133,7 @@ func TestRecost_ClearsUnknownWhenModelAdded(t *testing.T) {
 	}
 
 	// Move the row's ts to 2026-05-10 so haiku is now known.
-	if _, err := c.RawDB().Exec(`UPDATE messages SET ts = '2026-05-10T00:00:00.000Z' WHERE session_id = ?`, m.SessionID); err != nil {
+	if _, err := c.DB().Exec(`UPDATE messages SET ts = '2026-05-10T00:00:00.000Z' WHERE session_id = ?`, m.SessionID); err != nil {
 		t.Fatalf("update ts: %v", err)
 	}
 	stats, err := c.Recost(context.Background(), hist, cache.RecostOpts{})
@@ -143,7 +143,7 @@ func TestRecost_ClearsUnknownWhenModelAdded(t *testing.T) {
 	if stats.Updated != 1 {
 		t.Errorf("Updated = %d, want 1", stats.Updated)
 	}
-	if err := c.RawDB().QueryRow(`SELECT pricing_unknown FROM messages WHERE session_id = ?`, m.SessionID).Scan(&unk); err != nil {
+	if err := c.DB().QueryRow(`SELECT pricing_unknown FROM messages WHERE session_id = ?`, m.SessionID).Scan(&unk); err != nil {
 		t.Fatalf("re-read row: %v", err)
 	}
 	if unk != 0 {
@@ -178,7 +178,7 @@ func TestRecost_DryRunNoWrites(t *testing.T) {
 		Timestamp: time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC),
 	}
 	seedRow(t, c, hist, m)
-	if _, err := c.RawDB().Exec(`UPDATE messages SET pricing_version = '2026-05-10' WHERE session_id = ?`, m.SessionID); err != nil {
+	if _, err := c.DB().Exec(`UPDATE messages SET pricing_version = '2026-05-10' WHERE session_id = ?`, m.SessionID); err != nil {
 		t.Fatalf("seed stale: %v", err)
 	}
 	stats, err := c.Recost(context.Background(), hist, cache.RecostOpts{DryRun: true})
@@ -189,7 +189,7 @@ func TestRecost_DryRunNoWrites(t *testing.T) {
 		t.Errorf("dry-run Updated count = %d, want 1 (planned)", stats.Updated)
 	}
 	var ver string
-	if err := c.RawDB().QueryRow(`SELECT pricing_version FROM messages WHERE session_id = ?`, m.SessionID).Scan(&ver); err != nil {
+	if err := c.DB().QueryRow(`SELECT pricing_version FROM messages WHERE session_id = ?`, m.SessionID).Scan(&ver); err != nil {
 		t.Fatalf("read row: %v", err)
 	}
 	if ver != "2026-05-10" {
@@ -207,7 +207,7 @@ func TestRecost_ContextCancellation(t *testing.T) {
 			Timestamp: time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC),
 		})
 	}
-	if _, err := c.RawDB().Exec(`UPDATE messages SET pricing_version = '2026-05-10'`); err != nil {
+	if _, err := c.DB().Exec(`UPDATE messages SET pricing_version = '2026-05-10'`); err != nil {
 		t.Fatalf("seed stale: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -217,7 +217,7 @@ func TestRecost_ContextCancellation(t *testing.T) {
 		t.Errorf("recost with cancelled ctx returned nil error, want non-nil")
 	}
 	var stale int
-	if err := c.RawDB().QueryRow(`SELECT COUNT(*) FROM messages WHERE pricing_version = '2026-05-10'`).Scan(&stale); err != nil {
+	if err := c.DB().QueryRow(`SELECT COUNT(*) FROM messages WHERE pricing_version = '2026-05-10'`).Scan(&stale); err != nil {
 		t.Fatalf("count: %v", err)
 	}
 	if stale != 10 {

@@ -69,6 +69,7 @@ FROM messages`)
 	if err != nil {
 		return stats, fmt.Errorf("recost: query messages: %w", err)
 	}
+	defer rows.Close()
 
 	var batch []recostUpdate
 
@@ -84,7 +85,6 @@ FROM messages`)
 			unkStored           int
 		)
 		if err := rows.Scan(&id, &tsStr, &model, &in, &out, &cr, &cw5, &cw1, &costStored, &verStored, &unkStored); err != nil {
-			rows.Close()
 			return stats, fmt.Errorf("recost: scan row: %w", err)
 		}
 		stats.Scanned++
@@ -93,7 +93,6 @@ FROM messages`)
 		}
 		ts, err := time.Parse(tsFormat, tsStr)
 		if err != nil {
-			rows.Close()
 			return stats, fmt.Errorf("recost: parse ts %q on row id=%d: %w", tsStr, id, err)
 		}
 		m := parse.Message{
@@ -122,7 +121,6 @@ FROM messages`)
 		})
 		if len(batch) >= recostBatchSize {
 			if err := flushRecostBatch(ctx, tx, batch, opts.DryRun); err != nil {
-				rows.Close()
 				return stats, err
 			}
 			for _, u := range batch {
@@ -131,16 +129,13 @@ FROM messages`)
 			}
 			batch = batch[:0]
 			if err := ctx.Err(); err != nil {
-				rows.Close()
 				return stats, fmt.Errorf("recost: ctx: %w", err)
 			}
 		}
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
 		return stats, fmt.Errorf("recost: iterate: %w", err)
 	}
-	rows.Close()
 
 	if len(batch) > 0 {
 		if err := flushRecostBatch(ctx, tx, batch, opts.DryRun); err != nil {
