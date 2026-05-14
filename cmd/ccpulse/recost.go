@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"path/filepath"
+	"sort"
 
 	"github.com/spf13/cobra"
 
@@ -36,7 +37,7 @@ func newRecostCmd() *cobra.Command {
 
 			stats, err := ca.Recost(cmd.Context(), hist, cache.RecostOpts{DryRun: dryRun})
 			if err != nil {
-				return err
+				return fmt.Errorf("recost: %w", err)
 			}
 
 			out := cmd.OutOrStdout()
@@ -47,8 +48,13 @@ func newRecostCmd() *cobra.Command {
 				stats.Scanned, stats.Updated, stats.UnknownBefore, stats.UnknownAfter)
 			if verbose && len(stats.ByVersion) > 0 {
 				fmt.Fprintln(out, "By version:")
-				for ver, n := range stats.ByVersion {
-					fmt.Fprintf(out, "  %s: %d rows\n", ver, n)
+				vers := make([]string, 0, len(stats.ByVersion))
+				for ver := range stats.ByVersion {
+					vers = append(vers, ver)
+				}
+				sort.Strings(vers)
+				for _, ver := range vers {
+					fmt.Fprintf(out, "  %s: %d rows\n", ver, stats.ByVersion[ver])
 				}
 			}
 			fmt.Fprintf(out, "Elapsed: %s\n", stats.Elapsed)
