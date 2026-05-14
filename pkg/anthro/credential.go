@@ -40,8 +40,13 @@ func (c Credential) Expired(now time.Time) bool {
 // LoadCredential resolves the credential from the platform's preferred store.
 // Darwin: macOS Keychain (service "Claude Code-credentials"), with the file
 // at ~/.claude/.credentials.json as fallback. Other platforms: file only.
+//
+// CCPULSE_DISABLE_KEYCHAIN=1 skips the Keychain lookup entirely (test seam
+// for darwin no-credential assertions; on dev machines the Keychain holds a
+// real entry that ignores $HOME, so tempdir-HOME alone can't simulate
+// "no credential available"). Not a documented public flag.
 func LoadCredential() (Credential, error) {
-	if runtime.GOOS == "darwin" {
+	if runtime.GOOS == "darwin" && os.Getenv("CCPULSE_DISABLE_KEYCHAIN") != "1" {
 		if c, err := loadCredentialFromKeychain(); err == nil {
 			return c, nil
 		}
