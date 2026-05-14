@@ -1556,3 +1556,123 @@ func TestAllFileOffsets_ReturnsAllRows(t *testing.T) {
 		}
 	}
 }
+
+func TestSevenDaySamplesSince_OrderingAndFilter(t *testing.T) {
+	dir := t.TempDir()
+	c, err := Open(dir + "/state.db")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+
+	resetsA := time.Date(2026, 5, 18, 11, 0, 0, 0, time.UTC) // bucket A reset
+	mkUsage := func(pct float64, resetsAt time.Time) anthro.Usage {
+		return anthro.Usage{
+			SevenDay: &anthro.Bucket{Utilization: pct, ResetsAt: resetsAt},
+		}
+	}
+
+	now := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+	// Three samples: 26h ago, 12h ago, now. Insert out-of-order to verify ORDER BY.
+	if err := c.RecordUsageSample(mkUsage(40.0, resetsA), now); err != nil {
+		t.Fatalf("Record now: %v", err)
+	}
+	if err := c.RecordUsageSample(mkUsage(20.0, resetsA), now.Add(-26*time.Hour)); err != nil {
+		t.Fatalf("Record -26h: %v", err)
+	}
+	if err := c.RecordUsageSample(mkUsage(30.0, resetsA), now.Add(-12*time.Hour)); err != nil {
+		t.Fatalf("Record -12h: %v", err)
+	}
+
+	since := now.Add(-24 * time.Hour)
+	got, err := c.SevenDaySamplesSince(since)
+	if err != nil {
+		t.Fatalf("SevenDaySamplesSince: %v", err)
+	}
+
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2 (the -26h sample is older than since)", len(got))
+	}
+	if got[0].Pct != 30.0 || got[1].Pct != 40.0 {
+		t.Errorf("pct order = %v / %v, want 30.0 then 40.0", got[0].Pct, got[1].Pct)
+	}
+	if !got[0].At.Before(got[1].At) {
+		t.Errorf("not ordered oldest-first: %v then %v", got[0].At, got[1].At)
+	}
+	if got[0].ResetsAt == "" {
+		t.Errorf("ResetsAt empty; want raw stored value")
+	}
+}
+
+func TestSevenDaySamplesSince_NullPctExcluded(t *testing.T) {
+	dir := t.TempDir()
+	c, err := Open(dir + "/state.db")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+
+	now := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+
+	// One sample with SevenDay populated; one with SevenDay nil (NULL pct).
+	if err := c.RecordUsageSample(anthro.Usage{
+		SevenDay: &anthro.Bucket{Utilization: 25.0, ResetsAt: now.Add(96 * time.Hour)},
+	}, now.Add(-2*time.Hour)); err != nil {
+		t.Fatalf("Record populated: %v", err)
+	}
+	if err := c.RecordUsageSample(anthro.Usage{}, now.Add(-1*time.Hour)); err != nil {
+		t.Fatalf("Record nil bucket: %v", err)
+	}
+
+	got, err := c.SevenDaySamplesSince(now.Add(-24 * time.Hour))
+	if err != nil {
+		t.Fatalf("SevenDaySamplesSince: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len = %d, want 1 (NULL pct row excluded)", len(got))
+	}
+	if got[0].Pct != 25.0 {
+		t.Errorf("pct = %v, want 25.0", got[0].Pct)
+	}
+}
+
+func TestSevenDaySamplesSince_ResetsAtNormalized(t *testing.T) {
+	// The Anthropic API returns slightly different nanosecond timestamps for the
+	// same logical reset boundary on each call. Without normalization the equality
+	// filter in projectSevenDay treats every sample as its own bucket, leaving
+	// <2 filtered samples and silently falling back to the linear projection.
+	// This test pins the fix: sub-second jitter must be collapsed to second precision.
+	dir := t.TempDir()
+	c, err := Open(dir + "/state.db")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+
+	now := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+	// Same logical reset (2026-05-17T09:00:00) but nanoseconds differ per sample.
+	resets1 := time.Date(2026, 5, 17, 9, 0, 0, 745677000, time.UTC)
+	resets2 := time.Date(2026, 5, 17, 9, 0, 0, 719504000, time.UTC)
+
+	if err := c.RecordUsageSample(anthro.Usage{
+		SevenDay: &anthro.Bucket{Utilization: 70.0, ResetsAt: resets1},
+	}, now.Add(-12*time.Hour)); err != nil {
+		t.Fatalf("Record 1: %v", err)
+	}
+	if err := c.RecordUsageSample(anthro.Usage{
+		SevenDay: &anthro.Bucket{Utilization: 80.0, ResetsAt: resets2},
+	}, now); err != nil {
+		t.Fatalf("Record 2: %v", err)
+	}
+
+	got, err := c.SevenDaySamplesSince(now.Add(-24 * time.Hour))
+	if err != nil {
+		t.Fatalf("SevenDaySamplesSince: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2", len(got))
+	}
+	if got[0].ResetsAt != got[1].ResetsAt {
+		t.Errorf("ResetsAt not normalized: %q vs %q (nanosecond jitter survived)", got[0].ResetsAt, got[1].ResetsAt)
+	}
+}

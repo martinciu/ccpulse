@@ -3,6 +3,8 @@ package status
 import (
 	"math"
 	"time"
+
+	"github.com/martinciu/ccpulse/pkg/cache"
 )
 
 const (
@@ -67,4 +69,74 @@ func confidenceFor(elapsed, lowCutoff time.Duration) string {
 
 func round2(f float64) float64 {
 	return math.Round(f*100) / 100
+}
+
+const (
+	sevenDayTrailingWindow = 24 * time.Hour
+	minSamplesForSlope     = 2
+	minSpanForSlope        = 4 * time.Hour // must match sevenDayLowConfidenceCutoff
+)
+
+func projectSevenDay(
+	samples []cache.SevenDaySample,
+	currentPct float64,
+	resetsAt, now time.Time,
+) Projection {
+	linear := projectBucket(currentPct, resetsAt, now, sevenDayWindow, sevenDayLowConfidenceCutoff)
+
+	if len(samples) < minSamplesForSlope {
+		return linear
+	}
+
+	currentBucketID := samples[len(samples)-1].ResetsAt
+	var filtered []cache.SevenDaySample
+	for _, s := range samples {
+		if s.ResetsAt != currentBucketID {
+			continue
+		}
+		if math.IsNaN(s.Pct) || math.IsInf(s.Pct, 0) {
+			continue
+		}
+		filtered = append(filtered, s)
+	}
+
+	if len(filtered) < minSamplesForSlope {
+		return linear
+	}
+
+	span := filtered[len(filtered)-1].At.Sub(filtered[0].At)
+	if span < minSpanForSlope {
+		return linear
+	}
+
+	deltaPct := filtered[len(filtered)-1].Pct - filtered[0].Pct
+	slopePerHour := deltaPct / span.Hours()
+	if slopePerHour < 0 {
+		slopePerHour = 0
+	}
+
+	hoursToReset := resetsAt.Sub(now).Hours()
+	if hoursToReset < 0 {
+		hoursToReset = 0
+	}
+	projectedAtReset := currentPct + slopePerHour*hoursToReset
+
+	windowStart := resetsAt.Add(-sevenDayWindow)
+	elapsed := now.Sub(windowStart)
+	if elapsed < 0 {
+		elapsed = 0
+	}
+
+	proj := Projection{
+		ElapsedMinutes:      int(elapsed.Minutes()),
+		SlopePctPerHour:     round2(slopePerHour),
+		ProjectedPctAtReset: int(math.Round(projectedAtReset)),
+		WillOverreach:       projectedAtReset > 100,
+		Confidence:          "ok",
+	}
+	if proj.WillOverreach && slopePerHour > 0 && currentPct < 100 {
+		m := int(math.Round((100 - currentPct) / slopePerHour * 60))
+		proj.MinutesTo100Pct = &m
+	}
+	return proj
 }
