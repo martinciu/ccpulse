@@ -93,7 +93,9 @@ func buildQuotaInput(ctx context.Context, cacheDir string, now time.Time) status
 	if cred.Expired(now) {
 		fmt.Fprintln(os.Stderr, "ccpulse: OAuth credential expired — run /login in claude")
 	}
-	res, err := anthro.Fetch(ctx, cred, cacheDir)
+	fetchCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	res, err := anthro.Fetch(fetchCtx, cred, cacheDir)
 	if err != nil {
 		return q // fall back; quota nil
 	}
