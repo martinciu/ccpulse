@@ -126,6 +126,10 @@ func NewFromDB(db *sql.DB) *Cache {
 
 func (c *Cache) DB() *sql.DB { return c.db }
 
+// RawDB returns the underlying *sql.DB. Intended for test setup that
+// needs to seed pathological row state; do not use from production code.
+func (c *Cache) RawDB() *sql.DB { return c.db }
+
 func (c *Cache) Close() error { return c.db.Close() }
 
 // RemoveWithSiblings deletes path plus its SQLite sidecar files
