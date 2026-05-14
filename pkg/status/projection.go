@@ -109,6 +109,34 @@ func projectSevenDay(
 		return linear
 	}
 
-	// TODO(task-3): slope arithmetic lands here.
-	return linear
+	deltaPct := filtered[len(filtered)-1].Pct - filtered[0].Pct
+	slopePerHour := deltaPct / span.Hours()
+	if slopePerHour < 0 {
+		slopePerHour = 0
+	}
+
+	hoursToReset := resetsAt.Sub(now).Hours()
+	if hoursToReset < 0 {
+		hoursToReset = 0
+	}
+	projectedAtReset := currentPct + slopePerHour*hoursToReset
+
+	windowStart := resetsAt.Add(-sevenDayWindow)
+	elapsed := now.Sub(windowStart)
+	if elapsed < 0 {
+		elapsed = 0
+	}
+
+	proj := Projection{
+		ElapsedMinutes:      int(elapsed.Minutes()),
+		SlopePctPerHour:     round2(slopePerHour),
+		ProjectedPctAtReset: int(math.Round(projectedAtReset)),
+		WillOverreach:       projectedAtReset > 100,
+		Confidence:          "ok",
+	}
+	if proj.WillOverreach && slopePerHour > 0 && currentPct < 100 {
+		m := int(math.Round((100 - currentPct) / slopePerHour * 60))
+		proj.MinutesTo100Pct = &m
+	}
+	return proj
 }

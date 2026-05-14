@@ -340,6 +340,129 @@ func TestProjectSevenDay_ColdStartAndFallback(t *testing.T) {
 	})
 }
 
+func TestProjectSevenDay_SlopeCases(t *testing.T) {
+	now := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+	resetsAt := now.Add(72 * time.Hour) // 3 days (72h) until reset
+	bucketA := resetsAt.UTC().Format(time.RFC3339Nano)
+	bucketB := now.Add(72*time.Hour + 7*24*time.Hour).UTC().Format(time.RFC3339Nano) // a later bucket
+
+	mkSamples := func(pcts []float64, startBack time.Duration, step time.Duration, bucketID string) []cache.SevenDaySample {
+		out := make([]cache.SevenDaySample, len(pcts))
+		for i, p := range pcts {
+			out[i] = cache.SevenDaySample{
+				At:       now.Add(-startBack + time.Duration(i)*step),
+				Pct:      p,
+				ResetsAt: bucketID,
+			}
+		}
+		return out
+	}
+
+	const epsilon = 0.01
+	cases := []struct {
+		name             string
+		samples          []cache.SevenDaySample
+		currentPct       float64
+		wantSlopeApprox  float64
+		wantOverreach    bool
+		wantMinutesTo100 bool
+	}{
+		{
+			name:            "front-loaded: flat 24h trailing → slope ≈ 0",
+			samples:         mkSamples([]float64{50.0, 50.0, 50.0, 50.0, 50.0}, 24*time.Hour, 6*time.Hour, bucketA),
+			currentPct:      50.0,
+			wantSlopeApprox: 0.0,
+			wantOverreach:   false,
+		},
+		{
+			name:             "back-loaded: 0→50 over 24h → slope ≈ 2.083%/h",
+			samples:          mkSamples([]float64{0.0, 12.5, 25.0, 37.5, 50.0}, 24*time.Hour, 6*time.Hour, bucketA),
+			currentPct:       50.0,
+			wantSlopeApprox:  50.0 / 24.0,
+			wantOverreach:    true,
+			wantMinutesTo100: true,
+		},
+		{
+			name:            "flat steady ramp: 0→1 over 24h → slope ≈ 0.0417%/h",
+			samples:         mkSamples([]float64{0.0, 0.25, 0.5, 0.75, 1.0}, 24*time.Hour, 6*time.Hour, bucketA),
+			currentPct:      25.0,
+			wantSlopeApprox: 1.0 / 24.0,
+			wantOverreach:   false,
+		},
+		{
+			name: "recent spike: flat at 30% for 20h, +20% in last 4h",
+			samples: []cache.SevenDaySample{
+				{At: now.Add(-24 * time.Hour), Pct: 30.0, ResetsAt: bucketA},
+				{At: now.Add(-18 * time.Hour), Pct: 30.0, ResetsAt: bucketA},
+				{At: now.Add(-12 * time.Hour), Pct: 30.0, ResetsAt: bucketA},
+				{At: now.Add(-6 * time.Hour), Pct: 30.0, ResetsAt: bucketA},
+				{At: now, Pct: 50.0, ResetsAt: bucketA},
+			},
+			currentPct:       50.0,
+			wantSlopeApprox:  20.0 / 24.0,
+			wantOverreach:    true,
+			wantMinutesTo100: true,
+		},
+		{
+			name:            "old spike: flat at 30% for 24h → slope ≈ 0",
+			samples:         mkSamples([]float64{30.0, 30.0, 30.0, 30.0, 30.0}, 24*time.Hour, 6*time.Hour, bucketA),
+			currentPct:      30.0,
+			wantSlopeApprox: 0.0,
+			wantOverreach:   false,
+		},
+		{
+			name: "sparse window: two samples 24h apart",
+			samples: []cache.SevenDaySample{
+				{At: now.Add(-24 * time.Hour), Pct: 10.0, ResetsAt: bucketA},
+				{At: now, Pct: 30.0, ResetsAt: bucketA},
+			},
+			currentPct:      30.0,
+			wantSlopeApprox: 20.0 / 24.0,
+			wantOverreach:   false, // 30 + 0.833*72 ≈ 90
+		},
+		{
+			name: "reset inside window: pre-reset samples filtered out",
+			samples: []cache.SevenDaySample{
+				{At: now.Add(-20 * time.Hour), Pct: 80.0, ResetsAt: bucketA},
+				{At: now.Add(-10 * time.Hour), Pct: 90.0, ResetsAt: bucketA},
+				{At: now.Add(-4 * time.Hour), Pct: 0.0, ResetsAt: bucketB},
+				{At: now, Pct: 5.0, ResetsAt: bucketB},
+			},
+			currentPct:      5.0,
+			wantSlopeApprox: 5.0 / 4.0, // 1.25%/h
+			wantOverreach:   false,      // 5 + 1.25*72 = 95
+		},
+		{
+			name: "negative-Δ noise: clamped to 0",
+			samples: []cache.SevenDaySample{
+				{At: now.Add(-24 * time.Hour), Pct: 30.0, ResetsAt: bucketA},
+				{At: now, Pct: 29.7, ResetsAt: bucketA},
+			},
+			currentPct:      29.7,
+			wantSlopeApprox: 0.0,
+			wantOverreach:   false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := projectSevenDay(tc.samples, tc.currentPct, resetsAt, now)
+			if math.Abs(got.SlopePctPerHour-tc.wantSlopeApprox) > epsilon {
+				t.Errorf("SlopePctPerHour = %v, want ≈ %v (±%v)", got.SlopePctPerHour, tc.wantSlopeApprox, epsilon)
+			}
+			if got.WillOverreach != tc.wantOverreach {
+				t.Errorf("WillOverreach = %v, want %v", got.WillOverreach, tc.wantOverreach)
+			}
+			if tc.wantMinutesTo100 && got.MinutesTo100Pct == nil {
+				t.Errorf("MinutesTo100Pct = nil, want non-nil")
+			}
+			if !tc.wantMinutesTo100 && got.MinutesTo100Pct != nil {
+				t.Errorf("MinutesTo100Pct = %d, want nil", *got.MinutesTo100Pct)
+			}
+		})
+	}
+}
+
 func TestRound2(t *testing.T) {
 	cases := []struct {
 		in   float64
