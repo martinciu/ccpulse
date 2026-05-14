@@ -52,7 +52,7 @@ func newDoctorCmd() *cobra.Command {
 			check(out, "pricing loads (v="+version+")", err == nil, err)
 
 			if cacheErr == nil && err == nil {
-				pvStats, pvErr := c.PricingVersionStats(hist)
+				pvStats, pvErr := c.PricingVersionStats(cmd.Context(), hist)
 				if pvErr != nil {
 					fmt.Fprintf(out, "  pricing versions: ERR %v\n", pvErr)
 				} else if len(pvStats) > 0 {

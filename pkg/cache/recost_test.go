@@ -215,7 +215,7 @@ func TestPricingVersionStats(t *testing.T) {
 		t.Fatalf("seed stale: %v", err)
 	}
 
-	got, err := c.PricingVersionStats(hist)
+	got, err := c.PricingVersionStats(context.Background(), hist)
 	if err != nil {
 		t.Fatalf("PricingVersionStats: %v", err)
 	}
@@ -242,7 +242,7 @@ func TestPricingVersionStats(t *testing.T) {
 func TestRecost_ContextCancellation(t *testing.T) {
 	c := mustOpenTempCache(t)
 	hist := twoVersionHistory(t)
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		seedRow(t, c, hist, parse.Message{
 			SessionID: "s" + string(rune('a'+i)), ProjectSlug: "p", Role: "assistant",
 			Model: "claude-opus-4-7", InputTokens: 1_000_000,
@@ -264,5 +264,79 @@ func TestRecost_ContextCancellation(t *testing.T) {
 	}
 	if stale != 10 {
 		t.Errorf("cancelled recost wrote rows: %d still stale (want 10 — rollback)", stale)
+	}
+}
+
+func TestAutoRecost_SkipsWhenFingerprintMatches(t *testing.T) {
+	c := mustOpenTempCache(t)
+	hist := twoVersionHistory(t)
+	m := parse.Message{
+		SessionID: "s1", ProjectSlug: "p", Role: "assistant",
+		Model: "claude-opus-4-7", InputTokens: 1_000_000,
+		Timestamp: time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC),
+	}
+	seedRow(t, c, hist, m)
+	// Stamp the row with a stale pricing_version so Recost would normally update it.
+	if _, err := c.DB().Exec(`UPDATE messages SET pricing_version = '1999-01-01' WHERE session_id = ?`, m.SessionID); err != nil {
+		t.Fatalf("seed stale version: %v", err)
+	}
+	// Pre-write the matching fingerprint into meta so AutoRecost short-circuits.
+	fp := "2026-05-09,2026-05-10" // matches twoVersionHistory versions joined
+	if _, err := c.DB().Exec(`INSERT OR REPLACE INTO meta(key,value) VALUES('last_recost_history_fingerprint',?)`, fp); err != nil {
+		t.Fatalf("seed fingerprint: %v", err)
+	}
+
+	c.AutoRecost(context.Background(), hist)
+
+	// Row must still be stale — the early-out prevented any rewrite.
+	var ver string
+	if err := c.DB().QueryRow(`SELECT pricing_version FROM messages WHERE session_id = ?`, m.SessionID).Scan(&ver); err != nil {
+		t.Fatalf("read row: %v", err)
+	}
+	if ver != "1999-01-01" {
+		t.Errorf("pricing_version = %q after AutoRecost with matching fingerprint, want 1999-01-01 (skipped)", ver)
+	}
+}
+
+func TestRecost_WritesFingerprintOnCommit(t *testing.T) {
+	c := mustOpenTempCache(t)
+	hist := twoVersionHistory(t)
+	seedRow(t, c, hist, parse.Message{
+		SessionID: "s1", ProjectSlug: "p", Role: "assistant",
+		Model: "claude-opus-4-7", InputTokens: 1_000_000,
+		Timestamp: time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC),
+	})
+
+	// Non-dry-run: fingerprint must be written.
+	if _, err := c.Recost(context.Background(), hist, cache.RecostOpts{}); err != nil {
+		t.Fatalf("recost: %v", err)
+	}
+	var got string
+	if err := c.DB().QueryRow(`SELECT value FROM meta WHERE key = 'last_recost_history_fingerprint'`).Scan(&got); err != nil {
+		t.Fatalf("read fingerprint: %v", err)
+	}
+	want := "2026-05-09,2026-05-10"
+	if got != want {
+		t.Errorf("fingerprint = %q, want %q", got, want)
+	}
+
+	// Dry-run on a second cache: fingerprint must NOT be written.
+	c2 := mustOpenTempCache(t)
+	seedRow(t, c2, hist, parse.Message{
+		SessionID: "s2", ProjectSlug: "p", Role: "assistant",
+		Model: "claude-opus-4-7", InputTokens: 1_000_000,
+		Timestamp: time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC),
+	})
+	// Force a stale stamp so dry-run has work to plan.
+	if _, err := c2.DB().Exec(`UPDATE messages SET pricing_version = '1999-01-01'`); err != nil {
+		t.Fatalf("seed stale: %v", err)
+	}
+	if _, err := c2.Recost(context.Background(), hist, cache.RecostOpts{DryRun: true}); err != nil {
+		t.Fatalf("recost dry-run: %v", err)
+	}
+	var dryGot string
+	err := c2.DB().QueryRow(`SELECT value FROM meta WHERE key = 'last_recost_history_fingerprint'`).Scan(&dryGot)
+	if err == nil {
+		t.Errorf("dry-run wrote fingerprint %q, want no row", dryGot)
 	}
 }

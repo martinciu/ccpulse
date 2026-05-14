@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/martinciu/ccpulse/pkg/parse"
 	"github.com/martinciu/ccpulse/pkg/pricing"
 )
+
+const metaKeyRecostFingerprint = "last_recost_history_fingerprint"
 
 // RecostStats summarizes a Recost run.
 type RecostStats struct {
@@ -45,7 +48,7 @@ type recostUpdate struct {
 // On context cancellation the transaction is rolled back.
 func (c *Cache) Recost(ctx context.Context, hist pricing.History, opts RecostOpts) (RecostStats, error) {
 	start := time.Now()
-	stats := RecostStats{ByVersion: map[string]int{}}
+	stats := RecostStats{ByVersion: make(map[string]int, 4)}
 
 	if err := ctx.Err(); err != nil {
 		return stats, fmt.Errorf("recost: ctx: %w", err)
@@ -80,7 +83,7 @@ FROM messages`)
 	}
 	defer updateStmt.Close()
 
-	var batch []recostUpdate
+	batch := make([]recostUpdate, 0, recostBatchSize)
 
 	for rows.Next() {
 		var (
@@ -102,7 +105,7 @@ FROM messages`)
 		}
 		ts, err := time.Parse(tsFormat, tsStr)
 		if err != nil {
-			return stats, fmt.Errorf("recost: parse ts on row id=%d: %w", id, err)
+			return stats, fmt.Errorf("recost: parse ts on row id=%d: invalid format", id)
 		}
 		m := parse.Message{
 			Timestamp:          ts,
@@ -157,6 +160,12 @@ FROM messages`)
 	}
 
 	if !opts.DryRun {
+		fp := strings.Join(hist.Versions(), ",")
+		if _, err := tx.ExecContext(ctx,
+			`INSERT OR REPLACE INTO meta(key,value) VALUES(?,?)`,
+			metaKeyRecostFingerprint, fp); err != nil {
+			return stats, fmt.Errorf("recost: write fingerprint: %w", err)
+		}
 		if err := tx.Commit(); err != nil {
 			return stats, fmt.Errorf("recost: commit: %w", err)
 		}
@@ -169,12 +178,27 @@ FROM messages`)
 // AutoRecost runs Recost with a bounded timeout and emits a single slog line
 // when rows were updated. Intended for command entrypoints that should never
 // block the UI on a malformed DB.
+//
+// It performs a fingerprint early-out: if the meta table already holds a
+// fingerprint matching the current hist, Recost is skipped entirely (silent).
 func (c *Cache) AutoRecost(ctx context.Context, hist pricing.History) {
+	fp := strings.Join(hist.Versions(), ",")
+	var stored string
+	_ = c.db.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = ?`, metaKeyRecostFingerprint).Scan(&stored)
+	if stored == fp {
+		return
+	}
+
 	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	stats, err := c.Recost(cctx, hist, RecostOpts{})
 	if err != nil {
-		slog.Warn("recost", "err", err.Error(), "elapsed", stats.Elapsed)
+		slog.Warn("recost",
+			"err", err.Error(),
+			"scanned", stats.Scanned,
+			"updated", stats.Updated,
+			"elapsed", stats.Elapsed,
+		)
 		return
 	}
 	if stats.Updated > 0 {
@@ -199,8 +223,8 @@ type PricingVersionStat struct {
 // PricingVersionStats returns one entry per distinct pricing_version found in
 // messages, plus a per-version count of rows that disagree with
 // hist.TableAt(ts).Version. Entries are sorted by Version ascending.
-func (c *Cache) PricingVersionStats(hist pricing.History) ([]PricingVersionStat, error) {
-	rows, err := c.db.Query(`SELECT pricing_version, COUNT(*) FROM messages GROUP BY pricing_version`)
+func (c *Cache) PricingVersionStats(ctx context.Context, hist pricing.History) ([]PricingVersionStat, error) {
+	rows, err := c.db.QueryContext(ctx, `SELECT pricing_version, ts FROM messages`)
 	if err != nil {
 		return nil, fmt.Errorf("pricing version stats: query: %w", err)
 	}
@@ -208,30 +232,13 @@ func (c *Cache) PricingVersionStats(hist pricing.History) ([]PricingVersionStat,
 
 	current := hist.Latest().Version
 	totals := map[string]int{}
+	staleByVer := map[string]int{}
 	for rows.Next() {
-		var ver string
-		var n int
-		if err := rows.Scan(&ver, &n); err != nil {
+		var ver, tsStr string
+		if err := rows.Scan(&ver, &tsStr); err != nil {
 			return nil, fmt.Errorf("pricing version stats: scan: %w", err)
 		}
-		totals[ver] = n
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("pricing version stats: iterate: %w", err)
-	}
-
-	// Per-row stale check: compare stamped version to resolved version.
-	staleRows, err := c.db.Query(`SELECT pricing_version, ts FROM messages`)
-	if err != nil {
-		return nil, fmt.Errorf("pricing version stats: stale query: %w", err)
-	}
-	defer staleRows.Close()
-	staleByVer := map[string]int{}
-	for staleRows.Next() {
-		var ver, tsStr string
-		if err := staleRows.Scan(&ver, &tsStr); err != nil {
-			return nil, fmt.Errorf("pricing version stats: stale scan: %w", err)
-		}
+		totals[ver]++
 		ts, err := time.Parse(tsFormat, tsStr)
 		if err != nil {
 			continue
@@ -240,8 +247,8 @@ func (c *Cache) PricingVersionStats(hist pricing.History) ([]PricingVersionStat,
 			staleByVer[ver]++
 		}
 	}
-	if err := staleRows.Err(); err != nil {
-		return nil, fmt.Errorf("pricing version stats: stale iterate: %w", err)
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("pricing version stats: iterate: %w", err)
 	}
 
 	out := make([]PricingVersionStat, 0, len(totals))
