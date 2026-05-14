@@ -2604,3 +2604,77 @@ func TestView_RemainingModeShowsYTicks(t *testing.T) {
 		t.Error("View in remaining mode should contain 0% Y-tick")
 	}
 }
+
+// TestFullUnitCycle_TokensCostRemaining verifies that three presses of the
+// 'u' key cycle through tokens → cost → remaining → tokens, and that each
+// mode produces a non-empty view with the expected mode-specific marker.
+func TestFullUnitCycle_TokensCostRemaining(t *testing.T) {
+	dir := t.TempDir()
+	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	defer c.Close()
+
+	tab, _ := pricing.Load()
+	now := time.Now().UTC().Truncate(time.Minute)
+	msgs := []parse.Message{{
+		SessionID: "s1", ProjectSlug: "p", Model: "claude-sonnet-4-6",
+		Timestamp: now.Add(-30 * time.Minute), InputTokens: 5000,
+	}}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+	u := anthro.Usage{
+		FiveHour: &anthro.Bucket{Utilization: 40.0, ResetsAt: now.Add(time.Hour)},
+		SevenDay: &anthro.Bucket{Utilization: 20.0, ResetsAt: now.Add(24 * time.Hour)},
+	}
+	if err := c.RecordUsageSample(u, now); err != nil {
+		t.Fatalf("RecordUsageSample: %v", err)
+	}
+
+	m := New(Deps{Cache: c})
+	m.w, m.h = 120, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	m.refreshChart()
+
+	pressU := func() {
+		model, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("u")})
+		m = model.(Model)
+		// Abort any in-flight spring so View() shows the settled new state.
+		m.springActive = false
+		m.springPhase = springIdle
+		m.refreshChart()
+	}
+
+	// Press 1: tokens (0) → cost (1)
+	pressU()
+	if m.unitIdx != int(chartUnitCost) {
+		t.Fatalf("after 1st press: want unitIdx=%d (cost), got %d", int(chartUnitCost), m.unitIdx)
+	}
+	view1 := m.View()
+	if !strings.Contains(view1, "$") {
+		t.Error("cost mode view should contain '$'")
+	}
+
+	// Press 2: cost (1) → remaining (2)
+	pressU()
+	if m.unitIdx != int(chartUnitRemaining) {
+		t.Fatalf("after 2nd press: want unitIdx=%d (remaining), got %d", int(chartUnitRemaining), m.unitIdx)
+	}
+	view2 := m.View()
+	if !strings.Contains(view2, "100%") {
+		t.Error("remaining mode view should contain '100%'")
+	}
+
+	// Press 3: remaining (2) → tokens (0)
+	pressU()
+	if m.unitIdx != int(chartUnitTokens) {
+		t.Fatalf("after 3rd press: want unitIdx=%d (tokens), got %d", int(chartUnitTokens), m.unitIdx)
+	}
+	view3 := m.View()
+	if view3 == "" {
+		t.Error("tokens mode view should not be empty")
+	}
+}
