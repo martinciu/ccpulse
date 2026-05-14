@@ -61,6 +61,7 @@ type springPhase int
 const (
 	springIdle      springPhase = iota
 	springShrinking             // Phase 1: bars fall to zero (Projectile, ease-in)
+	springHolding               // Hold: bars rest at zero so the eye registers the beat (#163)
 	springGrowing               // Phase 2: bars grow from zero to target (Spring with Vi, ease-out)
 )
 
@@ -249,15 +250,36 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				maxR = max(maxR, pos.X)
 			}
 			if maxR < phaseTransitionThreshold {
-				// Phase handoff: snap ratios to zero, seed Phase 2
-				// velocities, switch to springGrowing.
+				// Phase 1 → Hold handoff: snap ratios to zero, render the
+				// all-zero frame once, schedule a one-shot tick at
+				// phaseHoldDuration. Phase 2 state (springTargetRatios,
+				// springVelocities) is seeded in the springHolding case
+				// when the hold tick arrives — not here (#163).
 				for i := range m.springRatios {
 					m.springRatios[i] = 0
-					m.springTargetRatios[i] = m.springFinalTargets[i]
-					m.springVelocities[i] = phase2InitialVelocityV0 * m.springFinalTargets[i]
 				}
-				m.springPhase = springGrowing
+				m.springPhase = springHolding
+				m.renderSpringFrame()
+				return m, tea.Tick(phaseHoldDuration, func(time.Time) tea.Msg {
+					return springTickMsg{}
+				})
 			}
+			m.renderSpringFrame()
+			return m, tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
+				return springTickMsg{}
+			})
+
+		case springHolding:
+			// Hold tick arrived: seed Phase 2 targets and initial
+			// velocities, switch to springGrowing, resume FPS ticking.
+			// Ratios remain at zero (already snapped in the Phase 1
+			// threshold-cross). The first springGrowing tick will move
+			// them off zero (#163).
+			for i := range m.springRatios {
+				m.springTargetRatios[i] = m.springFinalTargets[i]
+				m.springVelocities[i] = phase2InitialVelocityV0 * m.springFinalTargets[i]
+			}
+			m.springPhase = springGrowing
 			m.renderSpringFrame()
 			return m, tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
 				return springTickMsg{}
@@ -530,6 +552,10 @@ const (
 	phase2Damping            = springDamping   // 1.0
 	phase2InitialVelocityV0  = 5.0
 	phaseTransitionThreshold = 0.01
+	// phaseHoldDuration is the all-zero pause between Phase 1 (fall) and
+	// Phase 2 (grow) in the 'u' unit-toggle animation. Long enough to
+	// read the unit change, short enough to feel snappy (#163).
+	phaseHoldDuration = 150 * time.Millisecond
 )
 
 // beginUnitAnimation primes the two-phase unit-toggle animation. It
