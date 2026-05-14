@@ -105,13 +105,11 @@ func TestStatusJSONWithCachedUsage(t *testing.T) {
 }
 
 func TestStatusJSONWithoutCredential(t *testing.T) {
-	if runtime.GOOS == "darwin" {
-		t.Skip("Keychain may have a real credential on dev machines; skipping no-cred test on darwin")
-	}
 	cacheDir := t.TempDir()
 	credDir := t.TempDir() // no .credentials.json inside
 	t.Setenv("CCPULSE_CACHE_DIR", cacheDir)
 	t.Setenv("HOME", credDir)
+	t.Setenv("CCPULSE_DISABLE_KEYCHAIN", "1")
 
 	cmd := newStatusCmd()
 	cmd.SetArgs([]string{"--json"})
@@ -123,6 +121,9 @@ func TestStatusJSONWithoutCredential(t *testing.T) {
 	out := buf.String()
 	if strings.Contains(out, `"quota":`) {
 		t.Errorf("quota should be omitted when no credential: %s", out)
+	}
+	if strings.Contains(out, `"quota_updated_at":`) {
+		t.Errorf("quota_updated_at should be omitted when no credential: %s", out)
 	}
 	if !strings.Contains(out, `"ceiling_label":"unknown"`) {
 		t.Errorf("expected ceiling_label=unknown without cred: %s", out)
