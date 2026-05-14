@@ -310,21 +310,6 @@ func formatUnitValue(v float64, unit chartUnit) string {
 	}
 }
 
-// heatColor returns the adaptive-palette token on a safe → watch → danger
-// ramp based on ratio (0.0–1.0) of a bucket's tokens relative to the peak
-// bucket. Return type is lipgloss.TerminalColor (the interface satisfied
-// by lipgloss.AdaptiveColor) so callers can assign without a type assertion.
-func heatColor(ratio float64) lipgloss.TerminalColor {
-	switch {
-	case ratio >= 0.66:
-		return colorDanger
-	case ratio >= 0.33:
-		return colorWatch
-	default:
-		return colorSafe
-	}
-}
-
 // buildChart renders the viewport content from a parallel
 // (values, starts) pair at the given zoom: bars in the top chartH-1
 // rows (or all chartH if chartH < 6), plus an X-axis tick label row
@@ -338,11 +323,11 @@ func heatColor(ratio float64) lipgloss.TerminalColor {
 // state, or 1.0 during ratio-space animation (when values are
 // already normalised to [0, 1]).
 //
-// unit is read by the Y-label overlay path in Model.View() — not
-// used directly here; passed through for symmetry with overlayYLabel.
+// unit selects the bar color (Blue for chartUnitTokens, Amber for
+// chartUnitCost). It is also read by the Y-label overlay path in
+// Model.View() — passed through here for that reason too.
 func buildChart(values []float64, starts []time.Time, peak float64,
 	chartW, chartH int, now time.Time, zoom ZoomLevel, unit chartUnit, order dateOrder) string {
-	_ = unit // unit is consumed by overlayYLabel in Model.View(), not by buildChart itself
 	start := time.Now()
 	if chartH < 1 {
 		chartH = 1
@@ -354,18 +339,21 @@ func buildChart(values []float64, starts []time.Time, peak float64,
 		barsH = chartH - 1
 	}
 
+	// unit-keyed bar color — see colorChartTokens / colorChartCost in style.go.
+	// Bucket height is encoded by the bar's height; color encodes which axis
+	// is plotted (tokens vs cost), independent of the visible peak. issue #162.
+	var barColor lipgloss.TerminalColor = colorChartTokens
+	if unit == chartUnitCost {
+		barColor = colorChartCost
+	}
+
 	bars := make([]barchart.BarData, len(values))
 	for i, v := range values {
-		ratio := float64(0)
-		if peak > 0 {
-			ratio = v / peak
-		}
-		c := heatColor(ratio)
 		bars[i] = barchart.BarData{
 			Values: []barchart.BarValue{
 				{
 					Value: v,
-					Style: lipgloss.NewStyle().Foreground(c).Background(c),
+					Style: lipgloss.NewStyle().Foreground(barColor).Background(barColor),
 				},
 			},
 		}

@@ -389,33 +389,14 @@ func TestBuildChart_NoBaselineStrip(t *testing.T) {
 	}
 }
 
-func TestHeatColor(t *testing.T) {
-	tests := []struct {
-		ratio float64
-		want  lipgloss.AdaptiveColor
-	}{
-		{0.0, colorSafe},
-		{0.32, colorSafe},
-		{0.33, colorWatch},
-		{0.65, colorWatch},
-		{0.66, colorDanger},
-		{1.0, colorDanger},
-	}
-	for _, tt := range tests {
-		got := heatColor(tt.ratio)
-		if got != tt.want {
-			t.Errorf("heatColor(%v) = %v, want %v", tt.ratio, got, tt.want)
-		}
-	}
-}
-
 // TestBuildChart_BarColorByUnit pins issue #162: bars render in the
 // unit-keyed AdaptiveColor (Blue for tokens, Amber for cost), independent
 // of bucket height. We probe by rendering the chart with each unit and
 // asserting the unit's Light hex appears in the ANSI-stripped style escape,
 // and the OTHER unit's hex does not.
 func TestBuildChart_BarColorByUnit(t *testing.T) {
-	t.Setenv("COLORTERM", "truecolor")
+	withForcedColor(t)
+	withForcedDarkBackground(t, false) // probe Light stops: #1565c0 and #ff8f00
 	values := []float64{1, 2, 3, 4, 5}
 	starts := make([]time.Time, len(values))
 	now := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
