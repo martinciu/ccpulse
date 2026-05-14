@@ -4,6 +4,8 @@ import (
 	"math"
 	"testing"
 	"time"
+
+	"github.com/martinciu/ccpulse/pkg/cache"
 )
 
 // projectBucketCase exercises a single (utilization, elapsed) pair.
@@ -299,6 +301,43 @@ func TestProjectBucket(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestProjectSevenDay_ColdStartAndFallback(t *testing.T) {
+	now := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+	resetsAt := now.Add(72 * time.Hour) // 3 days until reset
+	bucketResetID := resetsAt.UTC().Format(time.RFC3339Nano)
+
+	t.Run("zero samples falls back to linear", func(t *testing.T) {
+		linear := projectBucket(20.0, resetsAt, now, sevenDayWindow, sevenDayLowConfidenceCutoff)
+		got := projectSevenDay(nil, 20.0, resetsAt, now)
+		if got != linear {
+			t.Errorf("got %+v, want linear fallback %+v", got, linear)
+		}
+	})
+
+	t.Run("single sample falls back to linear", func(t *testing.T) {
+		samples := []cache.SevenDaySample{
+			{At: now.Add(-2 * time.Hour), Pct: 18.0, ResetsAt: bucketResetID},
+		}
+		linear := projectBucket(20.0, resetsAt, now, sevenDayWindow, sevenDayLowConfidenceCutoff)
+		got := projectSevenDay(samples, 20.0, resetsAt, now)
+		if got != linear {
+			t.Errorf("got %+v, want linear fallback %+v", got, linear)
+		}
+	})
+
+	t.Run("post-reset span under 4h falls back to linear", func(t *testing.T) {
+		samples := []cache.SevenDaySample{
+			{At: now.Add(-2 * time.Hour), Pct: 18.0, ResetsAt: bucketResetID},
+			{At: now.Add(-30 * time.Minute), Pct: 19.5, ResetsAt: bucketResetID},
+		}
+		linear := projectBucket(20.0, resetsAt, now, sevenDayWindow, sevenDayLowConfidenceCutoff)
+		got := projectSevenDay(samples, 20.0, resetsAt, now)
+		if got != linear {
+			t.Errorf("got %+v, want linear fallback %+v", got, linear)
+		}
+	})
 }
 
 func TestRound2(t *testing.T) {

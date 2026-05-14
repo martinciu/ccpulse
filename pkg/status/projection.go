@@ -3,6 +3,8 @@ package status
 import (
 	"math"
 	"time"
+
+	"github.com/martinciu/ccpulse/pkg/cache"
 )
 
 const (
@@ -67,4 +69,46 @@ func confidenceFor(elapsed, lowCutoff time.Duration) string {
 
 func round2(f float64) float64 {
 	return math.Round(f*100) / 100
+}
+
+const (
+	sevenDayTrailingWindow = 24 * time.Hour
+	minSamplesForSlope     = 2
+	minSpanForSlope        = 4 * time.Hour
+)
+
+func projectSevenDay(
+	samples []cache.SevenDaySample,
+	currentPct float64,
+	resetsAt, now time.Time,
+) Projection {
+	linear := projectBucket(currentPct, resetsAt, now, sevenDayWindow, sevenDayLowConfidenceCutoff)
+
+	if len(samples) < minSamplesForSlope {
+		return linear
+	}
+
+	currentBucketID := samples[len(samples)-1].ResetsAt
+	var filtered []cache.SevenDaySample
+	for _, s := range samples {
+		if s.ResetsAt != currentBucketID {
+			continue
+		}
+		if math.IsNaN(s.Pct) || math.IsInf(s.Pct, 0) {
+			continue
+		}
+		filtered = append(filtered, s)
+	}
+
+	if len(filtered) < minSamplesForSlope {
+		return linear
+	}
+
+	span := filtered[len(filtered)-1].At.Sub(filtered[0].At)
+	if span < minSpanForSlope {
+		return linear
+	}
+
+	// TODO(task-3): slope arithmetic lands here.
+	return linear
 }
