@@ -1678,6 +1678,43 @@ func seedScrollTestModel(t *testing.T, count int) (*Model, func()) {
 	return &m, func() { c.Close() }
 }
 
+// TestRemainingMode_CanvasWidthMatchesBar verifies the new canvas
+// width formula matches what bar mode would produce at the same zoom
+// for the same [from, to) window. This is the time-range parity the
+// u-toggle anchor preservation relies on.
+func TestRemainingMode_CanvasWidthMatchesBar(t *testing.T) {
+	for zoomIdx, zoom := range ZoomLevels {
+		t.Run(zoom.Label, func(t *testing.T) {
+			m, cleanup := seedScrollTestModel(t, 200)
+			defer cleanup()
+			m.zoomIdx = zoomIdx
+
+			m.unitIdx = int(chartUnitTokens)
+			m.refreshChart()
+			barCanvasW := m.lastCanvasW
+			barFrom, barTo := m.lastChartFrom, m.lastChartTo
+
+			m.unitIdx = int(chartUnitRemaining)
+			m.refreshChart()
+			remCanvasW := m.lastCanvasW
+			remFrom, remTo := m.lastChartFrom, m.lastChartTo
+
+			if !barFrom.Equal(remFrom) || !barTo.Equal(remTo) {
+				t.Errorf("[%s] from/to differ: bar=[%v,%v) rem=[%v,%v)",
+					zoom.Label, barFrom, barTo, remFrom, remTo)
+			}
+			want := barCanvasW
+			if want < m.chartWidth() {
+				want = m.chartWidth()
+			}
+			if remCanvasW != want {
+				t.Errorf("[%s] canvasW differ: bar=%d rem=%d (chartWidth=%d, want=%d)",
+					zoom.Label, barCanvasW, remCanvasW, m.chartWidth(), want)
+			}
+		})
+	}
+}
+
 // TestRefreshChart_PreservesAnchorAcrossRefresh verifies the wall-clock
 // anchor stays put across a no-op refresh (same zoom, same unit, no new
 // data). Locks in the new time-based anchor primitive — a regression

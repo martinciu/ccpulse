@@ -1024,7 +1024,15 @@ func (m *Model) refreshChart() {
 	chartH := m.chartHeight()
 	var canvasW int
 	if unit == chartUnitRemaining {
-		canvasW = m.chartWidth()
+		// Mirror bar mode's canvas-width formula so 'z' zoom and 'u'
+		// unit-toggle preserve the same time-range under the viewport's
+		// left edge in both modes. Floor at chartWidth() so a short
+		// usage_samples history still spans the visible area instead
+		// of rendering in a narrow slice on the left.
+		canvasW = zoom.CanvasWidth(bucketCountInRange(from, to, zoom.Duration))
+		if canvasW < m.chartWidth() {
+			canvasW = m.chartWidth()
+		}
 		m.viewport.SetContent(buildLineChart(m.lastPts5h, m.lastPts7d, from, to, canvasW, chartH, time.Now(), zoom, m.dateOrder))
 	} else {
 		canvasW = zoom.CanvasWidth(len(values))
