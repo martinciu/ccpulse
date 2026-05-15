@@ -2364,6 +2364,23 @@ func chartBodyLines(view string) []string {
 	return t
 }
 
+// quotaBarLines returns the rendered bars-row line(s) from a View.
+// The 5h and 7d quota bars are joined horizontally inside the bordered
+// header box, so a single line normally contains both sides — that
+// line is what we return. Strips the leading box-border char ('│') and
+// padding whitespace before matching the "5h"/"7d" label prefix so the
+// lipgloss-rendered border doesn't defeat HasPrefix.
+func quotaBarLines(view string) []string {
+	var rows []string
+	for line := range strings.SplitSeq(view, "\n") {
+		trimmed := strings.TrimLeft(line, "│ \t")
+		if strings.HasPrefix(trimmed, "5h") || strings.HasPrefix(trimmed, "7d") {
+			rows = append(rows, line)
+		}
+	}
+	return rows
+}
+
 func TestRefreshMsg_AbortsBothPhases(t *testing.T) {
 	// RefreshMsg arriving in either phase must hard-cut the animation:
 	// springActive=false and springPhase=springIdle. Driven by the
@@ -3683,5 +3700,70 @@ func TestBeginIntroAnimation_SeedsQuotaTargets(t *testing.T) {
 					m.quotaVel5h, m.quotaVel7d)
 			}
 		})
+	}
+}
+
+func TestIntro_QuotaBars_HoldFrameRendersZeroFill(t *testing.T) {
+	// During springHolding both quota bar rows must render with no
+	// filled-block characters — quotaIntroRatio returns 0 for both
+	// sides, so bubbles/progress emits only the empty char ('░').
+	m := seedIntroModel(t, false)
+	updated, cmd := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatalf("WindowSizeMsg returned nil cmd; intro did not arm")
+	}
+	if m.springPhase != springHolding {
+		t.Fatalf("springPhase = %d after WindowSizeMsg; want springHolding (%d)",
+			m.springPhase, springHolding)
+	}
+
+	rows := quotaBarLines(m.View())
+	if len(rows) == 0 {
+		t.Fatalf("no quota bar rows in rendered view")
+	}
+	for _, row := range rows {
+		if strings.ContainsRune(row, '█') {
+			t.Errorf("quota bar row contains '█' during hold frame: %q", row)
+		}
+	}
+}
+
+func TestIntro_QuotaBars_HoldTickSeedsVelocities(t *testing.T) {
+	// The hold tick (the springHolding case of springTickMsg) must
+	// seed quotaVel5h/7d = phase2InitialVelocityV0 * quotaTarget5h/7d,
+	// matching the bucket springs' V_i = V0 * target_i contract.
+	m := seedIntroModel(t, false)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+
+	// Override targets to known non-zero values: the seedIntroModel
+	// fixture has no Anthropic quota loaded so window.Percent is 0,
+	// which would let V0*target = 0 trivially satisfy the assertion.
+	// Setting explicit non-zero targets here verifies the springHolding
+	// arm actually computes V0*target rather than no-op'ing.
+	m.quotaTarget5h = 0.8
+	m.quotaTarget7d = 0.25
+	t5h := m.quotaTarget5h
+	t7d := m.quotaTarget7d
+
+	// Deliver the hold tick. The handler switches springPhase to
+	// springGrowing AND seeds Phase 2 state (target ratios + velocities).
+	updated, _ = m.Update(springTickMsg{})
+	m = updated.(Model)
+
+	if m.springPhase != springGrowing {
+		t.Fatalf("springPhase = %d after hold tick; want springGrowing (%d)",
+			m.springPhase, springGrowing)
+	}
+	wantVel5h := phase2InitialVelocityV0 * t5h
+	wantVel7d := phase2InitialVelocityV0 * t7d
+	if m.quotaVel5h != wantVel5h {
+		t.Errorf("quotaVel5h = %v; want %v (V0 * target = %v * %v)",
+			m.quotaVel5h, wantVel5h, phase2InitialVelocityV0, t5h)
+	}
+	if m.quotaVel7d != wantVel7d {
+		t.Errorf("quotaVel7d = %v; want %v (V0 * target = %v * %v)",
+			m.quotaVel7d, wantVel7d, phase2InitialVelocityV0, t7d)
 	}
 }

@@ -389,6 +389,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.springTargetRatios[i] = m.springFinalTargets[i]
 				m.springVelocities[i] = phase2InitialVelocityV0 * m.springFinalTargets[i]
 			}
+			// Quota-bar Phase 2 seeding (#192). quotaTarget5h/7d were
+			// snapshotted at arm in beginIntroAnimation; mirror the
+			// bucket V_i = V0 * target_i contract.
+			m.quotaVel5h = phase2InitialVelocityV0 * m.quotaTarget5h
+			m.quotaVel7d = phase2InitialVelocityV0 * m.quotaTarget7d
 			m.springPhase = springGrowing
 			m.renderSpringFrame()
 			return m, tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
