@@ -479,10 +479,7 @@ func buildLineChart(pts5h, pts7d []cache.UtilizationPoint,
 		// [from, to) continuously but the label cadence comes from the zoom
 		// duration so it matches bar-chart mode.
 		dur := zoom.Duration
-		n := int(to.Sub(from)/dur) + 1
-		if n < 1 {
-			n = 1
-		}
+		n := max(int(to.Sub(from)/dur)+1, 1)
 		labelStarts := make([]time.Time, 0, n)
 		for t := from; t.Before(to); t = t.Add(dur) {
 			labelStarts = append(labelStarts, t)
