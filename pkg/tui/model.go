@@ -196,6 +196,21 @@ type Model struct {
 	oldIsLine bool
 	newIsLine bool
 
+	// introPending is true until the first non-empty refreshChart triggers
+	// the open-path slide-in animation (or is cleared by reduce_motion).
+	// One-shot: never re-armed after the first non-empty refresh. See #188.
+	introPending bool
+
+	// springIntro is true while the open-path intro animation is in flight
+	// (springHolding → springGrowing seeded by beginIntroAnimation). Used
+	// to suppress RefreshMsg's refreshChart so the initial-refresh race
+	// from main.go's startup-time p.Send(RefreshMsg{}) doesn't hard-cut
+	// the intro via refreshChart's spring-abort logic. Cleared on settle
+	// in the springGrowing handler and in refreshChart's defensive abort
+	// block. WindowSizeMsg still hard-cuts (terminal resize is an
+	// explicit user action). See #188.
+	springIntro bool
+
 	window         status.Window
 	quota          *anthro.Usage
 	quotaSource    string
@@ -237,6 +252,7 @@ func New(d Deps) Model {
 	m.progress7d = newProgressBar(40)
 	m.viewport = viewport.New(80, 20)
 	m.viewport.SetHorizontalStep(horizontalScrollStep)
+	m.introPending = !d.ReduceMotion
 	return m
 }
 
@@ -254,6 +270,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.progress = newProgressBar(m.progressWidth())
 		m.progress7d = newProgressBar(m.progressWidth())
 		m.refreshChart()
+		return m, m.maybeArmIntro()
 	case IndexProgressMsg:
 		wasActive := m.indexLastActive
 		m.indexActive = msg.Active
@@ -365,6 +382,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if maxGap < phaseTransitionThreshold {
 				copy(m.springRatios, m.springTargetRatios)
 				m.springActive = false
+				m.springIntro = false
 				m.springPhase = springIdle
 				m.refreshChart()
 				return m, nil
@@ -383,10 +401,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case RefreshMsg:
 		start := time.Now()
 		m.recomputeWindow()
-		m.refreshChart()
+		// Suppress refreshChart while the intro is in flight so the
+		// startup-time RefreshMsg race (cmd/ccpulse/main.go:329 +
+		// watcher events) doesn't hard-cut the intro via refreshChart's
+		// spring-abort block. The intro's terminal springGrowing tick
+		// fires its own refreshChart after settle (~600 ms), so any
+		// data updates that arrived during the intro are picked up
+		// there.
+		if !m.springIntro {
+			m.refreshChart()
+		}
 		slog.Debug("tui.refreshMsg",
 			"dur_ms", time.Since(start).Milliseconds(),
 			"zoom", ZoomLevels[m.zoomIdx].Label)
+		return m, m.maybeArmIntro()
 	case tea.KeyMsg:
 		switch {
 		case msg.String() == "ctrl+c":
@@ -674,6 +702,35 @@ const (
 //
 // Snapshots happen BEFORE refreshChart so the OLD m.peak / m.lastValues
 // survive the refresh that overwrites them.
+
+// seedPhase2Springs sizes the spring state arrays to len(targets), zeros
+// springRatios / springVelocities / springTargetRatios, copies targets
+// into springFinalTargets (the Phase 2 destination), and builds
+// springs[i] with phase2Frequency / phase2Damping.
+//
+// Used by both beginIntroAnimation (intro = Phase 2 only, preceded by
+// hold) and beginUnitAnimation (Phase 1 fall + Phase 2 grow); the
+// latter overwrites springRatios with the OLD heights and seeds
+// springProjectiles after this call. Sharing this helper enforces the
+// "same Phase 2 spring config" requirement from #188 by construction.
+//
+// springTargetRatios is left zeroed; the springHolding tick is what
+// seeds it from springFinalTargets at the Phase 2 entry — same
+// contract as the unit-toggle path.
+func (m *Model) seedPhase2Springs(targets []float64) {
+	n := len(targets)
+	m.springs = make([]harmonica.Spring, n)
+	m.springProjectiles = make([]harmonica.Projectile, n)
+	m.springRatios = make([]float64, n)
+	m.springVelocities = make([]float64, n)
+	m.springTargetRatios = make([]float64, n)
+	m.springFinalTargets = make([]float64, n)
+	for i, t := range targets {
+		m.springFinalTargets[i] = t
+		m.springs[i] = harmonica.NewSpring(harmonica.FPS(springFPS), phase2Frequency, phase2Damping)
+	}
+}
+
 func (m *Model) beginUnitAnimation() {
 	if m.deps.Cache == nil {
 		return
@@ -706,47 +763,36 @@ func (m *Model) beginUnitAnimation() {
 	// Size spring arrays to max(old, new) so cross-mode transitions
 	// (bar↔line) don't bail out in renderSpringFrame's bar branch when
 	// the user's scroll position is past the smaller side's length.
-	// Concretely: tokens→remaining has 700 old bars vs ~10 line points;
-	// without the max() the bar branch would compute start=582,
-	// end=min(582+nv, 10)=10, start>=end, return, and leave the
-	// refreshChart-set remaining-line steady state visible during all of
-	// Phase 1 (the bar collapse the user expects to see).
 	n := len(newValues)
 	if len(m.oldValues) > n {
 		n = len(m.oldValues)
 	}
 
-	m.springs = make([]harmonica.Spring, n)
-	m.springProjectiles = make([]harmonica.Projectile, n)
-	m.springRatios = make([]float64, n)
-	m.springVelocities = make([]float64, n)
-	m.springTargetRatios = make([]float64, n) // zeros — Phase 1 target
-	m.springFinalTargets = make([]float64, n)
+	// Phase 2 targets sized to n; entries past len(newValues) stay 0
+	// (invisible bars on the long side of a bar↔line cross-transition).
+	targets := make([]float64, n)
+	for i := range n {
+		if m.newIsLine {
+			targets[i] = 1.0
+		} else if newPeak > 0 && i < len(newValues) {
+			targets[i] = newValues[i] / newPeak
+		}
+	}
+	m.seedPhase2Springs(targets)
 
+	// Layer Phase 1 setup on top of the Phase-2-seeded arrays:
+	//   - Overwrite springRatios[i] with the OLD heights (Phase 1 start).
+	//   - Seed springProjectiles[i] with per-bar tuned gravity so bar i
+	//     lands at zero at t = phase1Duration regardless of its starting
+	//     ratio. h = 0.5·g·t² ⇒ g = 2h/t².
 	t1 := phase1Duration.Seconds()
 	for i := range n {
-		// Phase 1 exit ratio: line mode collapses as a uniform shape fraction
-		// (1.0 = full, 0.0 = flat); bar mode uses the per-bar height ratio.
-		// Index-bounded against m.oldValues so n > len(oldValues) leaves
-		// the trailing entries at 0 (invisible bars during shrink).
 		if m.oldIsLine {
 			m.springRatios[i] = 1.0
 		} else if m.oldPeak > 0 && i < len(m.oldValues) {
 			m.springRatios[i] = m.oldValues[i] / m.oldPeak
 		}
 
-		// Phase 2 enter target: line mode springs to shape-fraction 1.0
-		// (the interpPt formula then maps 1→real shape); bar mode uses the
-		// normalised new value. Same index-bound for newValues.
-		if m.newIsLine {
-			m.springFinalTargets[i] = 1.0
-		} else if newPeak > 0 && i < len(newValues) {
-			m.springFinalTargets[i] = newValues[i] / newPeak
-		}
-
-		// Per-bar tuned gravity (quadratic ease-in) so bar/line i hits 0 at
-		// t = phase1Duration. h = 0.5·g·t² ⇒ g = 2h/t². Direction is always
-		// toward zero (exit target for both bar and line is 0 in ratio-space).
 		g := 2 * m.springRatios[i] / (t1 * t1)
 		// Stored by value; Phase 1 tick MUST index (m.springProjectiles[i].Update()),
 		// never range-copy. Projectile.Update has a pointer receiver and mutates
@@ -757,10 +803,95 @@ func (m *Model) beginUnitAnimation() {
 			harmonica.Vector{},      // v0 = 0 (at rest)
 			harmonica.Vector{X: -g}, // accel toward zero
 		)
-		m.springs[i] = harmonica.NewSpring(harmonica.FPS(springFPS), phase2Frequency, phase2Damping)
 	}
 	m.springActive = true
 	m.springPhase = springShrinking
+}
+
+// beginIntroAnimation primes the open-path slide-in. Caller must have
+// already called refreshChart so m.lastValues / m.peak reflect the
+// current cache contents. The animation re-uses Phase 2 of the unit-
+// toggle state machine: springs are seeded with target ratios but
+// springRatios stay at zero until the springHolding tick fires after
+// phaseHoldDuration. See #188.
+//
+// No-op if lastValues is empty or peak is non-positive (defensive —
+// maybeArmIntro should have gated those cases already).
+//
+// Snapshots m.newIsLine for the View()/renderSpringFrame branches that
+// check it in the springHolding/springGrowing arms. m.oldIsLine /
+// m.oldValues / m.oldPeak are left at their zero values; the intro
+// never enters springShrinking, so the OLD-state fields are unread.
+func (m *Model) beginIntroAnimation() {
+	if len(m.lastValues) == 0 || m.peak <= 0 {
+		return
+	}
+
+	targets := make([]float64, len(m.lastValues))
+	for i, v := range m.lastValues {
+		targets[i] = v / m.peak
+	}
+
+	m.seedPhase2Springs(targets)
+
+	// Spring window tracks current viewport position so the animated
+	// slice matches what the user is about to look at. On open the
+	// shadow offset is at the right edge (pinned by refreshChart's
+	// post-rebuild restore); preserve it.
+	m.springXOffset = m.viewportXOffset
+
+	// renderSpringFrame's default arm reads m.newIsLine; pin it for the
+	// intro (always bar mode at open since default unit is tokens).
+	m.newIsLine = isLineMode(chartUnit(m.unitIdx))
+
+	m.springActive = true
+	m.springIntro = true
+	m.springPhase = springHolding
+
+	// Render the zero-bars hold frame synchronously so the next View()
+	// call doesn't briefly show refreshChart's fully-formed bars before
+	// the first tick paints over the viewport with the empty hold frame.
+	m.renderSpringFrame()
+}
+
+// maybeArmIntro fires the open-path slide-in when introPending is true
+// and the most recent refreshChart produced non-empty data. Called
+// from WindowSizeMsg and RefreshMsg handlers right after refreshChart.
+// Returns tea.Tick(phaseHoldDuration, ...) when the intro arms, nil
+// otherwise.
+//
+// Always clears introPending on the first non-empty refresh, whether
+// the intro actually arms (motion path) or is a no-op (reduce_motion
+// is already gated upstream via introPending init in New()). This
+// ensures the intro is strictly one-shot.
+//
+// When the cache starts empty: lastValues stays nil through the early
+// refreshes; introPending stays true; the first non-empty RefreshMsg
+// is what arms the intro. See #188 spec / acceptance criteria.
+func (m *Model) maybeArmIntro() tea.Cmd {
+	if !m.introPending {
+		return nil
+	}
+	// Wait for the first WindowSizeMsg before arming: in production the
+	// startup-time p.Send(RefreshMsg{}) from cmd/ccpulse/main.go:329 can
+	// race ahead of bubbletea's initial WindowSizeMsg. Arming with m.w=0
+	// produces a zero-size spring frame that the subsequent WindowSizeMsg
+	// would tear down via refreshChart's spring-abort block. Defer the
+	// arm until we have a real viewport. introPending stays true.
+	if m.w == 0 {
+		return nil
+	}
+	if len(m.lastValues) == 0 {
+		return nil
+	}
+	m.introPending = false
+	m.beginIntroAnimation()
+	if !m.springActive {
+		return nil
+	}
+	return tea.Tick(phaseHoldDuration, func(time.Time) tea.Msg {
+		return springTickMsg{}
+	})
 }
 
 // renderSpringFrame rebuilds the viewport content from the visible
@@ -977,6 +1108,7 @@ func (m *Model) refreshChart() {
 	// springActive is false.
 	if m.springActive {
 		m.springActive = false
+		m.springIntro = false
 		m.springPhase = springIdle
 		// springProjectiles, springFinalTargets, oldPeak, oldUnitIdx
 		// remain populated but unread — guarded by springActive=false.

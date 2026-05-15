@@ -1516,6 +1516,8 @@ func TestRefreshDuringAnimationSnapsAndContinues(t *testing.T) {
 	m.viewport.Width = m.chartWidth()
 	m.viewport.Height = m.chartHeight()
 	m.refreshChart()
+	// Post-open state — intro already fired (see seedTwoPhaseAnimationModel).
+	m.introPending = false
 	preBucketCount := len(m.lastValues)
 
 	// Start animation.
@@ -1579,6 +1581,8 @@ func TestRefreshDoesNotAnimate(t *testing.T) {
 	m.w, m.h = 120, 40
 	m.viewport.Width = m.chartWidth()
 	m.viewport.Height = m.chartHeight()
+	// Post-open state — intro already fired (see seedTwoPhaseAnimationModel).
+	m.introPending = false
 
 	updated, _ := m.Update(RefreshMsg{})
 	m = updated.(Model)
@@ -2324,6 +2328,12 @@ func seedTwoPhaseAnimationModel(t *testing.T) Model {
 	m.viewport.Width = m.chartWidth()
 	m.viewport.Height = m.chartHeight()
 	m.refreshChart()
+	// seedTwoPhaseAnimationModel represents post-open state: refreshChart
+	// has been called outside the WindowSizeMsg handler, so the open-path
+	// intro is treated as already fired/settled. Without this, every
+	// RefreshMsg / WindowSizeMsg in unit-toggle tests would re-arm the
+	// intro after the existing handler aborts the unit spring. See #188.
+	m.introPending = false
 	return m
 }
 
@@ -3170,5 +3180,423 @@ func TestRefreshChart_EmptyCacheRecoveryPinsRight(t *testing.T) {
 	if got := m.viewportXOffset; got != wantOffset {
 		t.Errorf("viewportXOffset = %d after empty-cache recovery; want right edge %d (lastCanvasW=%d, viewportWidth=%d, stride=%d)",
 			got, wantOffset, m.lastCanvasW, m.viewport.Width, stride)
+	}
+}
+
+func TestNew_IntroPendingDefaults(t *testing.T) {
+	// New() must initialise introPending = !ReduceMotion so the open-path
+	// slide-in is enabled by default but disabled when reduce_motion=true.
+	cases := []struct {
+		name         string
+		reduceMotion bool
+		want         bool
+	}{
+		{"motion_on", false, true},
+		{"reduce_motion", true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := New(Deps{ReduceMotion: tc.reduceMotion})
+			if m.introPending != tc.want {
+				t.Errorf("introPending = %v after New(ReduceMotion=%v); want %v",
+					m.introPending, tc.reduceMotion, tc.want)
+			}
+		})
+	}
+}
+
+// seedIntroModel returns a freshly New()-constructed model with a
+// non-empty cache but BEFORE any WindowSizeMsg or refreshChart, so
+// the test can deliver the WindowSizeMsg itself and observe the
+// intro-arm path end-to-end. Mirror of seedTwoPhaseAnimationModel
+// minus the w/h setup and the refreshChart call.
+func seedIntroModel(t *testing.T, reduceMotion bool) Model {
+	t.Helper()
+	dir := t.TempDir()
+	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	t.Cleanup(func() { c.Close() })
+
+	tab, err := pricing.Load()
+	if err != nil {
+		t.Fatalf("pricing.Load: %v", err)
+	}
+	now := time.Now().UTC().Truncate(15 * time.Minute)
+	msgs := []parse.Message{
+		{SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7",
+			Timestamp: now.Add(-30 * time.Minute), InputTokens: 10000, OutputTokens: 5000},
+		{SessionID: "s2", ProjectSlug: "p", Model: "claude-opus-4-7",
+			Timestamp: now.Add(-10 * time.Minute), InputTokens: 30000, OutputTokens: 15000},
+	}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	return New(Deps{Cache: c, ReduceMotion: reduceMotion})
+}
+
+func TestIntro_ReduceMotion_SnapsWithoutTick(t *testing.T) {
+	// With ReduceMotion=true, the first WindowSizeMsg must:
+	//   - leave springActive=false (no animation),
+	//   - return cmd=nil (no tick),
+	//   - leave introPending=false (initialised that way by New()).
+	m := seedIntroModel(t, true)
+	if m.introPending {
+		t.Fatalf("introPending = true after New(ReduceMotion=true); want false (sanity)")
+	}
+
+	updated, cmd := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+
+	if cmd != nil {
+		t.Errorf("cmd = %v after first WindowSizeMsg; want nil (no tick in reduce_motion)", cmd)
+	}
+	if m.springActive {
+		t.Errorf("springActive = true; want false (no animation in reduce_motion)")
+	}
+	if m.introPending {
+		t.Errorf("introPending = true after first WindowSizeMsg; want false (still cleared)")
+	}
+	if len(m.lastValues) == 0 {
+		t.Errorf("lastValues empty after WindowSizeMsg; want non-empty (refreshChart should have populated it)")
+	}
+}
+
+func TestIntro_HoldFrameRendersZeroBars(t *testing.T) {
+	// First WindowSizeMsg with non-empty cache + motion-on must:
+	//   - arm the intro (springActive=true, springPhase=springHolding),
+	//   - return a non-nil Cmd (the hold tick),
+	//   - leave all springRatios at zero (hold frame),
+	//   - render a chart body with no visible bar block characters.
+	m := seedIntroModel(t, false)
+	if !m.introPending {
+		t.Fatalf("introPending = false after New(ReduceMotion=false); want true (sanity)")
+	}
+
+	updated, cmd := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+
+	if cmd == nil {
+		t.Fatalf("cmd = nil after first WindowSizeMsg; want non-nil hold tick")
+	}
+	if !m.springActive {
+		t.Errorf("springActive = false after WindowSizeMsg; want true (intro armed)")
+	}
+	if m.springPhase != springHolding {
+		t.Errorf("springPhase = %d after WindowSizeMsg; want springHolding (%d)", m.springPhase, springHolding)
+	}
+	if m.introPending {
+		t.Errorf("introPending = true after intro arm; want false (one-shot)")
+	}
+	for i, r := range m.springRatios {
+		if r != 0 {
+			t.Errorf("springRatios[%d] = %v after intro arm; want 0 (hold frame)", i, r)
+			break
+		}
+	}
+
+	// Visual assertion: the chart body must contain no bar block characters.
+	// ntcharts/barchart uses block elements ('▁'..'█'); a zero-height chart
+	// leaves the body region empty (only whitespace).
+	body := chartBodyLines(m.View())
+	for _, line := range body {
+		if strings.ContainsAny(line, "▁▂▃▄▅▆▇█") {
+			t.Errorf("chart body contains bar block char during hold frame: %q", line)
+			break
+		}
+	}
+}
+
+func TestIntro_GrowLadderSettles(t *testing.T) {
+	// After the hold tick, the intro must traverse springHolding →
+	// springGrowing and settle within the same tick budget as the
+	// existing unit-toggle Phase 2.
+	m := seedIntroModel(t, false)
+
+	updated, cmd := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatalf("WindowSizeMsg returned nil cmd; intro did not arm")
+	}
+
+	// First springTickMsg drives the springHolding → springGrowing
+	// transition; subsequent ticks run the FPS grow loop.
+	const maxTicks = 200
+	var lastCmd tea.Cmd
+	for i := 0; i < maxTicks && m.springActive; i++ {
+		updated, lastCmd = m.Update(springTickMsg{})
+		m = updated.(Model)
+	}
+	if m.springActive {
+		t.Fatalf("intro did not settle within %d ticks", maxTicks)
+	}
+	if m.springPhase != springIdle {
+		t.Errorf("springPhase = %d after settle; want springIdle", m.springPhase)
+	}
+	for i, r := range m.springRatios {
+		if r != m.springTargetRatios[i] {
+			t.Errorf("springRatios[%d] = %v after settle; want %v (snapped target)",
+				i, r, m.springTargetRatios[i])
+		}
+	}
+	if lastCmd != nil {
+		t.Errorf("settle tick returned non-nil Cmd; idle TUI must not keep ticking")
+	}
+}
+
+func TestIntro_OneShot_NoReArmOnSecondWindowSize(t *testing.T) {
+	// Once the intro has fired (whether settled or hard-cut), a second
+	// WindowSizeMsg must not re-arm it. introPending is cleared on the
+	// first arm and never re-set.
+	m := seedIntroModel(t, false)
+
+	// First WindowSizeMsg arms the intro.
+	updated, cmd := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatalf("first WindowSizeMsg returned nil cmd; intro did not arm")
+	}
+
+	// Settle the animation.
+	const maxTicks = 200
+	for i := 0; i < maxTicks && m.springActive; i++ {
+		updated, _ = m.Update(springTickMsg{})
+		m = updated.(Model)
+	}
+	if m.springActive {
+		t.Fatalf("intro did not settle within %d ticks", maxTicks)
+	}
+
+	// Second WindowSizeMsg must return nil and leave spring state idle.
+	updated, cmd2 := m.Update(tea.WindowSizeMsg{Width: 140, Height: 50})
+	m = updated.(Model)
+	if cmd2 != nil {
+		t.Errorf("second WindowSizeMsg returned non-nil cmd; intro must not re-arm (cmd = %v)", cmd2)
+	}
+	if m.springActive {
+		t.Errorf("springActive = true after second WindowSizeMsg; want false (idle)")
+	}
+}
+
+func TestIntro_RefreshMsgBeforeWindowSizeMsg(t *testing.T) {
+	// Production startup ordering: cmd/ccpulse/main.go:329 fires
+	// p.Send(tui.RefreshMsg{}) in a goroutine, which often arrives
+	// BEFORE bubbletea's initial WindowSizeMsg. Confirmed via
+	// runtime trace. If maybeArmIntro armed at m.w=0, the subsequent
+	// WindowSizeMsg's refreshChart would tear down the zero-size
+	// spring frame via the spring-abort block and the intro would be
+	// invisible. Guarded by the m.w == 0 check in maybeArmIntro.
+	m := seedIntroModel(t, false)
+	if m.w != 0 {
+		t.Fatalf("seedIntroModel pre-condition: m.w = %d; want 0", m.w)
+	}
+
+	// Pre-WindowSizeMsg RefreshMsg — must NOT arm.
+	updated, cmd := m.Update(RefreshMsg{})
+	m = updated.(Model)
+	if cmd != nil {
+		t.Errorf("RefreshMsg before WindowSizeMsg returned non-nil cmd; want nil (deferred)")
+	}
+	if m.springActive {
+		t.Errorf("springActive = true after pre-WindowSize RefreshMsg; want false (deferred)")
+	}
+	if !m.introPending {
+		t.Errorf("introPending = false after pre-WindowSize RefreshMsg; want true (still pending)")
+	}
+
+	// Now WindowSizeMsg — must arm.
+	updated, cmd = m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatalf("WindowSizeMsg after deferred RefreshMsg returned nil cmd; want hold tick")
+	}
+	if !m.springActive {
+		t.Errorf("springActive = false after WindowSizeMsg; want true (intro armed)")
+	}
+	if m.springPhase != springHolding {
+		t.Errorf("springPhase = %d after WindowSizeMsg; want springHolding", m.springPhase)
+	}
+	if m.introPending {
+		t.Errorf("introPending = true after intro arm; want false (one-shot)")
+	}
+}
+
+func TestIntro_SurvivesInitialRefreshMsgRace(t *testing.T) {
+	// Real-world startup race: WindowSizeMsg arms the intro, then the
+	// initial RefreshMsg from main.go (cmd/ccpulse/main.go:329) fires
+	// before the first spring tick. refreshChart()'s spring-abort
+	// logic (model.go:1079) would kill the intro if not guarded.
+	//
+	// Visual probe: the chart body must still contain no bar block
+	// characters after the RefreshMsg — i.e. the viewport is still
+	// showing the zero-height hold frame, not the fully-painted chart
+	// that refreshChart would otherwise paint.
+	m := seedIntroModel(t, false)
+
+	// Arm intro via WindowSizeMsg.
+	updated, cmd := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatalf("WindowSizeMsg returned nil cmd; intro did not arm")
+	}
+	if !m.springActive || m.springPhase != springHolding {
+		t.Fatalf("intro not armed: springActive=%v springPhase=%d", m.springActive, m.springPhase)
+	}
+
+	// Deliver RefreshMsg BEFORE any springTickMsg — this is the race.
+	updated, _ = m.Update(RefreshMsg{})
+	m = updated.(Model)
+
+	if !m.springActive {
+		t.Errorf("springActive = false after RefreshMsg race; intro was killed")
+	}
+	if m.springPhase != springHolding {
+		t.Errorf("springPhase = %d after RefreshMsg race; want springHolding (%d)", m.springPhase, springHolding)
+	}
+
+	// Visual check: viewport should still show zero bars.
+	body := chartBodyLines(m.View())
+	for _, line := range body {
+		if strings.ContainsAny(line, "▁▂▃▄▅▆▇█") {
+			t.Errorf("chart body contains bar block char after RefreshMsg race: %q", line)
+			break
+		}
+	}
+}
+
+func TestIntro_RealisticStartupSequence(t *testing.T) {
+	// Mimic exactly what cmd/ccpulse/main.go does at startup:
+	//   1. WindowSizeMsg (bubbletea-injected)
+	//   2. RefreshMsg from line 329 (initial refresh)
+	//   3. Possibly more RefreshMsg from watcher
+	//   4. IndexProgressMsg Active:true then Active:false from backfill
+	//   5. RefreshMsg from backfill completion
+	//   6. (eventually) springTickMsg
+	// Assert that at no point before the hold tick fires do bar block
+	// characters appear in the View(). Then drive ticks and verify the
+	// chart eventually settles with full bars.
+	m := seedIntroModel(t, false)
+
+	updated, cmd := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatalf("WindowSizeMsg returned nil cmd; intro did not arm")
+	}
+
+	// Production sends several non-tick messages before the 150 ms hold
+	// tick fires. Each must NOT kill the intro and the View must
+	// continue to render zero-height bars.
+	preTickMessages := []tea.Msg{
+		RefreshMsg{},
+		RefreshMsg{},
+		IndexProgressMsg{Active: true, Done: 0, Total: 100},
+		IndexProgressMsg{Active: false, Done: 100, Total: 100},
+		RefreshMsg{},
+	}
+	for i, msg := range preTickMessages {
+		updated, _ = m.Update(msg)
+		m = updated.(Model)
+		if !m.springActive {
+			t.Fatalf("springActive=false after message %d (%T); intro was killed", i, msg)
+		}
+		if m.springPhase != springHolding {
+			t.Fatalf("springPhase=%d after message %d (%T); want springHolding", m.springPhase, i, msg)
+		}
+		body := chartBodyLines(m.View())
+		for _, line := range body {
+			if strings.ContainsAny(line, "▁▂▃▄▅▆▇█") {
+				t.Errorf("after message %d (%T): chart body shows bar block char during hold: %q", i, msg, line)
+				break
+			}
+		}
+	}
+
+	// Now drive the hold tick → grow ticks until settle.
+	const maxTicks = 200
+	settled := false
+	for i := 0; i < maxTicks; i++ {
+		updated, _ = m.Update(springTickMsg{})
+		m = updated.(Model)
+		if !m.springActive {
+			settled = true
+			break
+		}
+	}
+	if !settled {
+		t.Fatalf("intro did not settle within %d ticks", maxTicks)
+	}
+
+	// Final view should show actual bars now.
+	finalBody := chartBodyLines(m.View())
+	hasBar := false
+	for _, line := range finalBody {
+		if strings.ContainsAny(line, "▁▂▃▄▅▆▇█") {
+			hasBar = true
+			break
+		}
+	}
+	if !hasBar {
+		t.Errorf("after settle: chart body has no bar block chars; want fully-rendered bars")
+	}
+}
+
+func TestIntro_EmptyCacheDeferred(t *testing.T) {
+	// When the cache starts empty, the first WindowSizeMsg must NOT arm
+	// the intro (lastValues stays nil); introPending stays true. The
+	// intro fires on the first RefreshMsg that produces non-empty data.
+	dir := t.TempDir()
+	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	t.Cleanup(func() { c.Close() })
+
+	tab, err := pricing.Load()
+	if err != nil {
+		t.Fatalf("pricing.Load: %v", err)
+	}
+
+	m := New(Deps{Cache: c})
+	if !m.introPending {
+		t.Fatalf("introPending = false after New(ReduceMotion=false); want true (sanity)")
+	}
+
+	// First WindowSizeMsg with empty cache: no arm, introPending stays.
+	updated, cmd := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+	if cmd != nil {
+		t.Errorf("cmd = %v after WindowSizeMsg with empty cache; want nil (deferred)", cmd)
+	}
+	if m.springActive {
+		t.Errorf("springActive = true with empty cache; want false")
+	}
+	if !m.introPending {
+		t.Errorf("introPending = false after empty-cache WindowSizeMsg; want true (still pending)")
+	}
+
+	// Populate the cache and deliver a RefreshMsg.
+	now := time.Now().UTC().Truncate(15 * time.Minute)
+	if err := c.InsertMessages([]parse.Message{
+		{SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7",
+			Timestamp: now.Add(-30 * time.Minute), InputTokens: 10000, OutputTokens: 5000},
+	}, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	updated, cmd = m.Update(RefreshMsg{})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatalf("cmd = nil after RefreshMsg with non-empty cache; want non-nil hold tick (intro arm)")
+	}
+	if !m.springActive {
+		t.Errorf("springActive = false after RefreshMsg; want true (intro armed)")
+	}
+	if m.springPhase != springHolding {
+		t.Errorf("springPhase = %d after RefreshMsg arm; want springHolding (%d)", m.springPhase, springHolding)
+	}
+	if m.introPending {
+		t.Errorf("introPending = true after intro arm; want false (one-shot)")
 	}
 }
