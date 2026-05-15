@@ -46,6 +46,12 @@ const (
 const (
 	indexFadeStopCount    = 3
 	indexFadeStepDuration = 400 * time.Millisecond
+
+	// indexBannerDwellDuration is the full-opacity dwell used when
+	// reduce_motion is enabled. Equals the total span of the 3-step
+	// fade ladder so the banner is visible for the same total time
+	// regardless of mode — only whether it fades or stays solid changes.
+	indexBannerDwellDuration = time.Duration(indexFadeStopCount) * indexFadeStepDuration
 )
 
 // indexFadeStyle returns the lipgloss style for the supplied fade stop.

@@ -45,6 +45,12 @@ type IndexProgressMsg struct {
 // fade ends is zero — no Cmd is returned at the final stop.
 type tickFadeMsg struct{}
 
+// indexBannerClearMsg is the one-shot timer used when reduce_motion is
+// enabled to dismiss the post-backfill "✓ indexed N" banner after its
+// full-opacity dwell. The animations-on path uses the 3-step
+// tickFadeMsg ladder instead.
+type indexBannerClearMsg struct{}
+
 // springTickMsg drives the per-bar harmonica spring loop after a
 // 'u' unit-toggle. Scheduled by Update on the unit-key path and
 // re-scheduled by the springTickMsg handler until all springs are
@@ -261,8 +267,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// in current code (Backfill.Run is one-shot).
 			m.indexFadeStop = 0
 		case wasActive && !msg.Active:
-			// Falling edge — start the fade.
+			// Falling edge — start the post-backfill banner.
 			m.indexFadeStop = 1
+			if m.deps.ReduceMotion {
+				// Reduce-motion: one full-opacity dwell, no fade ladder.
+				return m, tea.Tick(indexBannerDwellDuration, func(time.Time) tea.Msg {
+					return indexBannerClearMsg{}
+				})
+			}
 			return m, tea.Tick(indexFadeStepDuration, func(time.Time) tea.Msg {
 				return tickFadeMsg{}
 			})
@@ -280,6 +292,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Tick(indexFadeStepDuration, func(time.Time) tea.Msg {
 			return tickFadeMsg{}
 		})
+	case indexBannerClearMsg:
+		m.indexFadeStop = 0
+		return m, nil
 	case springTickMsg:
 		if !m.springActive {
 			return m, nil

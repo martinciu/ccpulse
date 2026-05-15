@@ -876,6 +876,40 @@ func TestTickFadeMsg(t *testing.T) {
 	}
 }
 
+func TestIndexProgressMsg_ReduceMotion_OneShotDwell(t *testing.T) {
+	// With ReduceMotion enabled, the post-backfill falling edge schedules
+	// a single dwell tick that delivers indexBannerClearMsg. The handler
+	// for that message clears m.indexFadeStop in one step — no 3-step
+	// fade ladder.
+	m := New(Deps{ReduceMotion: true})
+
+	// Rising edge: model goes into "indexing" state.
+	updated, _ := m.Update(IndexProgressMsg{Done: 0, Total: 5, Active: true})
+	m = updated.(Model)
+
+	// Falling edge: backfill finishes. Expect FadeStop=1 (full opacity)
+	// and a non-nil Cmd (the dwell tick).
+	updated, cmd := m.Update(IndexProgressMsg{Done: 5, Total: 5, Active: false})
+	m = updated.(Model)
+	if m.indexFadeStop != 1 {
+		t.Errorf("after falling edge with ReduceMotion: indexFadeStop = %d, want 1 (full opacity)", m.indexFadeStop)
+	}
+	if cmd == nil {
+		t.Fatalf("after falling edge with ReduceMotion: cmd = nil, want one-shot dwell tea.Tick")
+	}
+
+	// Simulate the dwell expiring: deliver indexBannerClearMsg directly.
+	// One step must clear the banner (FadeStop = 0). Not a ladder.
+	updated, cmd = m.Update(indexBannerClearMsg{})
+	m = updated.(Model)
+	if m.indexFadeStop != 0 {
+		t.Errorf("after indexBannerClearMsg: indexFadeStop = %d, want 0", m.indexFadeStop)
+	}
+	if cmd != nil {
+		t.Errorf("after indexBannerClearMsg: cmd = %v, want nil (no further ticks)", cmd)
+	}
+}
+
 func TestIndexFadeStyle(t *testing.T) {
 	// Verifies the three fade stops map to the expected foregrounds.
 	// Stop 1 is the default fg (no Foreground set, which lipgloss reports as
