@@ -499,6 +499,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					phase2Frequency, phase2Damping,
 				)
 				m.quotaIntroPending = false
+				// Zero residual chart velocities from the prior settle
+				// so reusing the springGrowing arm for the quota-only
+				// late-arrival intro doesn't wobble the chart bars.
+				// Position is already at-target (copy in the settle
+				// block), velocity was never reset.
+				clear(m.springVelocities)
 				m.springActive = true
 				m.springIntro = true
 				m.springPhase = springGrowing
