@@ -878,6 +878,34 @@ func TestBuildLineChart_EmptyPoints(t *testing.T) {
 	}
 }
 
+// TestBuildLineChart_NoBuiltinXAxis verifies SetXStep(0)/SetYStep(0)
+// suppress ntcharts' built-in axis row. The historical bug (issue
+// #177) rendered "0% 4 6 8 10 14 …" below the chart body — a row of
+// integer column-position labels. After the fix only our renderXLabels
+// row (formatted time stamps) remains.
+func TestBuildLineChart_NoBuiltinXAxis(t *testing.T) {
+	now := time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC)
+	from := now.Add(-24 * time.Hour)
+	to := now
+	pts5h := []cache.UtilizationPoint{
+		{At: from.Add(time.Hour), Pct: 10},
+		{At: from.Add(12 * time.Hour), Pct: 50},
+		{At: from.Add(23 * time.Hour), Pct: 90},
+	}
+	body := buildLineChart(pts5h, nil, from, to, 80, 14, now, ZoomLevels[1], dateOrderMonthFirst)
+	stripped := ansi.Strip(body)
+
+	// A row consisting almost entirely of small integers separated by
+	// spaces is the smell. Look for the canonical "0 4 6 8" prefix that
+	// ntcharts emits at xStep=2 over a 0..N range.
+	for _, line := range strings.Split(stripped, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "0 4 6 8") || strings.HasPrefix(trimmed, "0  4  6  8") {
+			t.Errorf("buildLineChart output still contains built-in x-axis row: %q", trimmed)
+		}
+	}
+}
+
 func TestOverlayYTicks(t *testing.T) {
 	chartH := 12
 	lines := make([]string, chartH)

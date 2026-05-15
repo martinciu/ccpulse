@@ -8,9 +8,8 @@ import (
 	"time"
 
 	"github.com/NimbleMarkets/ntcharts/barchart"
-	"github.com/NimbleMarkets/ntcharts/canvas"
 	"github.com/NimbleMarkets/ntcharts/canvas/runes"
-	"github.com/NimbleMarkets/ntcharts/linechart/wavelinechart"
+	"github.com/NimbleMarkets/ntcharts/linechart/timeserieslinechart"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
@@ -500,14 +499,24 @@ func isLineMode(u chartUnit) bool {
 	return u == chartUnitRemaining
 }
 
-// buildLineChart renders two remaining-quota lines (5h green, 7d purple)
-// onto a single wavelinechart canvas. Each UtilizationPoint's timestamp
-// is mapped to a proportional x-position within [from, to). Y values
-// are remaining fractions: 1 - Pct/100, in [0, 1]. Empty input renders
-// a flat line at 1.0 (100% headroom — no-quota fallback).
+// buildLineChart renders two remaining-quota series (5h green, 7d
+// purple) as a dotted braille trail on a timeserieslinechart canvas.
+// Time values are mapped natively by ntcharts via SetViewTimeRange.
+// Y values are remaining fractions: 1 - Pct/100, in [0, 1].
 //
-// X-axis labels reuse renderXLabels with synthetic bucket starts derived
-// from the zoom's duration so the label cadence matches bar-chart mode.
+// Empty input renders a flat baseline at 1.0 (100% headroom — no-quota
+// fallback) per dataset.
+//
+// X-axis labels are rendered by ccpulse's renderXLabels and joined
+// below the chart body; ntcharts' built-in axes are suppressed via
+// SetXStep(0)/SetYStep(0). The left-edge Y labels (100%/50%/0% +
+// 5h/7d legend) are spliced in by overlayYTicks in the caller.
+//
+// Implementation note: ntcharts' line-chart Style API splits "rune set"
+// (SetLineStyle / SetDataSetLineStyle, taking runes.LineStyle) from
+// "lipgloss color" (SetStyle / SetDataSetStyle, taking lipgloss.Style).
+// They are SEPARATE setters — passing both via a hypothetical
+// SetStyles(line, color) would fail to compile against ntcharts v0.5.1.
 func buildLineChart(pts5h, pts7d []cache.UtilizationPoint,
 	from, to time.Time, chartW, chartH int,
 	now time.Time, zoom ZoomLevel, order dateOrder) string {
@@ -523,49 +532,47 @@ func buildLineChart(pts5h, pts7d []cache.UtilizationPoint,
 		barsH = chartH - 1
 	}
 
-	span := to.Sub(from).Seconds()
-	if span <= 0 {
-		span = 1
-	}
-
-	wlc := wavelinechart.New(chartW, barsH,
-		wavelinechart.WithYRange(0, 1.0),
-		wavelinechart.WithXRange(0, float64(chartW)),
+	tslc := timeserieslinechart.New(chartW, barsH,
+		timeserieslinechart.WithYRange(0, 1.0),
+		timeserieslinechart.WithTimeRange(from, to),
 	)
+	tslc.SetViewTimeRange(from, to)
+	tslc.SetXStep(0)
+	tslc.SetYStep(0)
 
-	mapX := func(t time.Time) float64 {
-		return t.Sub(from).Seconds() / span * float64(chartW)
-	}
-
-	// Plot 5h data set (default). Empty → flat line at 100% headroom.
+	// 5h dataset (default).
+	tslc.SetLineStyle(runes.ThinLineStyle)
+	tslc.SetStyle(lipgloss.NewStyle().Foreground(colorChartRemaining5h))
 	if len(pts5h) == 0 {
-		wlc.Plot(canvas.Float64Point{X: 0, Y: 1.0})
-		wlc.Plot(canvas.Float64Point{X: float64(chartW), Y: 1.0})
+		tslc.Push(timeserieslinechart.TimePoint{Time: from, Value: 1.0})
+		tslc.Push(timeserieslinechart.TimePoint{Time: to, Value: 1.0})
 	} else {
 		for _, p := range pts5h {
-			remaining := max(0, 1.0-p.Pct/100.0)
-			wlc.Plot(canvas.Float64Point{X: mapX(p.At), Y: remaining})
+			tslc.Push(timeserieslinechart.TimePoint{
+				Time:  p.At,
+				Value: math.Max(0, 1.0-p.Pct/100.0),
+			})
 		}
 	}
-	wlc.SetStyles(runes.ThinLineStyle,
-		lipgloss.NewStyle().Foreground(colorChartRemaining5h))
 
-	// Plot 7d data set.
+	// 7d dataset.
 	const ds7d = "7d"
+	tslc.SetDataSetLineStyle(ds7d, runes.ThinLineStyle)
+	tslc.SetDataSetStyle(ds7d, lipgloss.NewStyle().Foreground(colorChartRemaining7d))
 	if len(pts7d) == 0 {
-		wlc.PlotDataSet(ds7d, canvas.Float64Point{X: 0, Y: 1.0})
-		wlc.PlotDataSet(ds7d, canvas.Float64Point{X: float64(chartW), Y: 1.0})
+		tslc.PushDataSet(ds7d, timeserieslinechart.TimePoint{Time: from, Value: 1.0})
+		tslc.PushDataSet(ds7d, timeserieslinechart.TimePoint{Time: to, Value: 1.0})
 	} else {
 		for _, p := range pts7d {
-			remaining := max(0, 1.0-p.Pct/100.0)
-			wlc.PlotDataSet(ds7d, canvas.Float64Point{X: mapX(p.At), Y: remaining})
+			tslc.PushDataSet(ds7d, timeserieslinechart.TimePoint{
+				Time:  p.At,
+				Value: math.Max(0, 1.0-p.Pct/100.0),
+			})
 		}
 	}
-	wlc.SetDataSetStyles(ds7d, runes.ThinLineStyle,
-		lipgloss.NewStyle().Foreground(colorChartRemaining7d))
 
-	wlc.DrawAll()
-	body := wlc.View()
+	tslc.DrawBrailleAll()
+	body := tslc.View()
 
 	if showXLabels {
 		// Synthesise bucket starts for x-axis labels. The line chart spans
