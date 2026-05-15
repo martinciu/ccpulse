@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"fmt"
 	"runtime"
 	"strings"
 	"testing"
@@ -878,6 +877,34 @@ func TestBuildLineChart_EmptyPoints(t *testing.T) {
 	}
 }
 
+// TestBuildLineChart_NoBuiltinXAxis verifies SetXStep(0)/SetYStep(0)
+// suppress ntcharts' built-in axis row. The historical bug (issue
+// #177) rendered "0% 4 6 8 10 14 …" below the chart body — a row of
+// integer column-position labels. After the fix only our renderXLabels
+// row (formatted time stamps) remains.
+func TestBuildLineChart_NoBuiltinXAxis(t *testing.T) {
+	now := time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC)
+	from := now.Add(-24 * time.Hour)
+	to := now
+	pts5h := []cache.UtilizationPoint{
+		{At: from.Add(time.Hour), Pct: 10},
+		{At: from.Add(12 * time.Hour), Pct: 50},
+		{At: from.Add(23 * time.Hour), Pct: 90},
+	}
+	body := buildLineChart(pts5h, nil, from, to, 80, 14, now, ZoomLevels[1], dateOrderMonthFirst)
+	stripped := ansi.Strip(body)
+
+	// A row consisting almost entirely of small integers separated by
+	// spaces is the smell. Look for the canonical "0 4 6 8" prefix that
+	// ntcharts emits at xStep=2 over a 0..N range.
+	for _, line := range strings.Split(stripped, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "0 4 6 8") || strings.HasPrefix(trimmed, "0  4  6  8") {
+			t.Errorf("buildLineChart output still contains built-in x-axis row: %q", trimmed)
+		}
+	}
+}
+
 func TestOverlayYTicks(t *testing.T) {
 	chartH := 12
 	lines := make([]string, chartH)
@@ -899,23 +926,162 @@ func TestOverlayYTicks(t *testing.T) {
 }
 
 func BenchmarkBuildLineChart(b *testing.B) {
-	now := time.Now().UTC()
-	from := now.Add(-10 * 24 * time.Hour)
-	for _, n := range []int{500, 2000, 5000} {
-		pts5h := make([]cache.UtilizationPoint, n)
-		pts7d := make([]cache.UtilizationPoint, n)
+	now := time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC)
+
+	// Realistic sample cadence: ~5 minute spacing.
+	mkPoints := func(span time.Duration) []cache.UtilizationPoint {
+		n := int(span / (5 * time.Minute))
+		out := make([]cache.UtilizationPoint, n)
 		for i := range n {
-			t := from.Add(time.Duration(i) * 3 * time.Minute)
-			pts5h[i] = cache.UtilizationPoint{At: t, Pct: float64(i % 100)}
-			pts7d[i] = cache.UtilizationPoint{At: t, Pct: float64((i * 3) % 100)}
+			out[i] = cache.UtilizationPoint{
+				At:  now.Add(-span + time.Duration(i)*5*time.Minute),
+				Pct: 50 + float64(i%50),
+			}
 		}
-		b.Run(fmt.Sprintf("pts=%d", n), func(b *testing.B) {
+		return out
+	}
+
+	cases := []struct {
+		name    string
+		canvasW int
+		span    time.Duration
+		zoom    ZoomLevel
+	}{
+		{"w100_24h", 100, 24 * time.Hour, ZoomLevels[1]},
+		{"w1000_7d", 1000, 7 * 24 * time.Hour, ZoomLevels[1]},
+		{"w5000_30d_15m", 5000, 30 * 24 * time.Hour, ZoomLevels[0]},
+	}
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			pts5h := mkPoints(tc.span)
+			pts7d := mkPoints(tc.span)
+			from := now.Add(-tc.span)
+			to := now
+
 			b.ReportAllocs()
 			runtime.GC()
 			b.ResetTimer()
 			for b.Loop() {
-				sinkString = buildLineChart(pts5h, pts7d, from, now, 200, 20, now, ZoomLevels[0], dateOrderMonthFirst)
+				sinkString = buildLineChart(pts5h, pts7d, from, to, tc.canvasW, 20, now, tc.zoom, dateOrderMonthFirst)
 			}
 		})
 	}
+}
+
+func TestColumnToTime_RoundTrip(t *testing.T) {
+	from := time.Date(2026, 5, 15, 9, 0, 0, 0, time.UTC)
+	to := from.Add(24 * time.Hour)
+
+	tests := []struct {
+		name    string
+		canvasW int
+		col     int
+	}{
+		{"narrow_canvas", 24, 0},
+		{"narrow_canvas_mid", 24, 12},
+		{"narrow_canvas_end", 24, 23},
+		{"wide_canvas_start", 5000, 0},
+		{"wide_canvas_mid", 5000, 2500},
+		{"wide_canvas_end", 5000, 4999},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotT := columnToTime(tt.col, tt.canvasW, from, to)
+			gotCol := timeToColumn(gotT, tt.canvasW, from, to)
+			if absInt(gotCol-tt.col) > 1 {
+				t.Errorf("round-trip col=%d -> t=%v -> col=%d (canvasW=%d); want within +-1",
+					tt.col, gotT, gotCol, tt.canvasW)
+			}
+		})
+	}
+}
+
+func TestColumnToTime_Clamps(t *testing.T) {
+	from := time.Date(2026, 5, 15, 9, 0, 0, 0, time.UTC)
+	to := from.Add(time.Hour)
+
+	if got := columnToTime(-5, 100, from, to); !got.Equal(from) {
+		t.Errorf("columnToTime(-5) = %v; want from = %v", got, from)
+	}
+	if got := columnToTime(150, 100, from, to); !got.Equal(to) {
+		t.Errorf("columnToTime(150, canvasW=100) = %v; want to = %v", got, to)
+	}
+	if got := columnToTime(50, 0, from, to); !got.Equal(from) {
+		t.Errorf("columnToTime(50, canvasW=0) = %v; want from = %v", got, from)
+	}
+	if got := columnToTime(50, -1, from, to); !got.Equal(from) {
+		t.Errorf("columnToTime(50, canvasW=-1) = %v; want from = %v", got, from)
+	}
+
+	if got := timeToColumn(from.Add(-time.Hour), 100, from, to); got != 0 {
+		t.Errorf("timeToColumn(before from) = %d; want 0", got)
+	}
+	if got := timeToColumn(to.Add(time.Hour), 100, from, to); got != 100 {
+		t.Errorf("timeToColumn(after to) = %d; want 100 (canvasW)", got)
+	}
+	if got := timeToColumn(from.Add(30*time.Minute), 0, from, to); got != 0 {
+		t.Errorf("timeToColumn(canvasW=0) = %d; want 0", got)
+	}
+}
+
+func TestBucketCountInRange(t *testing.T) {
+	tests := []struct {
+		name string
+		from time.Time
+		to   time.Time
+		dur  time.Duration
+		want int
+	}{
+		{
+			"15m_one_hour",
+			time.Date(2026, 5, 15, 9, 0, 0, 0, time.UTC),
+			time.Date(2026, 5, 15, 10, 0, 0, 0, time.UTC),
+			15 * time.Minute,
+			4,
+		},
+		{
+			"1h_one_day",
+			time.Date(2026, 5, 15, 0, 0, 0, 0, time.UTC),
+			time.Date(2026, 5, 16, 0, 0, 0, 0, time.UTC),
+			time.Hour,
+			24,
+		},
+		{
+			"24h_seven_days_local",
+			time.Date(2026, 5, 8, 0, 0, 0, 0, time.Local),
+			time.Date(2026, 5, 15, 0, 0, 0, 0, time.Local),
+			24 * time.Hour,
+			7,
+		},
+		{
+			"empty_range",
+			time.Date(2026, 5, 15, 0, 0, 0, 0, time.UTC),
+			time.Date(2026, 5, 15, 0, 0, 0, 0, time.UTC),
+			time.Hour,
+			0,
+		},
+		{
+			"to_before_from",
+			time.Date(2026, 5, 15, 1, 0, 0, 0, time.UTC),
+			time.Date(2026, 5, 15, 0, 0, 0, 0, time.UTC),
+			time.Hour,
+			0,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := bucketCountInRange(tt.from, tt.to, tt.dur); got != tt.want {
+				t.Errorf("bucketCountInRange(%v, %v, %v) = %d; want %d",
+					tt.from, tt.to, tt.dur, got, tt.want)
+			}
+		})
+	}
+}
+
+// absInt is a small int absolute-value helper used by helper round-trip tests.
+func absInt(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
 }

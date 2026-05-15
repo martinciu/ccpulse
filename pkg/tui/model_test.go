@@ -945,56 +945,6 @@ func TestUnitKeyToggles(t *testing.T) {
 	}
 }
 
-func TestZoomKeyDisabledInRemainingMode(t *testing.T) {
-	// z must be a no-op while in remaining mode, and must be hidden from
-	// the help footer. Cycling back out of remaining mode must re-enable it.
-	m := New(Deps{})
-	m.w, m.h = 120, 40
-
-	// Press 'u' twice to arrive at remaining mode (unitIdx == 2).
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
-	m = updated.(Model)
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
-	m = updated.(Model)
-	if m.unitIdx != int(chartUnitRemaining) {
-		t.Fatalf("expected unitIdx=%d (remaining), got %d", int(chartUnitRemaining), m.unitIdx)
-	}
-
-	// z must not change zoomIdx.
-	initialZoom := m.zoomIdx
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
-	m = updated.(Model)
-	if m.zoomIdx != initialZoom {
-		t.Errorf("zoom changed in remaining mode: %d → %d", initialZoom, m.zoomIdx)
-	}
-
-	// Zoom binding must not appear in the help footer while in remaining mode.
-	footer := m.help.View(m.keys)
-	if strings.Contains(footer, "z  zoom") || strings.Contains(footer, "z zoom") {
-		t.Errorf("zoom binding still visible in help footer while in remaining mode:\n%s", footer)
-	}
-
-	// Cycle once more to wrap back to tokens (unitIdx == 0).
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
-	m = updated.(Model)
-	if m.unitIdx != 0 {
-		t.Fatalf("expected unitIdx=0 (tokens) after third 'u', got %d", m.unitIdx)
-	}
-
-	// Zoom binding must reappear in the help footer.
-	footer = m.help.View(m.keys)
-	if !strings.Contains(footer, "zoom") {
-		t.Errorf("zoom binding missing from help footer after leaving remaining mode:\n%s", footer)
-	}
-
-	// z must now change zoomIdx.
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
-	m = updated.(Model)
-	if m.zoomIdx == initialZoom {
-		t.Errorf("zoom did not advance after leaving remaining mode: zoomIdx still %d", m.zoomIdx)
-	}
-}
-
 func TestUnitKeyInHelp(t *testing.T) {
 	// The 'u unit' binding must appear in both ShortHelp (footer) and
 	// FullHelp (overlay opened with '?'). Asserts on the rendered help
@@ -1627,6 +1577,10 @@ func TestScrollHelpers_UpdateShadowOffset(t *testing.T) {
 // cache produces ~125 buckets, still overflowing chartWidth=118, so the
 // zoom-translation subtest also has somewhere to scroll.
 //
+// Also seeds 10 usage_samples (5min apart, ending now) so remaining-mode
+// refreshes hit the non-empty pts5h/pts7d branch. Bar-mode tests are
+// unaffected (lastPts5h/7d only consulted in remaining mode).
+//
 // Returns the Model with chartWidth=118 (w=120) and zoom=15m (zoomIdx=0).
 // Caller is responsible for cache.Close via the returned cleanup.
 func seedScrollTestModel(t *testing.T, count int) (*Model, func()) {
@@ -1655,6 +1609,16 @@ func seedScrollTestModel(t *testing.T, count int) (*Model, func()) {
 		c.Close()
 		t.Fatal(err)
 	}
+	for i := 0; i < 10; i++ {
+		u := anthro.Usage{
+			FiveHour: &anthro.Bucket{Utilization: float64(10 + i*5), ResetsAt: now.Add(time.Hour)},
+			SevenDay: &anthro.Bucket{Utilization: float64(5 + i*2), ResetsAt: now.Add(24 * time.Hour)},
+		}
+		if err := c.RecordUsageSample(u, now.Add(time.Duration(-i)*5*time.Minute)); err != nil {
+			c.Close()
+			t.Fatalf("RecordUsageSample: %v", err)
+		}
+	}
 	m := New(Deps{Cache: c})
 	m.w, m.h = 120, 40
 	m.zoomIdx = 0 // 15m zoom: count messages → ~count buckets, overflows chartWidth=118
@@ -1662,6 +1626,150 @@ func seedScrollTestModel(t *testing.T, count int) (*Model, func()) {
 	m.viewport.Height = m.chartHeight()
 	m.refreshChart()
 	return &m, func() { c.Close() }
+}
+
+func TestZoomKey_EnabledInEveryUnitMode(t *testing.T) {
+	m, cleanup := seedScrollTestModel(t, 200)
+	defer cleanup()
+
+	for _, u := range []chartUnit{chartUnitTokens, chartUnitCost, chartUnitRemaining} {
+		m.unitIdx = int(u)
+		if !m.keys.Zoom.Enabled() {
+			t.Errorf("Zoom binding disabled in unit=%v; want enabled", u)
+		}
+	}
+}
+
+func TestZoomKey_AdvancesZoomInRemainingMode(t *testing.T) {
+	m, cleanup := seedScrollTestModel(t, 200)
+	defer cleanup()
+	m.unitIdx = int(chartUnitRemaining)
+	m.zoomIdx = 0
+	m.refreshChart()
+
+	zoomKey := m.keys.Zoom.Keys()[0]
+	mUpdated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(zoomKey)})
+	got := mUpdated.(Model).zoomIdx
+	if got != 1 {
+		t.Errorf("zoomIdx after %q in remaining mode = %d; want 1", zoomKey, got)
+	}
+}
+
+// TestRemainingMode_CanvasWidthMatchesBar verifies the new canvas
+// width formula matches what bar mode would produce at the same zoom
+// for the same [from, to) window. This is the time-range parity the
+// u-toggle anchor preservation relies on.
+func TestRemainingMode_CanvasWidthMatchesBar(t *testing.T) {
+	for zoomIdx, zoom := range ZoomLevels {
+		t.Run(zoom.Label, func(t *testing.T) {
+			m, cleanup := seedScrollTestModel(t, 200)
+			defer cleanup()
+			m.zoomIdx = zoomIdx
+
+			m.unitIdx = int(chartUnitTokens)
+			m.refreshChart()
+			barCanvasW := m.lastCanvasW
+			barFrom, barTo := m.lastChartFrom, m.lastChartTo
+
+			m.unitIdx = int(chartUnitRemaining)
+			m.refreshChart()
+			remCanvasW := m.lastCanvasW
+			remFrom, remTo := m.lastChartFrom, m.lastChartTo
+
+			if !barFrom.Equal(remFrom) || !barTo.Equal(remTo) {
+				t.Errorf("[%s] from/to differ: bar=[%v,%v) rem=[%v,%v)",
+					zoom.Label, barFrom, barTo, remFrom, remTo)
+			}
+			want := barCanvasW
+			if want < m.chartWidth() {
+				want = m.chartWidth()
+			}
+			if remCanvasW != want {
+				t.Errorf("[%s] canvasW differ: bar=%d rem=%d (chartWidth=%d, want=%d)",
+					zoom.Label, barCanvasW, remCanvasW, m.chartWidth(), want)
+			}
+		})
+	}
+}
+
+// TestRefreshChart_PreservesAnchorAcrossRefresh verifies the wall-clock
+// anchor stays put across a no-op refresh (same zoom, same unit, no new
+// data). Locks in the new time-based anchor primitive — a regression
+// here means a viewport jump on every watcher RefreshMsg.
+func TestRefreshChart_PreservesAnchorAcrossRefresh(t *testing.T) {
+	m, cleanup := seedScrollTestModel(t, 200)
+	defer cleanup()
+	m.unitIdx = int(chartUnitTokens)
+	m.refreshChart()
+
+	// Scroll to a non-edge position (column-equivalent at stride=1 zoom).
+	canvasW := m.lastCanvasW
+	if canvasW < 20 {
+		t.Skipf("seeded canvas too narrow (%d) to scroll", canvasW)
+	}
+	want := canvasW / 3
+	m.setX(want)
+
+	// No-op refresh — same data, same zoom, same unit.
+	m.refreshChart()
+
+	if got := m.viewportXOffset; absInt(got-want) > 1 {
+		t.Errorf("after no-op refresh viewportXOffset = %d; want within +-1 of %d", got, want)
+	}
+}
+
+// TestRefreshChart_PinnedSticksToRightEdge verifies the wasPinned snap
+// survives the migration to time-based anchoring.
+func TestRefreshChart_PinnedSticksToRightEdge(t *testing.T) {
+	m, cleanup := seedScrollTestModel(t, 200)
+	defer cleanup()
+	m.unitIdx = int(chartUnitTokens)
+	m.refreshChart()
+
+	// Pin to right edge (column-equivalent at stride=1 zoom).
+	rightEdge := max(0, m.lastCanvasW-m.viewport.Width)
+	m.setX(rightEdge)
+
+	m.refreshChart()
+
+	if got := m.viewportXOffset; got != max(0, m.lastCanvasW-m.viewport.Width) {
+		t.Errorf("pinned refresh viewportXOffset = %d; want right edge %d",
+			got, max(0, m.lastCanvasW-m.viewport.Width))
+	}
+}
+
+func TestRefreshChart_CapturesCanvasState(t *testing.T) {
+	tests := []struct {
+		name    string
+		unitIdx int
+	}{
+		{"tokens", int(chartUnitTokens)},
+		{"cost", int(chartUnitCost)},
+		{"remaining", int(chartUnitRemaining)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m, cleanup := seedScrollTestModel(t, 200)
+			defer cleanup()
+			m.unitIdx = tt.unitIdx
+
+			m.refreshChart()
+
+			if m.lastCanvasW <= 0 {
+				t.Errorf("lastCanvasW = %d after refresh in %s mode; want > 0", m.lastCanvasW, tt.name)
+			}
+			if m.lastChartFrom.IsZero() {
+				t.Errorf("lastChartFrom is zero after refresh in %s mode", tt.name)
+			}
+			if m.lastChartTo.IsZero() {
+				t.Errorf("lastChartTo is zero after refresh in %s mode", tt.name)
+			}
+			if !m.lastChartTo.After(m.lastChartFrom) {
+				t.Errorf("lastChartTo (%v) is not after lastChartFrom (%v) in %s mode",
+					m.lastChartTo, m.lastChartFrom, tt.name)
+			}
+		})
+	}
 }
 
 func TestRefreshChart_FirstLoadPinsRight(t *testing.T) {

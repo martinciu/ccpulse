@@ -263,6 +263,116 @@ func TestProgram_IndexFadeAppearsAndClears(t *testing.T) {
 // "no Claude sessions yet" placeholder to a rendered chart after a
 // RefreshMsg with seeded cache data. Mirrors the post-backfill UX
 // from #94.
+// TestUToggle_PreservesTimeAnchor verifies that toggling u between
+// bar (tokens/cost) and remaining preserves the wall-clock moment
+// under the viewport's left edge. Locks in the time-range parity
+// claim of the design — relies on Task 4's canvas-width mirror and
+// Task 3's time-based anchor.
+func TestUToggle_PreservesTimeAnchor(t *testing.T) {
+	m, cleanup := seedScrollTestModel(t, 700)
+	defer cleanup()
+	m.zoomIdx = 1 // 1h zoom — wide enough canvas to scroll
+	m.unitIdx = int(chartUnitTokens)
+	m.refreshChart()
+
+	if m.lastCanvasW <= m.viewport.Width+10 {
+		t.Skipf("seeded canvas (%d) too narrow for a meaningful scroll on a %d-wide viewport",
+			m.lastCanvasW, m.viewport.Width)
+	}
+
+	// Scroll to a known mid-history column and capture its time.
+	canvasW := m.lastCanvasW
+	stride := ZoomLevels[m.zoomIdx].stride()
+	wantBucketIdx := (canvasW / 3) / stride
+	m.setX(wantBucketIdx)
+	wantCol := wantBucketIdx * stride
+	wantTime := columnToTime(wantCol, canvasW, m.lastChartFrom, m.lastChartTo)
+
+	// Bar (tokens) → remaining.
+	m.unitIdx = int(chartUnitRemaining)
+	m.refreshChart()
+	gotCol := m.viewportXOffset * ZoomLevels[m.zoomIdx].stride()
+	gotTime := columnToTime(gotCol, m.lastCanvasW, m.lastChartFrom, m.lastChartTo)
+	tolerance := timeColumnTolerance(m.lastCanvasW, m.lastChartFrom, m.lastChartTo)
+	if absDuration(gotTime.Sub(wantTime)) > tolerance {
+		t.Errorf("u toggle to remaining shifted anchor: want=%v got=%v (tol=%v)",
+			wantTime, gotTime, tolerance)
+	}
+
+	// Remaining → cost.
+	m.unitIdx = int(chartUnitCost)
+	m.refreshChart()
+	gotCol = m.viewportXOffset * ZoomLevels[m.zoomIdx].stride()
+	gotTime = columnToTime(gotCol, m.lastCanvasW, m.lastChartFrom, m.lastChartTo)
+	tolerance = timeColumnTolerance(m.lastCanvasW, m.lastChartFrom, m.lastChartTo)
+	if absDuration(gotTime.Sub(wantTime)) > tolerance {
+		t.Errorf("u toggle remaining→cost shifted anchor: want=%v got=%v (tol=%v)",
+			wantTime, gotTime, tolerance)
+	}
+}
+
+// TestZoomCycle_PreservesTimeAnchorInRemaining verifies z cycling
+// inside remaining mode keeps the wall-clock under the viewport edge
+// when scrolling history.
+func TestZoomCycle_PreservesTimeAnchorInRemaining(t *testing.T) {
+	m, cleanup := seedScrollTestModel(t, 700)
+	defer cleanup()
+	m.zoomIdx = 0 // 15m — widest canvas
+	m.unitIdx = int(chartUnitRemaining)
+	m.refreshChart()
+
+	if m.lastCanvasW <= m.viewport.Width+10 {
+		t.Skipf("seeded canvas (%d) too narrow for a meaningful scroll", m.lastCanvasW)
+	}
+
+	stride := ZoomLevels[m.zoomIdx].stride()
+	startBucket := (m.lastCanvasW / 4) / stride
+	m.setX(startBucket)
+	wantCol := startBucket * stride
+	wantTime := columnToTime(wantCol, m.lastCanvasW, m.lastChartFrom, m.lastChartTo)
+
+	for i := 1; i < len(ZoomLevels); i++ {
+		m.zoomIdx = i
+		m.refreshChart()
+		if m.lastCanvasW <= m.viewport.Width {
+			// No scroll room at this zoom — the entire canvas fits in
+			// the viewport, so the "wall-clock under the left edge"
+			// invariant is vacuous (the left edge is always
+			// lastChartFrom regardless of pre-zoom scroll position).
+			continue
+		}
+		gotCol := m.viewportXOffset * ZoomLevels[m.zoomIdx].stride()
+		gotTime := columnToTime(gotCol, m.lastCanvasW, m.lastChartFrom, m.lastChartTo)
+		tolerance := timeColumnTolerance(m.lastCanvasW, m.lastChartFrom, m.lastChartTo)
+		// Add one zoom-bucket of tolerance: zoom changes can shift the
+		// canvas's [from, to) window by up to one bucket-duration
+		// (BucketAlign vs DayStartLocal), and the bucket-quantised
+		// viewportXOffset shadow drops sub-bucket precision.
+		tolerance += ZoomLevels[m.zoomIdx].Duration
+		if absDuration(gotTime.Sub(wantTime)) > tolerance {
+			t.Errorf("zoom %s shifted anchor: want=%v got=%v (tol=%v)",
+				ZoomLevels[m.zoomIdx].Label, wantTime, gotTime, tolerance)
+		}
+	}
+}
+
+// timeColumnTolerance returns the wall-clock span of one column in
+// the current canvas — the minimum quantum the anchor restoration
+// can hit. Tests assert anchor preservation within this tolerance.
+func timeColumnTolerance(canvasW int, from, to time.Time) time.Duration {
+	if canvasW <= 0 || !to.After(from) {
+		return time.Second
+	}
+	return to.Sub(from) / time.Duration(canvasW)
+}
+
+func absDuration(d time.Duration) time.Duration {
+	if d < 0 {
+		return -d
+	}
+	return d
+}
+
 func TestProgram_EmptyToFirstChart(t *testing.T) {
 	c := newSeededCache(t)
 	m := New(Deps{Cache: c})

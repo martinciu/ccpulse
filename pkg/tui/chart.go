@@ -8,9 +8,8 @@ import (
 	"time"
 
 	"github.com/NimbleMarkets/ntcharts/barchart"
-	"github.com/NimbleMarkets/ntcharts/canvas"
 	"github.com/NimbleMarkets/ntcharts/canvas/runes"
-	"github.com/NimbleMarkets/ntcharts/linechart/wavelinechart"
+	"github.com/NimbleMarkets/ntcharts/linechart/timeserieslinechart"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
@@ -61,6 +60,99 @@ func (z ZoomLevel) CanvasWidth(n int) int {
 // re-introducing the integer-divide panic class.
 func (z ZoomLevel) stride() int {
 	return max(z.BarWidth, 1) + max(z.BarGap, 0)
+}
+
+// columnToTime maps a viewport column to the wall-clock time at that
+// column within the canvas's [from, to) range. Used pre-rebuild to
+// snapshot the anchor; the (truncating) inverse is timeToColumn.
+//
+// Uses integer-second arithmetic with round-to-nearest so the
+// round-trip columnToTime(col) -> timeToColumn(t) returns col exactly
+// at canvasW values where the truncated form would drop by 1 (e.g.,
+// 312/490*span over a 41-day range).
+//
+// Defensive: canvasW<=0 or to<=from collapse to the canvas origin so
+// callers can use the result without nil checks. col is clamped to
+// [0, canvasW] so out-of-range scroll state never escapes the helper.
+func columnToTime(col, canvasW int, from, to time.Time) time.Time {
+	if canvasW <= 0 || !to.After(from) {
+		return from
+	}
+	if col <= 0 {
+		return from
+	}
+	if col >= canvasW {
+		return to
+	}
+	spanSec := int64(to.Sub(from) / time.Second)
+	if spanSec <= 0 {
+		return from
+	}
+	// Round-to-nearest: (a + b/2) / b. The +canvasW/2 bias makes this
+	// the inverse of timeToColumn's truncating divide for exact
+	// bucket-boundary inputs that would otherwise drift by 1 col.
+	cw := int64(canvasW)
+	offSec := (spanSec*int64(col) + cw/2) / cw
+	return from.Add(time.Duration(offSec) * time.Second)
+}
+
+// timeToColumn maps a wall-clock time back to a viewport column in
+// the canvas's [from, to) range. Used post-rebuild to restore the
+// anchor; the inverse of columnToTime.
+//
+// Truncates (floor) rather than rounding so a mid-bucket wall-clock
+// returns the column at the start of the bucket containing it. This
+// matches the existing bar-mode semantics where BucketAlign(t, dur)
+// snaps an anchor DOWN to the bucket it lives in (e.g., 09:45 at 1h
+// zoom resolves to the 09:00 bucket, not the 10:00 one).
+//
+// Defensive: same clamping contract as columnToTime — out-of-range t
+// snaps to the canvas edges; degenerate canvas returns 0.
+func timeToColumn(t time.Time, canvasW int, from, to time.Time) int {
+	if canvasW <= 0 || !to.After(from) {
+		return 0
+	}
+	if !t.After(from) {
+		return 0
+	}
+	if !t.Before(to) {
+		return canvasW
+	}
+	spanSec := int64(to.Sub(from) / time.Second)
+	if spanSec <= 0 {
+		return 0
+	}
+	elapsedSec := int64(t.Sub(from) / time.Second)
+	col := int(elapsedSec * int64(canvasW) / spanSec)
+	if col < 0 {
+		return 0
+	}
+	if col > canvasW {
+		return canvasW
+	}
+	return col
+}
+
+// bucketCountInRange counts the bucket slots covering [from, to) at the
+// given zoom duration. Matches cache.TokenBuckets / cache.CostBuckets
+// return-length semantics:
+//   - For sub-day durations, the count is int(to.Sub(from) / dur).
+//   - For 24h, the count is the number of local-tz calendar days in
+//     the range (DST-correct via AddDate(0,0,1)).
+//
+// Returns 0 for empty or reversed ranges.
+func bucketCountInRange(from, to time.Time, dur time.Duration) int {
+	if !to.After(from) {
+		return 0
+	}
+	if dur == 24*time.Hour {
+		n := 0
+		for t := from; t.Before(to); t = t.AddDate(0, 0, 1) {
+			n++
+		}
+		return n
+	}
+	return int(to.Sub(from) / dur)
 }
 
 // ZoomLevels are the available zoom steps, cycled with the z key.
@@ -407,14 +499,24 @@ func isLineMode(u chartUnit) bool {
 	return u == chartUnitRemaining
 }
 
-// buildLineChart renders two remaining-quota lines (5h green, 7d purple)
-// onto a single wavelinechart canvas. Each UtilizationPoint's timestamp
-// is mapped to a proportional x-position within [from, to). Y values
-// are remaining fractions: 1 - Pct/100, in [0, 1]. Empty input renders
-// a flat line at 1.0 (100% headroom — no-quota fallback).
+// buildLineChart renders two remaining-quota series (5h green, 7d
+// purple) as a dotted braille trail on a timeserieslinechart canvas.
+// Time values are mapped natively by ntcharts via SetViewTimeRange.
+// Y values are remaining fractions: 1 - Pct/100, in [0, 1].
 //
-// X-axis labels reuse renderXLabels with synthetic bucket starts derived
-// from the zoom's duration so the label cadence matches bar-chart mode.
+// Empty input renders a flat baseline at 1.0 (100% headroom — no-quota
+// fallback) per dataset.
+//
+// X-axis labels are rendered by ccpulse's renderXLabels and joined
+// below the chart body; ntcharts' built-in axes are suppressed via
+// SetXStep(0)/SetYStep(0). The left-edge Y labels (100%/50%/0% +
+// 5h/7d legend) are spliced in by overlayYTicks in the caller.
+//
+// Implementation note: ntcharts' line-chart Style API splits "rune set"
+// (SetLineStyle / SetDataSetLineStyle, taking runes.LineStyle) from
+// "lipgloss color" (SetStyle / SetDataSetStyle, taking lipgloss.Style).
+// They are SEPARATE setters — passing both via a hypothetical
+// SetStyles(line, color) would fail to compile against ntcharts v0.5.1.
 func buildLineChart(pts5h, pts7d []cache.UtilizationPoint,
 	from, to time.Time, chartW, chartH int,
 	now time.Time, zoom ZoomLevel, order dateOrder) string {
@@ -430,49 +532,47 @@ func buildLineChart(pts5h, pts7d []cache.UtilizationPoint,
 		barsH = chartH - 1
 	}
 
-	span := to.Sub(from).Seconds()
-	if span <= 0 {
-		span = 1
-	}
-
-	wlc := wavelinechart.New(chartW, barsH,
-		wavelinechart.WithYRange(0, 1.0),
-		wavelinechart.WithXRange(0, float64(chartW)),
+	tslc := timeserieslinechart.New(chartW, barsH,
+		timeserieslinechart.WithYRange(0, 1.0),
+		timeserieslinechart.WithTimeRange(from, to),
 	)
+	tslc.SetViewTimeRange(from, to)
+	tslc.SetXStep(0)
+	tslc.SetYStep(0)
 
-	mapX := func(t time.Time) float64 {
-		return t.Sub(from).Seconds() / span * float64(chartW)
-	}
-
-	// Plot 5h data set (default). Empty → flat line at 100% headroom.
+	// 5h dataset (default).
+	tslc.SetLineStyle(runes.ThinLineStyle)
+	tslc.SetStyle(lipgloss.NewStyle().Foreground(colorChartRemaining5h))
 	if len(pts5h) == 0 {
-		wlc.Plot(canvas.Float64Point{X: 0, Y: 1.0})
-		wlc.Plot(canvas.Float64Point{X: float64(chartW), Y: 1.0})
+		tslc.Push(timeserieslinechart.TimePoint{Time: from, Value: 1.0})
+		tslc.Push(timeserieslinechart.TimePoint{Time: to, Value: 1.0})
 	} else {
 		for _, p := range pts5h {
-			remaining := max(0, 1.0-p.Pct/100.0)
-			wlc.Plot(canvas.Float64Point{X: mapX(p.At), Y: remaining})
+			tslc.Push(timeserieslinechart.TimePoint{
+				Time:  p.At,
+				Value: math.Max(0, 1.0-p.Pct/100.0),
+			})
 		}
 	}
-	wlc.SetStyles(runes.ThinLineStyle,
-		lipgloss.NewStyle().Foreground(colorChartRemaining5h))
 
-	// Plot 7d data set.
+	// 7d dataset.
 	const ds7d = "7d"
+	tslc.SetDataSetLineStyle(ds7d, runes.ThinLineStyle)
+	tslc.SetDataSetStyle(ds7d, lipgloss.NewStyle().Foreground(colorChartRemaining7d))
 	if len(pts7d) == 0 {
-		wlc.PlotDataSet(ds7d, canvas.Float64Point{X: 0, Y: 1.0})
-		wlc.PlotDataSet(ds7d, canvas.Float64Point{X: float64(chartW), Y: 1.0})
+		tslc.PushDataSet(ds7d, timeserieslinechart.TimePoint{Time: from, Value: 1.0})
+		tslc.PushDataSet(ds7d, timeserieslinechart.TimePoint{Time: to, Value: 1.0})
 	} else {
 		for _, p := range pts7d {
-			remaining := max(0, 1.0-p.Pct/100.0)
-			wlc.PlotDataSet(ds7d, canvas.Float64Point{X: mapX(p.At), Y: remaining})
+			tslc.PushDataSet(ds7d, timeserieslinechart.TimePoint{
+				Time:  p.At,
+				Value: math.Max(0, 1.0-p.Pct/100.0),
+			})
 		}
 	}
-	wlc.SetDataSetStyles(ds7d, runes.ThinLineStyle,
-		lipgloss.NewStyle().Foreground(colorChartRemaining7d))
 
-	wlc.DrawAll()
-	body := wlc.View()
+	tslc.DrawBrailleAll()
+	body := tslc.View()
 
 	if showXLabels {
 		// Synthesise bucket starts for x-axis labels. The line chart spans

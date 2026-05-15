@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
-	"sort"
 	"strings"
 	"time"
 
@@ -117,11 +116,31 @@ type Model struct {
 	oldPts5h []cache.UtilizationPoint
 	oldPts7d []cache.UtilizationPoint
 
-	// lastChartFrom / lastChartTo are the [from, to) time window used by
-	// the most recent remaining-mode buildLineChart call. Stored so
+	// oldValues / oldStarts are snapshotted in beginUnitAnimation so
+	// renderSpringFrame can render the exiting bar chart (oldIsLine=false
+	// phase) after refreshChart has already overwritten lastValues/Starts
+	// with the new unit's data. Used by the bar branch during
+	// springShrinking when oldIsLine=false — the bucket-aligned
+	// counterpart to oldPts5h/7d.
+	oldValues []float64
+	oldStarts []time.Time
+
+	// lastChartFrom / lastChartTo / lastCanvasW are the [from, to) time
+	// window and column-count used by the most recent buildChart /
+	// buildLineChart call (any unit). Stored so refreshChart can map
+	// the viewport column back to a wall-clock anchor on the NEXT
+	// refresh (zoom, unit toggle, watcher event), and so
 	// renderSpringFrame can reproduce the same x-axis during animation.
 	lastChartFrom time.Time
 	lastChartTo   time.Time
+	lastCanvasW   int
+	// lastZoomStride is the per-bar column distance captured at the
+	// same refreshChart pass as lastCanvasW. Used to derive the
+	// PREVIOUS viewport column offset (= viewportXOffset *
+	// lastZoomStride) when the user just pressed 'z' and the current
+	// ZoomLevels[m.zoomIdx].stride() reflects the NEW zoom, not the
+	// one the viewport was last drawn against.
+	lastZoomStride int
 
 	// viewportXOffset shadows m.viewport's unexported xOffset. We need a
 	// readable scroll position to preserve the wall-clock anchor across
@@ -208,7 +227,6 @@ func New(d Deps) Model {
 	m.progress7d = newProgressBar(40)
 	m.viewport = viewport.New(80, 20)
 	m.viewport.SetHorizontalStep(horizontalScrollStep)
-	m.keys.Zoom.SetEnabled(chartUnit(m.unitIdx) != chartUnitRemaining)
 	return m
 }
 
@@ -358,15 +376,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// so dismissing help returns the user to the same scroll/zoom
 			// state they left.
 		case key.Matches(msg, m.keys.Zoom):
-			// Zoom is a no-op in remaining mode; proper semantics tracked in #177.
-			if chartUnit(m.unitIdx) == chartUnitRemaining {
-				break
-			}
 			m.zoomIdx = (m.zoomIdx + 1) % len(ZoomLevels)
 			m.refreshChart()
 		case key.Matches(msg, m.keys.Unit):
 			m.unitIdx = (m.unitIdx + 1) % int(chartUnitCount)
-			m.keys.Zoom.SetEnabled(chartUnit(m.unitIdx) != chartUnitRemaining)
 			m.beginUnitAnimation()
 			if m.springActive {
 				// After beginUnitAnimation, viewport content is the new
@@ -634,12 +647,17 @@ func (m *Model) beginUnitAnimation() {
 		return
 	}
 
-	oldValues := m.lastValues
 	m.oldPeak = m.peak
 	m.oldUnitIdx = (m.unitIdx + int(chartUnitCount) - 1) % int(chartUnitCount)
 	m.oldIsLine = isLineMode(chartUnit(m.oldUnitIdx))
 	m.newIsLine = isLineMode(chartUnit(m.unitIdx))
-	// Snapshot pts before refreshChart overwrites them.
+	// Snapshot OLD-unit data before refreshChart overwrites lastValues/
+	// lastStarts/lastPts5h/lastPts7d. The bar branch of renderSpringFrame
+	// needs oldValues/oldStarts during springShrinking when oldIsLine=false;
+	// the line branch needs oldPts5h/7d during springShrinking when
+	// oldIsLine=true.
+	m.oldValues = m.lastValues
+	m.oldStarts = m.lastStarts
 	m.oldPts5h = m.lastPts5h
 	m.oldPts7d = m.lastPts7d
 
@@ -653,7 +671,19 @@ func (m *Model) beginUnitAnimation() {
 		return
 	}
 
+	// Size spring arrays to max(old, new) so cross-mode transitions
+	// (bar↔line) don't bail out in renderSpringFrame's bar branch when
+	// the user's scroll position is past the smaller side's length.
+	// Concretely: tokens→remaining has 700 old bars vs ~10 line points;
+	// without the max() the bar branch would compute start=582,
+	// end=min(582+nv, 10)=10, start>=end, return, and leave the
+	// refreshChart-set remaining-line steady state visible during all of
+	// Phase 1 (the bar collapse the user expects to see).
 	n := len(newValues)
+	if len(m.oldValues) > n {
+		n = len(m.oldValues)
+	}
+
 	m.springs = make([]harmonica.Spring, n)
 	m.springProjectiles = make([]harmonica.Projectile, n)
 	m.springRatios = make([]float64, n)
@@ -665,18 +695,20 @@ func (m *Model) beginUnitAnimation() {
 	for i := range n {
 		// Phase 1 exit ratio: line mode collapses as a uniform shape fraction
 		// (1.0 = full, 0.0 = flat); bar mode uses the per-bar height ratio.
+		// Index-bounded against m.oldValues so n > len(oldValues) leaves
+		// the trailing entries at 0 (invisible bars during shrink).
 		if m.oldIsLine {
 			m.springRatios[i] = 1.0
-		} else if m.oldPeak > 0 && i < len(oldValues) {
-			m.springRatios[i] = oldValues[i] / m.oldPeak
+		} else if m.oldPeak > 0 && i < len(m.oldValues) {
+			m.springRatios[i] = m.oldValues[i] / m.oldPeak
 		}
 
 		// Phase 2 enter target: line mode springs to shape-fraction 1.0
 		// (the interpPt formula then maps 1→real shape); bar mode uses the
-		// normalised new value.
+		// normalised new value. Same index-bound for newValues.
 		if m.newIsLine {
 			m.springFinalTargets[i] = 1.0
-		} else if newPeak > 0 {
+		} else if newPeak > 0 && i < len(newValues) {
 			m.springFinalTargets[i] = newValues[i] / newPeak
 		}
 
@@ -777,15 +809,43 @@ func (m *Model) renderSpringFrame() {
 		if to.IsZero() {
 			to = time.Now()
 		}
-		chartW := m.chartWidth()
+		// chartW must match the steady-state line-mode canvas width so
+		// the animated frame doesn't visibly compress when entering
+		// (springGrowing) or expand when exiting (springShrinking). The
+		// formula mirrors refreshChart's remaining-mode branch.
+		chartW := zoom.CanvasWidth(bucketCountInRange(from, to, zoom.Duration))
+		if chartW < m.chartWidth() {
+			chartW = m.chartWidth()
+		}
+		// Preserve the user's scroll position across the animation.
+		// viewport.SetXOffset(0) would snap the chart back to the
+		// canvas origin on every spring tick, which looks like a jump
+		// when the user was scrolled to mid-history.
 		m.viewport.SetContent(buildLineChart(interp5h, interp7d, from, to, chartW, chartH, time.Now(), zoom, m.dateOrder))
-		m.viewport.SetXOffset(0)
+		m.viewport.SetXOffset(m.viewportXOffset * zoom.stride())
 		return
 	}
 
 	nv := m.visibleBuckets()
 
-	// Clamp the window to the actual ratios slice.
+	// Pick the starts that align with the springRatios for the current
+	// phase. Phase 1 of a bar→line transition needs the OLD bar starts
+	// (lastStarts has been overwritten with sparse line points by
+	// refreshChart); every other case uses the post-refresh lastStarts.
+	var rangeStarts []time.Time
+	var prevBarCount int
+	if m.springPhase == springShrinking && !m.oldIsLine {
+		rangeStarts = m.oldStarts
+		prevBarCount = len(m.oldValues)
+	} else {
+		rangeStarts = m.lastStarts
+		prevBarCount = len(m.lastValues)
+	}
+
+	// Clamp the window to the smaller of springRatios and rangeStarts so
+	// the slice indices stay valid for both arrays. With springs sized to
+	// max(old, new) and rangeStarts chosen to match the active phase, the
+	// two slices line up 1:1 in normal flow; the clamp is a safety net.
 	start := m.springXOffset
 	if start < 0 {
 		start = 0
@@ -793,6 +853,9 @@ func (m *Model) renderSpringFrame() {
 	end := start + nv
 	if end > len(m.springRatios) {
 		end = len(m.springRatios)
+	}
+	if end > len(rangeStarts) {
+		end = len(rangeStarts)
 	}
 	if start >= end {
 		return
@@ -809,13 +872,14 @@ func (m *Model) renderSpringFrame() {
 	// doesn't see a "jump left" or a vanishing partial bar on the
 	// steady-state ↔ spring transition. Include bucket [start-1] as a
 	// leading bar and offset into it by the same slack the viewport
-	// would have shown pre-spring.
+	// would have shown pre-spring. Uses the phase-correct bar count so
+	// Phase 1 of bar→line uses the OLD bar canvas for slack math.
 	stride := zoom.stride()
-	prevLongest := zoom.CanvasWidth(len(m.lastValues))
+	prevLongest := zoom.CanvasWidth(prevBarCount)
 	sliceStart, springXOff := computeSpringSlice(start, prevLongest, m.viewport.Width, stride)
 
 	visibleRatios := m.springRatios[sliceStart:end]
-	visibleStarts := m.lastStarts[sliceStart:end]
+	visibleStarts := rangeStarts[sliceStart:end]
 	// During the shrinking phase the bars are still showing OLD-unit data
 	// falling toward zero, so render them in the OLD unit's color. Only
 	// after the handoff (springGrowing onward) does the color switch to
@@ -831,13 +895,31 @@ func (m *Model) renderSpringFrame() {
 
 // setX is the single point of entry for changing the viewport's horizontal
 // scroll position. n is a bucket index (not a column count); setX clamps
-// it against lastStarts and visibleBuckets, then multiplies by the per-
-// bar stride (BarWidth+BarGap, defensively clamped to ≥1) when
-// delegating to viewport.SetXOffset (which is column-indexed). The
-// shadow viewportXOffset stays in bucket-index space.
+// it then multiplies by the per-bar stride (BarWidth+BarGap, defensively
+// clamped to ≥1) when delegating to viewport.SetXOffset (column-indexed).
+// The shadow viewportXOffset stays in bucket-index space.
+//
+// Clamp is mode-aware:
+//
+//   - Bar modes (tokens/cost): clamp against len(lastStarts) -
+//     visibleBuckets(). Preserves the existing setX semantics that
+//     renderSpringFrame's slack-handling computeSpringSlice was tuned
+//     against. The bucket-aligned canvas guarantees lastStarts and
+//     visibleBuckets line up.
+//   - Remaining mode: clamp against (lastCanvasW - viewport.Width) /
+//     stride. lastStarts in remaining mode is sparse sample points
+//     (not bucket-aligned), so the bar-mode clamp would collapse to
+//     0 the moment usage_samples count drops below visibleBuckets.
+//     The canvas-width clamp matches the column-based anchor logic
+//     in refreshChart.
 func (m *Model) setX(n int) {
 	stride := ZoomLevels[m.zoomIdx].stride()
-	maxX := max(0, len(m.lastStarts)-m.visibleBuckets())
+	var maxX int
+	if chartUnit(m.unitIdx) == chartUnitRemaining {
+		maxX = max(0, m.lastCanvasW-m.viewport.Width) / stride
+	} else {
+		maxX = max(0, len(m.lastStarts)-m.visibleBuckets())
+	}
 	n = min(max(n, 0), maxX)
 	m.viewport.SetXOffset(n * stride)
 	m.viewportXOffset = n
@@ -869,20 +951,30 @@ func (m *Model) refreshChart() {
 		// Next beginUnitAnimation re-makes the slices.
 	}
 
-	// Snapshot the wall-clock anchor BEFORE rebuild. lastStarts is empty
-	// on first load and after any empty-cache early-return — handled by
-	// hadAnchor. Read viewportXOffset (the shadow) rather than the
-	// viewport's own xOffset, which is unexported in bubbles v1.
+	// Snapshot the wall-clock anchor BEFORE rebuild. The previous canvas
+	// state is captured by lastCanvasW + lastChartFrom/To + lastZoomStride
+	// at the end of the previous refreshChart pass. The viewport's
+	// xOffset is unexported in bubbles v1, so we derive its column
+	// position as viewportXOffset * lastZoomStride — the stride at the
+	// time the viewport was last drawn (which can differ from the
+	// current zoom's stride if the user just pressed 'z').
+	//
+	// wasPinned == true when the viewport was at the right edge before
+	// this refresh; the post-rebuild restore re-pins to the new right
+	// edge regardless of canvas width. hadAnchor == false on first load
+	// and after empty-cache early-returns; the restore pins to the new
+	// right edge in that case too.
 	var (
 		anchorTime time.Time
 		hadAnchor  bool
 		wasPinned  bool
 	)
-	if len(m.lastStarts) > 0 {
-		prevMax := max(0, len(m.lastStarts)-m.visibleBuckets())
-		wasPinned = m.viewportXOffset >= prevMax
-		if !wasPinned && m.viewportXOffset < len(m.lastStarts) {
-			anchorTime = m.lastStarts[m.viewportXOffset]
+	if m.lastCanvasW > 0 && m.lastZoomStride > 0 && !m.lastChartFrom.IsZero() && m.lastChartTo.After(m.lastChartFrom) {
+		prevColOffset := m.viewportXOffset * m.lastZoomStride
+		prevMaxCol := max(0, m.lastCanvasW-m.viewport.Width)
+		wasPinned = prevColOffset >= prevMaxCol
+		if !wasPinned {
+			anchorTime = columnToTime(prevColOffset, m.lastCanvasW, m.lastChartFrom, m.lastChartTo)
 			hadAnchor = true
 		}
 	}
@@ -1002,41 +1094,54 @@ func (m *Model) refreshChart() {
 	m.lastStarts = starts
 
 	chartH := m.chartHeight()
+	var canvasW int
 	if unit == chartUnitRemaining {
-		canvasW := m.chartWidth()
-		m.lastChartFrom = from
-		m.lastChartTo = to
+		// Mirror bar mode's canvas-width formula so 'z' zoom and 'u'
+		// unit-toggle preserve the same time-range under the viewport's
+		// left edge in both modes. Floor at chartWidth() so a short
+		// usage_samples history still spans the visible area instead
+		// of rendering in a narrow slice on the left.
+		canvasW = zoom.CanvasWidth(bucketCountInRange(from, to, zoom.Duration))
+		if canvasW < m.chartWidth() {
+			canvasW = m.chartWidth()
+		}
 		m.viewport.SetContent(buildLineChart(m.lastPts5h, m.lastPts7d, from, to, canvasW, chartH, time.Now(), zoom, m.dateOrder))
 	} else {
-		canvasW := zoom.CanvasWidth(len(values))
+		canvasW = zoom.CanvasWidth(len(values))
 		m.viewport.SetContent(buildChart(values, starts, peak, canvasW, chartH, time.Now(), zoom, unit, m.dateOrder))
 	}
+	m.lastChartFrom = from
+	m.lastChartTo = to
+	m.lastCanvasW = canvasW
+	m.lastZoomStride = zoom.stride()
 
 	// Restore the user's anchor. Three cases:
 	//   - !hadAnchor (first load, or coming back from an empty-cache
 	//     placeholder): pin to the new right edge.
 	//   - wasPinned: user was at "now", keep them at "now" against the
-	//     new right edge.
-	//   - else: translate the snapshotted anchor to its bucket index in
-	//     the new grid. For 24h zoom, DayStartLocal aligns to local
-	//     midnight; for sub-day zooms, BucketAlign uses UTC boundaries.
-	//     sort.Search finds the matching index in lastStarts. setX clamps
-	//     if the cache shrank unexpectedly.
+	//     new canvas width.
+	//   - else: map anchorTime → column in the new canvas.
+	//
+	// The anchor is restored via m.setX(targetCol / stride) so the viewport
+	// offset and the m.viewportXOffset bucket-indexed shadow stay in sync —
+	// the invariant that all scroll mutations route through setX /
+	// scrollLeft / scrollRight. At stride=1 (15m / 1h zoom) this is a no-op
+	// transform; at stride=12 (24h zoom with BarWidth=10/BarGap=2) it snaps
+	// to the bucket containing the leftmost visible column, matching the
+	// pre-refactor setX(bucketIdx) behaviour.
+	stride := zoom.stride()
+	rightEdgeCol := max(0, canvasW-m.viewport.Width)
+	var targetCol int
 	switch {
 	case !hadAnchor, wasPinned:
-		m.setX(len(values))
+		targetCol = rightEdgeCol
 	default:
-		var target time.Time
-		if zoom.Duration == 24*time.Hour {
-			target = cache.DayStartLocal(anchorTime)
-		} else {
-			target = cache.BucketAlign(anchorTime, zoom.Duration)
+		targetCol = timeToColumn(anchorTime, canvasW, from, to)
+		if targetCol > rightEdgeCol {
+			targetCol = rightEdgeCol
 		}
-		idx := sort.Search(len(m.lastStarts), func(i int) bool {
-			return !m.lastStarts[i].Before(target)
-		})
-		m.setX(idx)
 	}
+	m.setX(targetCol / stride)
 }
 
 // emptyPlaceholder returns a w×h block with "no Claude sessions yet"
