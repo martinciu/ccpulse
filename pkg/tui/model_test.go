@@ -3121,3 +3121,54 @@ func TestFullUnitCycle_TokensCostRemaining(t *testing.T) {
 		t.Error("tokens mode view should not be empty")
 	}
 }
+
+func TestRefreshChart_EmptyCacheRecoveryPinsRight(t *testing.T) {
+	// Guards the regression from issue #179: an empty-cache early-return in
+	// refreshChart left stale lastCanvasW/lastChartFrom/lastChartTo/lastZoomStride
+	// on the model. When data returned on the next refresh, the anchor logic
+	// saw a non-zero lastCanvasW and treated the offset as a wall-clock anchor
+	// (hadAnchor=true), mapping the stale position to the LEFT of the new
+	// canvas instead of pinning to the right edge.
+	m, cleanup := seedScrollTestModel(t, 200)
+	defer cleanup()
+	m.unitIdx = int(chartUnitTokens)
+
+	seeded := m.deps.Cache
+
+	// Swap in an empty cache to trigger the EarliestMessageTime no-data branch.
+	empty, err := cache.Open(filepath.Join(t.TempDir(), "empty.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer empty.Close()
+	m.deps.Cache = empty
+
+	m.refreshChart()
+
+	// After the empty-cache refresh all canvas-state fields must be zeroed.
+	if m.lastCanvasW != 0 {
+		t.Errorf("lastCanvasW = %d after empty-cache refresh; want 0", m.lastCanvasW)
+	}
+	if !m.lastChartFrom.IsZero() {
+		t.Errorf("lastChartFrom = %v after empty-cache refresh; want zero", m.lastChartFrom)
+	}
+
+	// Restore the seeded cache and force viewport to left edge so we can
+	// detect whether the next refresh correctly re-pins to the right.
+	m.deps.Cache = seeded
+	m.setX(0)
+
+	m.refreshChart()
+
+	// The recovery refresh must treat this as a first-load (hadAnchor=false)
+	// and pin to the right edge.
+	stride := m.lastZoomStride
+	if stride == 0 {
+		stride = 1
+	}
+	wantOffset := max(0, m.lastCanvasW-m.viewport.Width) / stride
+	if got := m.viewportXOffset; got != wantOffset {
+		t.Errorf("viewportXOffset = %d after empty-cache recovery; want right edge %d (lastCanvasW=%d, viewportWidth=%d, stride=%d)",
+			got, wantOffset, m.lastCanvasW, m.viewport.Width, stride)
+	}
+}

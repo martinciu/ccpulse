@@ -1028,6 +1028,10 @@ func (m *Model) refreshChart() {
 		m.lastValues = nil
 		m.lastStarts = nil
 		m.peak = 0
+		m.lastCanvasW = 0
+		m.lastZoomStride = 0
+		m.lastChartFrom = time.Time{}
+		m.lastChartTo = time.Time{}
 		m.setX(0)
 		return
 	}
@@ -1053,6 +1057,10 @@ func (m *Model) refreshChart() {
 			m.lastValues = nil
 			m.lastStarts = nil
 			m.peak = 0
+			m.lastCanvasW = 0
+			m.lastZoomStride = 0
+			m.lastChartFrom = time.Time{}
+			m.lastChartTo = time.Time{}
 			m.setX(0)
 			return
 		}
@@ -1076,6 +1084,10 @@ func (m *Model) refreshChart() {
 			m.lastPts5h = nil
 			m.lastPts7d = nil
 			m.peak = 0
+			m.lastCanvasW = 0
+			m.lastZoomStride = 0
+			m.lastChartFrom = time.Time{}
+			m.lastChartTo = time.Time{}
 			m.setX(0)
 			return
 		}
@@ -1106,6 +1118,10 @@ func (m *Model) refreshChart() {
 			m.lastValues = nil
 			m.lastStarts = nil
 			m.peak = 0
+			m.lastCanvasW = 0
+			m.lastZoomStride = 0
+			m.lastChartFrom = time.Time{}
+			m.lastChartTo = time.Time{}
 			m.setX(0)
 			return
 		}
