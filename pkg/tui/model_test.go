@@ -1627,6 +1627,10 @@ func TestScrollHelpers_UpdateShadowOffset(t *testing.T) {
 // cache produces ~125 buckets, still overflowing chartWidth=118, so the
 // zoom-translation subtest also has somewhere to scroll.
 //
+// Also seeds 10 usage_samples (5min apart, ending now) so remaining-mode
+// refreshes hit the non-empty pts5h/pts7d branch. Bar-mode tests are
+// unaffected (lastPts5h/7d only consulted in remaining mode).
+//
 // Returns the Model with chartWidth=118 (w=120) and zoom=15m (zoomIdx=0).
 // Caller is responsible for cache.Close via the returned cleanup.
 func seedScrollTestModel(t *testing.T, count int) (*Model, func()) {
@@ -1655,6 +1659,16 @@ func seedScrollTestModel(t *testing.T, count int) (*Model, func()) {
 		c.Close()
 		t.Fatal(err)
 	}
+	for i := 0; i < 10; i++ {
+		u := anthro.Usage{
+			FiveHour: &anthro.Bucket{Utilization: float64(10 + i*5), ResetsAt: now.Add(time.Hour)},
+			SevenDay: &anthro.Bucket{Utilization: float64(5 + i*2), ResetsAt: now.Add(24 * time.Hour)},
+		}
+		if err := c.RecordUsageSample(u, now.Add(time.Duration(-i)*5*time.Minute)); err != nil {
+			c.Close()
+			t.Fatalf("RecordUsageSample: %v", err)
+		}
+	}
 	m := New(Deps{Cache: c})
 	m.w, m.h = 120, 40
 	m.zoomIdx = 0 // 15m zoom: count messages → ~count buckets, overflows chartWidth=118
@@ -1662,6 +1676,40 @@ func seedScrollTestModel(t *testing.T, count int) (*Model, func()) {
 	m.viewport.Height = m.chartHeight()
 	m.refreshChart()
 	return &m, func() { c.Close() }
+}
+
+func TestRefreshChart_CapturesCanvasState(t *testing.T) {
+	tests := []struct {
+		name    string
+		unitIdx int
+	}{
+		{"tokens", int(chartUnitTokens)},
+		{"cost", int(chartUnitCost)},
+		{"remaining", int(chartUnitRemaining)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m, cleanup := seedScrollTestModel(t, 200)
+			defer cleanup()
+			m.unitIdx = tt.unitIdx
+
+			m.refreshChart()
+
+			if m.lastCanvasW <= 0 {
+				t.Errorf("lastCanvasW = %d after refresh in %s mode; want > 0", m.lastCanvasW, tt.name)
+			}
+			if m.lastChartFrom.IsZero() {
+				t.Errorf("lastChartFrom is zero after refresh in %s mode", tt.name)
+			}
+			if m.lastChartTo.IsZero() {
+				t.Errorf("lastChartTo is zero after refresh in %s mode", tt.name)
+			}
+			if !m.lastChartTo.After(m.lastChartFrom) {
+				t.Errorf("lastChartTo (%v) is not after lastChartFrom (%v) in %s mode",
+					m.lastChartTo, m.lastChartFrom, tt.name)
+			}
+		})
+	}
 }
 
 func TestRefreshChart_FirstLoadPinsRight(t *testing.T) {

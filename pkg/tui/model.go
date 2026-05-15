@@ -117,11 +117,15 @@ type Model struct {
 	oldPts5h []cache.UtilizationPoint
 	oldPts7d []cache.UtilizationPoint
 
-	// lastChartFrom / lastChartTo are the [from, to) time window used by
-	// the most recent remaining-mode buildLineChart call. Stored so
+	// lastChartFrom / lastChartTo / lastCanvasW are the [from, to) time
+	// window and column-count used by the most recent buildChart /
+	// buildLineChart call (any unit). Stored so refreshChart can map
+	// the viewport column back to a wall-clock anchor on the NEXT
+	// refresh (zoom, unit toggle, watcher event), and so
 	// renderSpringFrame can reproduce the same x-axis during animation.
 	lastChartFrom time.Time
 	lastChartTo   time.Time
+	lastCanvasW   int
 
 	// viewportXOffset shadows m.viewport's unexported xOffset. We need a
 	// readable scroll position to preserve the wall-clock anchor across
@@ -1002,15 +1006,17 @@ func (m *Model) refreshChart() {
 	m.lastStarts = starts
 
 	chartH := m.chartHeight()
+	var canvasW int
 	if unit == chartUnitRemaining {
-		canvasW := m.chartWidth()
-		m.lastChartFrom = from
-		m.lastChartTo = to
+		canvasW = m.chartWidth()
 		m.viewport.SetContent(buildLineChart(m.lastPts5h, m.lastPts7d, from, to, canvasW, chartH, time.Now(), zoom, m.dateOrder))
 	} else {
-		canvasW := zoom.CanvasWidth(len(values))
+		canvasW = zoom.CanvasWidth(len(values))
 		m.viewport.SetContent(buildChart(values, starts, peak, canvasW, chartH, time.Now(), zoom, unit, m.dateOrder))
 	}
+	m.lastChartFrom = from
+	m.lastChartTo = to
+	m.lastCanvasW = canvasW
 
 	// Restore the user's anchor. Three cases:
 	//   - !hadAnchor (first load, or coming back from an empty-cache
