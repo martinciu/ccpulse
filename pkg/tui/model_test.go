@@ -945,6 +945,56 @@ func TestUnitKeyToggles(t *testing.T) {
 	}
 }
 
+func TestZoomKeyDisabledInRemainingMode(t *testing.T) {
+	// z must be a no-op while in remaining mode, and must be hidden from
+	// the help footer. Cycling back out of remaining mode must re-enable it.
+	m := New(Deps{})
+	m.w, m.h = 120, 40
+
+	// Press 'u' twice to arrive at remaining mode (unitIdx == 2).
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	m = updated.(Model)
+	if m.unitIdx != int(chartUnitRemaining) {
+		t.Fatalf("expected unitIdx=%d (remaining), got %d", int(chartUnitRemaining), m.unitIdx)
+	}
+
+	// z must not change zoomIdx.
+	initialZoom := m.zoomIdx
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
+	m = updated.(Model)
+	if m.zoomIdx != initialZoom {
+		t.Errorf("zoom changed in remaining mode: %d → %d", initialZoom, m.zoomIdx)
+	}
+
+	// Zoom binding must not appear in the help footer while in remaining mode.
+	footer := m.help.View(m.keys)
+	if strings.Contains(footer, "z  zoom") || strings.Contains(footer, "z zoom") {
+		t.Errorf("zoom binding still visible in help footer while in remaining mode:\n%s", footer)
+	}
+
+	// Cycle once more to wrap back to tokens (unitIdx == 0).
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	m = updated.(Model)
+	if m.unitIdx != 0 {
+		t.Fatalf("expected unitIdx=0 (tokens) after third 'u', got %d", m.unitIdx)
+	}
+
+	// Zoom binding must reappear in the help footer.
+	footer = m.help.View(m.keys)
+	if !strings.Contains(footer, "zoom") {
+		t.Errorf("zoom binding missing from help footer after leaving remaining mode:\n%s", footer)
+	}
+
+	// z must now change zoomIdx.
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
+	m = updated.(Model)
+	if m.zoomIdx == initialZoom {
+		t.Errorf("zoom did not advance after leaving remaining mode: zoomIdx still %d", m.zoomIdx)
+	}
+}
+
 func TestUnitKeyInHelp(t *testing.T) {
 	// The 'u unit' binding must appear in both ShortHelp (footer) and
 	// FullHelp (overlay opened with '?'). Asserts on the rendered help
