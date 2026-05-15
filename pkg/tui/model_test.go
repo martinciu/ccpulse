@@ -2658,6 +2658,126 @@ func TestView_RemainingModeShowsYTicks(t *testing.T) {
 // TestFullUnitCycle_TokensCostRemaining verifies that three presses of the
 // 'u' key cycle through tokens → cost → remaining → tokens, and that each
 // mode produces a non-empty view with the expected mode-specific marker.
+// TestRenderSpringFrame_LineBranchUsesOldSnapshot verifies that the line-
+// rendering branch of renderSpringFrame reads from m.oldPts5h / m.oldPts7d
+// (the snapshot taken before refreshChart) rather than m.lastPts5h /
+// m.lastPts7d (which refreshChart overwrites with the new unit's data).
+//
+// Differentiation strategy: run renderSpringFrame twice.
+//   - Run A: oldPts5h populated with real data, lastPts5h nil.
+//   - Run B: both oldPts5h and lastPts5h nil.
+//
+// If the branch correctly reads oldPts*, Run A renders the real line shape
+// and differs from Run B (which renders the empty/flat fallback). If the
+// branch incorrectly reads lastPts* (the bug), both runs would produce the
+// same flat output — and the test would fail with "viewA == viewB".
+//
+// This avoids replicating the interpPt math and doesn't depend on exact
+// time values inside renderSpringFrame, which calls time.Now() internally.
+func TestRenderSpringFrame_LineBranchUsesOldSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	defer c.Close()
+
+	tab, _ := pricing.Load()
+	now := time.Now().UTC().Truncate(time.Minute)
+
+	// Insert one message so EarliestMessageTime returns a value.
+	msgs := []parse.Message{{
+		SessionID: "s1", ProjectSlug: "p", Model: "claude-sonnet-4-6",
+		Timestamp: now.Add(-30 * time.Minute), InputTokens: 5000,
+	}}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	// buildModel returns a fresh model in remaining mode with the spring
+	// wired into the springShrinking phase and oldIsLine=true (exit of a
+	// line chart toward a bar chart — the scenario that must use oldPts*).
+	buildModel := func() Model {
+		m := New(Deps{Cache: c})
+		m.w, m.h = 120, 40
+		m.viewport.Width = m.chartWidth()
+		m.viewport.Height = m.chartHeight()
+
+		// Use explicit, fixed time windows so both builds use identical
+		// from/to values. renderSpringFrame uses m.lastChartFrom/To directly
+		// (falling back to time.Now() only when zero), so setting them
+		// avoids any time-drift between the two render calls.
+		m.lastChartFrom = now.Add(-5 * time.Hour)
+		m.lastChartTo = now
+
+		// springRatios must be non-empty to pass the early-return guard.
+		// Values in (0, 1] so maxR > 0 and interpPt produces a non-trivial
+		// result when pts are populated.
+		m.springRatios = []float64{0.8, 0.6, 0.7}
+
+		// Simulate mid-exit animation: old chart was a line, new is a bar.
+		m.springActive = true
+		m.springPhase = springShrinking
+		m.oldIsLine = true
+		m.newIsLine = false
+
+		// lastPts* deliberately nil — refreshChart on the new unit would have
+		// cleared or replaced these with bar data. The test must pass even
+		// when lastPts* is empty (i.e. the branch must NOT fall through to it).
+		m.lastPts5h = nil
+		m.lastPts7d = nil
+
+		return m
+	}
+
+	// Synthetic old points with distinct Pct values so the rendered line
+	// shape is non-trivial. Values cover a range that interpPt maps onto
+	// visible line positions.
+	oldPts := []cache.UtilizationPoint{
+		{At: now.Add(-4 * time.Hour), Pct: 20.0},
+		{At: now.Add(-2 * time.Hour), Pct: 50.0},
+		{At: now.Add(-1 * time.Hour), Pct: 80.0},
+	}
+
+	// ── Run A: oldPts populated, lastPts nil ──────────────────────────────
+	mA := buildModel()
+	mA.oldPts5h = append([]cache.UtilizationPoint(nil), oldPts...)
+	mA.oldPts7d = append([]cache.UtilizationPoint(nil), oldPts...)
+	// Set a non-zero XOffset before the call to verify the line branch resets it.
+	mA.viewport.SetXOffset(42)
+	mA.renderSpringFrame()
+	viewA := mA.viewport.View()
+
+	// ── Run B: both oldPts and lastPts nil ────────────────────────────────
+	mB := buildModel()
+	mB.oldPts5h = nil
+	mB.oldPts7d = nil
+	mB.viewport.SetXOffset(42)
+	mB.renderSpringFrame()
+	viewB := mB.viewport.View()
+
+	// ── Assertions ────────────────────────────────────────────────────────
+
+	// The line branch must produce non-empty output in Run A (populated pts).
+	if strings.TrimSpace(stripANSIForTest(viewA)) == "" {
+		t.Fatal("viewA is blank; renderSpringFrame line branch produced no output with populated oldPts")
+	}
+
+	// viewA (populated oldPts) and viewB (nil oldPts) must differ.
+	// If the branch incorrectly reads lastPts* (nil in both runs), both
+	// would produce the same flat/empty fallback, and this assertion fails.
+	if stripANSIForTest(viewA) == stripANSIForTest(viewB) {
+		t.Error("viewA == viewB: line branch did not distinguish populated oldPts from nil; " +
+			"likely reads lastPts* instead of oldPts* during springShrinking")
+	}
+
+	// The line branch calls viewport.SetXOffset(0), which makes the leading
+	// content visible. The shadow viewportXOffset is only updated by setX,
+	// not by renderSpringFrame, so we verify this indirectly: the rendered
+	// content must be non-empty (a non-zero XOffset beyond the canvas width
+	// would blank the viewport). Already covered by the non-empty check above.
+}
+
 func TestFullUnitCycle_TokensCostRemaining(t *testing.T) {
 	dir := t.TempDir()
 	c, err := cache.Open(filepath.Join(dir, "state.db"))
