@@ -3380,6 +3380,49 @@ func TestIntro_OneShot_NoReArmOnSecondWindowSize(t *testing.T) {
 	}
 }
 
+func TestIntro_RefreshMsgBeforeWindowSizeMsg(t *testing.T) {
+	// Production startup ordering: cmd/ccpulse/main.go:329 fires
+	// p.Send(tui.RefreshMsg{}) in a goroutine, which often arrives
+	// BEFORE bubbletea's initial WindowSizeMsg. Confirmed via
+	// runtime trace. If maybeArmIntro armed at m.w=0, the subsequent
+	// WindowSizeMsg's refreshChart would tear down the zero-size
+	// spring frame via the spring-abort block and the intro would be
+	// invisible. Guarded by the m.w == 0 check in maybeArmIntro.
+	m := seedIntroModel(t, false)
+	if m.w != 0 {
+		t.Fatalf("seedIntroModel pre-condition: m.w = %d; want 0", m.w)
+	}
+
+	// Pre-WindowSizeMsg RefreshMsg — must NOT arm.
+	updated, cmd := m.Update(RefreshMsg{})
+	m = updated.(Model)
+	if cmd != nil {
+		t.Errorf("RefreshMsg before WindowSizeMsg returned non-nil cmd; want nil (deferred)")
+	}
+	if m.springActive {
+		t.Errorf("springActive = true after pre-WindowSize RefreshMsg; want false (deferred)")
+	}
+	if !m.introPending {
+		t.Errorf("introPending = false after pre-WindowSize RefreshMsg; want true (still pending)")
+	}
+
+	// Now WindowSizeMsg — must arm.
+	updated, cmd = m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatalf("WindowSizeMsg after deferred RefreshMsg returned nil cmd; want hold tick")
+	}
+	if !m.springActive {
+		t.Errorf("springActive = false after WindowSizeMsg; want true (intro armed)")
+	}
+	if m.springPhase != springHolding {
+		t.Errorf("springPhase = %d after WindowSizeMsg; want springHolding", m.springPhase)
+	}
+	if m.introPending {
+		t.Errorf("introPending = true after intro arm; want false (one-shot)")
+	}
+}
+
 func TestIntro_SurvivesInitialRefreshMsgRace(t *testing.T) {
 	// Real-world startup race: WindowSizeMsg arms the intro, then the
 	// initial RefreshMsg from main.go (cmd/ccpulse/main.go:329) fires
@@ -3420,6 +3463,82 @@ func TestIntro_SurvivesInitialRefreshMsgRace(t *testing.T) {
 			t.Errorf("chart body contains bar block char after RefreshMsg race: %q", line)
 			break
 		}
+	}
+}
+
+func TestIntro_RealisticStartupSequence(t *testing.T) {
+	// Mimic exactly what cmd/ccpulse/main.go does at startup:
+	//   1. WindowSizeMsg (bubbletea-injected)
+	//   2. RefreshMsg from line 329 (initial refresh)
+	//   3. Possibly more RefreshMsg from watcher
+	//   4. IndexProgressMsg Active:true then Active:false from backfill
+	//   5. RefreshMsg from backfill completion
+	//   6. (eventually) springTickMsg
+	// Assert that at no point before the hold tick fires do bar block
+	// characters appear in the View(). Then drive ticks and verify the
+	// chart eventually settles with full bars.
+	m := seedIntroModel(t, false)
+
+	updated, cmd := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatalf("WindowSizeMsg returned nil cmd; intro did not arm")
+	}
+
+	// Production sends several non-tick messages before the 150 ms hold
+	// tick fires. Each must NOT kill the intro and the View must
+	// continue to render zero-height bars.
+	preTickMessages := []tea.Msg{
+		RefreshMsg{},
+		RefreshMsg{},
+		IndexProgressMsg{Active: true, Done: 0, Total: 100},
+		IndexProgressMsg{Active: false, Done: 100, Total: 100},
+		RefreshMsg{},
+	}
+	for i, msg := range preTickMessages {
+		updated, _ = m.Update(msg)
+		m = updated.(Model)
+		if !m.springActive {
+			t.Fatalf("springActive=false after message %d (%T); intro was killed", i, msg)
+		}
+		if m.springPhase != springHolding {
+			t.Fatalf("springPhase=%d after message %d (%T); want springHolding", m.springPhase, i, msg)
+		}
+		body := chartBodyLines(m.View())
+		for _, line := range body {
+			if strings.ContainsAny(line, "▁▂▃▄▅▆▇█") {
+				t.Errorf("after message %d (%T): chart body shows bar block char during hold: %q", i, msg, line)
+				break
+			}
+		}
+	}
+
+	// Now drive the hold tick → grow ticks until settle.
+	const maxTicks = 200
+	settled := false
+	for i := 0; i < maxTicks; i++ {
+		updated, _ = m.Update(springTickMsg{})
+		m = updated.(Model)
+		if !m.springActive {
+			settled = true
+			break
+		}
+	}
+	if !settled {
+		t.Fatalf("intro did not settle within %d ticks", maxTicks)
+	}
+
+	// Final view should show actual bars now.
+	finalBody := chartBodyLines(m.View())
+	hasBar := false
+	for _, line := range finalBody {
+		if strings.ContainsAny(line, "▁▂▃▄▅▆▇█") {
+			hasBar = true
+			break
+		}
+	}
+	if !hasBar {
+		t.Errorf("after settle: chart body has no bar block chars; want fully-rendered bars")
 	}
 }
 

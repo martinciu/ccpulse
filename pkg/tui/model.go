@@ -872,6 +872,15 @@ func (m *Model) maybeArmIntro() tea.Cmd {
 	if !m.introPending {
 		return nil
 	}
+	// Wait for the first WindowSizeMsg before arming: in production the
+	// startup-time p.Send(RefreshMsg{}) from cmd/ccpulse/main.go:329 can
+	// race ahead of bubbletea's initial WindowSizeMsg. Arming with m.w=0
+	// produces a zero-size spring frame that the subsequent WindowSizeMsg
+	// would tear down via refreshChart's spring-abort block. Defer the
+	// arm until we have a real viewport. introPending stays true.
+	if m.w == 0 {
+		return nil
+	}
 	if len(m.lastValues) == 0 {
 		return nil
 	}
