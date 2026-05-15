@@ -835,13 +835,31 @@ func (m *Model) renderSpringFrame() {
 
 // setX is the single point of entry for changing the viewport's horizontal
 // scroll position. n is a bucket index (not a column count); setX clamps
-// it against lastStarts and visibleBuckets, then multiplies by the per-
-// bar stride (BarWidth+BarGap, defensively clamped to ≥1) when
-// delegating to viewport.SetXOffset (which is column-indexed). The
-// shadow viewportXOffset stays in bucket-index space.
+// it then multiplies by the per-bar stride (BarWidth+BarGap, defensively
+// clamped to ≥1) when delegating to viewport.SetXOffset (column-indexed).
+// The shadow viewportXOffset stays in bucket-index space.
+//
+// Clamp is mode-aware:
+//
+//   - Bar modes (tokens/cost): clamp against len(lastStarts) -
+//     visibleBuckets(). Preserves the existing setX semantics that
+//     renderSpringFrame's slack-handling computeSpringSlice was tuned
+//     against. The bucket-aligned canvas guarantees lastStarts and
+//     visibleBuckets line up.
+//   - Remaining mode: clamp against (lastCanvasW - viewport.Width) /
+//     stride. lastStarts in remaining mode is sparse sample points
+//     (not bucket-aligned), so the bar-mode clamp would collapse to
+//     0 the moment usage_samples count drops below visibleBuckets.
+//     The canvas-width clamp matches the column-based anchor logic
+//     in refreshChart.
 func (m *Model) setX(n int) {
 	stride := ZoomLevels[m.zoomIdx].stride()
-	maxX := max(0, len(m.lastStarts)-m.visibleBuckets())
+	var maxX int
+	if chartUnit(m.unitIdx) == chartUnitRemaining {
+		maxX = max(0, m.lastCanvasW-m.viewport.Width) / stride
+	} else {
+		maxX = max(0, len(m.lastStarts)-m.visibleBuckets())
+	}
 	n = min(max(n, 0), maxX)
 	m.viewport.SetXOffset(n * stride)
 	m.viewportXOffset = n
