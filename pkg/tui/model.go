@@ -786,6 +786,82 @@ func (m *Model) beginUnitAnimation() {
 	m.springPhase = springShrinking
 }
 
+// beginIntroAnimation primes the open-path slide-in. Caller must have
+// already called refreshChart so m.lastValues / m.peak reflect the
+// current cache contents. The animation re-uses Phase 2 of the unit-
+// toggle state machine: springs are seeded with target ratios but
+// springRatios stay at zero until the springHolding tick fires after
+// phaseHoldDuration. See #188.
+//
+// No-op if lastValues is empty or peak is non-positive (defensive —
+// maybeArmIntro should have gated those cases already).
+//
+// Snapshots m.newIsLine for the View()/renderSpringFrame branches that
+// check it in the springHolding/springGrowing arms. m.oldIsLine /
+// m.oldValues / m.oldPeak are left at their zero values; the intro
+// never enters springShrinking, so the OLD-state fields are unread.
+func (m *Model) beginIntroAnimation() {
+	if len(m.lastValues) == 0 || m.peak <= 0 {
+		return
+	}
+
+	targets := make([]float64, len(m.lastValues))
+	for i, v := range m.lastValues {
+		targets[i] = v / m.peak
+	}
+
+	m.seedPhase2Springs(targets)
+
+	// Spring window tracks current viewport position so the animated
+	// slice matches what the user is about to look at. On open the
+	// shadow offset is at the right edge (pinned by refreshChart's
+	// post-rebuild restore); preserve it.
+	m.springXOffset = m.viewportXOffset
+
+	// renderSpringFrame's default arm reads m.newIsLine; pin it for the
+	// intro (always bar mode at open since default unit is tokens).
+	m.newIsLine = isLineMode(chartUnit(m.unitIdx))
+
+	m.springActive = true
+	m.springPhase = springHolding
+
+	// Render the zero-bars hold frame synchronously so the next View()
+	// call doesn't briefly show refreshChart's fully-formed bars before
+	// the first tick paints over the viewport with the empty hold frame.
+	m.renderSpringFrame()
+}
+
+// maybeArmIntro fires the open-path slide-in when introPending is true
+// and the most recent refreshChart produced non-empty data. Called
+// from WindowSizeMsg and RefreshMsg handlers right after refreshChart.
+// Returns tea.Tick(phaseHoldDuration, ...) when the intro arms, nil
+// otherwise.
+//
+// Always clears introPending on the first non-empty refresh, whether
+// the intro actually arms (motion path) or is a no-op (reduce_motion
+// is already gated upstream via introPending init in New()). This
+// ensures the intro is strictly one-shot.
+//
+// When the cache starts empty: lastValues stays nil through the early
+// refreshes; introPending stays true; the first non-empty RefreshMsg
+// is what arms the intro. See #188 spec / acceptance criteria.
+func (m *Model) maybeArmIntro() tea.Cmd {
+	if !m.introPending {
+		return nil
+	}
+	if len(m.lastValues) == 0 {
+		return nil
+	}
+	m.introPending = false
+	m.beginIntroAnimation()
+	if !m.springActive {
+		return nil
+	}
+	return tea.Tick(phaseHoldDuration, func(time.Time) tea.Msg {
+		return springTickMsg{}
+	})
+}
+
 // renderSpringFrame rebuilds the viewport content from the visible
 // window of spring ratios. Pass 1.0 as the chart's max value because
 // the ratios already live in [0, 1]; ntcharts then renders each bar
