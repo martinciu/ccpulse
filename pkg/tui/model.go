@@ -196,6 +196,11 @@ type Model struct {
 	oldIsLine bool
 	newIsLine bool
 
+	// introPending is true until the first non-empty refreshChart triggers
+	// the open-path slide-in animation (or is cleared by reduce_motion).
+	// One-shot: never re-armed after the first non-empty refresh. See #188.
+	introPending bool
+
 	window         status.Window
 	quota          *anthro.Usage
 	quotaSource    string
@@ -237,6 +242,7 @@ func New(d Deps) Model {
 	m.progress7d = newProgressBar(40)
 	m.viewport = viewport.New(80, 20)
 	m.viewport.SetHorizontalStep(horizontalScrollStep)
+	m.introPending = !d.ReduceMotion
 	return m
 }
 

@@ -2324,6 +2324,12 @@ func seedTwoPhaseAnimationModel(t *testing.T) Model {
 	m.viewport.Width = m.chartWidth()
 	m.viewport.Height = m.chartHeight()
 	m.refreshChart()
+	// seedTwoPhaseAnimationModel represents post-open state: refreshChart
+	// has been called outside the WindowSizeMsg handler, so the open-path
+	// intro is treated as already fired/settled. Without this, every
+	// RefreshMsg / WindowSizeMsg in unit-toggle tests would re-arm the
+	// intro after the existing handler aborts the unit spring. See #188.
+	m.introPending = false
 	return m
 }
 
@@ -3170,5 +3176,27 @@ func TestRefreshChart_EmptyCacheRecoveryPinsRight(t *testing.T) {
 	if got := m.viewportXOffset; got != wantOffset {
 		t.Errorf("viewportXOffset = %d after empty-cache recovery; want right edge %d (lastCanvasW=%d, viewportWidth=%d, stride=%d)",
 			got, wantOffset, m.lastCanvasW, m.viewport.Width, stride)
+	}
+}
+
+func TestNew_IntroPendingDefaults(t *testing.T) {
+	// New() must initialise introPending = !ReduceMotion so the open-path
+	// slide-in is enabled by default but disabled when reduce_motion=true.
+	cases := []struct {
+		name         string
+		reduceMotion bool
+		want         bool
+	}{
+		{"motion_on", false, true},
+		{"reduce_motion", true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := New(Deps{ReduceMotion: tc.reduceMotion})
+			if m.introPending != tc.want {
+				t.Errorf("introPending = %v after New(ReduceMotion=%v); want %v",
+					m.introPending, tc.reduceMotion, tc.want)
+			}
+		})
 	}
 }
