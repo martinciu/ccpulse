@@ -1122,12 +1122,13 @@ func (m *Model) refreshChart() {
 	//     new canvas width.
 	//   - else: map anchorTime → column in the new canvas.
 	//
-	// The viewport offset is set directly in column-space; the bucket-
-	// indexed shadow (m.viewportXOffset) is derived as targetCol / stride.
-	// At stride=1 (15m/1h), column-index == bucket-index. At stride=12
-	// (24h with BarWidth=10/BarGap=2), the bucket-index is the bucket
-	// that contains the leftmost visible column, matching the pre-refactor
-	// behaviour where setX(bucketIdx) snapped to bucket-aligned offsets.
+	// The anchor is restored via m.setX(targetCol / stride) so the viewport
+	// offset and the m.viewportXOffset bucket-indexed shadow stay in sync —
+	// the invariant that all scroll mutations route through setX /
+	// scrollLeft / scrollRight. At stride=1 (15m / 1h zoom) this is a no-op
+	// transform; at stride=12 (24h zoom with BarWidth=10/BarGap=2) it snaps
+	// to the bucket containing the leftmost visible column, matching the
+	// pre-refactor setX(bucketIdx) behaviour.
 	stride := zoom.stride()
 	rightEdgeCol := max(0, canvasW-m.viewport.Width)
 	var targetCol int
@@ -1140,8 +1141,7 @@ func (m *Model) refreshChart() {
 			targetCol = rightEdgeCol
 		}
 	}
-	m.viewport.SetXOffset(targetCol)
-	m.viewportXOffset = targetCol / stride
+	m.setX(targetCol / stride)
 }
 
 // emptyPlaceholder returns a w×h block with "no Claude sessions yet"
