@@ -201,6 +201,16 @@ type Model struct {
 	// One-shot: never re-armed after the first non-empty refresh. See #188.
 	introPending bool
 
+	// springIntro is true while the open-path intro animation is in flight
+	// (springHolding → springGrowing seeded by beginIntroAnimation). Used
+	// to suppress RefreshMsg's refreshChart so the initial-refresh race
+	// from main.go's startup-time p.Send(RefreshMsg{}) doesn't hard-cut
+	// the intro via refreshChart's spring-abort logic. Cleared on settle
+	// in the springGrowing handler and in refreshChart's defensive abort
+	// block. WindowSizeMsg still hard-cuts (terminal resize is an
+	// explicit user action). See #188.
+	springIntro bool
+
 	window         status.Window
 	quota          *anthro.Usage
 	quotaSource    string
@@ -372,6 +382,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if maxGap < phaseTransitionThreshold {
 				copy(m.springRatios, m.springTargetRatios)
 				m.springActive = false
+				m.springIntro = false
 				m.springPhase = springIdle
 				m.refreshChart()
 				return m, nil
@@ -390,7 +401,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case RefreshMsg:
 		start := time.Now()
 		m.recomputeWindow()
-		m.refreshChart()
+		// Suppress refreshChart while the intro is in flight so the
+		// startup-time RefreshMsg race (cmd/ccpulse/main.go:329 +
+		// watcher events) doesn't hard-cut the intro via refreshChart's
+		// spring-abort block. The intro's terminal springGrowing tick
+		// fires its own refreshChart after settle (~600 ms), so any
+		// data updates that arrived during the intro are picked up
+		// there.
+		if !m.springIntro {
+			m.refreshChart()
+		}
 		slog.Debug("tui.refreshMsg",
 			"dur_ms", time.Since(start).Milliseconds(),
 			"zoom", ZoomLevels[m.zoomIdx].Label)
@@ -825,6 +845,7 @@ func (m *Model) beginIntroAnimation() {
 	m.newIsLine = isLineMode(chartUnit(m.unitIdx))
 
 	m.springActive = true
+	m.springIntro = true
 	m.springPhase = springHolding
 
 	// Render the zero-bars hold frame synchronously so the next View()
@@ -1078,6 +1099,7 @@ func (m *Model) refreshChart() {
 	// springActive is false.
 	if m.springActive {
 		m.springActive = false
+		m.springIntro = false
 		m.springPhase = springIdle
 		// springProjectiles, springFinalTargets, oldPeak, oldUnitIdx
 		// remain populated but unread — guarded by springActive=false.

@@ -3380,6 +3380,49 @@ func TestIntro_OneShot_NoReArmOnSecondWindowSize(t *testing.T) {
 	}
 }
 
+func TestIntro_SurvivesInitialRefreshMsgRace(t *testing.T) {
+	// Real-world startup race: WindowSizeMsg arms the intro, then the
+	// initial RefreshMsg from main.go (cmd/ccpulse/main.go:329) fires
+	// before the first spring tick. refreshChart()'s spring-abort
+	// logic (model.go:1079) would kill the intro if not guarded.
+	//
+	// Visual probe: the chart body must still contain no bar block
+	// characters after the RefreshMsg — i.e. the viewport is still
+	// showing the zero-height hold frame, not the fully-painted chart
+	// that refreshChart would otherwise paint.
+	m := seedIntroModel(t, false)
+
+	// Arm intro via WindowSizeMsg.
+	updated, cmd := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatalf("WindowSizeMsg returned nil cmd; intro did not arm")
+	}
+	if !m.springActive || m.springPhase != springHolding {
+		t.Fatalf("intro not armed: springActive=%v springPhase=%d", m.springActive, m.springPhase)
+	}
+
+	// Deliver RefreshMsg BEFORE any springTickMsg — this is the race.
+	updated, _ = m.Update(RefreshMsg{})
+	m = updated.(Model)
+
+	if !m.springActive {
+		t.Errorf("springActive = false after RefreshMsg race; intro was killed")
+	}
+	if m.springPhase != springHolding {
+		t.Errorf("springPhase = %d after RefreshMsg race; want springHolding (%d)", m.springPhase, springHolding)
+	}
+
+	// Visual check: viewport should still show zero bars.
+	body := chartBodyLines(m.View())
+	for _, line := range body {
+		if strings.ContainsAny(line, "▁▂▃▄▅▆▇█") {
+			t.Errorf("chart body contains bar block char after RefreshMsg race: %q", line)
+			break
+		}
+	}
+}
+
 func TestIntro_EmptyCacheDeferred(t *testing.T) {
 	// When the cache starts empty, the first WindowSizeMsg must NOT arm
 	// the intro (lastValues stays nil); introPending stays true. The
