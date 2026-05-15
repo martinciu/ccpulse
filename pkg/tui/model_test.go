@@ -3869,3 +3869,164 @@ func TestIntro_QuotaBars_SettleTogetherWithChart(t *testing.T) {
 			m.quotaRatio7d, phaseTransitionThreshold, m.quotaTarget7d)
 	}
 }
+
+func TestIntro_QuotaBars_ReduceMotion_FirstFrameFull(t *testing.T) {
+	// With ReduceMotion=true: no intro arms (introPending=false from
+	// New()), no springs are seeded, quotaIntroRatio returns target
+	// directly, and the first View() renders both bars at their target
+	// fill (which contains '█' for non-zero targets).
+	m := seedIntroModel(t, true) // reduceMotion=true
+	updated, cmd := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+
+	if cmd != nil {
+		t.Errorf("cmd = %v after first WindowSizeMsg with reduce_motion; want nil", cmd)
+	}
+	if m.springActive {
+		t.Errorf("springActive = true with reduce_motion; want false")
+	}
+
+	// Override window.Percent so the visual probe has a non-zero target
+	// to render — seedIntroModel has no Anthropic quota loaded, so the
+	// natural Percent is 0 and bubbles/progress would emit only empty
+	// chars regardless of the helper's behaviour.
+	m.window.Percent = 60
+	m.window.Has7d = true
+	m.window.Percent7d = 25
+
+	rows := quotaBarLines(m.View())
+	if len(rows) == 0 {
+		t.Fatalf("no quota bar rows in rendered view")
+	}
+	// At least one row should contain a filled block character since the
+	// override made both targets non-zero and the helper passes through
+	// to bubbles/progress under reduce_motion.
+	var sawFill bool
+	for _, row := range rows {
+		if strings.ContainsRune(row, '█') {
+			sawFill = true
+			break
+		}
+	}
+	if !sawFill {
+		t.Errorf("no '█' in quota bar rows with reduce_motion and non-zero Percent — bars should paint at full target on first frame")
+	}
+}
+
+func TestIntro_QuotaBars_OneShot_NoReArmAfterSettle(t *testing.T) {
+	// After the intro settles, a second WindowSizeMsg (or RefreshMsg
+	// with a different quota value) must not re-arm the quota intro.
+	// introPending is cleared on first arm and never re-set.
+	m := seedIntroModel(t, false)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+
+	const maxTicks = 300
+	for i := 0; i < maxTicks && m.springActive; i++ {
+		updated, _ = m.Update(springTickMsg{})
+		m = updated.(Model)
+	}
+	if m.springActive {
+		t.Fatalf("intro did not settle within %d ticks", maxTicks)
+	}
+	settled5h := m.quotaRatio5h
+	settled7d := m.quotaRatio7d
+
+	// Second WindowSizeMsg — must not re-arm.
+	updated, cmd := m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
+	m = updated.(Model)
+	if cmd != nil {
+		t.Errorf("cmd = %v after post-settle WindowSizeMsg; want nil (no re-arm)", cmd)
+	}
+	if m.springActive {
+		t.Errorf("springActive = true after post-settle WindowSizeMsg; want false")
+	}
+	if m.quotaRatio5h != settled5h || m.quotaRatio7d != settled7d {
+		t.Errorf("quota ratios moved after post-settle WindowSizeMsg: %v/%v → %v/%v",
+			settled5h, settled7d, m.quotaRatio5h, m.quotaRatio7d)
+	}
+}
+
+func TestIntro_QuotaBars_DeferredArmOnEmptyCache(t *testing.T) {
+	// Open with an empty cache: the chart-intro gate
+	// (len(lastValues) > 0) blocks arming, so the quota intro defers
+	// too (it shares introPending). The first non-empty RefreshMsg
+	// arms both surfaces.
+	dir := t.TempDir()
+	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	t.Cleanup(func() { c.Close() })
+
+	m := New(Deps{Cache: c, ReduceMotion: false})
+
+	updated, cmd := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+	if cmd != nil {
+		t.Errorf("cmd = %v after WindowSizeMsg with empty cache; want nil (deferred arm)", cmd)
+	}
+	if m.springActive {
+		t.Errorf("springActive = true after WindowSizeMsg with empty cache; want false")
+	}
+	if !m.introPending {
+		t.Errorf("introPending = false after WindowSizeMsg with empty cache; want true (still pending)")
+	}
+
+	// Insert a message; the next RefreshMsg should arm.
+	tab, err := pricing.Load()
+	if err != nil {
+		t.Fatalf("pricing.Load: %v", err)
+	}
+	now := time.Now().UTC().Truncate(15 * time.Minute)
+	if err := c.InsertMessages([]parse.Message{
+		{SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7",
+			Timestamp: now.Add(-10 * time.Minute), InputTokens: 30000, OutputTokens: 15000},
+	}, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	updated, cmd = m.Update(RefreshMsg{})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatalf("cmd = nil after non-empty RefreshMsg; want hold tick (deferred arm should fire)")
+	}
+	if !m.springActive {
+		t.Errorf("springActive = false after non-empty RefreshMsg; want true (intro armed)")
+	}
+	if m.springPhase != springHolding {
+		t.Errorf("springPhase = %d after non-empty RefreshMsg; want springHolding", m.springPhase)
+	}
+}
+
+func TestIntro_QuotaBars_NoData7d_PlaceholderUnchanged(t *testing.T) {
+	// When Has7d=false, the 7d side renders the (no data) placeholder
+	// regardless of intro phase. The intro fires for the 5h side only;
+	// the 7d spring is seeded with target=0 defensively but unread.
+	m := seedIntroModel(t, false)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+
+	// Overwrite the window to drop the 7d side, then re-arm via
+	// beginIntroAnimation directly (isolating from maybeArmIntro
+	// gating).
+	m.springActive = false
+	m.springIntro = false
+	m.springPhase = springIdle
+	m.window.Has7d = false
+	m.window.Percent7d = 0
+	m.beginIntroAnimation()
+
+	if m.quotaTarget7d != 0 {
+		t.Errorf("quotaTarget7d = %v with Has7d=false; want 0 (defensive zero)", m.quotaTarget7d)
+	}
+
+	// 5h and 7d sides render on the same row via JoinHorizontal; the
+	// 7d side appears as the "(no data)" placeholder regardless of
+	// intro phase when Has7d=false.
+	view := m.View()
+	if !strings.Contains(view, "(no data)") {
+		t.Errorf("rendered view missing '(no data)' placeholder with Has7d=false; got rows=%q",
+			quotaBarLines(view))
+	}
+}
