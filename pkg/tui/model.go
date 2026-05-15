@@ -116,6 +116,15 @@ type Model struct {
 	oldPts5h []cache.UtilizationPoint
 	oldPts7d []cache.UtilizationPoint
 
+	// oldValues / oldStarts are snapshotted in beginUnitAnimation so
+	// renderSpringFrame can render the exiting bar chart (oldIsLine=false
+	// phase) after refreshChart has already overwritten lastValues/Starts
+	// with the new unit's data. Used by the bar branch during
+	// springShrinking when oldIsLine=false — the bucket-aligned
+	// counterpart to oldPts5h/7d.
+	oldValues []float64
+	oldStarts []time.Time
+
 	// lastChartFrom / lastChartTo / lastCanvasW are the [from, to) time
 	// window and column-count used by the most recent buildChart /
 	// buildLineChart call (any unit). Stored so refreshChart can map
@@ -638,12 +647,17 @@ func (m *Model) beginUnitAnimation() {
 		return
 	}
 
-	oldValues := m.lastValues
 	m.oldPeak = m.peak
 	m.oldUnitIdx = (m.unitIdx + int(chartUnitCount) - 1) % int(chartUnitCount)
 	m.oldIsLine = isLineMode(chartUnit(m.oldUnitIdx))
 	m.newIsLine = isLineMode(chartUnit(m.unitIdx))
-	// Snapshot pts before refreshChart overwrites them.
+	// Snapshot OLD-unit data before refreshChart overwrites lastValues/
+	// lastStarts/lastPts5h/lastPts7d. The bar branch of renderSpringFrame
+	// needs oldValues/oldStarts during springShrinking when oldIsLine=false;
+	// the line branch needs oldPts5h/7d during springShrinking when
+	// oldIsLine=true.
+	m.oldValues = m.lastValues
+	m.oldStarts = m.lastStarts
 	m.oldPts5h = m.lastPts5h
 	m.oldPts7d = m.lastPts7d
 
@@ -657,7 +671,19 @@ func (m *Model) beginUnitAnimation() {
 		return
 	}
 
+	// Size spring arrays to max(old, new) so cross-mode transitions
+	// (bar↔line) don't bail out in renderSpringFrame's bar branch when
+	// the user's scroll position is past the smaller side's length.
+	// Concretely: tokens→remaining has 700 old bars vs ~10 line points;
+	// without the max() the bar branch would compute start=582,
+	// end=min(582+nv, 10)=10, start>=end, return, and leave the
+	// refreshChart-set remaining-line steady state visible during all of
+	// Phase 1 (the bar collapse the user expects to see).
 	n := len(newValues)
+	if len(m.oldValues) > n {
+		n = len(m.oldValues)
+	}
+
 	m.springs = make([]harmonica.Spring, n)
 	m.springProjectiles = make([]harmonica.Projectile, n)
 	m.springRatios = make([]float64, n)
@@ -669,18 +695,20 @@ func (m *Model) beginUnitAnimation() {
 	for i := range n {
 		// Phase 1 exit ratio: line mode collapses as a uniform shape fraction
 		// (1.0 = full, 0.0 = flat); bar mode uses the per-bar height ratio.
+		// Index-bounded against m.oldValues so n > len(oldValues) leaves
+		// the trailing entries at 0 (invisible bars during shrink).
 		if m.oldIsLine {
 			m.springRatios[i] = 1.0
-		} else if m.oldPeak > 0 && i < len(oldValues) {
-			m.springRatios[i] = oldValues[i] / m.oldPeak
+		} else if m.oldPeak > 0 && i < len(m.oldValues) {
+			m.springRatios[i] = m.oldValues[i] / m.oldPeak
 		}
 
 		// Phase 2 enter target: line mode springs to shape-fraction 1.0
 		// (the interpPt formula then maps 1→real shape); bar mode uses the
-		// normalised new value.
+		// normalised new value. Same index-bound for newValues.
 		if m.newIsLine {
 			m.springFinalTargets[i] = 1.0
-		} else if newPeak > 0 {
+		} else if newPeak > 0 && i < len(newValues) {
 			m.springFinalTargets[i] = newValues[i] / newPeak
 		}
 
@@ -800,7 +828,24 @@ func (m *Model) renderSpringFrame() {
 
 	nv := m.visibleBuckets()
 
-	// Clamp the window to the actual ratios slice.
+	// Pick the starts that align with the springRatios for the current
+	// phase. Phase 1 of a bar→line transition needs the OLD bar starts
+	// (lastStarts has been overwritten with sparse line points by
+	// refreshChart); every other case uses the post-refresh lastStarts.
+	var rangeStarts []time.Time
+	var prevBarCount int
+	if m.springPhase == springShrinking && !m.oldIsLine {
+		rangeStarts = m.oldStarts
+		prevBarCount = len(m.oldValues)
+	} else {
+		rangeStarts = m.lastStarts
+		prevBarCount = len(m.lastValues)
+	}
+
+	// Clamp the window to the smaller of springRatios and rangeStarts so
+	// the slice indices stay valid for both arrays. With springs sized to
+	// max(old, new) and rangeStarts chosen to match the active phase, the
+	// two slices line up 1:1 in normal flow; the clamp is a safety net.
 	start := m.springXOffset
 	if start < 0 {
 		start = 0
@@ -808,6 +853,9 @@ func (m *Model) renderSpringFrame() {
 	end := start + nv
 	if end > len(m.springRatios) {
 		end = len(m.springRatios)
+	}
+	if end > len(rangeStarts) {
+		end = len(rangeStarts)
 	}
 	if start >= end {
 		return
@@ -824,13 +872,14 @@ func (m *Model) renderSpringFrame() {
 	// doesn't see a "jump left" or a vanishing partial bar on the
 	// steady-state ↔ spring transition. Include bucket [start-1] as a
 	// leading bar and offset into it by the same slack the viewport
-	// would have shown pre-spring.
+	// would have shown pre-spring. Uses the phase-correct bar count so
+	// Phase 1 of bar→line uses the OLD bar canvas for slack math.
 	stride := zoom.stride()
-	prevLongest := zoom.CanvasWidth(len(m.lastValues))
+	prevLongest := zoom.CanvasWidth(prevBarCount)
 	sliceStart, springXOff := computeSpringSlice(start, prevLongest, m.viewport.Width, stride)
 
 	visibleRatios := m.springRatios[sliceStart:end]
-	visibleStarts := m.lastStarts[sliceStart:end]
+	visibleStarts := rangeStarts[sliceStart:end]
 	// During the shrinking phase the bars are still showing OLD-unit data
 	// falling toward zero, so render them in the OLD unit's color. Only
 	// after the handoff (springGrowing onward) does the color switch to
