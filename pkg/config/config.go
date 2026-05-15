@@ -20,14 +20,19 @@ type Paths struct {
 	CacheDir     string `toml:"cache_dir"`
 }
 
+type UI struct {
+	ReduceMotion bool `toml:"reduce_motion"`
+}
+
 type Config struct {
 	History History `toml:"history"`
 	Paths   Paths   `toml:"paths"`
+	UI      UI      `toml:"ui"`
 }
 
 // Load reads cfg from path, falling back to embedded defaults if path is empty.
 // Defaults always apply for unset fields. Unknown top-level sections and keys —
-// including the dropped [ui] / [display] / [pricing] sections, the legacy [plan] section,
+// including the dropped [display] / [pricing] sections, the legacy [plan] section,
 // and the dropped history.default_window_days / history.include_subagents keys —
 // are silently ignored, so older user configs keep loading without errors.
 //
