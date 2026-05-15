@@ -1133,6 +1133,57 @@ func TestBeginUnitAnimation(t *testing.T) {
 	}
 }
 
+func TestUnitKey_ReduceMotion_SnapsWithoutTick(t *testing.T) {
+	// With ReduceMotion enabled, the 'u' keypress must:
+	//   - advance unitIdx,
+	//   - call refreshChart (so lastValues reflects the new unit),
+	//   - leave springActive = false (no animation state),
+	//   - return cmd = nil (no springTickMsg follow-up).
+	//
+	// Seed using the same fixture as TestUnitToggleAnimationSettles, then
+	// flip the model's ReduceMotion flag before the keypress.
+	m := seedTwoPhaseAnimationModel(t)
+	m.deps.ReduceMotion = true
+	if len(m.lastValues) == 0 {
+		t.Fatalf("seed sanity: lastValues empty after refreshChart in token mode")
+	}
+	tokensSnapshot := append([]float64(nil), m.lastValues...)
+	tokensPeak := m.peak
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	m = updated.(Model)
+
+	if cmd != nil {
+		t.Errorf("ReduceMotion 'u' press: cmd = %v, want nil (no springTickMsg follow-up)", cmd)
+	}
+	if m.springActive {
+		t.Errorf("ReduceMotion 'u' press: springActive = true, want false (snap, not animate)")
+	}
+	if m.unitIdx != 1 {
+		t.Errorf("ReduceMotion 'u' press: unitIdx = %d, want 1 (advanced from tokens to cost)", m.unitIdx)
+	}
+	// refreshChart must have run for the new unit. Cost values are
+	// orders of magnitude smaller than token values for the seed fixture,
+	// so a peak that's not strictly less than the original token peak
+	// means refreshChart didn't actually swap state.
+	if m.peak >= tokensPeak {
+		t.Errorf("ReduceMotion 'u' press: m.peak = %v not less than pre-toggle tokens peak %v; refreshChart did not snap to cost", m.peak, tokensPeak)
+	}
+	// And lastValues must differ from the token snapshot (sanity).
+	if len(m.lastValues) == len(tokensSnapshot) {
+		identical := true
+		for i := range tokensSnapshot {
+			if m.lastValues[i] != tokensSnapshot[i] {
+				identical = false
+				break
+			}
+		}
+		if identical {
+			t.Errorf("ReduceMotion 'u' press: lastValues unchanged from token snapshot; expected cost values")
+		}
+	}
+}
+
 func TestUnitToggleAnimationSettles(t *testing.T) {
 	// Drives the model through the two-phase animation: press 'u',
 	// then deliver up to 200 springTickMsg ticks. Asserts springActive

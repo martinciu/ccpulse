@@ -399,22 +399,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.refreshChart()
 		case key.Matches(msg, m.keys.Unit):
 			m.unitIdx = (m.unitIdx + 1) % int(chartUnitCount)
-			m.beginUnitAnimation()
-			if m.springActive {
-				// After beginUnitAnimation, viewport content is the new
-				// full-canvas with XOffset preserved at the user's
-				// wall-clock anchor (via refreshChart). Use the shadow
-				// scroll position as the spring's window so the animated
-				// slice matches what the user is actually looking at.
-				m.springXOffset = m.viewportXOffset
-				// Paint spring-frame-0 (old heights, old unit, old color)
-				// synchronously so the next View() call doesn't show one
-				// frame of refreshChart's new-unit content before the
-				// first tick paints the falling old-unit chart.
-				m.renderSpringFrame()
-				return m, tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
-					return springTickMsg{}
-				})
+			if m.deps.ReduceMotion {
+				// Snap directly: no spring state, no tick scheduling.
+				// refreshChart is the same call that beginUnitAnimation
+				// makes internally — without it the viewport keeps showing
+				// the old unit's content.
+				m.refreshChart()
+			} else {
+				m.beginUnitAnimation()
+				if m.springActive {
+					// After beginUnitAnimation, viewport content is the new
+					// full-canvas with XOffset preserved at the user's
+					// wall-clock anchor (via refreshChart). Use the shadow
+					// scroll position as the spring's window so the animated
+					// slice matches what the user is actually looking at.
+					m.springXOffset = m.viewportXOffset
+					// Paint spring-frame-0 (old heights, old unit, old color)
+					// synchronously so the next View() call doesn't show one
+					// frame of refreshChart's new-unit content before the
+					// first tick paints the falling old-unit chart.
+					m.renderSpringFrame()
+					return m, tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
+						return springTickMsg{}
+					})
+				}
 			}
 		case key.Matches(msg, m.keys.ScrollLeft):
 			m.scrollLeft(horizontalScrollStep)
