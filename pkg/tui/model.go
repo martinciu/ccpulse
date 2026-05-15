@@ -674,6 +674,35 @@ const (
 //
 // Snapshots happen BEFORE refreshChart so the OLD m.peak / m.lastValues
 // survive the refresh that overwrites them.
+
+// seedPhase2Springs sizes the spring state arrays to len(targets), zeros
+// springRatios / springVelocities / springTargetRatios, copies targets
+// into springFinalTargets (the Phase 2 destination), and builds
+// springs[i] with phase2Frequency / phase2Damping.
+//
+// Used by both beginIntroAnimation (intro = Phase 2 only, preceded by
+// hold) and beginUnitAnimation (Phase 1 fall + Phase 2 grow); the
+// latter overwrites springRatios with the OLD heights and seeds
+// springProjectiles after this call. Sharing this helper enforces the
+// "same Phase 2 spring config" requirement from #188 by construction.
+//
+// springTargetRatios is left zeroed; the springHolding tick is what
+// seeds it from springFinalTargets at the Phase 2 entry — same
+// contract as the unit-toggle path.
+func (m *Model) seedPhase2Springs(targets []float64) {
+	n := len(targets)
+	m.springs = make([]harmonica.Spring, n)
+	m.springProjectiles = make([]harmonica.Projectile, n)
+	m.springRatios = make([]float64, n)
+	m.springVelocities = make([]float64, n)
+	m.springTargetRatios = make([]float64, n)
+	m.springFinalTargets = make([]float64, n)
+	for i, t := range targets {
+		m.springFinalTargets[i] = t
+		m.springs[i] = harmonica.NewSpring(harmonica.FPS(springFPS), phase2Frequency, phase2Damping)
+	}
+}
+
 func (m *Model) beginUnitAnimation() {
 	if m.deps.Cache == nil {
 		return
@@ -706,47 +735,36 @@ func (m *Model) beginUnitAnimation() {
 	// Size spring arrays to max(old, new) so cross-mode transitions
 	// (bar↔line) don't bail out in renderSpringFrame's bar branch when
 	// the user's scroll position is past the smaller side's length.
-	// Concretely: tokens→remaining has 700 old bars vs ~10 line points;
-	// without the max() the bar branch would compute start=582,
-	// end=min(582+nv, 10)=10, start>=end, return, and leave the
-	// refreshChart-set remaining-line steady state visible during all of
-	// Phase 1 (the bar collapse the user expects to see).
 	n := len(newValues)
 	if len(m.oldValues) > n {
 		n = len(m.oldValues)
 	}
 
-	m.springs = make([]harmonica.Spring, n)
-	m.springProjectiles = make([]harmonica.Projectile, n)
-	m.springRatios = make([]float64, n)
-	m.springVelocities = make([]float64, n)
-	m.springTargetRatios = make([]float64, n) // zeros — Phase 1 target
-	m.springFinalTargets = make([]float64, n)
+	// Phase 2 targets sized to n; entries past len(newValues) stay 0
+	// (invisible bars on the long side of a bar↔line cross-transition).
+	targets := make([]float64, n)
+	for i := range n {
+		if m.newIsLine {
+			targets[i] = 1.0
+		} else if newPeak > 0 && i < len(newValues) {
+			targets[i] = newValues[i] / newPeak
+		}
+	}
+	m.seedPhase2Springs(targets)
 
+	// Layer Phase 1 setup on top of the Phase-2-seeded arrays:
+	//   - Overwrite springRatios[i] with the OLD heights (Phase 1 start).
+	//   - Seed springProjectiles[i] with per-bar tuned gravity so bar i
+	//     lands at zero at t = phase1Duration regardless of its starting
+	//     ratio. h = 0.5·g·t² ⇒ g = 2h/t².
 	t1 := phase1Duration.Seconds()
 	for i := range n {
-		// Phase 1 exit ratio: line mode collapses as a uniform shape fraction
-		// (1.0 = full, 0.0 = flat); bar mode uses the per-bar height ratio.
-		// Index-bounded against m.oldValues so n > len(oldValues) leaves
-		// the trailing entries at 0 (invisible bars during shrink).
 		if m.oldIsLine {
 			m.springRatios[i] = 1.0
 		} else if m.oldPeak > 0 && i < len(m.oldValues) {
 			m.springRatios[i] = m.oldValues[i] / m.oldPeak
 		}
 
-		// Phase 2 enter target: line mode springs to shape-fraction 1.0
-		// (the interpPt formula then maps 1→real shape); bar mode uses the
-		// normalised new value. Same index-bound for newValues.
-		if m.newIsLine {
-			m.springFinalTargets[i] = 1.0
-		} else if newPeak > 0 && i < len(newValues) {
-			m.springFinalTargets[i] = newValues[i] / newPeak
-		}
-
-		// Per-bar tuned gravity (quadratic ease-in) so bar/line i hits 0 at
-		// t = phase1Duration. h = 0.5·g·t² ⇒ g = 2h/t². Direction is always
-		// toward zero (exit target for both bar and line is 0 in ratio-space).
 		g := 2 * m.springRatios[i] / (t1 * t1)
 		// Stored by value; Phase 1 tick MUST index (m.springProjectiles[i].Update()),
 		// never range-copy. Projectile.Update has a pointer receiver and mutates
@@ -757,7 +775,6 @@ func (m *Model) beginUnitAnimation() {
 			harmonica.Vector{},      // v0 = 0 (at rest)
 			harmonica.Vector{X: -g}, // accel toward zero
 		)
-		m.springs[i] = harmonica.NewSpring(harmonica.FPS(springFPS), phase2Frequency, phase2Damping)
 	}
 	m.springActive = true
 	m.springPhase = springShrinking
