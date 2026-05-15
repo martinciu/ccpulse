@@ -394,6 +394,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		slog.Debug("tui.refreshMsg",
 			"dur_ms", time.Since(start).Milliseconds(),
 			"zoom", ZoomLevels[m.zoomIdx].Label)
+		return m, m.maybeArmIntro()
 	case tea.KeyMsg:
 		switch {
 		case msg.String() == "ctrl+c":

@@ -1516,6 +1516,8 @@ func TestRefreshDuringAnimationSnapsAndContinues(t *testing.T) {
 	m.viewport.Width = m.chartWidth()
 	m.viewport.Height = m.chartHeight()
 	m.refreshChart()
+	// Post-open state — intro already fired (see seedTwoPhaseAnimationModel).
+	m.introPending = false
 	preBucketCount := len(m.lastValues)
 
 	// Start animation.
@@ -1579,6 +1581,8 @@ func TestRefreshDoesNotAnimate(t *testing.T) {
 	m.w, m.h = 120, 40
 	m.viewport.Width = m.chartWidth()
 	m.viewport.Height = m.chartHeight()
+	// Post-open state — intro already fired (see seedTwoPhaseAnimationModel).
+	m.introPending = false
 
 	updated, _ := m.Update(RefreshMsg{})
 	m = updated.(Model)
@@ -3373,5 +3377,64 @@ func TestIntro_OneShot_NoReArmOnSecondWindowSize(t *testing.T) {
 	}
 	if m.springActive {
 		t.Errorf("springActive = true after second WindowSizeMsg; want false (idle)")
+	}
+}
+
+func TestIntro_EmptyCacheDeferred(t *testing.T) {
+	// When the cache starts empty, the first WindowSizeMsg must NOT arm
+	// the intro (lastValues stays nil); introPending stays true. The
+	// intro fires on the first RefreshMsg that produces non-empty data.
+	dir := t.TempDir()
+	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	t.Cleanup(func() { c.Close() })
+
+	tab, err := pricing.Load()
+	if err != nil {
+		t.Fatalf("pricing.Load: %v", err)
+	}
+
+	m := New(Deps{Cache: c})
+	if !m.introPending {
+		t.Fatalf("introPending = false after New(ReduceMotion=false); want true (sanity)")
+	}
+
+	// First WindowSizeMsg with empty cache: no arm, introPending stays.
+	updated, cmd := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+	if cmd != nil {
+		t.Errorf("cmd = %v after WindowSizeMsg with empty cache; want nil (deferred)", cmd)
+	}
+	if m.springActive {
+		t.Errorf("springActive = true with empty cache; want false")
+	}
+	if !m.introPending {
+		t.Errorf("introPending = false after empty-cache WindowSizeMsg; want true (still pending)")
+	}
+
+	// Populate the cache and deliver a RefreshMsg.
+	now := time.Now().UTC().Truncate(15 * time.Minute)
+	if err := c.InsertMessages([]parse.Message{
+		{SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7",
+			Timestamp: now.Add(-30 * time.Minute), InputTokens: 10000, OutputTokens: 5000},
+	}, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	updated, cmd = m.Update(RefreshMsg{})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatalf("cmd = nil after RefreshMsg with non-empty cache; want non-nil hold tick (intro arm)")
+	}
+	if !m.springActive {
+		t.Errorf("springActive = false after RefreshMsg; want true (intro armed)")
+	}
+	if m.springPhase != springHolding {
+		t.Errorf("springPhase = %d after RefreshMsg arm; want springHolding (%d)", m.springPhase, springHolding)
+	}
+	if m.introPending {
+		t.Errorf("introPending = true after intro arm; want false (one-shot)")
 	}
 }
