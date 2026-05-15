@@ -876,6 +876,94 @@ func TestTickFadeMsg(t *testing.T) {
 	}
 }
 
+func TestIndexProgressMsg_ReduceMotion_OneShotDwell(t *testing.T) {
+	// Three subtests cover the reduce-motion dwell path and the stale-clear
+	// guard introduced in model.go:
+	//
+	//   falling_edge_schedules_dwell     — rising then falling edge; assert
+	//                                      FadeStop==1 and a non-nil dwell cmd.
+	//   dwell_clear_resets_in_one_step   — deliver indexBannerClearMsg after
+	//                                      the above; assert FadeStop==0, no
+	//                                      further cmd (not a fade ladder).
+	//   stale_clear_after_reenter_is_noop — falling edge followed by a second
+	//                                      rising edge (resets FadeStop to 0),
+	//                                      then a stale indexBannerClearMsg
+	//                                      must not disturb the in-progress
+	//                                      backfill.
+
+	t.Run("falling_edge_schedules_dwell", func(t *testing.T) {
+		m := New(Deps{ReduceMotion: true})
+
+		// Rising edge.
+		updated, _ := m.Update(IndexProgressMsg{Done: 0, Total: 5, Active: true})
+		m = updated.(Model)
+
+		// Falling edge: backfill finishes.
+		updated, cmd := m.Update(IndexProgressMsg{Done: 5, Total: 5, Active: false})
+		m = updated.(Model)
+		if m.indexFadeStop != 1 {
+			t.Errorf("after falling edge with ReduceMotion: indexFadeStop = %d, want 1 (full opacity)", m.indexFadeStop)
+		}
+		if cmd == nil {
+			t.Errorf("after falling edge with ReduceMotion: cmd = nil, want one-shot dwell tea.Tick")
+		}
+	})
+
+	t.Run("dwell_clear_resets_in_one_step", func(t *testing.T) {
+		m := New(Deps{ReduceMotion: true})
+
+		// Replay the same rising + falling edge to put the model in dwell state.
+		updated, _ := m.Update(IndexProgressMsg{Done: 0, Total: 5, Active: true})
+		m = updated.(Model)
+		updated, _ = m.Update(IndexProgressMsg{Done: 5, Total: 5, Active: false})
+		m = updated.(Model)
+
+		// Simulate the dwell expiring: deliver indexBannerClearMsg directly.
+		// One step must clear the banner (FadeStop = 0). Not a fade ladder.
+		updated, cmd := m.Update(indexBannerClearMsg{})
+		m = updated.(Model)
+		if m.indexFadeStop != 0 {
+			t.Errorf("after indexBannerClearMsg: indexFadeStop = %d, want 0", m.indexFadeStop)
+		}
+		if cmd != nil {
+			t.Errorf("after indexBannerClearMsg: cmd = %v, want nil (no further ticks)", cmd)
+		}
+	})
+
+	t.Run("stale_clear_after_reenter_is_noop", func(t *testing.T) {
+		m := New(Deps{ReduceMotion: true})
+
+		// Rising edge → falling edge: model enters dwell state (FadeStop=1),
+		// dwell tick is conceptually in flight.
+		updated, _ := m.Update(IndexProgressMsg{Done: 0, Total: 5, Active: true})
+		m = updated.(Model)
+		updated, _ = m.Update(IndexProgressMsg{Done: 5, Total: 5, Active: false})
+		m = updated.(Model)
+
+		// Second rising edge: a new backfill starts. IndexProgressMsg{Active:true}
+		// resets FadeStop to 0, leaving the old dwell tick orphaned in the queue.
+		updated, _ = m.Update(IndexProgressMsg{Done: 0, Total: 5, Active: true})
+		m = updated.(Model)
+		if m.indexFadeStop != 0 {
+			t.Errorf("after re-enter active: indexFadeStop = %d, want 0", m.indexFadeStop)
+		}
+
+		// The orphaned dwell tick fires. The guard must treat it as stale
+		// (FadeStop already 0) and leave the model untouched.
+		updated, cmd := m.Update(indexBannerClearMsg{})
+		m = updated.(Model)
+		if m.indexFadeStop != 0 {
+			t.Errorf("after stale clear: indexFadeStop = %d, want 0 (unchanged)", m.indexFadeStop)
+		}
+		if !m.indexActive {
+			t.Errorf("after stale clear: indexActive = false, want true (new backfill should not be disturbed)")
+		}
+		if cmd != nil {
+			t.Errorf("after stale clear: cmd = %v, want nil", cmd)
+		}
+	})
+}
+
 func TestIndexFadeStyle(t *testing.T) {
 	// Verifies the three fade stops map to the expected foregrounds.
 	// Stop 1 is the default fg (no Foreground set, which lipgloss reports as
@@ -1096,6 +1184,52 @@ func TestBeginUnitAnimation(t *testing.T) {
 	if m.peak >= oldPeak {
 		t.Errorf("m.peak = %v not less than oldPeak = %v; cost peak should be much smaller for these inputs",
 			m.peak, oldPeak)
+	}
+}
+
+func TestUnitKey_ReduceMotion_SnapsWithoutTick(t *testing.T) {
+	// With ReduceMotion enabled, the 'u' keypress must:
+	//   - advance unitIdx,
+	//   - call refreshChart (so lastValues reflects the new unit),
+	//   - leave springActive = false (no animation state),
+	//   - return cmd = nil (no springTickMsg follow-up).
+	//
+	// Seed using the same fixture as TestUnitToggleAnimationSettles, then
+	// flip the model's ReduceMotion flag before the keypress.
+	m := seedTwoPhaseAnimationModel(t)
+	m.deps.ReduceMotion = true
+	if len(m.lastValues) == 0 {
+		t.Fatalf("seed sanity: lastValues empty after refreshChart in token mode")
+	}
+	tokensSnapshot := append([]float64(nil), m.lastValues...)
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	m = updated.(Model)
+
+	if cmd != nil {
+		t.Errorf("ReduceMotion 'u' press: cmd = %v, want nil (no springTickMsg follow-up)", cmd)
+	}
+	if m.springActive {
+		t.Errorf("ReduceMotion 'u' press: springActive = true, want false (snap, not animate)")
+	}
+	if m.unitIdx != 1 {
+		t.Errorf("ReduceMotion 'u' press: unitIdx = %d, want 1 (advanced from tokens to cost)", m.unitIdx)
+	}
+	// And lastValues must differ from the token snapshot. Bucket counts
+	// are identical (same zoom level, same cache state), so a slice-equal
+	// check is sufficient — bail with t.Fatalf if lengths somehow diverge.
+	if len(m.lastValues) != len(tokensSnapshot) {
+		t.Fatalf("ReduceMotion 'u' press: lastValues len = %d, tokensSnapshot len = %d; bucket count changed unexpectedly", len(m.lastValues), len(tokensSnapshot))
+	}
+	identical := true
+	for i := range tokensSnapshot {
+		if m.lastValues[i] != tokensSnapshot[i] {
+			identical = false
+			break
+		}
+	}
+	if identical {
+		t.Errorf("ReduceMotion 'u' press: lastValues unchanged from token snapshot; expected cost values after snap")
 	}
 }
 

@@ -45,6 +45,12 @@ type IndexProgressMsg struct {
 // fade ends is zero — no Cmd is returned at the final stop.
 type tickFadeMsg struct{}
 
+// indexBannerClearMsg is the one-shot timer used when reduce_motion is
+// enabled to dismiss the post-backfill "✓ indexed N" banner after its
+// full-opacity dwell. The animations-on path uses the 3-step
+// tickFadeMsg ladder instead.
+type indexBannerClearMsg struct{}
+
 // springTickMsg drives the per-bar harmonica spring loop after a
 // 'u' unit-toggle. Scheduled by Update on the unit-key path and
 // re-scheduled by the springTickMsg handler until all springs are
@@ -79,6 +85,10 @@ type Deps struct {
 	HasOAuth     bool
 	CacheDir     string
 	IsDev        bool
+	// ReduceMotion disables the unit-toggle spring animation and the
+	// index-banner fade ladder. Zero value = false = animations on,
+	// preserving today's behaviour. Sourced from cfg.UI.ReduceMotion.
+	ReduceMotion bool
 }
 
 // Model is the root Bubble Tea model for the chart view.
@@ -257,8 +267,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// in current code (Backfill.Run is one-shot).
 			m.indexFadeStop = 0
 		case wasActive && !msg.Active:
-			// Falling edge — start the fade.
+			// Falling edge — start the post-backfill banner.
 			m.indexFadeStop = 1
+			if m.deps.ReduceMotion {
+				// Reduce-motion: one full-opacity dwell, no fade ladder.
+				return m, tea.Tick(indexBannerDwellDuration, func(time.Time) tea.Msg {
+					return indexBannerClearMsg{}
+				})
+			}
 			return m, tea.Tick(indexFadeStepDuration, func(time.Time) tea.Msg {
 				return tickFadeMsg{}
 			})
@@ -276,6 +292,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Tick(indexFadeStepDuration, func(time.Time) tea.Msg {
 			return tickFadeMsg{}
 		})
+	case indexBannerClearMsg:
+		if m.indexFadeStop == 0 {
+			// Stale tick — banner already dismissed (e.g. user re-entered
+			// indexing mid-dwell). Drop silently.
+			return m, nil
+		}
+		m.indexFadeStop = 0
+		return m, nil
 	case springTickMsg:
 		if !m.springActive {
 			return m, nil
@@ -380,22 +404,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.refreshChart()
 		case key.Matches(msg, m.keys.Unit):
 			m.unitIdx = (m.unitIdx + 1) % int(chartUnitCount)
-			m.beginUnitAnimation()
-			if m.springActive {
-				// After beginUnitAnimation, viewport content is the new
-				// full-canvas with XOffset preserved at the user's
-				// wall-clock anchor (via refreshChart). Use the shadow
-				// scroll position as the spring's window so the animated
-				// slice matches what the user is actually looking at.
-				m.springXOffset = m.viewportXOffset
-				// Paint spring-frame-0 (old heights, old unit, old color)
-				// synchronously so the next View() call doesn't show one
-				// frame of refreshChart's new-unit content before the
-				// first tick paints the falling old-unit chart.
-				m.renderSpringFrame()
-				return m, tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
-					return springTickMsg{}
-				})
+			if m.deps.ReduceMotion {
+				// Snap directly: no spring state, no tick scheduling.
+				// refreshChart is the same call that beginUnitAnimation
+				// makes internally — without it the viewport keeps showing
+				// the old unit's content.
+				m.refreshChart()
+			} else {
+				m.beginUnitAnimation()
+				if m.springActive {
+					// After beginUnitAnimation, viewport content is the new
+					// full-canvas with XOffset preserved at the user's
+					// wall-clock anchor (via refreshChart). Use the shadow
+					// scroll position as the spring's window so the animated
+					// slice matches what the user is actually looking at.
+					m.springXOffset = m.viewportXOffset
+					// Paint spring-frame-0 (old heights, old unit, old color)
+					// synchronously so the next View() call doesn't show one
+					// frame of refreshChart's new-unit content before the
+					// first tick paints the falling old-unit chart.
+					m.renderSpringFrame()
+					return m, tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
+						return springTickMsg{}
+					})
+				}
 			}
 		case key.Matches(msg, m.keys.ScrollLeft):
 			m.scrollLeft(horizontalScrollStep)

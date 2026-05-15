@@ -117,3 +117,41 @@ func TestLoad_MissingFileStillResolvesChannelDefault(t *testing.T) {
 		t.Errorf("missing-file CacheDir = %q, want %q (regression: channel-aware fallback must run even on file-read error)", cfg.Paths.CacheDir, "~/.cache/ccpulse-dev")
 	}
 }
+
+func TestLoad_UIReduceMotion(t *testing.T) {
+	cases := []struct {
+		name string
+		body string // empty body means "call Load(\"\")" to exercise the embedded default
+		want bool
+	}{
+		{"default_load_empty_path", "", false},
+		{"missing_ui_section", `[paths]
+cache_dir = "/x"
+`, false},
+		{"explicit_false", `[ui]
+reduce_motion = false
+`, false},
+		{"explicit_true", `[ui]
+reduce_motion = true
+`, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var path string
+			if tc.body != "" {
+				dir := t.TempDir()
+				path = filepath.Join(dir, "config.toml")
+				if err := os.WriteFile(path, []byte(tc.body), 0644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if got := cfg.UI.ReduceMotion; got != tc.want {
+				t.Errorf("cfg.UI.ReduceMotion = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

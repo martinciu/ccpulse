@@ -265,6 +265,7 @@ func runTUI(ctx context.Context) error {
 		HasOAuth:     hasOAuth,
 		CacheDir:     cacheDir,
 		IsDev:        channel.IsDev(),
+		ReduceMotion: cfg.UI.ReduceMotion,
 	})
 	p := newTeaProgram(m)
 

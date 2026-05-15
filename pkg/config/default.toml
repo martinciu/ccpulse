@@ -8,3 +8,13 @@ projects_root = "~/.claude/projects"
 # default at runtime ("~/.cache/ccpulse" for release, "~/.cache/ccpulse-dev"
 # for dev). User-explicit values in your own config.toml always win.
 cache_dir = ""
+
+[ui]
+# Default false (animations on). Set true to disable the unit-toggle
+# spring animation and the index-banner fade ladder — chart snaps to the
+# new unit on 'u', and the post-backfill "✓ indexed N" indicator shows
+# at full opacity for ~1.2 s then disappears in one frame. Mirrors the
+# OS-level "reduce motion" accessibility preference (macOS/iOS, CSS
+# prefers-reduced-motion, GTK). ccpulse does not auto-detect the OS
+# setting — this is the only switch.
+reduce_motion = false
