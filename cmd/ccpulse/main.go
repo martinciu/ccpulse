@@ -166,9 +166,9 @@ func newConfigCmd() *cobra.Command {
 }
 
 // defaultTOMLBytes — first-run scaffold; users edit, never overwritten by upgrades.
-// Delegates to pkg/config so the scaffold stays in lockstep with the embedded
-// default.toml (single source of truth for both in-code defaults and the
-// commented-out documentation users see in their config file).
+// Delegates to pkg/config so the scaffold stays in lockstep with resolved
+// defaults (single source of truth for both in-code defaults and the
+// live-value config the user edits in place).
 func defaultTOMLBytes() []byte {
 	return config.Scaffold()
 }
