@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"fmt"
 	"runtime"
 	"strings"
 	"testing"
@@ -927,22 +926,43 @@ func TestOverlayYTicks(t *testing.T) {
 }
 
 func BenchmarkBuildLineChart(b *testing.B) {
-	now := time.Now().UTC()
-	from := now.Add(-10 * 24 * time.Hour)
-	for _, n := range []int{500, 2000, 5000} {
-		pts5h := make([]cache.UtilizationPoint, n)
-		pts7d := make([]cache.UtilizationPoint, n)
+	now := time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC)
+
+	// Realistic sample cadence: ~5 minute spacing.
+	mkPoints := func(span time.Duration) []cache.UtilizationPoint {
+		n := int(span / (5 * time.Minute))
+		out := make([]cache.UtilizationPoint, n)
 		for i := range n {
-			t := from.Add(time.Duration(i) * 3 * time.Minute)
-			pts5h[i] = cache.UtilizationPoint{At: t, Pct: float64(i % 100)}
-			pts7d[i] = cache.UtilizationPoint{At: t, Pct: float64((i * 3) % 100)}
+			out[i] = cache.UtilizationPoint{
+				At:  now.Add(-span + time.Duration(i)*5*time.Minute),
+				Pct: 50 + float64(i%50),
+			}
 		}
-		b.Run(fmt.Sprintf("pts=%d", n), func(b *testing.B) {
+		return out
+	}
+
+	cases := []struct {
+		name    string
+		canvasW int
+		span    time.Duration
+		zoom    ZoomLevel
+	}{
+		{"w100_24h", 100, 24 * time.Hour, ZoomLevels[1]},
+		{"w1000_7d", 1000, 7 * 24 * time.Hour, ZoomLevels[1]},
+		{"w5000_30d_15m", 5000, 30 * 24 * time.Hour, ZoomLevels[0]},
+	}
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			pts5h := mkPoints(tc.span)
+			pts7d := mkPoints(tc.span)
+			from := now.Add(-tc.span)
+			to := now
+
 			b.ReportAllocs()
 			runtime.GC()
 			b.ResetTimer()
 			for b.Loop() {
-				sinkString = buildLineChart(pts5h, pts7d, from, now, 200, 20, now, ZoomLevels[0], dateOrderMonthFirst)
+				sinkString = buildLineChart(pts5h, pts7d, from, to, tc.canvasW, 20, now, tc.zoom, dateOrderMonthFirst)
 			}
 		})
 	}
