@@ -919,3 +919,121 @@ func BenchmarkBuildLineChart(b *testing.B) {
 		})
 	}
 }
+
+func TestColumnToTime_RoundTrip(t *testing.T) {
+	from := time.Date(2026, 5, 15, 9, 0, 0, 0, time.UTC)
+	to := from.Add(24 * time.Hour)
+
+	tests := []struct {
+		name    string
+		canvasW int
+		col     int
+	}{
+		{"narrow_canvas", 24, 0},
+		{"narrow_canvas_mid", 24, 12},
+		{"narrow_canvas_end", 24, 23},
+		{"wide_canvas_start", 5000, 0},
+		{"wide_canvas_mid", 5000, 2500},
+		{"wide_canvas_end", 5000, 4999},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotT := columnToTime(tt.col, tt.canvasW, from, to)
+			gotCol := timeToColumn(gotT, tt.canvasW, from, to)
+			if absInt(gotCol-tt.col) > 1 {
+				t.Errorf("round-trip col=%d -> t=%v -> col=%d (canvasW=%d); want within +-1",
+					tt.col, gotT, gotCol, tt.canvasW)
+			}
+		})
+	}
+}
+
+func TestColumnToTime_Clamps(t *testing.T) {
+	from := time.Date(2026, 5, 15, 9, 0, 0, 0, time.UTC)
+	to := from.Add(time.Hour)
+
+	if got := columnToTime(-5, 100, from, to); !got.Equal(from) {
+		t.Errorf("columnToTime(-5) = %v; want from = %v", got, from)
+	}
+	if got := columnToTime(150, 100, from, to); !got.Equal(to) {
+		t.Errorf("columnToTime(150, canvasW=100) = %v; want to = %v", got, to)
+	}
+	if got := columnToTime(50, 0, from, to); !got.Equal(from) {
+		t.Errorf("columnToTime(50, canvasW=0) = %v; want from = %v", got, from)
+	}
+	if got := columnToTime(50, -1, from, to); !got.Equal(from) {
+		t.Errorf("columnToTime(50, canvasW=-1) = %v; want from = %v", got, from)
+	}
+
+	if got := timeToColumn(from.Add(-time.Hour), 100, from, to); got != 0 {
+		t.Errorf("timeToColumn(before from) = %d; want 0", got)
+	}
+	if got := timeToColumn(to.Add(time.Hour), 100, from, to); got != 100 {
+		t.Errorf("timeToColumn(after to) = %d; want 100 (canvasW)", got)
+	}
+	if got := timeToColumn(from.Add(30*time.Minute), 0, from, to); got != 0 {
+		t.Errorf("timeToColumn(canvasW=0) = %d; want 0", got)
+	}
+}
+
+func TestBucketCountInRange(t *testing.T) {
+	tests := []struct {
+		name string
+		from time.Time
+		to   time.Time
+		dur  time.Duration
+		want int
+	}{
+		{
+			"15m_one_hour",
+			time.Date(2026, 5, 15, 9, 0, 0, 0, time.UTC),
+			time.Date(2026, 5, 15, 10, 0, 0, 0, time.UTC),
+			15 * time.Minute,
+			4,
+		},
+		{
+			"1h_one_day",
+			time.Date(2026, 5, 15, 0, 0, 0, 0, time.UTC),
+			time.Date(2026, 5, 16, 0, 0, 0, 0, time.UTC),
+			time.Hour,
+			24,
+		},
+		{
+			"24h_seven_days_local",
+			time.Date(2026, 5, 8, 0, 0, 0, 0, time.Local),
+			time.Date(2026, 5, 15, 0, 0, 0, 0, time.Local),
+			24 * time.Hour,
+			7,
+		},
+		{
+			"empty_range",
+			time.Date(2026, 5, 15, 0, 0, 0, 0, time.UTC),
+			time.Date(2026, 5, 15, 0, 0, 0, 0, time.UTC),
+			time.Hour,
+			0,
+		},
+		{
+			"to_before_from",
+			time.Date(2026, 5, 15, 1, 0, 0, 0, time.UTC),
+			time.Date(2026, 5, 15, 0, 0, 0, 0, time.UTC),
+			time.Hour,
+			0,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := bucketCountInRange(tt.from, tt.to, tt.dur); got != tt.want {
+				t.Errorf("bucketCountInRange(%v, %v, %v) = %d; want %d",
+					tt.from, tt.to, tt.dur, got, tt.want)
+			}
+		})
+	}
+}
+
+// absInt is a small int absolute-value helper used by helper round-trip tests.
+func absInt(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
+}

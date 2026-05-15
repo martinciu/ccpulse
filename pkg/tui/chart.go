@@ -63,6 +63,78 @@ func (z ZoomLevel) stride() int {
 	return max(z.BarWidth, 1) + max(z.BarGap, 0)
 }
 
+// columnToTime maps a viewport column to the wall-clock time at that
+// column within the canvas's [from, to) range. Used pre-rebuild to
+// snapshot the anchor; the inverse is timeToColumn.
+//
+// Defensive: canvasW<=0 or to<=from collapse to the canvas origin so
+// callers can use the result without nil checks. col is clamped to
+// [0, canvasW] so out-of-range scroll state never escapes the helper.
+func columnToTime(col, canvasW int, from, to time.Time) time.Time {
+	if canvasW <= 0 || !to.After(from) {
+		return from
+	}
+	if col <= 0 {
+		return from
+	}
+	if col >= canvasW {
+		return to
+	}
+	span := to.Sub(from)
+	frac := float64(col) / float64(canvasW)
+	return from.Add(time.Duration(float64(span) * frac))
+}
+
+// timeToColumn maps a wall-clock time back to a viewport column in
+// the canvas's [from, to) range. Used post-rebuild to restore the
+// anchor; the inverse of columnToTime.
+//
+// Defensive: same clamping contract as columnToTime — out-of-range t
+// snaps to the canvas edges; degenerate canvas returns 0.
+func timeToColumn(t time.Time, canvasW int, from, to time.Time) int {
+	if canvasW <= 0 || !to.After(from) {
+		return 0
+	}
+	if !t.After(from) {
+		return 0
+	}
+	if !t.Before(to) {
+		return canvasW
+	}
+	span := to.Sub(from)
+	frac := float64(t.Sub(from)) / float64(span)
+	col := int(frac * float64(canvasW))
+	if col < 0 {
+		return 0
+	}
+	if col > canvasW {
+		return canvasW
+	}
+	return col
+}
+
+// bucketCountInRange counts the bucket slots covering [from, to) at the
+// given zoom duration. Matches cache.TokenBuckets / cache.CostBuckets
+// return-length semantics:
+//   - For sub-day durations, the count is int(to.Sub(from) / dur).
+//   - For 24h, the count is the number of local-tz calendar days in
+//     the range (DST-correct via AddDate(0,0,1)).
+//
+// Returns 0 for empty or reversed ranges.
+func bucketCountInRange(from, to time.Time, dur time.Duration) int {
+	if !to.After(from) {
+		return 0
+	}
+	if dur == 24*time.Hour {
+		n := 0
+		for t := from; t.Before(to); t = t.AddDate(0, 0, 1) {
+			n++
+		}
+		return n
+	}
+	return int(to.Sub(from) / dur)
+}
+
 // ZoomLevels are the available zoom steps, cycled with the z key.
 // Order matters: pkg/tui/model.go indexes by position (zoomIdx).
 var ZoomLevels = []ZoomLevel{
