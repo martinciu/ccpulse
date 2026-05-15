@@ -28,7 +28,7 @@ func defaultKeyMap() KeyMap {
 		),
 		Unit: key.NewBinding(
 			key.WithKeys("u"),
-			key.WithHelp("u", "tokens/cost"),
+			key.WithHelp("u", "tokens/cost/remaining"),
 		),
 		Help: key.NewBinding(
 			key.WithKeys("?"),

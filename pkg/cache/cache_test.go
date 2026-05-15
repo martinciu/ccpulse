@@ -1680,3 +1680,73 @@ func TestSevenDaySamplesSince_ResetsAtNormalized(t *testing.T) {
 		t.Errorf("ResetsAt not normalized: %q vs %q (nanosecond jitter survived)", got[0].ResetsAt, got[1].ResetsAt)
 	}
 }
+
+func TestUtilizationSince(t *testing.T) {
+	dir := t.TempDir()
+	c, err := Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer c.Close()
+
+	now := time.Now().UTC().Truncate(time.Second)
+
+	samples := []struct {
+		ts       time.Time
+		fiveHour *anthro.Bucket
+		sevenDay *anthro.Bucket
+	}{
+		{now.Add(-6 * time.Minute), &anthro.Bucket{Utilization: 10.0, ResetsAt: now.Add(time.Hour)}, &anthro.Bucket{Utilization: 5.0, ResetsAt: now.Add(24 * time.Hour)}},
+		{now.Add(-3 * time.Minute), &anthro.Bucket{Utilization: 25.0, ResetsAt: now.Add(time.Hour)}, nil},
+		{now, &anthro.Bucket{Utilization: 50.0, ResetsAt: now.Add(time.Hour)}, &anthro.Bucket{Utilization: 15.0, ResetsAt: now.Add(24 * time.Hour)}},
+	}
+	for _, s := range samples {
+		u := anthro.Usage{FiveHour: s.fiveHour, SevenDay: s.sevenDay}
+		if err := c.RecordUsageSample(u, s.ts); err != nil {
+			t.Fatalf("RecordUsageSample: %v", err)
+		}
+	}
+
+	tests := []struct {
+		name    string
+		column  string
+		since   time.Time
+		wantLen int
+		wantPct []float64
+	}{
+		{"five_hour_all", "five_hour_pct", now.Add(-10 * time.Minute), 3, []float64{10.0, 25.0, 50.0}},
+		{"seven_day_all", "seven_day_pct", now.Add(-10 * time.Minute), 2, []float64{5.0, 15.0}},
+		{"five_hour_partial", "five_hour_pct", now.Add(-4 * time.Minute), 2, []float64{25.0, 50.0}},
+		{"no_rows", "five_hour_pct", now.Add(time.Hour), 0, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pts, err := c.UtilizationSince(tt.column, tt.since)
+			if err != nil {
+				t.Fatalf("UtilizationSince: %v", err)
+			}
+			if len(pts) != tt.wantLen {
+				t.Fatalf("got %d points, want %d", len(pts), tt.wantLen)
+			}
+			for i, want := range tt.wantPct {
+				if pts[i].Pct != want {
+					t.Errorf("pts[%d].Pct = %f, want %f", i, pts[i].Pct, want)
+				}
+			}
+		})
+	}
+}
+
+func TestUtilizationSince_InvalidColumn(t *testing.T) {
+	dir := t.TempDir()
+	c, err := Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer c.Close()
+
+	_, err = c.UtilizationSince("DROP TABLE messages", time.Now())
+	if err == nil {
+		t.Fatal("expected error for invalid column, got nil")
+	}
+}

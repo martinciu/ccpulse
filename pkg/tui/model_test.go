@@ -917,9 +917,8 @@ func TestViewRendersFadeIndicator(t *testing.T) {
 }
 
 func TestUnitKeyToggles(t *testing.T) {
-	// Pressing 'u' must flip unitIdx between 0 (tokens) and 1 (cost).
-	// Two presses must return to 0. Initial state is 0 (default reset
-	// per spec — no persistence across launches).
+	// Pressing 'u' cycles unitIdx through 0 (tokens) → 1 (cost) → 2 (remaining) → 0.
+	// Initial state is 0 (default reset per spec — no persistence across launches).
 	m := New(Deps{})
 	m.w, m.h = 120, 40
 
@@ -935,8 +934,64 @@ func TestUnitKeyToggles(t *testing.T) {
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
 	m = updated.(Model)
+	if m.unitIdx != 2 {
+		t.Errorf("after second 'u', unitIdx = %d, want 2", m.unitIdx)
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	m = updated.(Model)
 	if m.unitIdx != 0 {
-		t.Errorf("after second 'u', unitIdx = %d, want 0", m.unitIdx)
+		t.Errorf("after third 'u', unitIdx = %d, want 0", m.unitIdx)
+	}
+}
+
+func TestZoomKeyDisabledInRemainingMode(t *testing.T) {
+	// z must be a no-op while in remaining mode, and must be hidden from
+	// the help footer. Cycling back out of remaining mode must re-enable it.
+	m := New(Deps{})
+	m.w, m.h = 120, 40
+
+	// Press 'u' twice to arrive at remaining mode (unitIdx == 2).
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	m = updated.(Model)
+	if m.unitIdx != int(chartUnitRemaining) {
+		t.Fatalf("expected unitIdx=%d (remaining), got %d", int(chartUnitRemaining), m.unitIdx)
+	}
+
+	// z must not change zoomIdx.
+	initialZoom := m.zoomIdx
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
+	m = updated.(Model)
+	if m.zoomIdx != initialZoom {
+		t.Errorf("zoom changed in remaining mode: %d → %d", initialZoom, m.zoomIdx)
+	}
+
+	// Zoom binding must not appear in the help footer while in remaining mode.
+	footer := m.help.View(m.keys)
+	if strings.Contains(footer, "z  zoom") || strings.Contains(footer, "z zoom") {
+		t.Errorf("zoom binding still visible in help footer while in remaining mode:\n%s", footer)
+	}
+
+	// Cycle once more to wrap back to tokens (unitIdx == 0).
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	m = updated.(Model)
+	if m.unitIdx != 0 {
+		t.Fatalf("expected unitIdx=0 (tokens) after third 'u', got %d", m.unitIdx)
+	}
+
+	// Zoom binding must reappear in the help footer.
+	footer = m.help.View(m.keys)
+	if !strings.Contains(footer, "zoom") {
+		t.Errorf("zoom binding missing from help footer after leaving remaining mode:\n%s", footer)
+	}
+
+	// z must now change zoomIdx.
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
+	m = updated.(Model)
+	if m.zoomIdx == initialZoom {
+		t.Errorf("zoom did not advance after leaving remaining mode: zoomIdx still %d", m.zoomIdx)
 	}
 }
 
@@ -953,15 +1008,15 @@ func TestUnitKeyInHelp(t *testing.T) {
 	// bare "u" also appears in "quit" and "scroll" so the substring is
 	// vacuous on its own.
 	footer := m.help.View(m.keys)
-	if !strings.Contains(footer, "u tokens/cost") {
-		t.Errorf("footer help missing 'u tokens/cost' binding:\n%s", footer)
+	if !strings.Contains(footer, "u tokens/cost/remaining") {
+		t.Errorf("footer help missing 'u tokens/cost/remaining' binding:\n%s", footer)
 	}
 
 	// Help overlay: triggered by '?'. Asserts on the FullHelp view.
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
 	overlay := updated.(Model).View()
-	if !strings.Contains(overlay, "tokens/cost") {
-		t.Errorf("help overlay missing 'tokens/cost' binding:\n%s", overlay)
+	if !strings.Contains(overlay, "tokens/cost/remaining") {
+		t.Errorf("help overlay missing 'tokens/cost/remaining' binding:\n%s", overlay)
 	}
 }
 
@@ -2406,5 +2461,390 @@ func TestRenderSpringFrame_MatchesPreSpringBoundary(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestRefreshChart_RemainingMode(t *testing.T) {
+	dir := t.TempDir()
+	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	defer c.Close()
+
+	now := time.Now().UTC().Truncate(time.Minute)
+	for i := 0; i < 10; i++ {
+		u := anthro.Usage{
+			FiveHour: &anthro.Bucket{Utilization: float64(i * 10), ResetsAt: now.Add(time.Hour)},
+			SevenDay: &anthro.Bucket{Utilization: float64(i * 5), ResetsAt: now.Add(24 * time.Hour)},
+		}
+		if err := c.RecordUsageSample(u, now.Add(time.Duration(-i)*3*time.Minute)); err != nil {
+			t.Fatalf("RecordUsageSample: %v", err)
+		}
+	}
+
+	tab, _ := pricing.Load()
+	msgs := []parse.Message{{
+		SessionID: "s1", ProjectSlug: "p", Model: "claude-sonnet-4-6",
+		Timestamp: now.Add(-30 * time.Minute), InputTokens: 100,
+	}}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	m := New(Deps{Cache: c})
+	m.w, m.h = 120, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	m.unitIdx = int(chartUnitRemaining)
+	m.refreshChart()
+
+	if m.peak != 1.0 {
+		t.Errorf("peak = %f, want 1.0", m.peak)
+	}
+	if len(m.lastPts5h) == 0 {
+		t.Error("expected non-empty lastPts5h")
+	}
+	view := m.View()
+	if view == "" {
+		t.Error("View returned empty string in remaining mode")
+	}
+}
+
+func TestBeginUnitAnimation_BarToLine(t *testing.T) {
+	dir := t.TempDir()
+	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	defer c.Close()
+
+	tab, _ := pricing.Load()
+	now := time.Now().UTC().Truncate(time.Minute)
+	msgs := []parse.Message{{
+		SessionID: "s1", ProjectSlug: "p", Model: "claude-sonnet-4-6",
+		Timestamp: now.Add(-30 * time.Minute), InputTokens: 5000,
+	}}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	u := anthro.Usage{
+		FiveHour: &anthro.Bucket{Utilization: 50.0, ResetsAt: now.Add(time.Hour)},
+		SevenDay: &anthro.Bucket{Utilization: 25.0, ResetsAt: now.Add(24 * time.Hour)},
+	}
+	if err := c.RecordUsageSample(u, now); err != nil {
+		t.Fatalf("RecordUsageSample: %v", err)
+	}
+
+	m := New(Deps{Cache: c})
+	m.w, m.h = 120, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	m.refreshChart() // tokens mode
+
+	// Toggle to cost (bar→bar), then to remaining (bar→line).
+	m.unitIdx = int(chartUnitCost)
+	m.refreshChart()
+	m.unitIdx = int(chartUnitRemaining)
+	m.beginUnitAnimation()
+
+	if !m.springActive {
+		t.Fatal("expected springActive=true after bar→line toggle")
+	}
+	if m.springPhase != springShrinking {
+		t.Errorf("expected springShrinking, got %d", m.springPhase)
+	}
+	if !m.newIsLine {
+		t.Error("expected newIsLine=true")
+	}
+	if m.oldIsLine {
+		t.Error("expected oldIsLine=false")
+	}
+}
+
+func TestBeginUnitAnimation_LineToBar(t *testing.T) {
+	dir := t.TempDir()
+	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	defer c.Close()
+
+	tab, _ := pricing.Load()
+	now := time.Now().UTC().Truncate(time.Minute)
+	msgs := []parse.Message{{
+		SessionID: "s1", ProjectSlug: "p", Model: "claude-sonnet-4-6",
+		Timestamp: now.Add(-30 * time.Minute), InputTokens: 5000,
+	}}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	u := anthro.Usage{
+		FiveHour: &anthro.Bucket{Utilization: 50.0, ResetsAt: now.Add(time.Hour)},
+	}
+	if err := c.RecordUsageSample(u, now); err != nil {
+		t.Fatalf("RecordUsageSample: %v", err)
+	}
+
+	m := New(Deps{Cache: c})
+	m.w, m.h = 120, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+
+	// Start in remaining mode.
+	m.unitIdx = int(chartUnitRemaining)
+	m.refreshChart()
+
+	// Toggle to tokens (line→bar).
+	m.unitIdx = int(chartUnitTokens)
+	m.beginUnitAnimation()
+
+	if !m.springActive {
+		t.Fatal("expected springActive=true")
+	}
+	if !m.oldIsLine {
+		t.Error("expected oldIsLine=true")
+	}
+	if m.newIsLine {
+		t.Error("expected newIsLine=false")
+	}
+}
+
+func TestView_RemainingModeShowsYTicks(t *testing.T) {
+	dir := t.TempDir()
+	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	defer c.Close()
+
+	tab, _ := pricing.Load()
+	now := time.Now().UTC().Truncate(time.Minute)
+	msgs := []parse.Message{{
+		SessionID: "s1", ProjectSlug: "p", Model: "claude-sonnet-4-6",
+		Timestamp: now.Add(-30 * time.Minute), InputTokens: 5000,
+	}}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	u := anthro.Usage{
+		FiveHour: &anthro.Bucket{Utilization: 40.0, ResetsAt: now.Add(time.Hour)},
+		SevenDay: &anthro.Bucket{Utilization: 20.0, ResetsAt: now.Add(24 * time.Hour)},
+	}
+	if err := c.RecordUsageSample(u, now); err != nil {
+		t.Fatalf("RecordUsageSample: %v", err)
+	}
+
+	m := New(Deps{Cache: c})
+	m.w, m.h = 120, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+
+	m.unitIdx = int(chartUnitRemaining)
+	m.refreshChart()
+
+	view := m.View()
+	if !strings.Contains(view, "100%") {
+		t.Error("View in remaining mode should contain 100% Y-tick")
+	}
+	if !strings.Contains(view, "0%") {
+		t.Error("View in remaining mode should contain 0% Y-tick")
+	}
+}
+
+// TestFullUnitCycle_TokensCostRemaining verifies that three presses of the
+// 'u' key cycle through tokens → cost → remaining → tokens, and that each
+// mode produces a non-empty view with the expected mode-specific marker.
+// TestRenderSpringFrame_LineBranchUsesOldSnapshot verifies that the line-
+// rendering branch of renderSpringFrame reads from m.oldPts5h / m.oldPts7d
+// (the snapshot taken before refreshChart) rather than m.lastPts5h /
+// m.lastPts7d (which refreshChart overwrites with the new unit's data).
+//
+// Differentiation strategy: run renderSpringFrame twice.
+//   - Run A: oldPts5h populated with real data, lastPts5h nil.
+//   - Run B: both oldPts5h and lastPts5h nil.
+//
+// If the branch correctly reads oldPts*, Run A renders the real line shape
+// and differs from Run B (which renders the empty/flat fallback). If the
+// branch incorrectly reads lastPts* (the bug), both runs would produce the
+// same flat output — and the test would fail with "viewA == viewB".
+//
+// This avoids replicating the interpPt math and doesn't depend on exact
+// time values inside renderSpringFrame, which calls time.Now() internally.
+func TestRenderSpringFrame_LineBranchUsesOldSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	defer c.Close()
+
+	tab, _ := pricing.Load()
+	now := time.Now().UTC().Truncate(time.Minute)
+
+	// Insert one message so EarliestMessageTime returns a value.
+	msgs := []parse.Message{{
+		SessionID: "s1", ProjectSlug: "p", Model: "claude-sonnet-4-6",
+		Timestamp: now.Add(-30 * time.Minute), InputTokens: 5000,
+	}}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	// buildModel returns a fresh model in remaining mode with the spring
+	// wired into the springShrinking phase and oldIsLine=true (exit of a
+	// line chart toward a bar chart — the scenario that must use oldPts*).
+	buildModel := func() Model {
+		m := New(Deps{Cache: c})
+		m.w, m.h = 120, 40
+		m.viewport.Width = m.chartWidth()
+		m.viewport.Height = m.chartHeight()
+
+		// Use explicit, fixed time windows so both builds use identical
+		// from/to values. renderSpringFrame uses m.lastChartFrom/To directly
+		// (falling back to time.Now() only when zero), so setting them
+		// avoids any time-drift between the two render calls.
+		m.lastChartFrom = now.Add(-5 * time.Hour)
+		m.lastChartTo = now
+
+		// springRatios must be non-empty to pass the early-return guard.
+		// Values in (0, 1] so maxR > 0 and interpPt produces a non-trivial
+		// result when pts are populated.
+		m.springRatios = []float64{0.8, 0.6, 0.7}
+
+		// Simulate mid-exit animation: old chart was a line, new is a bar.
+		m.springActive = true
+		m.springPhase = springShrinking
+		m.oldIsLine = true
+		m.newIsLine = false
+
+		// lastPts* deliberately nil — refreshChart on the new unit would have
+		// cleared or replaced these with bar data. The test must pass even
+		// when lastPts* is empty (i.e. the branch must NOT fall through to it).
+		m.lastPts5h = nil
+		m.lastPts7d = nil
+
+		return m
+	}
+
+	// Synthetic old points with distinct Pct values so the rendered line
+	// shape is non-trivial. Values cover a range that interpPt maps onto
+	// visible line positions.
+	oldPts := []cache.UtilizationPoint{
+		{At: now.Add(-4 * time.Hour), Pct: 20.0},
+		{At: now.Add(-2 * time.Hour), Pct: 50.0},
+		{At: now.Add(-1 * time.Hour), Pct: 80.0},
+	}
+
+	// ── Run A: oldPts populated, lastPts nil ──────────────────────────────
+	mA := buildModel()
+	mA.oldPts5h = append([]cache.UtilizationPoint(nil), oldPts...)
+	mA.oldPts7d = append([]cache.UtilizationPoint(nil), oldPts...)
+	// Set a non-zero XOffset before the call to verify the line branch resets it.
+	mA.viewport.SetXOffset(42)
+	mA.renderSpringFrame()
+	viewA := mA.viewport.View()
+
+	// ── Run B: both oldPts and lastPts nil ────────────────────────────────
+	mB := buildModel()
+	mB.oldPts5h = nil
+	mB.oldPts7d = nil
+	mB.viewport.SetXOffset(42)
+	mB.renderSpringFrame()
+	viewB := mB.viewport.View()
+
+	// ── Assertions ────────────────────────────────────────────────────────
+
+	// The line branch must produce non-empty output in Run A (populated pts).
+	if strings.TrimSpace(stripANSIForTest(viewA)) == "" {
+		t.Fatal("viewA is blank; renderSpringFrame line branch produced no output with populated oldPts")
+	}
+
+	// viewA (populated oldPts) and viewB (nil oldPts) must differ.
+	// If the branch incorrectly reads lastPts* (nil in both runs), both
+	// would produce the same flat/empty fallback, and this assertion fails.
+	if stripANSIForTest(viewA) == stripANSIForTest(viewB) {
+		t.Error("viewA == viewB: line branch did not distinguish populated oldPts from nil; " +
+			"likely reads lastPts* instead of oldPts* during springShrinking")
+	}
+
+	// The line branch calls viewport.SetXOffset(0), which makes the leading
+	// content visible. The shadow viewportXOffset is only updated by setX,
+	// not by renderSpringFrame, so we verify this indirectly: the rendered
+	// content must be non-empty (a non-zero XOffset beyond the canvas width
+	// would blank the viewport). Already covered by the non-empty check above.
+}
+
+func TestFullUnitCycle_TokensCostRemaining(t *testing.T) {
+	dir := t.TempDir()
+	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	defer c.Close()
+
+	tab, _ := pricing.Load()
+	now := time.Now().UTC().Truncate(time.Minute)
+	msgs := []parse.Message{{
+		SessionID: "s1", ProjectSlug: "p", Model: "claude-sonnet-4-6",
+		Timestamp: now.Add(-30 * time.Minute), InputTokens: 5000,
+	}}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+	u := anthro.Usage{
+		FiveHour: &anthro.Bucket{Utilization: 40.0, ResetsAt: now.Add(time.Hour)},
+		SevenDay: &anthro.Bucket{Utilization: 20.0, ResetsAt: now.Add(24 * time.Hour)},
+	}
+	if err := c.RecordUsageSample(u, now); err != nil {
+		t.Fatalf("RecordUsageSample: %v", err)
+	}
+
+	m := New(Deps{Cache: c})
+	m.w, m.h = 120, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	m.refreshChart()
+
+	pressU := func() {
+		model, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("u")})
+		m = model.(Model)
+		// Abort any in-flight spring so View() shows the settled new state.
+		m.springActive = false
+		m.springPhase = springIdle
+		m.refreshChart()
+	}
+
+	// Press 1: tokens (0) → cost (1)
+	pressU()
+	if m.unitIdx != int(chartUnitCost) {
+		t.Fatalf("after 1st press: want unitIdx=%d (cost), got %d", int(chartUnitCost), m.unitIdx)
+	}
+	view1 := m.View()
+	if !strings.Contains(view1, "$") {
+		t.Error("cost mode view should contain '$'")
+	}
+
+	// Press 2: cost (1) → remaining (2)
+	pressU()
+	if m.unitIdx != int(chartUnitRemaining) {
+		t.Fatalf("after 2nd press: want unitIdx=%d (remaining), got %d", int(chartUnitRemaining), m.unitIdx)
+	}
+	view2 := m.View()
+	if !strings.Contains(view2, "100%") {
+		t.Error("remaining mode view should contain '100%'")
+	}
+
+	// Press 3: remaining (2) → tokens (0)
+	pressU()
+	if m.unitIdx != int(chartUnitTokens) {
+		t.Fatalf("after 3rd press: want unitIdx=%d (tokens), got %d", int(chartUnitTokens), m.unitIdx)
+	}
+	view3 := m.View()
+	if view3 == "" {
+		t.Error("tokens mode view should not be empty")
 	}
 }

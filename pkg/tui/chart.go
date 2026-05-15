@@ -8,8 +8,13 @@ import (
 	"time"
 
 	"github.com/NimbleMarkets/ntcharts/barchart"
+	"github.com/NimbleMarkets/ntcharts/canvas"
+	"github.com/NimbleMarkets/ntcharts/canvas/runes"
+	"github.com/NimbleMarkets/ntcharts/linechart/wavelinechart"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/martinciu/ccpulse/pkg/cache"
 )
 
 // ZoomLevel maps a human label to a bucket duration and visual layout
@@ -228,8 +233,10 @@ func formatXLabel(t time.Time, zoom ZoomLevel, now time.Time, order dateOrder) s
 type chartUnit int
 
 const (
-	chartUnitTokens chartUnit = iota
+	chartUnitTokens    chartUnit = iota
 	chartUnitCost
+	chartUnitRemaining
+	chartUnitCount // sentinel — cycle modulus
 )
 
 // niceFloorFloat returns the largest "nice" value <= peak from the
@@ -392,4 +399,158 @@ func buildChart(values []float64, starts []time.Time, peak float64,
 		"chartH", chartH,
 		"peak", peak)
 	return body
+}
+
+// isLineMode returns true when the given chartUnit renders as a line chart
+// (remaining mode) rather than a bar chart (tokens/cost).
+func isLineMode(u chartUnit) bool {
+	return u == chartUnitRemaining
+}
+
+// buildLineChart renders two remaining-quota lines (5h green, 7d purple)
+// onto a single wavelinechart canvas. Each UtilizationPoint's timestamp
+// is mapped to a proportional x-position within [from, to). Y values
+// are remaining fractions: 1 - Pct/100, in [0, 1]. Empty input renders
+// a flat line at 1.0 (100% headroom — no-quota fallback).
+//
+// X-axis labels reuse renderXLabels with synthetic bucket starts derived
+// from the zoom's duration so the label cadence matches bar-chart mode.
+func buildLineChart(pts5h, pts7d []cache.UtilizationPoint,
+	from, to time.Time, chartW, chartH int,
+	now time.Time, zoom ZoomLevel, order dateOrder) string {
+
+	logStart := time.Now()
+	if chartH < 1 {
+		chartH = 1
+	}
+
+	barsH := chartH
+	showXLabels := chartH >= 6
+	if showXLabels {
+		barsH = chartH - 1
+	}
+
+	span := to.Sub(from).Seconds()
+	if span <= 0 {
+		span = 1
+	}
+
+	wlc := wavelinechart.New(chartW, barsH,
+		wavelinechart.WithYRange(0, 1.0),
+		wavelinechart.WithXRange(0, float64(chartW)),
+	)
+
+	mapX := func(t time.Time) float64 {
+		return t.Sub(from).Seconds() / span * float64(chartW)
+	}
+
+	// Plot 5h data set (default). Empty → flat line at 100% headroom.
+	if len(pts5h) == 0 {
+		wlc.Plot(canvas.Float64Point{X: 0, Y: 1.0})
+		wlc.Plot(canvas.Float64Point{X: float64(chartW), Y: 1.0})
+	} else {
+		for _, p := range pts5h {
+			remaining := max(0, 1.0-p.Pct/100.0)
+			wlc.Plot(canvas.Float64Point{X: mapX(p.At), Y: remaining})
+		}
+	}
+	wlc.SetStyles(runes.ThinLineStyle,
+		lipgloss.NewStyle().Foreground(colorChartRemaining5h))
+
+	// Plot 7d data set.
+	const ds7d = "7d"
+	if len(pts7d) == 0 {
+		wlc.PlotDataSet(ds7d, canvas.Float64Point{X: 0, Y: 1.0})
+		wlc.PlotDataSet(ds7d, canvas.Float64Point{X: float64(chartW), Y: 1.0})
+	} else {
+		for _, p := range pts7d {
+			remaining := max(0, 1.0-p.Pct/100.0)
+			wlc.PlotDataSet(ds7d, canvas.Float64Point{X: mapX(p.At), Y: remaining})
+		}
+	}
+	wlc.SetDataSetStyles(ds7d, runes.ThinLineStyle,
+		lipgloss.NewStyle().Foreground(colorChartRemaining7d))
+
+	wlc.DrawAll()
+	body := wlc.View()
+
+	if showXLabels {
+		// Synthesise bucket starts for x-axis labels. The line chart spans
+		// [from, to) continuously but the label cadence comes from the zoom
+		// duration so it matches bar-chart mode.
+		dur := zoom.Duration
+		n := max(int(to.Sub(from)/dur)+1, 1)
+		labelStarts := make([]time.Time, 0, n)
+		for t := from; t.Before(to); t = t.Add(dur) {
+			labelStarts = append(labelStarts, t)
+		}
+		body = lipgloss.JoinVertical(lipgloss.Left, body, renderXLabels(labelStarts, chartW, zoom, now, order))
+	}
+
+	slog.Debug("tui.buildLineChart",
+		"dur_ms", time.Since(logStart).Milliseconds(),
+		"pts5h", len(pts5h),
+		"pts7d", len(pts7d),
+		"chartW", chartW,
+		"chartH", chartH)
+	return body
+}
+
+// overlayYTicks splices fixed "100%", "50%", "0%" labels and a colored
+// legend ("5h", "7d") into the left edge of an already-rendered line
+// chart string. Operates ANSI-aware on the post-scroll viewport output
+// so labels stay pinned to the viewport's left edge regardless of
+// horizontal scroll position.
+//
+// fade ∈ [0, 1] controls label visibility via labelFadeStyle. fade <= 0
+// returns body unchanged.
+func overlayYTicks(body string, chartH int, fade float64) string {
+	if chartH < 5 || body == "" || fade <= 0 {
+		return body
+	}
+	barsH := chartH
+	if chartH >= 6 {
+		barsH = chartH - 1
+	}
+
+	lines := strings.Split(body, "\n")
+	style := labelFadeStyle(fade)
+
+	type tick struct {
+		row   int
+		label string
+	}
+	ticks := []tick{
+		{0, "100%"},
+		{barsH / 2, " 50%"},
+		{barsH - 1, "  0%"},
+	}
+	for _, tk := range ticks {
+		if tk.row >= len(lines) {
+			continue
+		}
+		rendered := style.Render(tk.label)
+		labelW := lipgloss.Width(rendered)
+		lines[tk.row] = ansi.TruncateLeft(lines[tk.row], labelW, rendered)
+	}
+
+	// Legend: colored "5h" and "7d" labels on rows 1 and 2 (below 100% tick).
+	legendItems := []struct {
+		row   int
+		label string
+		color lipgloss.TerminalColor
+	}{
+		{1, " 5h", colorChartRemaining5h},
+		{2, " 7d", colorChartRemaining7d},
+	}
+	for _, li := range legendItems {
+		if li.row >= len(lines) {
+			continue
+		}
+		rendered := labelFadeStyle(fade).Foreground(li.color).Render(li.label)
+		labelW := lipgloss.Width(rendered)
+		lines[li.row] = ansi.TruncateLeft(lines[li.row], labelW, rendered)
+	}
+
+	return strings.Join(lines, "\n")
 }

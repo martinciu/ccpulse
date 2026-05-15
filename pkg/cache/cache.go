@@ -285,6 +285,55 @@ ORDER BY ts ASC`, since.UTC().Unix())
 	return out, nil
 }
 
+// UtilizationPoint is a single usage_samples row projected to a timestamp
+// and a utilization percentage. Used by the TUI remaining-quota line chart.
+type UtilizationPoint struct {
+	At  time.Time
+	Pct float64
+}
+
+// utilizationColumns is the allowlist of columns that UtilizationSince
+// accepts. Prevents SQL injection — the column name is interpolated
+// into the query string (not parameterisable in SQLite).
+var utilizationColumns = map[string]bool{
+	"five_hour_pct": true,
+	"seven_day_pct": true,
+}
+
+// UtilizationSince returns timestamped utilization percentages from
+// usage_samples for the given column, oldest-first. Rows where the
+// column IS NULL are skipped. column must be in the allowlist.
+func (c *Cache) UtilizationSince(column string, since time.Time) ([]UtilizationPoint, error) {
+	if !utilizationColumns[column] {
+		return nil, fmt.Errorf("invalid utilization column: %q", column)
+	}
+	rows, err := c.db.Query(
+		fmt.Sprintf(`SELECT ts, %s FROM usage_samples WHERE ts >= ? AND %s IS NOT NULL ORDER BY ts ASC`, column, column),
+		since.UTC().Unix(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query usage_samples: %w", err)
+	}
+	defer rows.Close()
+
+	var out []UtilizationPoint
+	for rows.Next() {
+		var ts int64
+		var pct float64
+		if err := rows.Scan(&ts, &pct); err != nil {
+			return nil, fmt.Errorf("scan usage_samples row: %w", err)
+		}
+		out = append(out, UtilizationPoint{
+			At:  time.Unix(ts, 0).UTC(),
+			Pct: pct,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate usage_samples rows: %w", err)
+	}
+	return out, nil
+}
+
 func (c *Cache) InsertMessages(msgs []parse.Message, hist pricing.History) error {
 	tx, err := c.db.Begin()
 	if err != nil {

@@ -103,6 +103,26 @@ type Model struct {
 	lastValues []float64
 	lastStarts []time.Time
 
+	// lastPts5h / lastPts7d hold the raw utilization points for the
+	// remaining-quota line chart. Populated by refreshChart when
+	// unitIdx == chartUnitRemaining; nil otherwise. Used by
+	// renderSpringFrame for the line-mode animation path.
+	lastPts5h []cache.UtilizationPoint
+	lastPts7d []cache.UtilizationPoint
+
+	// oldPts5h / oldPts7d are snapshotted in beginUnitAnimation so
+	// renderSpringFrame can render the exiting line chart (oldIsLine=true
+	// phase) after refreshChart has already overwritten lastPts5h/7d
+	// with the new unit's data.
+	oldPts5h []cache.UtilizationPoint
+	oldPts7d []cache.UtilizationPoint
+
+	// lastChartFrom / lastChartTo are the [from, to) time window used by
+	// the most recent remaining-mode buildLineChart call. Stored so
+	// renderSpringFrame can reproduce the same x-axis during animation.
+	lastChartFrom time.Time
+	lastChartTo   time.Time
+
 	// viewportXOffset shadows m.viewport's unexported xOffset. We need a
 	// readable scroll position to preserve the wall-clock anchor across
 	// refreshes; v1 viewport only exposes a setter. Maintained by
@@ -142,6 +162,10 @@ type Model struct {
 	// unit's value at the OLD peak.
 	oldPeak    float64
 	oldUnitIdx int
+	// oldIsLine / newIsLine track whether exit/enter render as line charts.
+	// Set by beginUnitAnimation; read by renderSpringFrame and View.
+	oldIsLine bool
+	newIsLine bool
 
 	window         status.Window
 	quota          *anthro.Usage
@@ -184,6 +208,7 @@ func New(d Deps) Model {
 	m.progress7d = newProgressBar(40)
 	m.viewport = viewport.New(80, 20)
 	m.viewport.SetHorizontalStep(horizontalScrollStep)
+	m.keys.Zoom.SetEnabled(chartUnit(m.unitIdx) != chartUnitRemaining)
 	return m
 }
 
@@ -333,10 +358,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// so dismissing help returns the user to the same scroll/zoom
 			// state they left.
 		case key.Matches(msg, m.keys.Zoom):
+			// Zoom is a no-op in remaining mode; proper semantics tracked in #177.
+			if chartUnit(m.unitIdx) == chartUnitRemaining {
+				break
+			}
 			m.zoomIdx = (m.zoomIdx + 1) % len(ZoomLevels)
 			m.refreshChart()
 		case key.Matches(msg, m.keys.Unit):
-			m.unitIdx = (m.unitIdx + 1) % 2
+			m.unitIdx = (m.unitIdx + 1) % int(chartUnitCount)
+			m.keys.Zoom.SetEnabled(chartUnit(m.unitIdx) != chartUnitRemaining)
 			m.beginUnitAnimation()
 			if m.springActive {
 				// After beginUnitAnimation, viewport content is the new
@@ -377,18 +407,36 @@ func (m Model) View() string {
 		fade := 1.0
 		labelUnit := chartUnit(m.unitIdx)
 		labelPeak := m.peak
+		rawBody := m.viewport.View()
 		if m.springActive {
 			var maxR float64
 			for _, r := range m.springRatios {
 				maxR = max(maxR, r)
 			}
 			fade = maxR
-			if m.springPhase == springShrinking {
-				labelUnit = chartUnit(m.oldUnitIdx)
-				labelPeak = m.oldPeak
+			// Determine whether the current rendered frame is a line chart.
+			// Exit phase shows OLD type; hold/enter shows NEW type.
+			renderingLine := false
+			switch m.springPhase {
+			case springShrinking:
+				renderingLine = m.oldIsLine
+				if !renderingLine {
+					labelUnit = chartUnit(m.oldUnitIdx)
+					labelPeak = m.oldPeak
+				}
+			default: // springHolding, springGrowing
+				renderingLine = m.newIsLine
 			}
+			if renderingLine {
+				body = overlayYTicks(rawBody, m.chartHeight(), fade)
+			} else {
+				body = overlayYLabel(rawBody, labelPeak, labelUnit, m.chartHeight(), fade)
+			}
+		} else if chartUnit(m.unitIdx) == chartUnitRemaining {
+			body = overlayYTicks(rawBody, m.chartHeight(), 1.0)
+		} else {
+			body = overlayYLabel(rawBody, m.peak, chartUnit(m.unitIdx), m.chartHeight(), 1.0)
 		}
-		body = overlayYLabel(m.viewport.View(), labelPeak, labelUnit, m.chartHeight(), fade)
 	}
 	footer := m.renderFooter()
 	out := lipgloss.JoinVertical(lipgloss.Left, header, sep, body, sep, footer)
@@ -588,7 +636,12 @@ func (m *Model) beginUnitAnimation() {
 
 	oldValues := m.lastValues
 	m.oldPeak = m.peak
-	m.oldUnitIdx = (m.unitIdx + 1) % 2
+	m.oldUnitIdx = (m.unitIdx + int(chartUnitCount) - 1) % int(chartUnitCount)
+	m.oldIsLine = isLineMode(chartUnit(m.oldUnitIdx))
+	m.newIsLine = isLineMode(chartUnit(m.unitIdx))
+	// Snapshot pts before refreshChart overwrites them.
+	m.oldPts5h = m.lastPts5h
+	m.oldPts7d = m.lastPts7d
 
 	m.refreshChart()
 	newValues := m.lastValues
@@ -610,17 +663,26 @@ func (m *Model) beginUnitAnimation() {
 
 	t1 := phase1Duration.Seconds()
 	for i := range n {
-		if m.oldPeak > 0 && i < len(oldValues) {
+		// Phase 1 exit ratio: line mode collapses as a uniform shape fraction
+		// (1.0 = full, 0.0 = flat); bar mode uses the per-bar height ratio.
+		if m.oldIsLine {
+			m.springRatios[i] = 1.0
+		} else if m.oldPeak > 0 && i < len(oldValues) {
 			m.springRatios[i] = oldValues[i] / m.oldPeak
 		}
-		if newPeak > 0 {
+
+		// Phase 2 enter target: line mode springs to shape-fraction 1.0
+		// (the interpPt formula then maps 1→real shape); bar mode uses the
+		// normalised new value.
+		if m.newIsLine {
+			m.springFinalTargets[i] = 1.0
+		} else if newPeak > 0 {
 			m.springFinalTargets[i] = newValues[i] / newPeak
 		}
-		// Per-bar tuned gravity (quadratic ease-in) so bar i hits 0 at t = phase1Duration.
-		// h = 0.5 · g · t² (zero initial velocity) ⇒ g = 2h / t².
-		// If springRatios[i] == 0 (no prior data for this bucket), g = 0 and the
-		// Projectile is degenerate. Phase 1's max-ratio early-exit handles it on
-		// the first tick — no special case needed here.
+
+		// Per-bar tuned gravity (quadratic ease-in) so bar/line i hits 0 at
+		// t = phase1Duration. h = 0.5·g·t² ⇒ g = 2h/t². Direction is always
+		// toward zero (exit target for both bar and line is 0 in ratio-space).
 		g := 2 * m.springRatios[i] / (t1 * t1)
 		// Stored by value; Phase 1 tick MUST index (m.springProjectiles[i].Update()),
 		// never range-copy. Projectile.Update has a pointer receiver and mutates
@@ -657,8 +719,71 @@ func (m *Model) renderSpringFrame() {
 		return
 	}
 	zoom := ZoomLevels[m.zoomIdx]
-	nv := m.visibleBuckets()
 	chartH := m.chartHeight()
+
+	// Determine whether the current frame renders as a line chart (remaining
+	// mode). Exit phase shows the OLD chart type; enter phase shows the NEW.
+	renderAsLine := false
+	switch m.springPhase {
+	case springShrinking:
+		renderAsLine = m.oldIsLine
+	default:
+		renderAsLine = m.newIsLine
+	}
+
+	if renderAsLine {
+		// Shape-fraction convention: springRatios[i] is a uniform scalar in
+		// [0,1] where 1.0 = full real shape and 0 = flat line at 100% headroom.
+		// Both exit and enter use the SAME ratio direction (springShrinking:
+		// 1→0, springGrowing: 0→1). The visual direction is produced by
+		// interpPt below, which maps the scalar onto the displayed value via
+		// displayed = 1.0 + (target-1.0)*maxR — so maxR=0 renders flat 100%
+		// and maxR=1 renders the real shape. This is why exit (line
+		// collapses upward to 100%) and enter (line drops from 100% to real
+		// shape) both use ratios approaching 1.0 → 0 and 0 → 1.0 respectively
+		// without needing separate direction flags.
+		// maxR is the global envelope; all ratios move together.
+		var maxR float64
+		for _, r := range m.springRatios {
+			maxR = max(maxR, r)
+		}
+
+		// Select which pts to interpolate: old data during exit, new during enter.
+		pts5h, pts7d := m.lastPts5h, m.lastPts7d
+		if m.springPhase == springShrinking && m.oldIsLine {
+			pts5h, pts7d = m.oldPts5h, m.oldPts7d
+		}
+
+		interpPt := func(p cache.UtilizationPoint) cache.UtilizationPoint {
+			target := max(0, 1.0-p.Pct/100.0)
+			// displayed ∈ [1.0, target]: 1.0 (flat) when maxR=0, target (real) when maxR=1.
+			displayed := 1.0 + (target-1.0)*maxR
+			return cache.UtilizationPoint{At: p.At, Pct: (1.0 - displayed) * 100.0}
+		}
+
+		interp5h := make([]cache.UtilizationPoint, len(pts5h))
+		for i, p := range pts5h {
+			interp5h[i] = interpPt(p)
+		}
+		interp7d := make([]cache.UtilizationPoint, len(pts7d))
+		for i, p := range pts7d {
+			interp7d[i] = interpPt(p)
+		}
+
+		from, to := m.lastChartFrom, m.lastChartTo
+		if from.IsZero() {
+			from = time.Now().Add(-5 * time.Hour)
+		}
+		if to.IsZero() {
+			to = time.Now()
+		}
+		chartW := m.chartWidth()
+		m.viewport.SetContent(buildLineChart(interp5h, interp7d, from, to, chartW, chartH, time.Now(), zoom, m.dateOrder))
+		m.viewport.SetXOffset(0)
+		return
+	}
+
+	nv := m.visibleBuckets()
 
 	// Clamp the window to the actual ratios slice.
 	start := m.springXOffset
@@ -797,7 +922,7 @@ func (m *Model) refreshChart() {
 		unit   chartUnit
 	)
 	switch m.unitIdx {
-	case 1: // cost
+	case int(chartUnitCost): // cost
 		buckets, err := m.deps.Cache.CostBuckets(zoom.Duration, from, to)
 		if err != nil || len(buckets) == 0 {
 			m.viewport.SetContent(emptyPlaceholder(m.chartWidth(), m.chartHeight()))
@@ -817,6 +942,39 @@ func (m *Model) refreshChart() {
 			}
 		}
 		unit = chartUnitCost
+	case int(chartUnitRemaining): // remaining quota line chart
+		pts5h, err5h := m.deps.Cache.UtilizationSince("five_hour_pct", from)
+		pts7d, err7d := m.deps.Cache.UtilizationSince("seven_day_pct", from)
+		if err5h != nil && err7d != nil {
+			m.viewport.SetContent(emptyPlaceholder(m.chartWidth(), m.chartHeight()))
+			m.lastValues = nil
+			m.lastStarts = nil
+			m.lastPts5h = nil
+			m.lastPts7d = nil
+			m.peak = 0
+			m.setX(0)
+			return
+		}
+		if err5h != nil {
+			pts5h = nil
+		}
+		if err7d != nil {
+			pts7d = nil
+		}
+		m.lastPts5h = pts5h
+		m.lastPts7d = pts7d
+		peak = 1.0
+		anchor := pts5h
+		if len(anchor) == 0 {
+			anchor = pts7d
+		}
+		values = make([]float64, len(anchor))
+		starts = make([]time.Time, len(anchor))
+		for i, p := range anchor {
+			values[i] = max(0, 1.0-p.Pct/100.0)
+			starts[i] = p.At
+		}
+		unit = chartUnitRemaining
 	default: // tokens
 		buckets, err := m.deps.Cache.TokenBuckets(zoom.Duration, from, to)
 		if err != nil || len(buckets) == 0 {
@@ -843,9 +1001,16 @@ func (m *Model) refreshChart() {
 	m.lastValues = values
 	m.lastStarts = starts
 
-	canvasW := zoom.CanvasWidth(len(values))
 	chartH := m.chartHeight()
-	m.viewport.SetContent(buildChart(values, starts, peak, canvasW, chartH, time.Now(), zoom, unit, m.dateOrder))
+	if unit == chartUnitRemaining {
+		canvasW := m.chartWidth()
+		m.lastChartFrom = from
+		m.lastChartTo = to
+		m.viewport.SetContent(buildLineChart(m.lastPts5h, m.lastPts7d, from, to, canvasW, chartH, time.Now(), zoom, m.dateOrder))
+	} else {
+		canvasW := zoom.CanvasWidth(len(values))
+		m.viewport.SetContent(buildChart(values, starts, peak, canvasW, chartH, time.Now(), zoom, unit, m.dateOrder))
+	}
 
 	// Restore the user's anchor. Three cases:
 	//   - !hadAnchor (first load, or coming back from an empty-cache
