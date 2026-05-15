@@ -260,6 +260,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.progress = newProgressBar(m.progressWidth())
 		m.progress7d = newProgressBar(m.progressWidth())
 		m.refreshChart()
+		return m, m.maybeArmIntro()
 	case IndexProgressMsg:
 		wasActive := m.indexLastActive
 		m.indexActive = msg.Active
