@@ -3631,3 +3631,57 @@ func TestQuotaIntroRatio_SteadyStateReturnsTarget(t *testing.T) {
 		})
 	}
 }
+
+func TestBeginIntroAnimation_SeedsQuotaTargets(t *testing.T) {
+	// After arming, the quota springs must reflect the window snapshot:
+	//   - quotaTarget5h  = Percent / 100
+	//   - quotaTarget7d  = Percent7d / 100 when Has7d, else 0
+	//   - quotaRatio5h/7d, quotaVel5h/7d = 0 (Phase 2 init seeded in
+	//     the springHolding tick, not at arm).
+	cases := []struct {
+		name      string
+		percent5h int
+		has7d     bool
+		percent7d int
+		want5h    float64
+		want7d    float64
+	}{
+		{"both_sides_data", 80, true, 25, 0.80, 0.25},
+		{"5h_only", 60, false, 0, 0.60, 0.0},
+		{"both_zero", 0, true, 0, 0.0, 0.0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := seedIntroModel(t, false)
+			updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+			m = updated.(Model)
+
+			// Overwrite window to the test scenario, then re-arm by
+			// resetting the intro state and calling beginIntroAnimation
+			// directly. This isolates the seed logic from the
+			// maybeArmIntro gate.
+			m.springActive = false
+			m.springIntro = false
+			m.springPhase = springIdle
+			m.window.Percent = tc.percent5h
+			m.window.Has7d = tc.has7d
+			m.window.Percent7d = tc.percent7d
+			m.beginIntroAnimation()
+
+			if got := m.quotaTarget5h; got != tc.want5h {
+				t.Errorf("quotaTarget5h = %v; want %v", got, tc.want5h)
+			}
+			if got := m.quotaTarget7d; got != tc.want7d {
+				t.Errorf("quotaTarget7d = %v; want %v", got, tc.want7d)
+			}
+			if m.quotaRatio5h != 0 || m.quotaRatio7d != 0 {
+				t.Errorf("quotaRatio5h/7d = %v/%v; want 0/0 (seeded by springHolding tick, not at arm)",
+					m.quotaRatio5h, m.quotaRatio7d)
+			}
+			if m.quotaVel5h != 0 || m.quotaVel7d != 0 {
+				t.Errorf("quotaVel5h/7d = %v/%v; want 0/0 (seeded by springHolding tick, not at arm)",
+					m.quotaVel5h, m.quotaVel7d)
+			}
+		})
+	}
+}

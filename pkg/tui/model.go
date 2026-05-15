@@ -890,6 +890,31 @@ func (m *Model) beginIntroAnimation() {
 
 	m.seedPhase2Springs(targets)
 
+	// Quota-bar spring seeding (#192). Targets are snapshotted from
+	// the current window so a mid-intro recomputeWindow can't shift
+	// the visual destination. When Has7d=false the 7d target stays at
+	// 0 (defensively zeroed) — quotaBars() short-circuits to the
+	// (no data) placeholder for that side regardless of intro phase,
+	// so the spring ratio is unread; this just keeps state consistent.
+	m.quotaTarget5h = float64(m.window.Percent) / 100.0
+	m.quotaRatio5h = 0
+	m.quotaVel5h = 0
+	m.quotaSpring5h = harmonica.NewSpring(
+		harmonica.FPS(springFPS),
+		phase2Frequency, phase2Damping,
+	)
+	if m.window.Has7d {
+		m.quotaTarget7d = float64(m.window.Percent7d) / 100.0
+	} else {
+		m.quotaTarget7d = 0
+	}
+	m.quotaRatio7d = 0
+	m.quotaVel7d = 0
+	m.quotaSpring7d = harmonica.NewSpring(
+		harmonica.FPS(springFPS),
+		phase2Frequency, phase2Damping,
+	)
+
 	// Spring window tracks current viewport position so the animated
 	// slice matches what the user is about to look at. On open the
 	// shadow offset is at the right edge (pinned by refreshChart's
