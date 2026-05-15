@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"math"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -3765,5 +3766,106 @@ func TestIntro_QuotaBars_HoldTickSeedsVelocities(t *testing.T) {
 	if m.quotaVel7d != wantVel7d {
 		t.Errorf("quotaVel7d = %v; want %v (V0 * target = %v * %v)",
 			m.quotaVel7d, wantVel7d, phase2InitialVelocityV0, t7d)
+	}
+}
+
+func TestIntro_QuotaBars_GrowLadderRisesMonotonically(t *testing.T) {
+	// During springGrowing the quota ratios must rise monotonically
+	// from 0 toward their targets, never overshooting (critical damping
+	// guarantees no oscillation).
+	m := seedIntroModel(t, false)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+
+	// Override targets to known non-zero values (seedIntroModel has
+	// no Anthropic quota loaded → window.Percent=0). The springHolding
+	// tick below reads these to seed velocities; the grow ticks then
+	// integrate against them.
+	m.quotaTarget5h = 0.8
+	m.quotaTarget7d = 0.25
+
+	// Deliver the hold tick to enter springGrowing.
+	updated, _ = m.Update(springTickMsg{})
+	m = updated.(Model)
+	if m.springPhase != springGrowing {
+		t.Fatalf("springPhase = %d after hold tick; want springGrowing", m.springPhase)
+	}
+
+	target5h := m.quotaTarget5h
+	target7d := m.quotaTarget7d
+	if target5h <= 0 {
+		t.Fatalf("quotaTarget5h = %v; want > 0 for monotonicity check", target5h)
+	}
+
+	prev5h := m.quotaRatio5h
+	prev7d := m.quotaRatio7d
+	const maxTicks = 200
+	sawRise5h := false
+	sawRise7d := false
+	for i := 0; i < maxTicks && m.springActive; i++ {
+		updated, _ = m.Update(springTickMsg{})
+		m = updated.(Model)
+		if m.quotaRatio5h+1e-9 < prev5h {
+			t.Fatalf("tick %d: quotaRatio5h regressed %v → %v", i, prev5h, m.quotaRatio5h)
+		}
+		if m.quotaRatio7d+1e-9 < prev7d {
+			t.Fatalf("tick %d: quotaRatio7d regressed %v → %v", i, prev7d, m.quotaRatio7d)
+		}
+		if m.quotaRatio5h > target5h+1e-6 {
+			t.Fatalf("tick %d: quotaRatio5h %v overshot target %v", i, m.quotaRatio5h, target5h)
+		}
+		if m.quotaRatio7d > target7d+1e-6 {
+			t.Fatalf("tick %d: quotaRatio7d %v overshot target %v", i, m.quotaRatio7d, target7d)
+		}
+		if m.quotaRatio5h > prev5h {
+			sawRise5h = true
+		}
+		if m.quotaRatio7d > prev7d {
+			sawRise7d = true
+		}
+		prev5h = m.quotaRatio5h
+		prev7d = m.quotaRatio7d
+	}
+	if m.springActive {
+		t.Fatalf("intro did not settle within %d ticks", maxTicks)
+	}
+	if !sawRise5h {
+		t.Errorf("quotaRatio5h never rose during grow phase")
+	}
+	if target7d > 0 && !sawRise7d {
+		t.Errorf("quotaRatio7d never rose during grow phase (target was %v)", target7d)
+	}
+}
+
+func TestIntro_QuotaBars_SettleTogetherWithChart(t *testing.T) {
+	// On the tick that the chart bucket springs settle (maxGap <
+	// phaseTransitionThreshold), the quota springs must also be within
+	// threshold of their targets. The shared maxGap fold makes this
+	// true by construction; the test guards the contract.
+	m := seedIntroModel(t, false)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+
+	// Override targets to non-zero values so settle-within-threshold
+	// is a meaningful claim (without it both quota springs settle at 0
+	// trivially and the assertion is vacuous).
+	m.quotaTarget5h = 0.8
+	m.quotaTarget7d = 0.25
+
+	const maxTicks = 300
+	for i := 0; i < maxTicks && m.springActive; i++ {
+		updated, _ = m.Update(springTickMsg{})
+		m = updated.(Model)
+	}
+	if m.springActive {
+		t.Fatalf("intro did not settle within %d ticks", maxTicks)
+	}
+	if math.Abs(m.quotaTarget5h-m.quotaRatio5h) > phaseTransitionThreshold {
+		t.Errorf("quotaRatio5h = %v after settle, want within %v of target %v",
+			m.quotaRatio5h, phaseTransitionThreshold, m.quotaTarget5h)
+	}
+	if math.Abs(m.quotaTarget7d-m.quotaRatio7d) > phaseTransitionThreshold {
+		t.Errorf("quotaRatio7d = %v after settle, want within %v of target %v",
+			m.quotaRatio7d, phaseTransitionThreshold, m.quotaTarget7d)
 	}
 }

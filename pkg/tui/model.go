@@ -410,6 +410,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				gap := math.Abs(m.springTargetRatios[i] - r)
 				maxGap = max(maxGap, gap)
 			}
+			// Quota-bar Phase 2 advance (#192). Two scalar Update calls
+			// per tick; their gaps fold into the same maxGap so the
+			// existing settle check fires when ALL three surfaces are
+			// within threshold of their targets.
+			r5, v5 := m.quotaSpring5h.Update(
+				m.quotaRatio5h, m.quotaVel5h, m.quotaTarget5h,
+			)
+			m.quotaRatio5h, m.quotaVel5h = r5, v5
+			maxGap = max(maxGap, math.Abs(m.quotaTarget5h-r5))
+
+			r7, v7 := m.quotaSpring7d.Update(
+				m.quotaRatio7d, m.quotaVel7d, m.quotaTarget7d,
+			)
+			m.quotaRatio7d, m.quotaVel7d = r7, v7
+			maxGap = max(maxGap, math.Abs(m.quotaTarget7d-r7))
+
 			if maxGap < phaseTransitionThreshold {
 				copy(m.springRatios, m.springTargetRatios)
 				m.springActive = false
