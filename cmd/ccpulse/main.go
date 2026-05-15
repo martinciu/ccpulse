@@ -166,10 +166,11 @@ func newConfigCmd() *cobra.Command {
 }
 
 // defaultTOMLBytes — first-run scaffold; users edit, never overwritten by upgrades.
+// Delegates to pkg/config so the scaffold stays in lockstep with resolved
+// defaults (single source of truth for both in-code defaults and the
+// live-value config the user edits in place).
 func defaultTOMLBytes() []byte {
-	return []byte(`# ccpulse config — managed by you, never overwritten.
-# See "ccpulse config show" for the live values (defaults + your overrides).
-`)
+	return config.Scaffold()
 }
 
 // ensureConfigFile creates path with the default scaffold if missing,
