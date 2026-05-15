@@ -2476,6 +2476,37 @@ func TestBeginUnitAnimation_EmptyCache(t *testing.T) {
 	}
 }
 
+func TestUnitKey_ReduceMotion_EmptyCache(t *testing.T) {
+	dir := t.TempDir()
+	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	t.Cleanup(func() { c.Close() })
+
+	m := New(Deps{Cache: c, ReduceMotion: true})
+	m.w, m.h = 120, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	m.refreshChart()
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	m = updated.(Model)
+
+	if cmd != nil {
+		t.Errorf("cmd != nil; expected nil (no tick scheduled in reduce-motion path)")
+	}
+	if m.springActive {
+		t.Errorf("springActive = true; expected false in reduce-motion path")
+	}
+	if m.unitIdx != 1 {
+		t.Errorf("unitIdx = %d; expected 1 after one toggle", m.unitIdx)
+	}
+	if len(m.lastValues) != 0 {
+		t.Errorf("len(lastValues) = %d; expected 0 on empty cache", len(m.lastValues))
+	}
+}
+
 func TestWindowSizeMsg_AbortsAnimation(t *testing.T) {
 	// WindowSizeMsg routes through refreshChart, which clears both
 	// springActive and springPhase. Spec acceptance criteria explicitly
