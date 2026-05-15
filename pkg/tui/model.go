@@ -223,11 +223,11 @@ type Model struct {
 
 	// Per-bar scalar springs for the open-path quota-bar slide-in (#192).
 	// Each side has its own harmonica.Spring + (ratio, velocity, target)
-	// triple. Targets are snapshotted at arm time inside
-	// beginIntroAnimation so a mid-intro window update can't shift the
-	// visual destination. Both gaps fold into the existing springGrowing
-	// maxGap check so chart bucket springs + 5h quota + 7d quota settle
-	// in the same frame.
+	// triple. Targets snapshot at arm time inside beginIntroAnimation,
+	// then re-snapshot in the QuotaMsg handler if the async Anthropic
+	// poller hadn't loaded m.quota yet at arm. Both gaps fold into the
+	// existing springGrowing maxGap check so chart bucket springs +
+	// 5h quota + 7d quota settle in the same frame.
 	quotaSpring5h harmonica.Spring
 	quotaRatio5h  float64
 	quotaVel5h    float64
@@ -236,6 +236,18 @@ type Model struct {
 	quotaRatio7d  float64
 	quotaVel7d    float64
 	quotaTarget7d float64
+
+	// quotaIntroPending tracks whether the open-path quota slide-in is
+	// still owed to the user. The chart intro and quota intro share
+	// introPending for arming, but quota animation requires m.quota
+	// to be loaded — and the async poller often hasn't completed by
+	// the time WindowSize triggers the chart arm. This flag stays true
+	// past the chart arm if quota was nil, so when QuotaMsg eventually
+	// arrives the handler can either re-snapshot in-flight targets
+	// (during the intro) or kick a quota-only late-arrival animation
+	// (after intro settle). Cleared on first quota animation, on
+	// late-arrival fire, or under reduce_motion in New().
+	quotaIntroPending bool
 
 	window         status.Window
 	quota          *anthro.Usage
@@ -279,6 +291,7 @@ func New(d Deps) Model {
 	m.viewport = viewport.New(80, 20)
 	m.viewport.SetHorizontalStep(horizontalScrollStep)
 	m.introPending = !d.ReduceMotion
+	m.quotaIntroPending = !d.ReduceMotion
 	return m
 }
 
@@ -445,6 +458,58 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.quotaSource = msg.Source
 		m.quotaUpdatedAt = msg.UpdatedAt
 		m.recomputeWindow()
+		// (#192) Quota arrival timing fix. Two paths:
+		//
+		// 1. In-flight: the open-path intro is still running but the
+		//    quota targets were snapshotted as 0 because m.quota was
+		//    nil at arm. Re-snapshot to live values so the springs
+		//    ease toward real targets for the remainder of the grow.
+		// 2. Late arrival: the chart intro armed and settled with no
+		//    quota loaded (springs ran 0→0 invisibly). Kick a
+		//    quota-only slide-in now, skipping the hold beat (the
+		//    bars already sat at 0 throughout the chart intro — no
+		//    new beat to register).
+		if m.springIntro {
+			m.quotaTarget5h = float64(m.window.Percent) / 100.0
+			if m.window.Has7d {
+				m.quotaTarget7d = float64(m.window.Percent7d) / 100.0
+			} else {
+				m.quotaTarget7d = 0
+			}
+			m.quotaIntroPending = false
+		} else if m.quotaIntroPending && !m.introPending && !m.deps.ReduceMotion {
+			target5h := float64(m.window.Percent) / 100.0
+			var target7d float64
+			if m.window.Has7d {
+				target7d = float64(m.window.Percent7d) / 100.0
+			}
+			if target5h > 0 || target7d > 0 {
+				m.quotaTarget5h = target5h
+				m.quotaTarget7d = target7d
+				m.quotaRatio5h = 0
+				m.quotaRatio7d = 0
+				m.quotaVel5h = phase2InitialVelocityV0 * target5h
+				m.quotaVel7d = phase2InitialVelocityV0 * target7d
+				m.quotaSpring5h = harmonica.NewSpring(
+					harmonica.FPS(springFPS),
+					phase2Frequency, phase2Damping,
+				)
+				m.quotaSpring7d = harmonica.NewSpring(
+					harmonica.FPS(springFPS),
+					phase2Frequency, phase2Damping,
+				)
+				m.quotaIntroPending = false
+				m.springActive = true
+				m.springIntro = true
+				m.springPhase = springGrowing
+				return m, tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
+					return springTickMsg{}
+				})
+			}
+			// Targets both zero — nothing to animate. Clear the flag
+			// so we don't keep checking on every QuotaMsg.
+			m.quotaIntroPending = false
+		}
 	case RefreshMsg:
 		start := time.Now()
 		m.recomputeWindow()
@@ -935,6 +1000,15 @@ func (m *Model) beginIntroAnimation() {
 		harmonica.FPS(springFPS),
 		phase2Frequency, phase2Damping,
 	)
+	// If quota is already loaded, the targets snapshotted above are
+	// real values and the springs will animate to them. If quota is
+	// still nil (the common startup race — async Anthropic poller
+	// hasn't finished), targets are 0; the QuotaMsg handler will
+	// either re-snapshot in flight or kick a quota-only late-arrival
+	// intro after settle.
+	if m.quota != nil {
+		m.quotaIntroPending = false
+	}
 
 	// Spring window tracks current viewport position so the animated
 	// slice matches what the user is about to look at. On open the
