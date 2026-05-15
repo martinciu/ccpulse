@@ -91,6 +91,16 @@ type Deps struct {
 	ReduceMotion bool
 }
 
+// quotaSide identifies which quota bar a per-frame ratio belongs to.
+// Used by quotaIntroRatio to dispatch to the right per-bar spring
+// during the open-path slide-in (#192). Two-value enum, no parsing.
+type quotaSide int
+
+const (
+	quotaSide5h quotaSide = iota
+	quotaSide7d
+)
+
 // Model is the root Bubble Tea model for the chart view.
 type Model struct {
 	deps       Deps
@@ -211,6 +221,34 @@ type Model struct {
 	// explicit user action). See #188.
 	springIntro bool
 
+	// Per-bar scalar springs for the open-path quota-bar slide-in (#192).
+	// Each side has its own harmonica.Spring + (ratio, velocity, target)
+	// triple. Targets snapshot at arm time inside beginIntroAnimation,
+	// then re-snapshot in the QuotaMsg handler if the async Anthropic
+	// poller hadn't loaded m.quota yet at arm. Both gaps fold into the
+	// existing springGrowing maxGap check so chart bucket springs +
+	// 5h quota + 7d quota settle in the same frame.
+	quotaSpring5h harmonica.Spring
+	quotaRatio5h  float64
+	quotaVel5h    float64
+	quotaTarget5h float64
+	quotaSpring7d harmonica.Spring
+	quotaRatio7d  float64
+	quotaVel7d    float64
+	quotaTarget7d float64
+
+	// quotaIntroPending tracks whether the open-path quota slide-in is
+	// still owed to the user. The chart intro and quota intro share
+	// introPending for arming, but quota animation requires m.quota
+	// to be loaded — and the async poller often hasn't completed by
+	// the time WindowSize triggers the chart arm. This flag stays true
+	// past the chart arm if quota was nil, so when QuotaMsg eventually
+	// arrives the handler can either re-snapshot in-flight targets
+	// (during the intro) or kick a quota-only late-arrival animation
+	// (after intro settle). Cleared on first quota animation, on
+	// late-arrival fire, or under reduce_motion in New().
+	quotaIntroPending bool
+
 	window         status.Window
 	quota          *anthro.Usage
 	quotaSource    string
@@ -253,6 +291,7 @@ func New(d Deps) Model {
 	m.viewport = viewport.New(80, 20)
 	m.viewport.SetHorizontalStep(horizontalScrollStep)
 	m.introPending = !d.ReduceMotion
+	m.quotaIntroPending = !d.ReduceMotion
 	return m
 }
 
@@ -363,6 +402,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.springTargetRatios[i] = m.springFinalTargets[i]
 				m.springVelocities[i] = phase2InitialVelocityV0 * m.springFinalTargets[i]
 			}
+			// Quota-bar Phase 2 seeding (#192). quotaTarget5h/7d were
+			// snapshotted at arm in beginIntroAnimation; mirror the
+			// bucket V_i = V0 * target_i contract.
+			m.quotaVel5h = phase2InitialVelocityV0 * m.quotaTarget5h
+			m.quotaVel7d = phase2InitialVelocityV0 * m.quotaTarget7d
 			m.springPhase = springGrowing
 			m.renderSpringFrame()
 			return m, tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
@@ -379,6 +423,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				gap := math.Abs(m.springTargetRatios[i] - r)
 				maxGap = max(maxGap, gap)
 			}
+			// Quota-bar Phase 2 advance (#192). Two scalar Update calls
+			// per tick; their gaps fold into the same maxGap so the
+			// existing settle check fires when ALL three surfaces are
+			// within threshold of their targets.
+			r5, v5 := m.quotaSpring5h.Update(
+				m.quotaRatio5h, m.quotaVel5h, m.quotaTarget5h,
+			)
+			m.quotaRatio5h, m.quotaVel5h = r5, v5
+			maxGap = max(maxGap, math.Abs(m.quotaTarget5h-r5))
+
+			r7, v7 := m.quotaSpring7d.Update(
+				m.quotaRatio7d, m.quotaVel7d, m.quotaTarget7d,
+			)
+			m.quotaRatio7d, m.quotaVel7d = r7, v7
+			maxGap = max(maxGap, math.Abs(m.quotaTarget7d-r7))
+
 			if maxGap < phaseTransitionThreshold {
 				copy(m.springRatios, m.springTargetRatios)
 				m.springActive = false
@@ -398,6 +458,64 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.quotaSource = msg.Source
 		m.quotaUpdatedAt = msg.UpdatedAt
 		m.recomputeWindow()
+		// (#192) Quota arrival timing fix. Two paths:
+		//
+		// 1. In-flight: the open-path intro is still running but the
+		//    quota targets were snapshotted as 0 because m.quota was
+		//    nil at arm. Re-snapshot to live values so the springs
+		//    ease toward real targets for the remainder of the grow.
+		// 2. Late arrival: the chart intro armed and settled with no
+		//    quota loaded (springs ran 0→0 invisibly). Kick a
+		//    quota-only slide-in now, skipping the hold beat (the
+		//    bars already sat at 0 throughout the chart intro — no
+		//    new beat to register).
+		if m.springIntro {
+			m.quotaTarget5h = float64(m.window.Percent) / 100.0
+			if m.window.Has7d {
+				m.quotaTarget7d = float64(m.window.Percent7d) / 100.0
+			} else {
+				m.quotaTarget7d = 0
+			}
+			m.quotaIntroPending = false
+		} else if m.quotaIntroPending && !m.introPending && !m.deps.ReduceMotion {
+			target5h := float64(m.window.Percent) / 100.0
+			var target7d float64
+			if m.window.Has7d {
+				target7d = float64(m.window.Percent7d) / 100.0
+			}
+			if target5h > 0 || target7d > 0 {
+				m.quotaTarget5h = target5h
+				m.quotaTarget7d = target7d
+				m.quotaRatio5h = 0
+				m.quotaRatio7d = 0
+				m.quotaVel5h = phase2InitialVelocityV0 * target5h
+				m.quotaVel7d = phase2InitialVelocityV0 * target7d
+				m.quotaSpring5h = harmonica.NewSpring(
+					harmonica.FPS(springFPS),
+					phase2Frequency, phase2Damping,
+				)
+				m.quotaSpring7d = harmonica.NewSpring(
+					harmonica.FPS(springFPS),
+					phase2Frequency, phase2Damping,
+				)
+				m.quotaIntroPending = false
+				// Zero residual chart velocities from the prior settle
+				// so reusing the springGrowing arm for the quota-only
+				// late-arrival intro doesn't wobble the chart bars.
+				// Position is already at-target (copy in the settle
+				// block), velocity was never reset.
+				clear(m.springVelocities)
+				m.springActive = true
+				m.springIntro = true
+				m.springPhase = springGrowing
+				return m, tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
+					return springTickMsg{}
+				})
+			}
+			// Targets both zero — nothing to animate. Clear the flag
+			// so we don't keep checking on every QuotaMsg.
+			m.quotaIntroPending = false
+		}
 	case RefreshMsg:
 		start := time.Now()
 		m.recomputeWindow()
@@ -577,6 +695,36 @@ func renderIndicators(isDev bool, idx IndexProgress, w status.Window) string {
 	return strings.Join(parts, sep)
 }
 
+// quotaIntroRatio returns the fill ratio a quota bar should render
+// this frame:
+//   - target during steady state (springIntro == false): pass-through
+//     so quotaBars() reads m.window.Percent / 100.0 unchanged.
+//   - 0 during the hold beat (springPhase == springHolding): the bar
+//     rests at zero so the eye registers the beat before the grow.
+//   - the per-side spring ratio during the grow (springPhase ==
+//     springGrowing): the bar interpolates from 0 to its target via
+//     the same harmonica config as the chart intro.
+//
+// Callers route 5h through quotaSide5h and 7d through quotaSide7d so
+// the helper picks the right (ratio, velocity, target) triple.
+func (m Model) quotaIntroRatio(side quotaSide, target float64) float64 {
+	if !m.springIntro {
+		return target
+	}
+	switch m.springPhase {
+	case springHolding:
+		return 0
+	case springGrowing:
+		switch side {
+		case quotaSide5h:
+			return m.quotaRatio5h
+		case quotaSide7d:
+			return m.quotaRatio7d
+		}
+	}
+	return target
+}
+
 // quotaBars renders the two content rows that live inside the bordered
 // header box: the existing 5h / 7d quota bars row and the new burn-rate
 // row beneath it. Both rows are separated by a dim " │ " divider and
@@ -591,7 +739,7 @@ func (m Model) quotaBars() string {
 	left := renderQuotaSide(
 		"5h ",
 		m.progress,
-		float64(m.window.Percent)/100.0,
+		m.quotaIntroRatio(quotaSide5h, float64(m.window.Percent)/100.0),
 		durString(m.window.MinutesToReset),
 	)
 	// Derive the per-side slot from the actual rendered bars-row left,
@@ -607,7 +755,7 @@ func (m Model) quotaBars() string {
 		right = renderQuotaSide(
 			"7d ",
 			m.progress7d,
-			float64(m.window.Percent7d)/100.0,
+			m.quotaIntroRatio(quotaSide7d, float64(m.window.Percent7d)/100.0),
 			formatReset7d(m.window.MinutesToReset7d),
 		)
 	} else {
@@ -833,6 +981,40 @@ func (m *Model) beginIntroAnimation() {
 	}
 
 	m.seedPhase2Springs(targets)
+
+	// Quota-bar spring seeding (#192). Targets are snapshotted from
+	// the current window so a mid-intro recomputeWindow can't shift
+	// the visual destination. When Has7d=false the 7d target stays at
+	// 0 (defensively zeroed) — quotaBars() short-circuits to the
+	// (no data) placeholder for that side regardless of intro phase,
+	// so the spring ratio is unread; this just keeps state consistent.
+	m.quotaTarget5h = float64(m.window.Percent) / 100.0
+	m.quotaRatio5h = 0
+	m.quotaVel5h = 0
+	m.quotaSpring5h = harmonica.NewSpring(
+		harmonica.FPS(springFPS),
+		phase2Frequency, phase2Damping,
+	)
+	if m.window.Has7d {
+		m.quotaTarget7d = float64(m.window.Percent7d) / 100.0
+	} else {
+		m.quotaTarget7d = 0
+	}
+	m.quotaRatio7d = 0
+	m.quotaVel7d = 0
+	m.quotaSpring7d = harmonica.NewSpring(
+		harmonica.FPS(springFPS),
+		phase2Frequency, phase2Damping,
+	)
+	// If quota is already loaded, the targets snapshotted above are
+	// real values and the springs will animate to them. If quota is
+	// still nil (the common startup race — async Anthropic poller
+	// hasn't finished), targets are 0; the QuotaMsg handler will
+	// either re-snapshot in flight or kick a quota-only late-arrival
+	// intro after settle.
+	if m.quota != nil {
+		m.quotaIntroPending = false
+	}
 
 	// Spring window tracks current viewport position so the animated
 	// slice matches what the user is about to look at. On open the

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"math"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -2364,6 +2365,23 @@ func chartBodyLines(view string) []string {
 	return t
 }
 
+// quotaBarLines returns the rendered bars-row line(s) from a View.
+// The 5h and 7d quota bars are joined horizontally inside the bordered
+// header box, so a single line normally contains both sides — that
+// line is what we return. Strips the leading box-border char ('│') and
+// padding whitespace before matching the "5h"/"7d" label prefix so the
+// lipgloss-rendered border doesn't defeat HasPrefix.
+func quotaBarLines(view string) []string {
+	var rows []string
+	for line := range strings.SplitSeq(view, "\n") {
+		trimmed := strings.TrimLeft(line, "│ \t")
+		if strings.HasPrefix(trimmed, "5h") || strings.HasPrefix(trimmed, "7d") {
+			rows = append(rows, line)
+		}
+	}
+	return rows
+}
+
 func TestRefreshMsg_AbortsBothPhases(t *testing.T) {
 	// RefreshMsg arriving in either phase must hard-cut the animation:
 	// springActive=false and springPhase=springIdle. Driven by the
@@ -3598,5 +3616,664 @@ func TestIntro_EmptyCacheDeferred(t *testing.T) {
 	}
 	if m.introPending {
 		t.Errorf("introPending = true after intro arm; want false (one-shot)")
+	}
+}
+
+func TestQuotaIntroRatio_SteadyStateReturnsTarget(t *testing.T) {
+	// In steady state (springIntro=false) the helper must return its
+	// target argument unchanged for both sides — quotaBars() relies on
+	// this so today's render is byte-for-byte preserved when no intro
+	// is in flight.
+	m := New(Deps{ReduceMotion: false})
+	m.springIntro = false
+
+	cases := []struct {
+		name   string
+		side   quotaSide
+		target float64
+	}{
+		{"5h_zero", quotaSide5h, 0.0},
+		{"5h_half", quotaSide5h, 0.5},
+		{"5h_full", quotaSide5h, 1.0},
+		{"7d_zero", quotaSide7d, 0.0},
+		{"7d_half", quotaSide7d, 0.5},
+		{"7d_full", quotaSide7d, 1.0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := m.quotaIntroRatio(tc.side, tc.target)
+			if got != tc.target {
+				t.Errorf("quotaIntroRatio(%v, %v) = %v; want %v (steady state passes through)",
+					tc.side, tc.target, got, tc.target)
+			}
+		})
+	}
+}
+
+func TestBeginIntroAnimation_SeedsQuotaTargets(t *testing.T) {
+	// After arming, the quota springs must reflect the window snapshot:
+	//   - quotaTarget5h  = Percent / 100
+	//   - quotaTarget7d  = Percent7d / 100 when Has7d, else 0
+	//   - quotaRatio5h/7d, quotaVel5h/7d = 0 (Phase 2 init seeded in
+	//     the springHolding tick, not at arm).
+	cases := []struct {
+		name      string
+		percent5h int
+		has7d     bool
+		percent7d int
+		want5h    float64
+		want7d    float64
+	}{
+		{"both_sides_data", 80, true, 25, 0.80, 0.25},
+		{"5h_only", 60, false, 0, 0.60, 0.0},
+		{"both_zero", 0, true, 0, 0.0, 0.0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := seedIntroModel(t, false)
+			updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+			m = updated.(Model)
+
+			// Overwrite window to the test scenario, then re-arm by
+			// resetting the intro state and calling beginIntroAnimation
+			// directly. This isolates the seed logic from the
+			// maybeArmIntro gate.
+			m.springActive = false
+			m.springIntro = false
+			m.springPhase = springIdle
+			m.window.Percent = tc.percent5h
+			m.window.Has7d = tc.has7d
+			m.window.Percent7d = tc.percent7d
+			m.beginIntroAnimation()
+
+			if got := m.quotaTarget5h; got != tc.want5h {
+				t.Errorf("quotaTarget5h = %v; want %v", got, tc.want5h)
+			}
+			if got := m.quotaTarget7d; got != tc.want7d {
+				t.Errorf("quotaTarget7d = %v; want %v", got, tc.want7d)
+			}
+			if m.quotaRatio5h != 0 || m.quotaRatio7d != 0 {
+				t.Errorf("quotaRatio5h/7d = %v/%v; want 0/0 (seeded by springHolding tick, not at arm)",
+					m.quotaRatio5h, m.quotaRatio7d)
+			}
+			if m.quotaVel5h != 0 || m.quotaVel7d != 0 {
+				t.Errorf("quotaVel5h/7d = %v/%v; want 0/0 (seeded by springHolding tick, not at arm)",
+					m.quotaVel5h, m.quotaVel7d)
+			}
+		})
+	}
+}
+
+func TestIntro_QuotaBars_HoldFrameRendersZeroFill(t *testing.T) {
+	// During springHolding both quota bar rows must render with no
+	// filled-block characters — quotaIntroRatio returns 0 for both
+	// sides, so bubbles/progress emits only the empty char ('░').
+	m := seedIntroModel(t, false)
+	updated, cmd := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatalf("WindowSizeMsg returned nil cmd; intro did not arm")
+	}
+	if m.springPhase != springHolding {
+		t.Fatalf("springPhase = %d after WindowSizeMsg; want springHolding (%d)",
+			m.springPhase, springHolding)
+	}
+
+	rows := quotaBarLines(m.View())
+	if len(rows) == 0 {
+		t.Fatalf("no quota bar rows in rendered view")
+	}
+	for _, row := range rows {
+		if strings.ContainsRune(row, '█') {
+			t.Errorf("quota bar row contains '█' during hold frame: %q", row)
+		}
+	}
+}
+
+func TestIntro_QuotaBars_HoldTickSeedsVelocities(t *testing.T) {
+	// The hold tick (the springHolding case of springTickMsg) must
+	// seed quotaVel5h/7d = phase2InitialVelocityV0 * quotaTarget5h/7d,
+	// matching the bucket springs' V_i = V0 * target_i contract.
+	m := seedIntroModel(t, false)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+
+	// Override targets to known non-zero values: the seedIntroModel
+	// fixture has no Anthropic quota loaded so window.Percent is 0,
+	// which would let V0*target = 0 trivially satisfy the assertion.
+	// Setting explicit non-zero targets here verifies the springHolding
+	// arm actually computes V0*target rather than no-op'ing.
+	m.quotaTarget5h = 0.8
+	m.quotaTarget7d = 0.25
+	t5h := m.quotaTarget5h
+	t7d := m.quotaTarget7d
+
+	// Deliver the hold tick. The handler switches springPhase to
+	// springGrowing AND seeds Phase 2 state (target ratios + velocities).
+	updated, _ = m.Update(springTickMsg{})
+	m = updated.(Model)
+
+	if m.springPhase != springGrowing {
+		t.Fatalf("springPhase = %d after hold tick; want springGrowing (%d)",
+			m.springPhase, springGrowing)
+	}
+	wantVel5h := phase2InitialVelocityV0 * t5h
+	wantVel7d := phase2InitialVelocityV0 * t7d
+	if m.quotaVel5h != wantVel5h {
+		t.Errorf("quotaVel5h = %v; want %v (V0 * target = %v * %v)",
+			m.quotaVel5h, wantVel5h, phase2InitialVelocityV0, t5h)
+	}
+	if m.quotaVel7d != wantVel7d {
+		t.Errorf("quotaVel7d = %v; want %v (V0 * target = %v * %v)",
+			m.quotaVel7d, wantVel7d, phase2InitialVelocityV0, t7d)
+	}
+}
+
+func TestIntro_QuotaBars_GrowLadderRisesMonotonically(t *testing.T) {
+	// During springGrowing the quota ratios must rise monotonically
+	// from 0 toward their targets, never overshooting (critical damping
+	// guarantees no oscillation).
+	m := seedIntroModel(t, false)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+
+	// Override targets to known non-zero values (seedIntroModel has
+	// no Anthropic quota loaded → window.Percent=0). The springHolding
+	// tick below reads these to seed velocities; the grow ticks then
+	// integrate against them.
+	m.quotaTarget5h = 0.8
+	m.quotaTarget7d = 0.25
+
+	// Deliver the hold tick to enter springGrowing.
+	updated, _ = m.Update(springTickMsg{})
+	m = updated.(Model)
+	if m.springPhase != springGrowing {
+		t.Fatalf("springPhase = %d after hold tick; want springGrowing", m.springPhase)
+	}
+
+	target5h := m.quotaTarget5h
+	target7d := m.quotaTarget7d
+	if target5h <= 0 {
+		t.Fatalf("quotaTarget5h = %v; want > 0 for monotonicity check", target5h)
+	}
+
+	prev5h := m.quotaRatio5h
+	prev7d := m.quotaRatio7d
+	const maxTicks = 200
+	sawRise5h := false
+	sawRise7d := false
+	for i := 0; i < maxTicks && m.springActive; i++ {
+		updated, _ = m.Update(springTickMsg{})
+		m = updated.(Model)
+		if m.quotaRatio5h+1e-9 < prev5h {
+			t.Fatalf("tick %d: quotaRatio5h regressed %v → %v", i, prev5h, m.quotaRatio5h)
+		}
+		if m.quotaRatio7d+1e-9 < prev7d {
+			t.Fatalf("tick %d: quotaRatio7d regressed %v → %v", i, prev7d, m.quotaRatio7d)
+		}
+		if m.quotaRatio5h > target5h+1e-6 {
+			t.Fatalf("tick %d: quotaRatio5h %v overshot target %v", i, m.quotaRatio5h, target5h)
+		}
+		if m.quotaRatio7d > target7d+1e-6 {
+			t.Fatalf("tick %d: quotaRatio7d %v overshot target %v", i, m.quotaRatio7d, target7d)
+		}
+		if m.quotaRatio5h > prev5h {
+			sawRise5h = true
+		}
+		if m.quotaRatio7d > prev7d {
+			sawRise7d = true
+		}
+		prev5h = m.quotaRatio5h
+		prev7d = m.quotaRatio7d
+	}
+	if m.springActive {
+		t.Fatalf("intro did not settle within %d ticks", maxTicks)
+	}
+	if !sawRise5h {
+		t.Errorf("quotaRatio5h never rose during grow phase")
+	}
+	if target7d > 0 && !sawRise7d {
+		t.Errorf("quotaRatio7d never rose during grow phase (target was %v)", target7d)
+	}
+}
+
+func TestIntro_QuotaBars_SettleTogetherWithChart(t *testing.T) {
+	// On the tick that the chart bucket springs settle (maxGap <
+	// phaseTransitionThreshold), the quota springs must also be within
+	// threshold of their targets. The shared maxGap fold makes this
+	// true by construction; the test guards the contract.
+	m := seedIntroModel(t, false)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+
+	// Override targets to non-zero values so settle-within-threshold
+	// is a meaningful claim (without it both quota springs settle at 0
+	// trivially and the assertion is vacuous).
+	m.quotaTarget5h = 0.8
+	m.quotaTarget7d = 0.25
+
+	const maxTicks = 300
+	for i := 0; i < maxTicks && m.springActive; i++ {
+		updated, _ = m.Update(springTickMsg{})
+		m = updated.(Model)
+	}
+	if m.springActive {
+		t.Fatalf("intro did not settle within %d ticks", maxTicks)
+	}
+	if math.Abs(m.quotaTarget5h-m.quotaRatio5h) > phaseTransitionThreshold {
+		t.Errorf("quotaRatio5h = %v after settle, want within %v of target %v",
+			m.quotaRatio5h, phaseTransitionThreshold, m.quotaTarget5h)
+	}
+	if math.Abs(m.quotaTarget7d-m.quotaRatio7d) > phaseTransitionThreshold {
+		t.Errorf("quotaRatio7d = %v after settle, want within %v of target %v",
+			m.quotaRatio7d, phaseTransitionThreshold, m.quotaTarget7d)
+	}
+}
+
+func TestIntro_QuotaBars_ReduceMotion_FirstFrameFull(t *testing.T) {
+	// With ReduceMotion=true: no intro arms (introPending=false from
+	// New()), no springs are seeded, quotaIntroRatio returns target
+	// directly, and the first View() renders both bars at their target
+	// fill (which contains '█' for non-zero targets).
+	m := seedIntroModel(t, true) // reduceMotion=true
+	updated, cmd := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+
+	if cmd != nil {
+		t.Errorf("cmd = %v after first WindowSizeMsg with reduce_motion; want nil", cmd)
+	}
+	if m.springActive {
+		t.Errorf("springActive = true with reduce_motion; want false")
+	}
+
+	// Override window.Percent so the visual probe has a non-zero target
+	// to render — seedIntroModel has no Anthropic quota loaded, so the
+	// natural Percent is 0 and bubbles/progress would emit only empty
+	// chars regardless of the helper's behaviour.
+	m.window.Percent = 60
+	m.window.Has7d = true
+	m.window.Percent7d = 25
+
+	rows := quotaBarLines(m.View())
+	if len(rows) == 0 {
+		t.Fatalf("no quota bar rows in rendered view")
+	}
+	// At least one row should contain a filled block character since the
+	// override made both targets non-zero and the helper passes through
+	// to bubbles/progress under reduce_motion.
+	var sawFill bool
+	for _, row := range rows {
+		if strings.ContainsRune(row, '█') {
+			sawFill = true
+			break
+		}
+	}
+	if !sawFill {
+		t.Errorf("no '█' in quota bar rows with reduce_motion and non-zero Percent — bars should paint at full target on first frame")
+	}
+}
+
+func TestIntro_QuotaBars_OneShot_NoReArmAfterSettle(t *testing.T) {
+	// After the intro settles, a second WindowSizeMsg (or RefreshMsg
+	// with a different quota value) must not re-arm the quota intro.
+	// introPending is cleared on first arm and never re-set.
+	m := seedIntroModel(t, false)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+
+	const maxTicks = 300
+	for i := 0; i < maxTicks && m.springActive; i++ {
+		updated, _ = m.Update(springTickMsg{})
+		m = updated.(Model)
+	}
+	if m.springActive {
+		t.Fatalf("intro did not settle within %d ticks", maxTicks)
+	}
+	settled5h := m.quotaRatio5h
+	settled7d := m.quotaRatio7d
+
+	// Second WindowSizeMsg — must not re-arm.
+	updated, cmd := m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
+	m = updated.(Model)
+	if cmd != nil {
+		t.Errorf("cmd = %v after post-settle WindowSizeMsg; want nil (no re-arm)", cmd)
+	}
+	if m.springActive {
+		t.Errorf("springActive = true after post-settle WindowSizeMsg; want false")
+	}
+	if m.quotaRatio5h != settled5h || m.quotaRatio7d != settled7d {
+		t.Errorf("quota ratios moved after post-settle WindowSizeMsg: %v/%v → %v/%v",
+			settled5h, settled7d, m.quotaRatio5h, m.quotaRatio7d)
+	}
+}
+
+func TestIntro_QuotaBars_DeferredArmOnEmptyCache(t *testing.T) {
+	// Open with an empty cache: the chart-intro gate
+	// (len(lastValues) > 0) blocks arming, so the quota intro defers
+	// too (it shares introPending). The first non-empty RefreshMsg
+	// arms both surfaces.
+	dir := t.TempDir()
+	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	t.Cleanup(func() { c.Close() })
+
+	m := New(Deps{Cache: c, ReduceMotion: false})
+
+	updated, cmd := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+	if cmd != nil {
+		t.Errorf("cmd = %v after WindowSizeMsg with empty cache; want nil (deferred arm)", cmd)
+	}
+	if m.springActive {
+		t.Errorf("springActive = true after WindowSizeMsg with empty cache; want false")
+	}
+	if !m.introPending {
+		t.Errorf("introPending = false after WindowSizeMsg with empty cache; want true (still pending)")
+	}
+
+	// Insert a message; the next RefreshMsg should arm.
+	tab, err := pricing.Load()
+	if err != nil {
+		t.Fatalf("pricing.Load: %v", err)
+	}
+	now := time.Now().UTC().Truncate(15 * time.Minute)
+	if err := c.InsertMessages([]parse.Message{
+		{SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7",
+			Timestamp: now.Add(-10 * time.Minute), InputTokens: 30000, OutputTokens: 15000},
+	}, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	updated, cmd = m.Update(RefreshMsg{})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatalf("cmd = nil after non-empty RefreshMsg; want hold tick (deferred arm should fire)")
+	}
+	if !m.springActive {
+		t.Errorf("springActive = false after non-empty RefreshMsg; want true (intro armed)")
+	}
+	if m.springPhase != springHolding {
+		t.Errorf("springPhase = %d after non-empty RefreshMsg; want springHolding", m.springPhase)
+	}
+}
+
+func TestIntro_QuotaBars_NoData7d_PlaceholderUnchanged(t *testing.T) {
+	// When Has7d=false, the 7d side renders the (no data) placeholder
+	// regardless of intro phase. The intro fires for the 5h side only;
+	// the 7d spring is seeded with target=0 defensively but unread.
+	m := seedIntroModel(t, false)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+
+	// Overwrite the window to drop the 7d side, then re-arm via
+	// beginIntroAnimation directly (isolating from maybeArmIntro
+	// gating).
+	m.springActive = false
+	m.springIntro = false
+	m.springPhase = springIdle
+	m.window.Has7d = false
+	m.window.Percent7d = 0
+	m.beginIntroAnimation()
+
+	if m.quotaTarget7d != 0 {
+		t.Errorf("quotaTarget7d = %v with Has7d=false; want 0 (defensive zero)", m.quotaTarget7d)
+	}
+
+	// 5h and 7d sides render on the same row via JoinHorizontal; the
+	// 7d side appears as the "(no data)" placeholder regardless of
+	// intro phase when Has7d=false.
+	view := m.View()
+	if !strings.Contains(view, "(no data)") {
+		t.Errorf("rendered view missing '(no data)' placeholder with Has7d=false; got rows=%q",
+			quotaBarLines(view))
+	}
+}
+
+// quotaUsage builds an *anthro.Usage suitable for QuotaMsg fixtures.
+// Both buckets reset 2h / 48h from now so status.Compute treats them
+// as live. Pass utilFiveHour/utilSevenDay as percent values [0, 100].
+func quotaUsage(utilFiveHour, utilSevenDay float64) *anthro.Usage {
+	now := time.Now()
+	return &anthro.Usage{
+		FiveHour: &anthro.Bucket{Utilization: utilFiveHour, ResetsAt: now.Add(2 * time.Hour)},
+		SevenDay: &anthro.Bucket{Utilization: utilSevenDay, ResetsAt: now.Add(48 * time.Hour)},
+	}
+}
+
+func TestIntro_QuotaBars_QuotaArrivesDuringHold(t *testing.T) {
+	// Open the intro with quota nil (the common startup race: the
+	// async Anthropic poller hasn't finished yet). beginIntroAnimation
+	// snapshots quotaTarget5h/7d as 0 because m.window.Percent is 0.
+	// When QuotaMsg arrives DURING the hold beat, the handler must
+	// re-snapshot the targets to the real values so the upcoming hold
+	// tick seeds the velocities (V0 * target) from real values, and
+	// the grow ramps to a visible end-state instead of 0.
+	m := seedIntroModel(t, false)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+	if m.springPhase != springHolding {
+		t.Fatalf("springPhase = %d after WindowSize; want springHolding", m.springPhase)
+	}
+	if m.quotaTarget5h != 0 {
+		t.Fatalf("quotaTarget5h = %v at arm; want 0 (no quota loaded yet)", m.quotaTarget5h)
+	}
+
+	// Quota arrives during the hold beat.
+	updated, _ = m.Update(QuotaMsg{Usage: quotaUsage(80, 25), Source: "api", UpdatedAt: time.Now()})
+	m = updated.(Model)
+	wantTarget5h := float64(m.window.Percent) / 100.0
+	wantTarget7d := float64(m.window.Percent7d) / 100.0
+	if wantTarget5h <= 0 {
+		t.Fatalf("test setup: window.Percent still 0 after QuotaMsg; got %d", m.window.Percent)
+	}
+	if m.quotaTarget5h != wantTarget5h {
+		t.Errorf("quotaTarget5h = %v after QuotaMsg in hold; want %v (live window value)",
+			m.quotaTarget5h, wantTarget5h)
+	}
+	if m.quotaTarget7d != wantTarget7d {
+		t.Errorf("quotaTarget7d = %v after QuotaMsg in hold; want %v (live window value)",
+			m.quotaTarget7d, wantTarget7d)
+	}
+
+	// Drive ticks through hold + grow; quota springs should settle
+	// at the real targets (within phaseTransitionThreshold).
+	const maxTicks = 300
+	for i := 0; i < maxTicks && m.springActive; i++ {
+		updated, _ = m.Update(springTickMsg{})
+		m = updated.(Model)
+	}
+	if m.springActive {
+		t.Fatalf("intro did not settle within %d ticks", maxTicks)
+	}
+	if math.Abs(m.quotaTarget5h-m.quotaRatio5h) > phaseTransitionThreshold {
+		t.Errorf("quotaRatio5h = %v after settle; want within %v of target %v",
+			m.quotaRatio5h, phaseTransitionThreshold, m.quotaTarget5h)
+	}
+}
+
+func TestIntro_QuotaBars_QuotaArrivesDuringGrow(t *testing.T) {
+	// Similar to the during-hold case, but QuotaMsg arrives AFTER the
+	// hold tick has already seeded velocities from the (then-zero)
+	// targets. Re-snapshotting the target shifts the spring's
+	// destination mid-flight; critical damping ensures the spring
+	// eases to the new target without overshoot.
+	m := seedIntroModel(t, false)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+
+	// Hold tick → springGrowing.
+	updated, _ = m.Update(springTickMsg{})
+	m = updated.(Model)
+	if m.springPhase != springGrowing {
+		t.Fatalf("springPhase = %d after hold tick; want springGrowing", m.springPhase)
+	}
+	if m.quotaVel5h != 0 {
+		t.Fatalf("quotaVel5h = %v; want 0 (V0 * 0 = 0 because no quota loaded at arm)", m.quotaVel5h)
+	}
+
+	// A few grow ticks happen before quota arrives. With targets at 0
+	// the springs are stationary at 0 — no visible motion.
+	for i := 0; i < 5; i++ {
+		updated, _ = m.Update(springTickMsg{})
+		m = updated.(Model)
+	}
+	if m.quotaRatio5h != 0 {
+		t.Fatalf("quotaRatio5h = %v after grow ticks with target=0; want 0", m.quotaRatio5h)
+	}
+
+	// Quota arrives mid-grow.
+	updated, _ = m.Update(QuotaMsg{Usage: quotaUsage(80, 25), Source: "api", UpdatedAt: time.Now()})
+	m = updated.(Model)
+	wantTarget5h := float64(m.window.Percent) / 100.0
+	if m.quotaTarget5h != wantTarget5h {
+		t.Errorf("quotaTarget5h = %v after mid-grow QuotaMsg; want %v",
+			m.quotaTarget5h, wantTarget5h)
+	}
+
+	// Drive remaining ticks; quota springs should settle at real targets
+	// even though they were seeded with 0 velocities.
+	const maxTicks = 300
+	for i := 0; i < maxTicks && m.springActive; i++ {
+		updated, _ = m.Update(springTickMsg{})
+		m = updated.(Model)
+	}
+	if m.springActive {
+		t.Fatalf("intro did not settle within %d ticks", maxTicks)
+	}
+	if math.Abs(m.quotaTarget5h-m.quotaRatio5h) > phaseTransitionThreshold {
+		t.Errorf("quotaRatio5h = %v after settle; want within %v of target %v",
+			m.quotaRatio5h, phaseTransitionThreshold, m.quotaTarget5h)
+	}
+}
+
+func TestIntro_QuotaBars_QuotaArrivesAfterSettle(t *testing.T) {
+	// Slow-network case: chart intro armed and settled with quota=nil
+	// (springs animated 0 → 0 invisibly), then QuotaMsg arrives. The
+	// QuotaMsg handler must kick a quota-only slide-in so the bars
+	// don't snap from 0 to their real values. Skips the hold beat
+	// (bars already sat at 0 for the chart intro).
+	m := seedIntroModel(t, false)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+
+	// Drive the chart intro to settle.
+	const settleTicks = 300
+	for i := 0; i < settleTicks && m.springActive; i++ {
+		updated, _ = m.Update(springTickMsg{})
+		m = updated.(Model)
+	}
+	if m.springActive {
+		t.Fatalf("chart intro did not settle within %d ticks", settleTicks)
+	}
+	if !m.quotaIntroPending {
+		t.Fatalf("quotaIntroPending = false after chart intro settled with quota=nil; want true (quota animation still owed)")
+	}
+
+	// Quota arrives. The handler should kick a quota-only intro and
+	// return a tick.
+	updated, cmd := m.Update(QuotaMsg{Usage: quotaUsage(80, 25), Source: "api", UpdatedAt: time.Now()})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatalf("cmd = nil after late QuotaMsg; want non-nil tick (quota intro should kick)")
+	}
+	if !m.springActive {
+		t.Errorf("springActive = false after late QuotaMsg; want true (quota intro armed)")
+	}
+	if !m.springIntro {
+		t.Errorf("springIntro = false after late QuotaMsg; want true")
+	}
+	if m.springPhase != springGrowing {
+		t.Errorf("springPhase = %d after late QuotaMsg; want springGrowing (skip hold beat — bars already at 0)",
+			m.springPhase)
+	}
+	if m.quotaIntroPending {
+		t.Errorf("quotaIntroPending = true after late-arrival kick; want false (now firing)")
+	}
+	wantTarget5h := float64(m.window.Percent) / 100.0
+	if m.quotaTarget5h != wantTarget5h {
+		t.Errorf("quotaTarget5h = %v; want %v after late kick", m.quotaTarget5h, wantTarget5h)
+	}
+	wantVel5h := phase2InitialVelocityV0 * wantTarget5h
+	if m.quotaVel5h != wantVel5h {
+		t.Errorf("quotaVel5h = %v; want %v (V0 * target — late kick seeds velocity directly, no hold beat)",
+			m.quotaVel5h, wantVel5h)
+	}
+	if m.quotaRatio5h != 0 {
+		t.Errorf("quotaRatio5h = %v; want 0 (animation starts from zero)", m.quotaRatio5h)
+	}
+
+	// Drive ticks to settle the late-arrival quota intro.
+	const maxTicks = 300
+	for i := 0; i < maxTicks && m.springActive; i++ {
+		updated, _ = m.Update(springTickMsg{})
+		m = updated.(Model)
+	}
+	if m.springActive {
+		t.Fatalf("late quota intro did not settle within %d ticks", maxTicks)
+	}
+	if math.Abs(m.quotaTarget5h-m.quotaRatio5h) > phaseTransitionThreshold {
+		t.Errorf("quotaRatio5h = %v after late settle; want within %v of target %v",
+			m.quotaRatio5h, phaseTransitionThreshold, m.quotaTarget5h)
+	}
+}
+
+func TestIntro_QuotaBars_LateArrival_NoFireAfterFirst(t *testing.T) {
+	// After the late-arrival quota intro fires once and settles, a
+	// subsequent QuotaMsg (poller fires every 3 minutes) must NOT
+	// re-trigger the intro — quotaIntroPending was cleared on first
+	// fire.
+	m := seedIntroModel(t, false)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+
+	// Settle chart intro (quota=nil throughout).
+	for i := 0; i < 300 && m.springActive; i++ {
+		updated, _ = m.Update(springTickMsg{})
+		m = updated.(Model)
+	}
+
+	// First QuotaMsg → late-arrival kick.
+	updated, _ = m.Update(QuotaMsg{Usage: quotaUsage(80, 25), Source: "api", UpdatedAt: time.Now()})
+	m = updated.(Model)
+	for i := 0; i < 300 && m.springActive; i++ {
+		updated, _ = m.Update(springTickMsg{})
+		m = updated.(Model)
+	}
+
+	// Second QuotaMsg → must NOT re-fire.
+	updated, cmd := m.Update(QuotaMsg{Usage: quotaUsage(82, 26), Source: "api", UpdatedAt: time.Now()})
+	m = updated.(Model)
+	if cmd != nil {
+		t.Errorf("cmd = %v after second QuotaMsg post-settle; want nil (no re-fire)", cmd)
+	}
+	if m.springActive {
+		t.Errorf("springActive = true after second QuotaMsg; want false")
+	}
+}
+
+func TestIntro_QuotaBars_QuotaLoadedAtArm_ClearsPending(t *testing.T) {
+	// When quota is already loaded at the moment beginIntroAnimation
+	// runs (QuotaMsg arrived BEFORE WindowSize), quotaIntroPending must
+	// be cleared so a subsequent post-settle QuotaMsg doesn't trigger
+	// the late-arrival path.
+	m := seedIntroModel(t, false)
+
+	// Quota loads BEFORE WindowSize.
+	updated, _ := m.Update(QuotaMsg{Usage: quotaUsage(80, 25), Source: "api", UpdatedAt: time.Now()})
+	m = updated.(Model)
+	if !m.quotaIntroPending {
+		t.Fatalf("quotaIntroPending = false after QuotaMsg before WindowSize; want true (intro hasn't armed yet)")
+	}
+
+	// WindowSize arms the intro with quota loaded.
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+	if m.quotaIntroPending {
+		t.Errorf("quotaIntroPending = true after WindowSize with quota loaded; want false (intro armed with real targets, no late path needed)")
+	}
+	if m.quotaTarget5h == 0 {
+		t.Errorf("quotaTarget5h = 0 at arm with quota loaded; expected non-zero target")
 	}
 }
