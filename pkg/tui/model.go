@@ -218,7 +218,6 @@ func New(d Deps) Model {
 	m.progress7d = newProgressBar(40)
 	m.viewport = viewport.New(80, 20)
 	m.viewport.SetHorizontalStep(horizontalScrollStep)
-	m.keys.Zoom.SetEnabled(chartUnit(m.unitIdx) != chartUnitRemaining)
 	return m
 }
 
@@ -368,15 +367,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// so dismissing help returns the user to the same scroll/zoom
 			// state they left.
 		case key.Matches(msg, m.keys.Zoom):
-			// Zoom is a no-op in remaining mode; proper semantics tracked in #177.
-			if chartUnit(m.unitIdx) == chartUnitRemaining {
-				break
-			}
 			m.zoomIdx = (m.zoomIdx + 1) % len(ZoomLevels)
 			m.refreshChart()
 		case key.Matches(msg, m.keys.Unit):
 			m.unitIdx = (m.unitIdx + 1) % int(chartUnitCount)
-			m.keys.Zoom.SetEnabled(chartUnit(m.unitIdx) != chartUnitRemaining)
 			m.beginUnitAnimation()
 			if m.springActive {
 				// After beginUnitAnimation, viewport content is the new
