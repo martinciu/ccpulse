@@ -91,6 +91,16 @@ type Deps struct {
 	ReduceMotion bool
 }
 
+// quotaSide identifies which quota bar a per-frame ratio belongs to.
+// Used by quotaIntroRatio to dispatch to the right per-bar spring
+// during the open-path slide-in (#192). Two-value enum, no parsing.
+type quotaSide int
+
+const (
+	quotaSide5h quotaSide = iota
+	quotaSide7d
+)
+
 // Model is the root Bubble Tea model for the chart view.
 type Model struct {
 	deps       Deps
@@ -210,6 +220,22 @@ type Model struct {
 	// block. WindowSizeMsg still hard-cuts (terminal resize is an
 	// explicit user action). See #188.
 	springIntro bool
+
+	// Per-bar scalar springs for the open-path quota-bar slide-in (#192).
+	// Each side has its own harmonica.Spring + (ratio, velocity, target)
+	// triple. Targets are snapshotted at arm time inside
+	// beginIntroAnimation so a mid-intro window update can't shift the
+	// visual destination. Both gaps fold into the existing springGrowing
+	// maxGap check so chart bucket springs + 5h quota + 7d quota settle
+	// in the same frame.
+	quotaSpring5h harmonica.Spring
+	quotaRatio5h  float64
+	quotaVel5h    float64
+	quotaTarget5h float64
+	quotaSpring7d harmonica.Spring
+	quotaRatio7d  float64
+	quotaVel7d    float64
+	quotaTarget7d float64
 
 	window         status.Window
 	quota          *anthro.Usage
@@ -577,6 +603,36 @@ func renderIndicators(isDev bool, idx IndexProgress, w status.Window) string {
 	return strings.Join(parts, sep)
 }
 
+// quotaIntroRatio returns the fill ratio a quota bar should render
+// this frame:
+//   - target during steady state (springIntro == false): pass-through
+//     so quotaBars() reads m.window.Percent / 100.0 unchanged.
+//   - 0 during the hold beat (springPhase == springHolding): the bar
+//     rests at zero so the eye registers the beat before the grow.
+//   - the per-side spring ratio during the grow (springPhase ==
+//     springGrowing): the bar interpolates from 0 to its target via
+//     the same harmonica config as the chart intro.
+//
+// Callers route 5h through quotaSide5h and 7d through quotaSide7d so
+// the helper picks the right (ratio, velocity, target) triple.
+func (m Model) quotaIntroRatio(side quotaSide, target float64) float64 {
+	if !m.springIntro {
+		return target
+	}
+	switch m.springPhase {
+	case springHolding:
+		return 0
+	case springGrowing:
+		switch side {
+		case quotaSide5h:
+			return m.quotaRatio5h
+		case quotaSide7d:
+			return m.quotaRatio7d
+		}
+	}
+	return target
+}
+
 // quotaBars renders the two content rows that live inside the bordered
 // header box: the existing 5h / 7d quota bars row and the new burn-rate
 // row beneath it. Both rows are separated by a dim " │ " divider and
@@ -591,7 +647,7 @@ func (m Model) quotaBars() string {
 	left := renderQuotaSide(
 		"5h ",
 		m.progress,
-		float64(m.window.Percent)/100.0,
+		m.quotaIntroRatio(quotaSide5h, float64(m.window.Percent)/100.0),
 		durString(m.window.MinutesToReset),
 	)
 	// Derive the per-side slot from the actual rendered bars-row left,
@@ -607,7 +663,7 @@ func (m Model) quotaBars() string {
 		right = renderQuotaSide(
 			"7d ",
 			m.progress7d,
-			float64(m.window.Percent7d)/100.0,
+			m.quotaIntroRatio(quotaSide7d, float64(m.window.Percent7d)/100.0),
 			formatReset7d(m.window.MinutesToReset7d),
 		)
 	} else {

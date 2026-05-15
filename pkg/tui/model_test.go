@@ -3600,3 +3600,34 @@ func TestIntro_EmptyCacheDeferred(t *testing.T) {
 		t.Errorf("introPending = true after intro arm; want false (one-shot)")
 	}
 }
+
+func TestQuotaIntroRatio_SteadyStateReturnsTarget(t *testing.T) {
+	// In steady state (springIntro=false) the helper must return its
+	// target argument unchanged for both sides — quotaBars() relies on
+	// this so today's render is byte-for-byte preserved when no intro
+	// is in flight.
+	m := New(Deps{ReduceMotion: false})
+	m.springIntro = false
+
+	cases := []struct {
+		name   string
+		side   quotaSide
+		target float64
+	}{
+		{"5h_zero", quotaSide5h, 0.0},
+		{"5h_half", quotaSide5h, 0.5},
+		{"5h_full", quotaSide5h, 1.0},
+		{"7d_zero", quotaSide7d, 0.0},
+		{"7d_half", quotaSide7d, 0.5},
+		{"7d_full", quotaSide7d, 1.0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := m.quotaIntroRatio(tc.side, tc.target)
+			if got != tc.target {
+				t.Errorf("quotaIntroRatio(%v, %v) = %v; want %v (steady state passes through)",
+					tc.side, tc.target, got, tc.target)
+			}
+		})
+	}
+}
