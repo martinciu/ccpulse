@@ -79,6 +79,10 @@ type Deps struct {
 	HasOAuth     bool
 	CacheDir     string
 	IsDev        bool
+	// ReduceMotion disables the unit-toggle spring animation and the
+	// index-banner fade ladder. Zero value = false = animations on,
+	// preserving today's behaviour. Sourced from cfg.UI.ReduceMotion.
+	ReduceMotion bool
 }
 
 // Model is the root Bubble Tea model for the chart view.
