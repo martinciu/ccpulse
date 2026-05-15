@@ -732,9 +732,16 @@ func (m *Model) renderSpringFrame() {
 	}
 
 	if renderAsLine {
-		// springRatios[i] are a uniform "shape fraction" in [0,1]:
-		//   exit  (oldIsLine=true):  starts at 1.0, falls to 0 — line disappears
-		//   enter (newIsLine=true):  starts at 0,   grows to 1.0 — line appears
+		// Shape-fraction convention: springRatios[i] is a uniform scalar in
+		// [0,1] where 1.0 = full real shape and 0 = flat line at 100% headroom.
+		// Both exit and enter use the SAME ratio direction (springShrinking:
+		// 1→0, springGrowing: 0→1). The visual direction is produced by
+		// interpPt below, which maps the scalar onto the displayed value via
+		// displayed = 1.0 + (target-1.0)*maxR — so maxR=0 renders flat 100%
+		// and maxR=1 renders the real shape. This is why exit (line
+		// collapses upward to 100%) and enter (line drops from 100% to real
+		// shape) both use ratios approaching 1.0 → 0 and 0 → 1.0 respectively
+		// without needing separate direction flags.
 		// maxR is the global envelope; all ratios move together.
 		var maxR float64
 		for _, r := range m.springRatios {
