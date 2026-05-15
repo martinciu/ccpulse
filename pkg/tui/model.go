@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
-	"sort"
 	"strings"
 	"time"
 
@@ -126,6 +125,13 @@ type Model struct {
 	lastChartFrom time.Time
 	lastChartTo   time.Time
 	lastCanvasW   int
+	// lastZoomStride is the per-bar column distance captured at the
+	// same refreshChart pass as lastCanvasW. Used to derive the
+	// PREVIOUS viewport column offset (= viewportXOffset *
+	// lastZoomStride) when the user just pressed 'z' and the current
+	// ZoomLevels[m.zoomIdx].stride() reflects the NEW zoom, not the
+	// one the viewport was last drawn against.
+	lastZoomStride int
 
 	// viewportXOffset shadows m.viewport's unexported xOffset. We need a
 	// readable scroll position to preserve the wall-clock anchor across
@@ -873,20 +879,30 @@ func (m *Model) refreshChart() {
 		// Next beginUnitAnimation re-makes the slices.
 	}
 
-	// Snapshot the wall-clock anchor BEFORE rebuild. lastStarts is empty
-	// on first load and after any empty-cache early-return — handled by
-	// hadAnchor. Read viewportXOffset (the shadow) rather than the
-	// viewport's own xOffset, which is unexported in bubbles v1.
+	// Snapshot the wall-clock anchor BEFORE rebuild. The previous canvas
+	// state is captured by lastCanvasW + lastChartFrom/To + lastZoomStride
+	// at the end of the previous refreshChart pass. The viewport's
+	// xOffset is unexported in bubbles v1, so we derive its column
+	// position as viewportXOffset * lastZoomStride — the stride at the
+	// time the viewport was last drawn (which can differ from the
+	// current zoom's stride if the user just pressed 'z').
+	//
+	// wasPinned == true when the viewport was at the right edge before
+	// this refresh; the post-rebuild restore re-pins to the new right
+	// edge regardless of canvas width. hadAnchor == false on first load
+	// and after empty-cache early-returns; the restore pins to the new
+	// right edge in that case too.
 	var (
 		anchorTime time.Time
 		hadAnchor  bool
 		wasPinned  bool
 	)
-	if len(m.lastStarts) > 0 {
-		prevMax := max(0, len(m.lastStarts)-m.visibleBuckets())
-		wasPinned = m.viewportXOffset >= prevMax
-		if !wasPinned && m.viewportXOffset < len(m.lastStarts) {
-			anchorTime = m.lastStarts[m.viewportXOffset]
+	if m.lastCanvasW > 0 && m.lastZoomStride > 0 && !m.lastChartFrom.IsZero() && m.lastChartTo.After(m.lastChartFrom) {
+		prevColOffset := m.viewportXOffset * m.lastZoomStride
+		prevMaxCol := max(0, m.lastCanvasW-m.viewport.Width)
+		wasPinned = prevColOffset >= prevMaxCol
+		if !wasPinned {
+			anchorTime = columnToTime(prevColOffset, m.lastCanvasW, m.lastChartFrom, m.lastChartTo)
 			hadAnchor = true
 		}
 	}
@@ -1017,32 +1033,35 @@ func (m *Model) refreshChart() {
 	m.lastChartFrom = from
 	m.lastChartTo = to
 	m.lastCanvasW = canvasW
+	m.lastZoomStride = zoom.stride()
 
 	// Restore the user's anchor. Three cases:
 	//   - !hadAnchor (first load, or coming back from an empty-cache
 	//     placeholder): pin to the new right edge.
 	//   - wasPinned: user was at "now", keep them at "now" against the
-	//     new right edge.
-	//   - else: translate the snapshotted anchor to its bucket index in
-	//     the new grid. For 24h zoom, DayStartLocal aligns to local
-	//     midnight; for sub-day zooms, BucketAlign uses UTC boundaries.
-	//     sort.Search finds the matching index in lastStarts. setX clamps
-	//     if the cache shrank unexpectedly.
+	//     new canvas width.
+	//   - else: map anchorTime → column in the new canvas.
+	//
+	// The viewport offset is set directly in column-space; the bucket-
+	// indexed shadow (m.viewportXOffset) is derived as targetCol / stride.
+	// At stride=1 (15m/1h), column-index == bucket-index. At stride=12
+	// (24h with BarWidth=10/BarGap=2), the bucket-index is the bucket
+	// that contains the leftmost visible column, matching the pre-refactor
+	// behaviour where setX(bucketIdx) snapped to bucket-aligned offsets.
+	stride := zoom.stride()
+	rightEdgeCol := max(0, canvasW-m.viewport.Width)
+	var targetCol int
 	switch {
 	case !hadAnchor, wasPinned:
-		m.setX(len(values))
+		targetCol = rightEdgeCol
 	default:
-		var target time.Time
-		if zoom.Duration == 24*time.Hour {
-			target = cache.DayStartLocal(anchorTime)
-		} else {
-			target = cache.BucketAlign(anchorTime, zoom.Duration)
+		targetCol = timeToColumn(anchorTime, canvasW, from, to)
+		if targetCol > rightEdgeCol {
+			targetCol = rightEdgeCol
 		}
-		idx := sort.Search(len(m.lastStarts), func(i int) bool {
-			return !m.lastStarts[i].Before(target)
-		})
-		m.setX(idx)
 	}
+	m.viewport.SetXOffset(targetCol)
+	m.viewportXOffset = targetCol / stride
 }
 
 // emptyPlaceholder returns a w×h block with "no Claude sessions yet"

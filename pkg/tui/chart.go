@@ -65,7 +65,12 @@ func (z ZoomLevel) stride() int {
 
 // columnToTime maps a viewport column to the wall-clock time at that
 // column within the canvas's [from, to) range. Used pre-rebuild to
-// snapshot the anchor; the inverse is timeToColumn.
+// snapshot the anchor; the (truncating) inverse is timeToColumn.
+//
+// Uses integer-second arithmetic with round-to-nearest so the
+// round-trip columnToTime(col) -> timeToColumn(t) returns col exactly
+// at canvasW values where the truncated form would drop by 1 (e.g.,
+// 312/490*span over a 41-day range).
 //
 // Defensive: canvasW<=0 or to<=from collapse to the canvas origin so
 // callers can use the result without nil checks. col is clamped to
@@ -80,14 +85,27 @@ func columnToTime(col, canvasW int, from, to time.Time) time.Time {
 	if col >= canvasW {
 		return to
 	}
-	span := to.Sub(from)
-	frac := float64(col) / float64(canvasW)
-	return from.Add(time.Duration(float64(span) * frac))
+	spanSec := int64(to.Sub(from) / time.Second)
+	if spanSec <= 0 {
+		return from
+	}
+	// Round-to-nearest: (a + b/2) / b. The +canvasW/2 bias makes this
+	// the inverse of timeToColumn's truncating divide for exact
+	// bucket-boundary inputs that would otherwise drift by 1 col.
+	cw := int64(canvasW)
+	offSec := (spanSec*int64(col) + cw/2) / cw
+	return from.Add(time.Duration(offSec) * time.Second)
 }
 
 // timeToColumn maps a wall-clock time back to a viewport column in
 // the canvas's [from, to) range. Used post-rebuild to restore the
 // anchor; the inverse of columnToTime.
+//
+// Truncates (floor) rather than rounding so a mid-bucket wall-clock
+// returns the column at the start of the bucket containing it. This
+// matches the existing bar-mode semantics where BucketAlign(t, dur)
+// snaps an anchor DOWN to the bucket it lives in (e.g., 09:45 at 1h
+// zoom resolves to the 09:00 bucket, not the 10:00 one).
 //
 // Defensive: same clamping contract as columnToTime — out-of-range t
 // snaps to the canvas edges; degenerate canvas returns 0.
@@ -101,9 +119,12 @@ func timeToColumn(t time.Time, canvasW int, from, to time.Time) int {
 	if !t.Before(to) {
 		return canvasW
 	}
-	span := to.Sub(from)
-	frac := float64(t.Sub(from)) / float64(span)
-	col := int(frac * float64(canvasW))
+	spanSec := int64(to.Sub(from) / time.Second)
+	if spanSec <= 0 {
+		return 0
+	}
+	elapsedSec := int64(t.Sub(from) / time.Second)
+	col := int(elapsedSec * int64(canvasW) / spanSec)
 	if col < 0 {
 		return 0
 	}

@@ -1678,6 +1678,52 @@ func seedScrollTestModel(t *testing.T, count int) (*Model, func()) {
 	return &m, func() { c.Close() }
 }
 
+// TestRefreshChart_PreservesAnchorAcrossRefresh verifies the wall-clock
+// anchor stays put across a no-op refresh (same zoom, same unit, no new
+// data). Locks in the new time-based anchor primitive — a regression
+// here means a viewport jump on every watcher RefreshMsg.
+func TestRefreshChart_PreservesAnchorAcrossRefresh(t *testing.T) {
+	m, cleanup := seedScrollTestModel(t, 200)
+	defer cleanup()
+	m.unitIdx = int(chartUnitTokens)
+	m.refreshChart()
+
+	// Scroll to a non-edge position (column-equivalent at stride=1 zoom).
+	canvasW := m.lastCanvasW
+	if canvasW < 20 {
+		t.Skipf("seeded canvas too narrow (%d) to scroll", canvasW)
+	}
+	want := canvasW / 3
+	m.setX(want)
+
+	// No-op refresh — same data, same zoom, same unit.
+	m.refreshChart()
+
+	if got := m.viewportXOffset; absInt(got-want) > 1 {
+		t.Errorf("after no-op refresh viewportXOffset = %d; want within +-1 of %d", got, want)
+	}
+}
+
+// TestRefreshChart_PinnedSticksToRightEdge verifies the wasPinned snap
+// survives the migration to time-based anchoring.
+func TestRefreshChart_PinnedSticksToRightEdge(t *testing.T) {
+	m, cleanup := seedScrollTestModel(t, 200)
+	defer cleanup()
+	m.unitIdx = int(chartUnitTokens)
+	m.refreshChart()
+
+	// Pin to right edge (column-equivalent at stride=1 zoom).
+	rightEdge := max(0, m.lastCanvasW-m.viewport.Width)
+	m.setX(rightEdge)
+
+	m.refreshChart()
+
+	if got := m.viewportXOffset; got != max(0, m.lastCanvasW-m.viewport.Width) {
+		t.Errorf("pinned refresh viewportXOffset = %d; want right edge %d",
+			got, max(0, m.lastCanvasW-m.viewport.Width))
+	}
+}
+
 func TestRefreshChart_CapturesCanvasState(t *testing.T) {
 	tests := []struct {
 		name    string
