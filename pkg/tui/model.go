@@ -293,6 +293,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return tickFadeMsg{}
 		})
 	case indexBannerClearMsg:
+		if m.indexFadeStop == 0 {
+			// Stale tick — banner already dismissed (e.g. user re-entered
+			// indexing mid-dwell). Drop silently.
+			return m, nil
+		}
 		m.indexFadeStop = 0
 		return m, nil
 	case springTickMsg:
