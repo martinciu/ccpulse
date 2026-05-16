@@ -681,15 +681,17 @@ func TestOutputTokenBuckets_ContiguousRange(t *testing.T) {
 		}
 	}
 	// Indices 10 (11:50), 11 (11:55) carry data; everything else is zero.
+	// Aggregate is SUM(output_tokens) only — input and cache_* columns are
+	// excluded. See issue #209.
 	for i, b := range buckets {
 		switch i {
 		case 10:
-			if b.Tokens != 1500 {
-				t.Errorf("bucket[10].Tokens = %d, want 1500", b.Tokens)
+			if b.Tokens != 500 {
+				t.Errorf("bucket[10].Tokens = %d, want 500 (output_tokens only)", b.Tokens)
 			}
 		case 11:
-			if b.Tokens != 3500 {
-				t.Errorf("bucket[11].Tokens = %d, want 3500", b.Tokens)
+			if b.Tokens != 1000 {
+				t.Errorf("bucket[11].Tokens = %d, want 1000 (output_tokens only)", b.Tokens)
 			}
 		default:
 			if b.Tokens != 0 {
@@ -798,8 +800,8 @@ func TestOutputTokenBuckets_IncludesInFlightBucket(t *testing.T) {
 		t.Errorf("rightmost BucketStart = %v, want %v (bucket containing now)",
 			last.BucketStart, BucketAlign(now, dur))
 	}
-	if last.Tokens != 1500 {
-		t.Errorf("rightmost Tokens = %d, want 1500 (in-flight message)", last.Tokens)
+	if last.Tokens != 500 {
+		t.Errorf("rightmost Tokens = %d, want 500 (output_tokens of in-flight message)", last.Tokens)
 	}
 }
 
@@ -1105,8 +1107,8 @@ func TestInsertMessages_NormalizesNonUTCTimestamp(t *testing.T) {
 	if len(buckets) != 12 {
 		t.Fatalf("want 12 buckets, got %d: %+v", len(buckets), buckets)
 	}
-	if buckets[10].Tokens != 1500 {
-		t.Errorf("bucket[10].Tokens = %d, want 1500 (input+output of the non-UTC insert)",
+	if buckets[10].Tokens != 500 {
+		t.Errorf("bucket[10].Tokens = %d, want 500 (output_tokens of the non-UTC insert)",
 			buckets[10].Tokens)
 	}
 }
@@ -1258,7 +1260,7 @@ INSERT INTO messages
  cache_write_5m_tokens, cache_write_1h_tokens,
  cost_usd_estimate, pricing_version, pricing_unknown,
  is_subagent, parent_session_id, cwd, git_branch)
-VALUES('s','p',?,'assistant','m',?,0,0,0,0,0,'v1',0,0,'','','')`,
+VALUES('s','p',?,'assistant','m',0,?,0,0,0,0,'v1',0,0,'','','')`,
 		ts.UTC().Format("2006-01-02T15:04:05.000Z07:00"), tokens)
 	if err != nil {
 		t.Fatalf("insert: %v", err)
