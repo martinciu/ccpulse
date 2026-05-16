@@ -112,7 +112,7 @@ type Model struct {
 	showHelp   bool
 
 	zoomIdx int // index into ZoomLevels
-	unitIdx int // 0 = tokens, 1 = cost. Cycled by 'u'. Resets on launch.
+	unitIdx int // 0 = cost, 1 = output tokens, 2 = remaining. Cycled by 'u'. Resets to cost on launch.
 
 	// lastValues / lastStarts are the per-bucket inputs fed to the
 	// most recent buildChart, in the active unit. Refreshed by
@@ -850,7 +850,7 @@ const (
 //
 // Caller must have already incremented m.unitIdx before calling.
 // oldUnitIdx is derived by inverting the toggle since this is a
-// 2-cycle (tokens ↔ cost).
+// 3-cycle (cost → tokens → remaining → cost; see chartUnit iota).
 //
 // Snapshots happen BEFORE refreshChart so the OLD m.peak / m.lastValues
 // survive the refresh that overwrites them.

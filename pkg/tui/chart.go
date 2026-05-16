@@ -366,11 +366,16 @@ func formatXLabel(t time.Time, zoom ZoomLevel, now time.Time, order dateOrder) s
 // chartUnit selects what `peak` and bar values represent. Used by
 // formatUnitValue to pick the right Y-label format. Spring-animation
 // rendering also reads this through Model.unitIdx.
+//
+// Cost is declared first so the zero-value default of Model.unitIdx (0)
+// renders the cost histogram on launch; the `u` cycle then advances
+// cost → tokens → remaining → cost via (unitIdx+1) % chartUnitCount.
+// Resets to cost on every launch — no persistence (see issue #209).
 type chartUnit int
 
 const (
-	chartUnitTokens    chartUnit = iota
-	chartUnitCost
+	chartUnitCost      chartUnit = iota
+	chartUnitTokens
 	chartUnitRemaining
 	chartUnitCount // sentinel — cycle modulus
 )
