@@ -549,6 +549,18 @@ func TestStatusQuietStillEmitsStderrDiagnostics(t *testing.T) {
 	}
 }
 
+func TestStatusJSONQuietMutuallyExclusive(t *testing.T) {
+	cmd := newStatusCmd()
+	cmd.SetArgs([]string{"--json", "--quiet"})
+	var out, errBuf bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errBuf)
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatalf("expected error for mutually exclusive flags, got nil")
+	}
+}
+
 func TestStatusPrunesWhenRetentionConfigured(t *testing.T) {
 	cacheDir := t.TempDir()
 	credDir := t.TempDir()
