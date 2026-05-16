@@ -6,9 +6,11 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -387,6 +389,33 @@ func TestRecordUsageSample_NilBucket(t *testing.T) {
 	}
 	if sevenResets.Valid {
 		t.Errorf("seven_day_resets_at = %q, want NULL", sevenResets.String)
+	}
+}
+
+func TestWarnOnceNullResets(t *testing.T) {
+	// Reset the package-level once-flags to a clean state — necessary
+	// because Go tests share package state. Use the unexported reset
+	// hook added in the impl step.
+	resetNullResetsWarnedForTest()
+
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	warnOnceNullResets("seven_day_resets_at")
+	warnOnceNullResets("seven_day_resets_at") // suppressed
+	warnOnceNullResets("seven_day_sonnet_resets_at")
+
+	got := buf.String()
+	if count := strings.Count(got, "filtered row with null resets_at"); count != 2 {
+		t.Errorf("expected 2 WARN lines (one per column), got %d:\n%s", count, got)
+	}
+	if !strings.Contains(got, `column=seven_day_resets_at`) {
+		t.Errorf("missing seven_day column attribute: %s", got)
+	}
+	if !strings.Contains(got, `column=seven_day_sonnet_resets_at`) {
+		t.Errorf("missing seven_day_sonnet column attribute: %s", got)
 	}
 }
 

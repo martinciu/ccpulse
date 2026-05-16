@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/martinciu/ccpulse/pkg/anthro"
@@ -779,4 +781,38 @@ func (c *Cache) EarliestMessageTime() (time.Time, bool, error) {
 		return time.Time{}, false, fmt.Errorf("parse earliest ts %q: %w", s.String, err)
 	}
 	return t.UTC(), true, nil
+}
+
+// nullResetsWarned tracks which column names have already produced a
+// once-per-process WARN from warnOnceNullResets. Keyed by column name
+// string → *atomic.Bool; LoadOrStore + Swap give a lock-free
+// "log the first call per key" gate.
+var nullResetsWarned sync.Map
+
+// warnOnceNullResets emits a single WARN line per (column, process
+// lifetime) when the read layer filters a usage_samples row whose
+// *_resets_at value is NULL. Used by the 7d-glitch filter in
+// SevenDaySamplesSince and the per-column policy in UtilizationSince
+// (see issue #189). At most three keys are expected today
+// (seven_day_resets_at, seven_day_sonnet_resets_at,
+// seven_day_opus_resets_at); 5h null-resets rows are kept (idle window
+// is legitimate) and don't trigger this.
+func warnOnceNullResets(column string) {
+	flag, _ := nullResetsWarned.LoadOrStore(column, &atomic.Bool{})
+	if !flag.(*atomic.Bool).Swap(true) {
+		slog.Warn("cache.UtilizationSince: filtered row with null resets_at",
+			"column", column,
+			"advisory", "treating as upstream glitch; see issue #189")
+	}
+}
+
+// resetNullResetsWarnedForTest clears the once-per-column flag map.
+// Test-only: production code never calls this. Exported via lowercase
+// name within the package so tests in the same package can reset state
+// between cases.
+func resetNullResetsWarnedForTest() {
+	nullResetsWarned.Range(func(k, _ any) bool {
+		nullResetsWarned.Delete(k)
+		return true
+	})
 }
