@@ -1084,7 +1084,7 @@ func TestUnitKeyInHelp(t *testing.T) {
 	m.w, m.h = 120, 40
 
 	// Footer help line: ShortHelp() result, rendered through bubbles/help.
-	// Match the full "u tokens/cost" pair to avoid false positives —
+	// Match the full "u cost/output/usage" pair to avoid false positives —
 	// bare "u" also appears in "quit" and "scroll" so the substring is
 	// vacuous on its own.
 	footer := m.help.View(m.keys)
@@ -3228,8 +3228,8 @@ func TestView_RemainingModeShowsYTicks(t *testing.T) {
 	}
 }
 
-// TestFullUnitCycle_TokensCostRemaining verifies that three presses of the
-// 'u' key cycle through tokens → cost → remaining → tokens, and that each
+// TestFullUnitCycle_CostTokensRemaining verifies that three presses of the
+// 'u' key cycle through cost → tokens → remaining → cost, and that each
 // mode produces a non-empty view with the expected mode-specific marker.
 // TestRenderSpringFrame_LineBranchUsesOldSnapshot verifies that the line-
 // rendering branch of renderSpringFrame reads from m.oldPts5h / m.oldPts7d
@@ -3351,7 +3351,7 @@ func TestRenderSpringFrame_LineBranchUsesOldSnapshot(t *testing.T) {
 	// would blank the viewport). Already covered by the non-empty check above.
 }
 
-func TestFullUnitCycle_TokensCostRemaining(t *testing.T) {
+func TestFullUnitCycle_CostTokensRemaining(t *testing.T) {
 	dir := t.TempDir()
 	c, err := cache.Open(filepath.Join(dir, "state.db"))
 	if err != nil {
