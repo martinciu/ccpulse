@@ -392,6 +392,43 @@ func TestRecordUsageSample_NilBucket(t *testing.T) {
 	}
 }
 
+func TestUtilizationSincePerColumnNullPolicy(t *testing.T) {
+	resetNullResetsWarnedForTest()
+
+	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	// 5h: pct non-null, resets_at NULL → idle, keep.
+	// 7d: pct non-null, resets_at NULL → glitch, filter.
+	if _, err := c.DB().Exec(`
+		INSERT INTO usage_samples(ts, source, five_hour_pct, five_hour_resets_at, seven_day_pct, seven_day_resets_at) VALUES
+			(1, 'api', 0,  NULL,                   88, '2026-05-10T09:00:00Z'),
+			(2, 'api', 5,  '2026-05-09T16:10:00Z', 89, NULL),
+			(3, 'api', 10, '2026-05-09T16:10:00Z', 90, '2026-05-10T09:00:00Z')
+	`); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	fh, err := c.UtilizationSince("five_hour_pct", time.Unix(0, 0))
+	if err != nil {
+		t.Fatalf("five_hour: %v", err)
+	}
+	if len(fh) != 3 {
+		t.Errorf("five_hour: expected 3 points (idle rows kept), got %d: %+v", len(fh), fh)
+	}
+
+	sd, err := c.UtilizationSince("seven_day_pct", time.Unix(0, 0))
+	if err != nil {
+		t.Fatalf("seven_day: %v", err)
+	}
+	if len(sd) != 2 {
+		t.Errorf("seven_day: expected 2 points (glitch row filtered), got %d: %+v", len(sd), sd)
+	}
+}
+
 func TestSevenDaySamplesSinceSkipsNullResetsAt(t *testing.T) {
 	resetNullResetsWarnedForTest()
 

@@ -324,23 +324,41 @@ type UtilizationPoint struct {
 	Pct float64
 }
 
-// utilizationColumns is the allowlist of columns that UtilizationSince
-// accepts. Prevents SQL injection — the column name is interpolated
-// into the query string (not parameterisable in SQLite).
-var utilizationColumns = map[string]bool{
-	"five_hour_pct": true,
-	"seven_day_pct": true,
+// utilizationPolicy is the read-time policy for one (pct, resets_at)
+// pair: which resets_at column to inspect, and whether NULL resets_at
+// rows should be filtered out (true for calendar-aligned 7d buckets
+// where NULL is an Anthropic-side glitch; false for the 5h rolling
+// window where NULL means "idle" and pct=0 is truthful).
+type utilizationPolicy struct {
+	resetsAtCol     string
+	filterNullReset bool
+}
+
+// utilizationColumns is the allowlist + per-column policy that
+// UtilizationSince consults. Prevents SQL injection — the pct column
+// name is interpolated into the query string (not parameterisable in
+// SQLite), and the resets_at column name comes from the policy.
+var utilizationColumns = map[string]utilizationPolicy{
+	"five_hour_pct": {"five_hour_resets_at", false},
+	"seven_day_pct": {"seven_day_resets_at", true},
 }
 
 // UtilizationSince returns timestamped utilization percentages from
 // usage_samples for the given column, oldest-first. Rows where the
 // column IS NULL are skipped. column must be in the allowlist.
+//
+// Per-column null-resets_at policy: 5h rows with NULL resets_at are
+// kept (idle window — pct=0 is truthful); 7d rows with NULL resets_at
+// are filtered + emit the once-per-process WARN (calendar-bucket
+// glitch). See issue #189.
 func (c *Cache) UtilizationSince(column string, since time.Time) ([]UtilizationPoint, error) {
-	if !utilizationColumns[column] {
+	policy, ok := utilizationColumns[column]
+	if !ok {
 		return nil, fmt.Errorf("invalid utilization column: %q", column)
 	}
 	rows, err := c.db.Query(
-		fmt.Sprintf(`SELECT ts, %s FROM usage_samples WHERE ts >= ? AND %s IS NOT NULL ORDER BY ts ASC`, column, column),
+		fmt.Sprintf(`SELECT ts, %s, %s FROM usage_samples WHERE ts >= ? AND %s IS NOT NULL ORDER BY ts ASC`,
+			column, policy.resetsAtCol, column),
 		since.UTC().Unix(),
 	)
 	if err != nil {
@@ -352,8 +370,13 @@ func (c *Cache) UtilizationSince(column string, since time.Time) ([]UtilizationP
 	for rows.Next() {
 		var ts int64
 		var pct float64
-		if err := rows.Scan(&ts, &pct); err != nil {
+		var resetsAt sql.NullString
+		if err := rows.Scan(&ts, &pct, &resetsAt); err != nil {
 			return nil, fmt.Errorf("scan usage_samples row: %w", err)
+		}
+		if policy.filterNullReset && !resetsAt.Valid {
+			warnOnceNullResets(policy.resetsAtCol)
+			continue
 		}
 		out = append(out, UtilizationPoint{
 			At:  time.Unix(ts, 0).UTC(),
