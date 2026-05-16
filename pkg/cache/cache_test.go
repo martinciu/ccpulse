@@ -390,6 +390,73 @@ func TestRecordUsageSample_NilBucket(t *testing.T) {
 	}
 }
 
+func TestOpenNormalisesLegacyResetsAtSentinel(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.db")
+
+	c, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Seed three rows with the sentinel across multiple *_resets_at
+	// columns, simulating the pre-fix corruption pattern.
+	if _, err := c.DB().Exec(`
+		INSERT INTO usage_samples(ts, source,
+			five_hour_pct,            five_hour_resets_at,
+			seven_day_pct,            seven_day_resets_at,
+			seven_day_omelette_pct,   seven_day_omelette_resets_at)
+		VALUES
+			(1, 'api', 0,    '0001-01-01T00:00:00Z', 89, '2026-05-10T09:00:00Z', 0, '0001-01-01T00:00:00Z'),
+			(2, 'api', 10,   '2026-05-09T16:10:00Z', 90, '0001-01-01T00:00:00Z', 0, '0001-01-01T00:00:00Z'),
+			(3, 'api', NULL, NULL,                   91, '2026-05-10T09:00:00Z', 0, '0001-01-01T00:00:00Z')
+	`); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	c.Close()
+
+	// Re-open: the normalisation should run and convert all sentinel
+	// strings to NULL.
+	c, err = Open(path)
+	if err != nil {
+		t.Fatalf("re-open: %v", err)
+	}
+	defer c.Close()
+
+	var sentinelCount int
+	if err := c.DB().QueryRow(`
+		SELECT count(*) FROM usage_samples
+		WHERE five_hour_resets_at          = '0001-01-01T00:00:00Z'
+		   OR seven_day_resets_at          = '0001-01-01T00:00:00Z'
+		   OR seven_day_omelette_resets_at = '0001-01-01T00:00:00Z'
+	`).Scan(&sentinelCount); err != nil {
+		t.Fatal(err)
+	}
+	if sentinelCount != 0 {
+		t.Errorf("expected 0 sentinel rows after Open, got %d", sentinelCount)
+	}
+
+	// Spot-check: row 1's five_hour_resets_at is now NULL; row 2's
+	// seven_day_resets_at is now NULL; row 3's seven_day_omelette is NULL.
+	var n int
+	if err := c.DB().QueryRow(`
+		SELECT count(*) FROM usage_samples
+		WHERE ts = 1 AND five_hour_resets_at IS NULL AND seven_day_resets_at = '2026-05-10T09:00:00Z'
+	`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("row 1 not normalised correctly: matched %d", n)
+	}
+
+	// Idempotency: a third Open should be a no-op.
+	c.Close()
+	c, err = Open(path)
+	if err != nil {
+		t.Fatalf("third open: %v", err)
+	}
+	defer c.Close()
+}
+
 func TestRecordUsageSampleNullResetsAt(t *testing.T) {
 	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {

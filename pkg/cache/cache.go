@@ -70,6 +70,24 @@ var schemaSQL string
 
 const SchemaVersion = "6"
 
+// normalizeResetsAtSQL flips legacy `0001-01-01T00:00:00Z` sentinels
+// (written before issue #189 landed) to SQL NULL across every
+// *_resets_at column. Runs on every Open; idempotent — re-running on a
+// clean DB matches zero rows. Cheap: usage_samples holds <2000 rows
+// over ccpulse's useful history.
+const normalizeResetsAtSQL = `
+UPDATE usage_samples SET five_hour_resets_at            = NULL WHERE five_hour_resets_at            = '0001-01-01T00:00:00Z';
+UPDATE usage_samples SET seven_day_resets_at            = NULL WHERE seven_day_resets_at            = '0001-01-01T00:00:00Z';
+UPDATE usage_samples SET seven_day_sonnet_resets_at     = NULL WHERE seven_day_sonnet_resets_at     = '0001-01-01T00:00:00Z';
+UPDATE usage_samples SET seven_day_opus_resets_at       = NULL WHERE seven_day_opus_resets_at       = '0001-01-01T00:00:00Z';
+UPDATE usage_samples SET seven_day_omelette_resets_at   = NULL WHERE seven_day_omelette_resets_at   = '0001-01-01T00:00:00Z';
+UPDATE usage_samples SET seven_day_oauth_apps_resets_at = NULL WHERE seven_day_oauth_apps_resets_at = '0001-01-01T00:00:00Z';
+UPDATE usage_samples SET seven_day_cowork_resets_at     = NULL WHERE seven_day_cowork_resets_at     = '0001-01-01T00:00:00Z';
+UPDATE usage_samples SET tangelo_resets_at              = NULL WHERE tangelo_resets_at              = '0001-01-01T00:00:00Z';
+UPDATE usage_samples SET iguana_necktie_resets_at       = NULL WHERE iguana_necktie_resets_at       = '0001-01-01T00:00:00Z';
+UPDATE usage_samples SET omelette_promotional_resets_at = NULL WHERE omelette_promotional_resets_at = '0001-01-01T00:00:00Z';
+`
+
 // cachePragmas is appended to the DSN so modernc.org/sqlite applies them
 // on every new pool connection, not just the first one. Issuing pragmas
 // post-Open via db.Exec only configures whichever connection database/sql
@@ -112,6 +130,10 @@ func Open(path string) (*Cache, error) {
 	if _, err := db.Exec(`INSERT OR IGNORE INTO meta(key,value) VALUES('schema_version',?)`, SchemaVersion); err != nil {
 		db.Close()
 		return nil, err
+	}
+	if _, err := db.Exec(normalizeResetsAtSQL); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("normalize legacy resets_at sentinels: %w", err)
 	}
 	return &Cache{db: db}, nil
 }
