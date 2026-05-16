@@ -1158,20 +1158,15 @@ func (m *Model) renderSpringFrame() {
 		if to.IsZero() {
 			to = time.Now()
 		}
-		// chartW must match the steady-state line-mode canvas width so
-		// the animated frame doesn't visibly compress when entering
-		// (springGrowing) or expand when exiting (springShrinking). The
-		// formula mirrors refreshChart's remaining-mode branch.
-		chartW := zoom.CanvasWidth(bucketCountInRange(from, to, zoom.Duration))
-		if chartW < m.chartWidth() {
-			chartW = m.chartWidth()
-		}
-		// Preserve the user's scroll position across the animation.
-		// viewport.SetXOffset(0) would snap the chart back to the
-		// canvas origin on every spring tick, which looks like a jump
-		// when the user was scrolled to mid-history.
+		// PERF (#180): during the spring, cap chartW to the viewport
+		// width — the per-tick rebuild cost is linear in canvasW, and a
+		// 2880-col rebuild blows the 16.7ms 60fps budget. The
+		// steady-state refreshChart call after settle restores the full
+		// canvas. User sees a brief "compressed" line for ~500ms during
+		// the toggle (accepted trade-off per spec option 1).
+		chartW := m.chartWidth()
 		m.viewport.SetContent(buildLineChart(interp5h, interp7d, from, to, chartW, chartH, time.Now(), zoom, m.dateOrder, "spring"))
-		m.viewport.SetXOffset(m.viewportXOffset * zoom.stride())
+		m.viewport.SetXOffset(0)
 		return
 	}
 
