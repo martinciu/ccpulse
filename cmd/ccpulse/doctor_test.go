@@ -8,9 +8,27 @@ import (
 	"testing"
 )
 
-func TestCheckClaudeCodeHook_FileMissing(t *testing.T) {
+// writeSettings creates a temp HOME with ~/.claude/settings.json containing
+// the given contents and returns the temp home dir. If contents is empty,
+// no settings.json is written (file-missing case).
+func writeSettings(t *testing.T, contents string) string {
+	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	if contents == "" {
+		return home
+	}
+	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".claude", "settings.json"), []byte(contents), 0600); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+	return home
+}
+
+func TestCheckClaudeCodeHook_FileMissing(t *testing.T) {
+	writeSettings(t, "")
 
 	var buf bytes.Buffer
 	checkClaudeCodeHook(&buf)
@@ -22,11 +40,6 @@ func TestCheckClaudeCodeHook_FileMissing(t *testing.T) {
 }
 
 func TestCheckClaudeCodeHook_MatchingHookPresent(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0700); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
 	settings := `{
 		"hooks": {
 			"Stop": [
@@ -39,9 +52,7 @@ func TestCheckClaudeCodeHook_MatchingHookPresent(t *testing.T) {
 			]
 		}
 	}`
-	if err := os.WriteFile(filepath.Join(home, ".claude", "settings.json"), []byte(settings), 0600); err != nil {
-		t.Fatalf("write settings: %v", err)
-	}
+	writeSettings(t, settings)
 
 	var buf bytes.Buffer
 	checkClaudeCodeHook(&buf)
@@ -52,11 +63,6 @@ func TestCheckClaudeCodeHook_MatchingHookPresent(t *testing.T) {
 }
 
 func TestCheckClaudeCodeHook_NoMatchingHook(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0700); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
 	// Stop hook exists but runs something unrelated.
 	settings := `{
 		"hooks": {
@@ -65,9 +71,7 @@ func TestCheckClaudeCodeHook_NoMatchingHook(t *testing.T) {
 			]
 		}
 	}`
-	if err := os.WriteFile(filepath.Join(home, ".claude", "settings.json"), []byte(settings), 0600); err != nil {
-		t.Fatalf("write settings: %v", err)
-	}
+	writeSettings(t, settings)
 
 	var buf bytes.Buffer
 	checkClaudeCodeHook(&buf)
@@ -99,33 +103,20 @@ func excerptAround(s, needle string, radius int) string {
 	if i < 0 {
 		return "(needle not found)"
 	}
-	start := i - radius
-	if start < 0 {
-		start = 0
-	}
-	end := i + radius
-	if end > len(s) {
-		end = len(s)
-	}
+	start := max(0, i-radius)
+	end := min(len(s), i+radius)
 	return s[start:end]
 }
 
 func TestCheckClaudeCodeHook_MalformedJSON(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0700); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(home, ".claude", "settings.json"), []byte("{not json"), 0600); err != nil {
-		t.Fatalf("write settings: %v", err)
-	}
+	writeSettings(t, "{not json")
 
 	var buf bytes.Buffer
 	checkClaudeCodeHook(&buf)
 	got := buf.String()
 	// Per spec: malformed user config should not fail the health check.
-	// The output line should be informational, not ✗, and should not echo
-	// the file contents back.
+	// Parse failure intentionally surfaces as ✗ no-match (nudging the user
+	// to fix their settings.json), and contents must never be echoed back.
 	if !strings.Contains(got, "✗ no ccpulse Stop hook") {
 		t.Errorf("malformed JSON should produce ✗ no-hook line (parse failure treated as no-match), got: %q", got)
 	}

@@ -485,8 +485,6 @@ func TestStatusQuietStillRecordsSample(t *testing.T) {
 	if count == 0 {
 		t.Errorf("expected at least one usage_samples row after --quiet fetch, got 0")
 	}
-	// Belt-and-braces: silence the unused import warning if runtime stops being needed.
-	_ = runtime.GOOS
 }
 
 func TestStatusQuietHardErrorStillExitsNonZero(t *testing.T) {
@@ -509,6 +507,45 @@ func TestStatusQuietHardErrorStillExitsNonZero(t *testing.T) {
 	cmd.SetErr(&errBuf)
 	if err := cmd.Execute(); err == nil {
 		t.Fatalf("expected non-nil error from hard cache-open failure with --quiet, got nil")
+	}
+}
+
+func TestStatusQuietStillEmitsStderrDiagnostics(t *testing.T) {
+	// intent: --quiet is stdout-only — stderr diagnostics must still flow.
+	// we force the "OAuth credential expired" diagnostic by writing a credential
+	// with expiresAt in the past, then assert stderr contains the marker.
+	// stdout must remain empty.
+	cacheDir := t.TempDir()
+	credDir := t.TempDir()
+	t.Setenv("CCPULSE_CACHE_DIR", cacheDir)
+	t.Setenv("HOME", credDir)
+	t.Setenv("CCPULSE_DISABLE_KEYCHAIN", "1")
+
+	// Write a credential whose expiresAt is epoch+1ms (well in the past).
+	body := `{"claudeAiOauth":{"accessToken":"tok","subscriptionType":"max","rateLimitTier":"default_claude_max_20x","expiresAt":1}}`
+	claudeDir := filepath.Join(credDir, ".claude")
+	if err := os.MkdirAll(claudeDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(claudeDir, ".credentials.json"), []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newStatusCmd()
+	cmd.SetArgs([]string{"--quiet"})
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	var out, errBuf bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errBuf)
+	// Expired credential is a soft failure; status still computes via JSONL fallback.
+	_ = cmd.Execute()
+
+	if out.Len() != 0 {
+		t.Errorf("stdout should be empty with --quiet, got: %q", out.String())
+	}
+	if !strings.Contains(errBuf.String(), "OAuth credential expired") {
+		t.Errorf("expected 'OAuth credential expired' in stderr buffer, got: %q", errBuf.String())
 	}
 }
 
