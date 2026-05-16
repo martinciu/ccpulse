@@ -124,3 +124,69 @@ func TestCheckClaudeCodeHook_MalformedJSON(t *testing.T) {
 		t.Errorf("must not echo settings.json contents, got: %q", got)
 	}
 }
+
+func TestHookCommandMentionsCcpulse(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{
+			name:  "empty object",
+			input: `{}`,
+			want:  false,
+		},
+		{
+			name:  "hooks present but Stop absent",
+			input: `{"hooks": {"PreToolUse": []}}`,
+			want:  false,
+		},
+		{
+			name:  "canonical matching shape",
+			input: `{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"ccpulse status"}]}]}}`,
+			want:  true,
+		},
+		// Loose substring match is deliberate — wrappers/aliases like
+		// "my-ccpulse-wrapper" should still count as a ccpulse Stop hook.
+		{
+			name:  "command contains ccpulse as substring",
+			input: `{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"my-ccpulse-wrapper"}]}]}}`,
+			want:  true,
+		},
+		{
+			name:  "command is an array, not a string",
+			input: `{"hooks":{"Stop":[{"hooks":[{"type":"command","command":["ccpulse"]}]}]}}`,
+			want:  false,
+		},
+		{
+			name:  "top-level value is an array",
+			input: `[]`,
+			want:  false,
+		},
+		{
+			name:  "nil byte slice",
+			input: "",
+			want:  false,
+		},
+		{
+			name:  "Stop key present but empty array",
+			input: `{"hooks":{"Stop":[]}}`,
+			want:  false,
+		},
+		{
+			name:  "command is JSON null",
+			input: `{"hooks":{"Stop":[{"hooks":[{"type":"command","command":null}]}]}}`,
+			want:  false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := hookCommandMentionsCcpulse([]byte(tc.input))
+			if got != tc.want {
+				t.Errorf("input: %q\ngot %v, want %v", tc.input, got, tc.want)
+			}
+		})
+	}
+}
