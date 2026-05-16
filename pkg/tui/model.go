@@ -1272,12 +1272,19 @@ func earliestRemainingSampleAt(pts5h, pts7d []cache.UtilizationPoint) time.Time 
 //     renderSpringFrame's slack-handling computeSpringSlice was tuned
 //     against. The bucket-aligned canvas guarantees lastStarts and
 //     visibleBuckets line up.
-//   - Remaining mode: upper bound is (lastCanvasW - viewport.Width) /
-//     stride. lastStarts in remaining mode is sparse sample points
-//     (not bucket-aligned), so the bar-mode clamp would collapse to
-//     0 the moment usage_samples count drops below visibleBuckets.
-//     The canvas-width clamp matches the column-based anchor logic
-//     in refreshChart.
+//   - Remaining mode: ceil-divide the column gap by stride. lastStarts
+//     in remaining mode is sparse usage_samples (not bucket-aligned),
+//     so the bar-mode clamp would collapse to 0 the moment sample
+//     count drops below visibleBuckets. Ceil-division of
+//     (lastCanvasW - viewport.Width) / stride gives the smallest
+//     bucket index whose stride×idx position reaches the canvas
+//     right edge — the same value bar mode produces in production
+//     (where viewport.Width == chartWidth). Previously this branch
+//     floor-divided, which lost up to stride-1 cols of slack and
+//     produced maxX one bucket short of bar mode at 24h zoom
+//     (BarGap=2). That left the user one stride away from the
+//     canvas right edge and turned every u-cycle through remaining
+//     mode into a permanent off-by-one shift (#206).
 //
 //     Remaining mode also enforces a LOWER bound at the earliest
 //     usage_samples timestamp (per #200): the user cannot pan earlier
@@ -1298,7 +1305,10 @@ func (m *Model) setX(n int) {
 	stride := ZoomLevels[m.zoomIdx].stride()
 	var minX, maxX int
 	if chartUnit(m.unitIdx) == chartUnitRemaining {
-		maxX = max(0, m.lastCanvasW-m.viewport.Width) / stride
+		// Ceil-divide the column gap so maxX*stride reaches the canvas right
+		// edge (the previous floor lost up to stride-1 cols of slack — #206).
+		gap := max(0, m.lastCanvasW-m.viewport.Width)
+		maxX = (gap + stride - 1) / stride
 		if earliest := earliestRemainingSampleAt(m.lastPts5h, m.lastPts7d); !earliest.IsZero() &&
 			!m.lastChartFrom.IsZero() && m.lastChartTo.After(m.lastChartFrom) {
 			minX = timeToColumn(earliest, m.lastCanvasW, m.lastChartFrom, m.lastChartTo) / stride
@@ -1528,26 +1538,30 @@ func (m *Model) refreshChart() {
 	//     new canvas width.
 	//   - else: map anchorTime → column in the new canvas.
 	//
-	// The anchor is restored via m.setX(targetCol / stride) so the viewport
-	// offset and the m.viewportXOffset bucket-indexed shadow stay in sync —
-	// the invariant that all scroll mutations route through setX /
-	// scrollLeft / scrollRight. At stride=1 (15m / 1h zoom) this is a no-op
-	// transform; at stride=12 (24h zoom with BarWidth=10/BarGap=2) it snaps
-	// to the bucket containing the leftmost visible column, matching the
-	// pre-refactor setX(bucketIdx) behaviour.
+	// The anchor is restored via m.setX so the viewport offset and the
+	// m.viewportXOffset bucket-indexed shadow stay in sync — the invariant
+	// that all scroll mutations route through setX / scrollLeft / scrollRight.
 	stride := zoom.stride()
 	rightEdgeCol := max(0, canvasW-m.viewport.Width)
-	var targetCol int
 	switch {
 	case !hadAnchor, wasPinned:
-		targetCol = rightEdgeCol
+		// Pass a sentinel ≥ maxX so setX's clamp lands on the mode-specific
+		// maxX. bucketCount = N when canvasW = N*stride-gap (the steady-state
+		// shape for both bar and remaining mode); when canvasW is floored at
+		// chartWidth() for short data, bucketCount degrades gracefully because
+		// setX's maxX still clamps to 0. Floor-dividing rightEdgeCol by stride
+		// loses up to (stride-1) cols of slack at 24h zoom (BarGap=2) and
+		// produces maxX-1 in either mode — the original #206 symptom plus the
+		// stuck-at-maxX-1 fallout after a bar↔line toggle.
+		bucketCount := (canvasW + max(zoom.BarGap, 0)) / stride
+		m.setX(bucketCount)
 	default:
-		targetCol = timeToColumn(anchorTime, canvasW, from, to)
+		targetCol := timeToColumn(anchorTime, canvasW, from, to)
 		if targetCol > rightEdgeCol {
 			targetCol = rightEdgeCol
 		}
+		m.setX(targetCol / stride)
 	}
-	m.setX(targetCol / stride)
 }
 
 // emptyPlaceholder returns a w×h block with "no Claude sessions yet"
