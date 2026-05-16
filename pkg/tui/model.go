@@ -1157,6 +1157,15 @@ func (m *Model) renderSpringFrame() {
 		}
 		vpW := m.viewport.Width
 		chartXOffset := m.viewportXOffset * zoom.stride()
+		// Clamp: after #207's ceil-maxX in remaining mode, chartXOffset+vpW
+		// can exceed fullCanvasW by up to stride-1 cols at 24h zoom. Without
+		// this, viewTo saturates to fullTo via columnToTime but viewFrom
+		// still advances — yielding a higher col-per-time density than the
+		// steady-state full-canvas render and a visible horizontal stretch
+		// on the spring → settle transition.
+		if maxOff := fullCanvasW - vpW; chartXOffset > maxOff {
+			chartXOffset = maxOff
+		}
 		viewFrom := columnToTime(chartXOffset, fullCanvasW, fullFrom, fullTo)
 		viewTo := columnToTime(chartXOffset+vpW, fullCanvasW, fullFrom, fullTo)
 
