@@ -1101,12 +1101,13 @@ func absInt(x int) int {
 // geometry (barsH=17) so a pre-fix run gives the canonical row 2 vs
 // row 1, col ~198 vs col ~200 split.
 //
-// Overdraw constraint: DrawBrailleAll sorts dataset names
-// alphabetically, so "7d" draws before "default" (5h). Identical
-// data on both series would make 5h overwrite 7d at every shared
-// cell post-fix, yielding zero visible 7d cells and a vacuous
-// failure. Both subtests below place the two series in
-// non-overlapping cells.
+// Overdraw constraint: 5h ("default") deliberately wins shared
+// braille cells via the explicit draw order in buildLineChart
+// (issue #196). The column_shared_scale and row_shared_scale
+// subtests below place the two series in non-overlapping cells
+// so the per-series rightmost/topmost assertions are not eaten
+// by overdraw; the adjacent overlap_5h_wins subtest exercises
+// the overdraw invariant directly with identical-data series.
 func TestBuildLineChart_5hAnd7dShareScale(t *testing.T) {
 	withForcedColor(t)
 	withForcedDarkBackground(t, true)
