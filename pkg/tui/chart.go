@@ -478,9 +478,10 @@ func formatUnitValue(v float64, unit chartUnit) string {
 // state, or 1.0 during ratio-space animation (when values are
 // already normalised to [0, 1]).
 //
-// unit selects the bar color (Blue for chartUnitTokens, Amber for
-// chartUnitCost). It is also read by the Y-label overlay path in
-// Model.View() — passed through here for that reason too.
+// unit selects the bar color (Blue for chartUnitTokens — output tokens
+// since issue #209, Amber for chartUnitCost). It is also read by the
+// Y-label overlay path in Model.View() — passed through here for that
+// reason too.
 func buildChart(values []float64, starts []time.Time, peak float64,
 	chartW, chartH int, now time.Time, zoom ZoomLevel, unit chartUnit, order dateOrder) string {
 	start := time.Now()
