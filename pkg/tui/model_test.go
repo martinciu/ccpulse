@@ -235,6 +235,29 @@ func TestHeaderShowsResetTime(t *testing.T) {
 	}
 }
 
+func TestQuotaBarsRendersIdleForNil5hResetsAt(t *testing.T) {
+	// Post #189: a 5h Window with MinutesToReset == nil means the
+	// rolling window is idle (Anthropic reports resets_at: null when no
+	// turns have landed in the last 5h). The header should render
+	// "idle" on the 5h side rather than a misleading "0m".
+	m := New(Deps{})
+	m.w, m.h = 120, 40
+	m.window = status.Window{
+		Percent:          0,
+		MinutesToReset:   nil,
+		Has7d:            true,
+		Percent7d:        50,
+		MinutesToReset7d: intPtr(60 * 24),
+	}
+	m.progress = newProgressBar(m.progressWidth())
+	m.progress7d = newProgressBar(m.progressWidth())
+
+	out := m.quotaBars()
+	if !strings.Contains(out, "idle") {
+		t.Errorf("expected 'idle' in 5h side, got:\n%s", out)
+	}
+}
+
 func TestHelpToggle(t *testing.T) {
 	m := New(Deps{})
 	m.w, m.h = 120, 40
