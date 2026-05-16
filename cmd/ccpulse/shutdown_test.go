@@ -69,7 +69,7 @@ func TestRunTUIQuitsCleanly(t *testing.T) {
 	// is fine here.
 	done := make(chan error, 1)
 	go func() {
-		done <- runTUI(context.Background())
+		done <- runTUI(context.Background(), io.Discard)
 	}()
 
 	select {

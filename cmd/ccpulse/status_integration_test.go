@@ -294,6 +294,38 @@ func TestStatusNoOAuthShowsNoQuotaNotice(t *testing.T) {
 	}
 }
 
+// TestStatusExpiredCredentialWritesToCmdErr asserts that the "OAuth credential
+// expired" diagnostic is written to the cobra command's error writer (set via
+// cmd.SetErr), not to os.Stderr.
+func TestStatusExpiredCredentialWritesToCmdErr(t *testing.T) {
+	cacheDir := t.TempDir()
+	credDir := t.TempDir()
+	t.Setenv("CCPULSE_CACHE_DIR", cacheDir)
+	t.Setenv("HOME", credDir)
+	t.Setenv("CCPULSE_DISABLE_KEYCHAIN", "1")
+
+	// Write a credential whose expiresAt is epoch+1s (well in the past).
+	body := `{"claudeAiOauth":{"accessToken":"tok","subscriptionType":"max","rateLimitTier":"default_claude_max_20x","expiresAt":1000}}`
+	claudeDir := filepath.Join(credDir, ".claude")
+	if err := os.MkdirAll(claudeDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(claudeDir, ".credentials.json"), []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newStatusCmd()
+	var outBuf, errBuf bytes.Buffer
+	cmd.SetOut(&outBuf)
+	cmd.SetErr(&errBuf)
+	// Ignore the error return — the command may succeed (quota fetch fails gracefully).
+	_ = cmd.Execute()
+
+	if !strings.Contains(errBuf.String(), "OAuth credential expired") {
+		t.Errorf("expected 'OAuth credential expired' in stderr buffer, got: %q", errBuf.String())
+	}
+}
+
 func TestStatusTmuxFlagRemoved(t *testing.T) {
 	cmd := newStatusCmd()
 	cmd.SetArgs([]string{"--tmux"})

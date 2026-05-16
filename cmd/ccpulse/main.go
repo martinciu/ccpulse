@@ -91,7 +91,7 @@ func newRootCmd() *cobra.Command {
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runTUI(cmd.Context())
+			return runTUI(cmd.Context(), cmd.ErrOrStderr())
 		},
 	}
 	root.PersistentFlags().StringVar(
@@ -208,7 +208,7 @@ func initDevlog(isDev bool, cacheDir string, level slog.Level, w io.Writer) io.C
 // for the quota poller's context and for the startup backfill, so
 // SIGINT/SIGTERM cancels in-flight work even before the user quits
 // the TUI itself.
-func runTUI(ctx context.Context) error {
+func runTUI(ctx context.Context, errOut io.Writer) error {
 	cfg, _ := config.Load(config.DefaultPath())
 	cacheDir := envOr("CCPULSE_CACHE_DIR", expand(cfg.Paths.CacheDir))
 	if err := secfile.MkdirAll(cacheDir); err != nil {
@@ -255,7 +255,7 @@ func runTUI(ctx context.Context) error {
 
 	cred, credErr := anthro.LoadCredential()
 	if credErr != nil && !errors.Is(credErr, anthro.ErrNoCredential) {
-		fmt.Fprintf(os.Stderr, "ccpulse: %v\n", credErr)
+		fmt.Fprintf(errOut, "ccpulse: %v\n", credErr)
 	}
 	hasOAuth := credErr == nil
 
