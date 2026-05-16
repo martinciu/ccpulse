@@ -1186,6 +1186,34 @@ func TestBuildLineChart_5hAnd7dShareScale(t *testing.T) {
 				scan.topmost5h, scan.topmost7d)
 		}
 	})
+
+	t.Run("overlap_5h_wins", func(t *testing.T) {
+		// Both series have IDENTICAL data: same Y, same time
+		// range, same point count. Every braille cell that
+		// holds a 5h dot also holds a 7d dot — maximum
+		// overdraw. Post-fix invariant: 5h ("default") wins
+		// every shared cell, so the rendered body must contain
+		// 5h-styled cells but ZERO 7d-styled cells.
+		//
+		// This test guards against a future regression where
+		// someone switches back to DrawBrailleAll (whose
+		// internal sort.Strings would reshuffle the winner the
+		// moment a third dataset's name sorts after "default")
+		// or rearranges the explicit name list in buildLineChart.
+		pts5h := makeUniformPoints(from, to, 24, 12.0) // Y = 0.88
+		pts7d := makeUniformPoints(from, to, 24, 12.0) // identical
+
+		body := buildLineChart(pts5h, pts7d, from, to, chartW, chartH, now, ZoomLevels[1], dateOrderMonthFirst)
+
+		scan := scanSeries(body, sgrOpen5h, sgrClose5h, sgrOpen7d, sgrClose7d)
+
+		if scan.count5h == 0 {
+			t.Fatalf("no 5h cells found — test setup broken (palette mismatch or chart empty)")
+		}
+		if scan.count7d != 0 {
+			t.Errorf("issue #196: 5h must consistently win shared cells; got %d visible 7d cells (expected 0)", scan.count7d)
+		}
+	})
 }
 
 // makeUniformPoints produces n uniformly-spaced cache.UtilizationPoint
