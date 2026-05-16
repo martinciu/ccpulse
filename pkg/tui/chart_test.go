@@ -859,7 +859,7 @@ func TestBuildLineChart_NonEmpty(t *testing.T) {
 
 	chartW := 60
 	chartH := 12
-	body := buildLineChart(pts5h, pts7d, from, to, chartW, chartH, now, ZoomLevels[0], dateOrderMonthFirst)
+	body := buildLineChart(pts5h, pts7d, from, to, chartW, chartH, now, ZoomLevels[0], dateOrderMonthFirst, "test")
 	if body == "" {
 		t.Fatal("buildLineChart returned empty string")
 	}
@@ -871,7 +871,7 @@ func TestBuildLineChart_NonEmpty(t *testing.T) {
 
 func TestBuildLineChart_EmptyPoints(t *testing.T) {
 	now := time.Now().UTC()
-	body := buildLineChart(nil, nil, now.Add(-time.Hour), now, 60, 12, now, ZoomLevels[0], dateOrderMonthFirst)
+	body := buildLineChart(nil, nil, now.Add(-time.Hour), now, 60, 12, now, ZoomLevels[0], dateOrderMonthFirst, "test")
 	if body == "" {
 		t.Fatal("expected non-empty output for empty points (flat 100% line)")
 	}
@@ -891,7 +891,7 @@ func TestBuildLineChart_NoBuiltinXAxis(t *testing.T) {
 		{At: from.Add(12 * time.Hour), Pct: 50},
 		{At: from.Add(23 * time.Hour), Pct: 90},
 	}
-	body := buildLineChart(pts5h, nil, from, to, 80, 14, now, ZoomLevels[1], dateOrderMonthFirst)
+	body := buildLineChart(pts5h, nil, from, to, 80, 14, now, ZoomLevels[1], dateOrderMonthFirst, "test")
 	stripped := ansi.Strip(body)
 
 	// A row consisting almost entirely of small integers separated by
@@ -949,6 +949,7 @@ func BenchmarkBuildLineChart(b *testing.B) {
 	}{
 		{"w100_24h", 100, 24 * time.Hour, ZoomLevels[1]},
 		{"w1000_7d", 1000, 7 * 24 * time.Hour, ZoomLevels[1]},
+		{"w2880_30d_15m", 2880, 30 * 24 * time.Hour, ZoomLevels[0]},
 		{"w5000_30d_15m", 5000, 30 * 24 * time.Hour, ZoomLevels[0]},
 	}
 	for _, tc := range cases {
@@ -962,7 +963,7 @@ func BenchmarkBuildLineChart(b *testing.B) {
 			runtime.GC()
 			b.ResetTimer()
 			for b.Loop() {
-				sinkString = buildLineChart(pts5h, pts7d, from, to, tc.canvasW, 20, now, tc.zoom, dateOrderMonthFirst)
+				sinkString = buildLineChart(pts5h, pts7d, from, to, tc.canvasW, 20, now, tc.zoom, dateOrderMonthFirst, "test")
 			}
 		})
 	}
@@ -1146,7 +1147,7 @@ func TestBuildLineChart_5hAnd7dShareScale(t *testing.T) {
 		pts5h := makeUniformPoints(from, to, 24, 4.0)  // Y = 0.96
 		pts7d := makeUniformPoints(from, to, 24, 20.0) // Y = 0.80
 
-		body := buildLineChart(pts5h, pts7d, from, to, chartW, chartH, now, ZoomLevels[1], dateOrderMonthFirst)
+		body := buildLineChart(pts5h, pts7d, from, to, chartW, chartH, now, ZoomLevels[1], dateOrderMonthFirst, "test")
 
 		scan := scanSeries(body, sgrOpen5h, sgrClose5h, sgrOpen7d, sgrClose7d)
 
@@ -1172,7 +1173,7 @@ func TestBuildLineChart_5hAnd7dShareScale(t *testing.T) {
 		pts5h := makeUniformPoints(from, mid, 12, 4.0)
 		pts7d := makeUniformPoints(mid, to, 12, 4.0)
 
-		body := buildLineChart(pts5h, pts7d, from, to, chartW, chartH, now, ZoomLevels[1], dateOrderMonthFirst)
+		body := buildLineChart(pts5h, pts7d, from, to, chartW, chartH, now, ZoomLevels[1], dateOrderMonthFirst, "test")
 
 		scan := scanSeries(body, sgrOpen5h, sgrClose5h, sgrOpen7d, sgrClose7d)
 
@@ -1204,7 +1205,7 @@ func TestBuildLineChart_5hAnd7dShareScale(t *testing.T) {
 		pts5h := makeUniformPoints(from, to, 24, 12.0) // Y = 0.88
 		pts7d := makeUniformPoints(from, to, 24, 12.0) // identical
 
-		body := buildLineChart(pts5h, pts7d, from, to, chartW, chartH, now, ZoomLevels[1], dateOrderMonthFirst)
+		body := buildLineChart(pts5h, pts7d, from, to, chartW, chartH, now, ZoomLevels[1], dateOrderMonthFirst, "test")
 
 		scan := scanSeries(body, sgrOpen5h, sgrClose5h, sgrOpen7d, sgrClose7d)
 
@@ -1319,4 +1320,71 @@ func scanSeries(body, sgrOpen5h, sgrClose5h, sgrOpen7d, sgrClose7d string) serie
 		}
 	}
 	return out
+}
+
+func TestSlicePointsInRange(t *testing.T) {
+	base := time.Date(2026, 5, 16, 12, 0, 0, 0, time.UTC)
+	mk := func(offsets ...time.Duration) []cache.UtilizationPoint {
+		out := make([]cache.UtilizationPoint, len(offsets))
+		for i, off := range offsets {
+			out[i] = cache.UtilizationPoint{At: base.Add(off), Pct: float64(i)}
+		}
+		return out
+	}
+
+	tests := []struct {
+		name string
+		pts  []cache.UtilizationPoint
+		from time.Time
+		to   time.Time
+		want []time.Duration // offsets that should survive
+	}{
+		{
+			name: "empty input",
+			pts:  nil,
+			from: base, to: base.Add(time.Hour),
+			want: nil,
+		},
+		{
+			name: "all in range",
+			pts:  mk(0, 10*time.Minute, 20*time.Minute, 30*time.Minute),
+			from: base.Add(-time.Hour), to: base.Add(time.Hour),
+			want: []time.Duration{0, 10 * time.Minute, 20 * time.Minute, 30 * time.Minute},
+		},
+		{
+			name: "middle slice with padding",
+			pts:  mk(0, 10*time.Minute, 20*time.Minute, 30*time.Minute, 40*time.Minute),
+			from: base.Add(15 * time.Minute), to: base.Add(25 * time.Minute),
+			// Pad by one on each side: idx 1 (10m) + idx 2 (20m) + idx 3 (30m).
+			want: []time.Duration{10 * time.Minute, 20 * time.Minute, 30 * time.Minute},
+		},
+		{
+			name: "range before all points",
+			pts:  mk(time.Hour, 2*time.Hour),
+			from: base, to: base.Add(30 * time.Minute),
+			// Empty visible range: return the closest single point (idx 0 = 1h).
+			want: []time.Duration{time.Hour},
+		},
+		{
+			name: "range after all points",
+			pts:  mk(0, 10*time.Minute),
+			from: base.Add(time.Hour), to: base.Add(2 * time.Hour),
+			// Empty visible range: return the closest single point (idx 1 = 10m, last).
+			want: []time.Duration{10 * time.Minute},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := slicePointsInRange(tt.pts, tt.from, tt.to)
+			if len(got) != len(tt.want) {
+				t.Fatalf("len=%d, want %d (got=%v)", len(got), len(tt.want), got)
+			}
+			for i, off := range tt.want {
+				wantAt := base.Add(off)
+				if !got[i].At.Equal(wantAt) {
+					t.Errorf("[%d].At = %v, want %v", i, got[i].At, wantAt)
+				}
+			}
+		})
+	}
 }

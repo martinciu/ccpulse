@@ -189,6 +189,50 @@ func computeSpringSlice(start, prevLongest, vpWidth, stride int) (sliceStart, sp
 	return sliceStart, springXOff
 }
 
+// slicePointsInRange returns the sub-slice of pts that falls within
+// [from, to], padded by one point on each side if available. The
+// padding preserves cross-boundary line continuity — without it,
+// timeserieslinechart would have no preceding/following anchor to draw
+// the segment that crosses the visible edge.
+//
+// Empty input returns nil. If no points fall inside [from, to],
+// returns the single closest point as a baseline anchor (the first
+// point if pts are all after to, the last point if all before from).
+//
+// pts is assumed to be sorted by At ascending — true for cache.TokenBuckets
+// and status.Compute output. Linear scan; binary search is unnecessary
+// at the n=O(thousands) sizes seen by the line branch.
+func slicePointsInRange(pts []cache.UtilizationPoint, from, to time.Time) []cache.UtilizationPoint {
+	if len(pts) == 0 {
+		return nil
+	}
+	startIdx := 0
+	for startIdx < len(pts) && pts[startIdx].At.Before(from) {
+		startIdx++
+	}
+	endIdx := len(pts)
+	for endIdx > 0 && pts[endIdx-1].At.After(to) {
+		endIdx--
+	}
+
+	// Empty visible range: return the closest single point as a baseline anchor.
+	if startIdx >= endIdx {
+		if startIdx >= len(pts) {
+			return pts[len(pts)-1:]
+		}
+		return pts[startIdx : startIdx+1]
+	}
+
+	// Pad by one on each side to preserve cross-boundary line continuity.
+	if startIdx > 0 {
+		startIdx--
+	}
+	if endIdx < len(pts) {
+		endIdx++
+	}
+	return pts[startIdx:endIdx]
+}
+
 // overlayYLabel splices `formatUnitValue(niceFloorFloat(peak), unit)` in
 // the chosen fade style into the niceFloorFloat(peak) row of an already-rendered
 // chart string, replacing the first 5 visible columns of that row.
@@ -519,7 +563,7 @@ func isLineMode(u chartUnit) bool {
 // SetStyles(line, color) would fail to compile against ntcharts v0.5.1.
 func buildLineChart(pts5h, pts7d []cache.UtilizationPoint,
 	from, to time.Time, chartW, chartH int,
-	now time.Time, zoom ZoomLevel, order dateOrder) string {
+	now time.Time, zoom ZoomLevel, order dateOrder, source string) string {
 
 	logStart := time.Now()
 	if chartH < 1 {
@@ -608,6 +652,7 @@ func buildLineChart(pts5h, pts7d []cache.UtilizationPoint,
 	}
 
 	slog.Debug("tui.buildLineChart",
+		"source", source,
 		"dur_ms", time.Since(logStart).Milliseconds(),
 		"pts5h", len(pts5h),
 		"pts7d", len(pts7d),
