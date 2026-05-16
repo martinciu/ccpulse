@@ -1085,3 +1085,209 @@ func absInt(x int) int {
 	}
 	return x
 }
+
+// TestBuildLineChart_5hAnd7dShareScale guards against issue #194 —
+// ntcharts' timeserieslinechart caches each dataset's buffer scale
+// at creation time. The default 5h dataset is created during
+// timeserieslinechart.New(...), before SetXStep(0)/SetYStep(0) grow
+// the graph area; the 7d dataset is created later via PushDataSet,
+// after the steps. Without an explicit rescale, the two datasets
+// carry different scale factors and render at different rows and
+// columns despite identical data. SetViewTimeRange triggers
+// rescaleData() — placing it after the step calls anchors the
+// default dataset to the post-step geometry.
+//
+// chartW=200, chartH=18 reproduces the issue body's instrumented
+// geometry (barsH=17) so a pre-fix run gives the canonical row 2 vs
+// row 1, col ~198 vs col ~200 split.
+//
+// Overdraw constraint: DrawBrailleAll sorts dataset names
+// alphabetically, so "7d" draws before "default" (5h). Identical
+// data on both series would make 5h overwrite 7d at every shared
+// cell post-fix, yielding zero visible 7d cells and a vacuous
+// failure. Both subtests below place the two series in
+// non-overlapping cells.
+func TestBuildLineChart_5hAnd7dShareScale(t *testing.T) {
+	withForcedColor(t)
+	withForcedDarkBackground(t, true)
+
+	const chartW = 200
+	const chartH = 18
+
+	now := time.Date(2026, 5, 16, 12, 0, 0, 0, time.UTC)
+	from := now.Add(-24 * time.Hour)
+	to := now
+
+	// Derive per-series SGR opening sequences from the same
+	// colorChartRemaining* constants the production code uses.
+	// Rendering a known sentinel through each style lets us slice
+	// out the leading SGR-open and the trailing SGR-close that
+	// lipgloss emits. The test then scans the styled chart body
+	// for those exact byte sequences. If the palette ever changes,
+	// this derivation tracks it automatically.
+	const sentinel = "X"
+	sgrOpen5h, sgrClose5h := splitSGR(lipgloss.NewStyle().Foreground(colorChartRemaining5h).Render(sentinel), sentinel)
+	sgrOpen7d, sgrClose7d := splitSGR(lipgloss.NewStyle().Foreground(colorChartRemaining7d).Render(sentinel), sentinel)
+
+	if sgrOpen5h == "" || sgrOpen7d == "" {
+		t.Fatalf("could not derive SGR sequences (5h=%q, 7d=%q) — lipgloss color profile may not be forced", sgrOpen5h, sgrOpen7d)
+	}
+	if sgrOpen5h == sgrOpen7d {
+		t.Fatalf("5h and 7d SGR sequences are identical (%q) — palette would make the test ambiguous", sgrOpen5h)
+	}
+
+	t.Run("column_shared_scale", func(t *testing.T) {
+		// Both series span the full 24h timeline but at different
+		// Y values so they live on different rows. No overdraw.
+		// Post-fix invariant: both lines end at the same rightmost
+		// canvas column because both datasets share the same X
+		// scale factor.
+		pts5h := makeUniformPoints(from, to, 24, 4.0)  // Y = 0.96
+		pts7d := makeUniformPoints(from, to, 24, 20.0) // Y = 0.80
+
+		body := buildLineChart(pts5h, pts7d, from, to, chartW, chartH, now, ZoomLevels[1], dateOrderMonthFirst)
+
+		scan := scanSeries(body, sgrOpen5h, sgrClose5h, sgrOpen7d, sgrClose7d)
+
+		if scan.count5h == 0 {
+			t.Fatalf("no 5h cells found — test setup broken (palette mismatch or chart empty)")
+		}
+		if scan.count7d == 0 {
+			t.Fatalf("no 7d cells found — test setup broken (palette mismatch or chart empty)")
+		}
+		if scan.rightmost5h != scan.rightmost7d {
+			t.Errorf("issue #194: 5h rightmost col=%d != 7d rightmost col=%d (datasets do not share X scale)",
+				scan.rightmost5h, scan.rightmost7d)
+		}
+	})
+
+	t.Run("row_shared_scale", func(t *testing.T) {
+		// Both series at the same Y, but time-shifted into
+		// non-overlapping halves of the timeline. No overdraw.
+		// Post-fix invariant: both horizontal segments sit on the
+		// same canvas row because both datasets share the same Y
+		// scale factor.
+		mid := from.Add(12 * time.Hour)
+		pts5h := makeUniformPoints(from, mid, 12, 4.0)
+		pts7d := makeUniformPoints(mid, to, 12, 4.0)
+
+		body := buildLineChart(pts5h, pts7d, from, to, chartW, chartH, now, ZoomLevels[1], dateOrderMonthFirst)
+
+		scan := scanSeries(body, sgrOpen5h, sgrClose5h, sgrOpen7d, sgrClose7d)
+
+		if scan.count5h == 0 {
+			t.Fatalf("no 5h cells found — test setup broken (palette mismatch or chart empty)")
+		}
+		if scan.count7d == 0 {
+			t.Fatalf("no 7d cells found — test setup broken (palette mismatch or chart empty)")
+		}
+		if scan.topmost5h != scan.topmost7d {
+			t.Errorf("issue #194: 5h topmost row=%d != 7d topmost row=%d (datasets do not share Y scale)",
+				scan.topmost5h, scan.topmost7d)
+		}
+	})
+}
+
+// makeUniformPoints produces n uniformly-spaced cache.UtilizationPoint
+// across [start, end), all at the given pct. Helper for
+// TestBuildLineChart_5hAnd7dShareScale.
+func makeUniformPoints(start, end time.Time, n int, pct float64) []cache.UtilizationPoint {
+	if n < 1 {
+		return nil
+	}
+	out := make([]cache.UtilizationPoint, 0, n)
+	step := end.Sub(start) / time.Duration(n)
+	for i := 0; i < n; i++ {
+		out = append(out, cache.UtilizationPoint{
+			At:  start.Add(time.Duration(i) * step),
+			Pct: pct,
+		})
+	}
+	return out
+}
+
+// splitSGR takes a string of the form "<SGR-open><sentinel><SGR-close>"
+// (what lipgloss emits when rendering a styled sentinel) and returns
+// the opening SGR sequence and the closing SGR sequence. Returns
+// empty strings if the sentinel is not found.
+func splitSGR(rendered, sentinel string) (open, close string) {
+	idx := strings.Index(rendered, sentinel)
+	if idx < 0 {
+		return "", ""
+	}
+	return rendered[:idx], rendered[idx+len(sentinel):]
+}
+
+// seriesScan holds the per-series probe results from scanSeries.
+type seriesScan struct {
+	count5h, count7d         int
+	topmost5h, topmost7d     int
+	rightmost5h, rightmost7d int
+}
+
+// scanSeries walks the styled body line by line, tracks the currently
+// active foreground color via the supplied SGR open/close sequences,
+// and records each non-space cell's (row, visual-col) tagged by series.
+// topmost is the smallest row index seen for the series; rightmost is
+// the largest visual column index. Both default to -1 if the series
+// has no cells.
+//
+// Each line is scanned with fresh ANSI state. The walk uses
+// ansi.DecodeSequence to step through the line in ANSI-aware chunks:
+// zero-width chunks are control sequences (SGR changes update the
+// active tag), positive-width chunks are printable runes that advance
+// the column counter.
+func scanSeries(body, sgrOpen5h, sgrClose5h, sgrOpen7d, sgrClose7d string) seriesScan {
+	out := seriesScan{
+		topmost5h: -1, topmost7d: -1,
+		rightmost5h: -1, rightmost7d: -1,
+	}
+
+	for row, line := range strings.Split(body, "\n") {
+		parser := ansi.NewParser()
+		state := byte(0)
+		col := 0
+		active := "" // "5h", "7d", or ""
+
+		remaining := line
+		for len(remaining) > 0 {
+			seq, width, n, newState := ansi.DecodeSequence(remaining, state, parser)
+			state = newState
+			if width > 0 {
+				if seq != " " {
+					switch active {
+					case "5h":
+						if out.topmost5h < 0 {
+							out.topmost5h = row
+						}
+						if col > out.rightmost5h {
+							out.rightmost5h = col
+						}
+						out.count5h++
+					case "7d":
+						if out.topmost7d < 0 {
+							out.topmost7d = row
+						}
+						if col > out.rightmost7d {
+							out.rightmost7d = col
+						}
+						out.count7d++
+					}
+				}
+				col += width
+			} else {
+				// Escape sequence. Update active tag on SGR open/close.
+				switch {
+				case seq == sgrOpen5h:
+					active = "5h"
+				case seq == sgrOpen7d:
+					active = "7d"
+				case seq == sgrClose5h || seq == sgrClose7d:
+					active = ""
+				}
+			}
+			remaining = remaining[n:]
+		}
+	}
+	return out
+}

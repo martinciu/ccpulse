@@ -536,9 +536,12 @@ func buildLineChart(pts5h, pts7d []cache.UtilizationPoint,
 		timeserieslinechart.WithYRange(0, 1.0),
 		timeserieslinechart.WithTimeRange(from, to),
 	)
-	tslc.SetViewTimeRange(from, to)
 	tslc.SetXStep(0)
 	tslc.SetYStep(0)
+	// must come after Set{X,Y}Step — SetViewTimeRange triggers rescaleData
+	// on the default dataset, anchoring it to the post-step geometry so it
+	// shares scale with later PushDataSet datasets (issue #194).
+	tslc.SetViewTimeRange(from, to)
 
 	// 5h dataset (default).
 	tslc.SetLineStyle(runes.ThinLineStyle)
