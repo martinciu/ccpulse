@@ -18,11 +18,13 @@ import (
 )
 
 // Bucket is one quota dimension (e.g. five_hour, seven_day_sonnet).
-// utilization is a 0-100 percent reported by Anthropic; resets_at is the
-// server-side reset boundary in RFC3339Nano.
+// Utilization is a 0-100 percent reported by Anthropic. ResetsAt is the
+// server-side reset boundary in RFC3339Nano, or nil when the API reports
+// `resets_at: null` (idle 5h window, glitched 7d sample, or
+// never-populated bucket like seven_day_omelette).
 type Bucket struct {
-	Utilization float64   `json:"utilization"`
-	ResetsAt    time.Time `json:"resets_at"`
+	Utilization float64    `json:"utilization"`
+	ResetsAt    *time.Time `json:"resets_at"`
 }
 
 // ExtraUsage describes the pay-as-you-go credit pool. Fields can be zero/null

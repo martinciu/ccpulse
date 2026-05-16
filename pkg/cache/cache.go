@@ -198,6 +198,9 @@ func bucketArgs(b *anthro.Bucket) []any {
 	if b == nil {
 		return []any{nil, nil}
 	}
+	if b.ResetsAt == nil {
+		return []any{b.Utilization, nil}
+	}
 	return []any{b.Utilization, b.ResetsAt.UTC().Format(time.RFC3339Nano)}
 }
 

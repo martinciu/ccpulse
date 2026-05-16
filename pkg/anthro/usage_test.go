@@ -40,7 +40,7 @@ func TestUsageUnmarshalFull(t *testing.T) {
 		t.Errorf("five_hour utilization: %+v", u.FiveHour)
 	}
 	want, _ := time.Parse(time.RFC3339Nano, "2026-05-09T16:10:00.151311+00:00")
-	if !u.FiveHour.ResetsAt.Equal(want) {
+	if u.FiveHour.ResetsAt == nil || !u.FiveHour.ResetsAt.Equal(want) {
 		t.Errorf("five_hour.ResetsAt = %v, want %v", u.FiveHour.ResetsAt, want)
 	}
 	if u.SevenDay == nil || u.SevenDay.Utilization != 89.0 {
@@ -78,6 +78,38 @@ func TestUsageUnmarshalAllNull(t *testing.T) {
 	}
 	if u.FiveHour != nil || u.ExtraUsage != nil {
 		t.Errorf("expected all nil, got %+v", u)
+	}
+}
+
+func TestUsageUnmarshalNullResetsAt(t *testing.T) {
+	body := `{
+	  "five_hour":   {"utilization": 0.0,  "resets_at": null},
+	  "seven_day":   {"utilization": 89.0, "resets_at": "2026-05-10T09:00:00.151331+00:00"},
+	  "seven_day_oauth_apps": null,
+	  "seven_day_opus":       null,
+	  "seven_day_sonnet":     null,
+	  "seven_day_cowork":     null,
+	  "seven_day_omelette":   {"utilization": 0.0, "resets_at": null},
+	  "tangelo":              null,
+	  "iguana_necktie":       null,
+	  "omelette_promotional": null,
+	  "extra_usage":          null
+	}`
+	var u Usage
+	if err := json.Unmarshal([]byte(body), &u); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if u.FiveHour == nil {
+		t.Fatal("five_hour should be present (utilization 0)")
+	}
+	if u.FiveHour.ResetsAt != nil {
+		t.Errorf("five_hour.ResetsAt should be nil pointer, got %v", *u.FiveHour.ResetsAt)
+	}
+	if u.SevenDay == nil || u.SevenDay.ResetsAt == nil {
+		t.Fatalf("seven_day should be present with non-nil ResetsAt, got %+v", u.SevenDay)
+	}
+	if u.SevenDayOmelette == nil || u.SevenDayOmelette.ResetsAt != nil {
+		t.Errorf("seven_day_omelette: want bucket present with nil ResetsAt, got %+v", u.SevenDayOmelette)
 	}
 }
 

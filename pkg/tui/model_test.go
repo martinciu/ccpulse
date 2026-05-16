@@ -18,6 +18,14 @@ import (
 	"github.com/martinciu/ccpulse/pkg/status"
 )
 
+// intPtr returns &n. Test-only helper for the *int Window.MinutesToReset
+// fields, post #189 (5h-idle and 7d-glitch need to be expressible as nil).
+func intPtr(n int) *int { return &n }
+
+// timePtr returns &t. Test-only helper for the *time.Time
+// anthro.Bucket.ResetsAt field on sites that build the value inline.
+func timePtr(t time.Time) *time.Time { return &t }
+
 // BenchmarkModelView measures the per-frame cost of the full View()
 // composition: header + sep + viewport + sep + footer. View() runs on
 // every keypress and tick — regressions here (e.g. an extra lipgloss
@@ -217,7 +225,7 @@ func TestHeaderShowsResetTime(t *testing.T) {
 	// present alongside it.
 	m := New(Deps{})
 	m.w, m.h = 120, 40
-	m.window = status.Window{Percent: 61, MinutesToReset: 107, CeilingLabel: "max_20x"}
+	m.window = status.Window{Percent: 61, MinutesToReset: intPtr(107), CeilingLabel: "max_20x"}
 	got := m.View()
 	if !strings.Contains(got, "1h 47m") {
 		t.Errorf("expected reset time '1h 47m' in:\n%s", got)
@@ -511,7 +519,7 @@ func TestSevenDayBarRendered(t *testing.T) {
 	// divider rather than percent substrings.
 	m := New(Deps{})
 	m.w, m.h = 120, 40
-	m.window = status.Window{Percent: 1, MinutesToReset: 100, Has7d: true, Percent7d: 12, MinutesToReset7d: 1000}
+	m.window = status.Window{Percent: 1, MinutesToReset: intPtr(100), Has7d: true, Percent7d: 12, MinutesToReset7d: intPtr(1000)}
 	m.progress = newProgressBar(m.progressWidth())
 	m.progress7d = newProgressBar(m.progressWidth())
 	v := m.View()
@@ -551,13 +559,13 @@ func TestQuotaBarsSymmetric(t *testing.T) {
 		w    int
 		win  status.Window
 	}{
-		{"40cols_clamp", 40, status.Window{Percent: 5, MinutesToReset: 52, Has7d: true, Percent7d: 24, MinutesToReset7d: 8640}},
-		{"60cols_short_times", 60, status.Window{Percent: 5, MinutesToReset: 52, Has7d: true, Percent7d: 24, MinutesToReset7d: 8640}},   // 6d
-		{"60cols_long_times", 60, status.Window{Percent: 95, MinutesToReset: 299, Has7d: true, Percent7d: 80, MinutesToReset7d: 1439}}, // 4h 59m / 23:59
-		{"80cols_short_times", 80, status.Window{Percent: 5, MinutesToReset: 52, Has7d: true, Percent7d: 24, MinutesToReset7d: 8640}},
-		{"80cols_long_times", 80, status.Window{Percent: 95, MinutesToReset: 299, Has7d: true, Percent7d: 80, MinutesToReset7d: 1439}},
-		{"120cols_zero_times", 120, status.Window{Percent: 0, MinutesToReset: 0, Has7d: true, Percent7d: 0, MinutesToReset7d: 0}},
-		{"80cols_no_7d", 80, status.Window{Percent: 5, MinutesToReset: 52, Has7d: false}},
+		{"40cols_clamp", 40, status.Window{Percent: 5, MinutesToReset: intPtr(52), Has7d: true, Percent7d: 24, MinutesToReset7d: intPtr(8640)}},
+		{"60cols_short_times", 60, status.Window{Percent: 5, MinutesToReset: intPtr(52), Has7d: true, Percent7d: 24, MinutesToReset7d: intPtr(8640)}},   // 6d
+		{"60cols_long_times", 60, status.Window{Percent: 95, MinutesToReset: intPtr(299), Has7d: true, Percent7d: 80, MinutesToReset7d: intPtr(1439)}}, // 4h 59m / 23:59
+		{"80cols_short_times", 80, status.Window{Percent: 5, MinutesToReset: intPtr(52), Has7d: true, Percent7d: 24, MinutesToReset7d: intPtr(8640)}},
+		{"80cols_long_times", 80, status.Window{Percent: 95, MinutesToReset: intPtr(299), Has7d: true, Percent7d: 80, MinutesToReset7d: intPtr(1439)}},
+		{"120cols_zero_times", 120, status.Window{Percent: 0, MinutesToReset: intPtr(0), Has7d: true, Percent7d: 0, MinutesToReset7d: intPtr(0)}},
+		{"80cols_no_7d", 80, status.Window{Percent: 5, MinutesToReset: intPtr(52), Has7d: false}},
 		// Asymmetric Projection cases: one bucket has a Projection, the
 		// other is nil. The burn-rate row renders styled rate text on the
 		// populated side and "(no data)" on the nil side. Both sides must
@@ -568,8 +576,8 @@ func TestQuotaBarsSymmetric(t *testing.T) {
 			"100cols_proj5h_only",
 			100,
 			status.Window{
-				Percent: 43, MinutesToReset: 137,
-				Has7d: true, Percent7d: 17, MinutesToReset7d: 7200,
+				Percent: 43, MinutesToReset: intPtr(137),
+				Has7d: true, Percent7d: 17, MinutesToReset7d: intPtr(7200),
 				Projection: &status.Projections{
 					FiveHour: &status.Projection{
 						SlopePctPerHour:     12,
@@ -584,8 +592,8 @@ func TestQuotaBarsSymmetric(t *testing.T) {
 			"100cols_proj7d_only",
 			100,
 			status.Window{
-				Percent: 43, MinutesToReset: 137,
-				Has7d: true, Percent7d: 17, MinutesToReset7d: 7200,
+				Percent: 43, MinutesToReset: intPtr(137),
+				Has7d: true, Percent7d: 17, MinutesToReset7d: intPtr(7200),
 				Projection: &status.Projections{
 					FiveHour: nil,
 					SevenDay: &status.Projection{
@@ -725,7 +733,7 @@ func TestRefreshChart_FromEarliest(t *testing.T) {
 func TestQuotaMsgApplied(t *testing.T) {
 	m := New(Deps{Cache: nil})
 	msg := QuotaMsg{
-		Usage:     &anthro.Usage{FiveHour: &anthro.Bucket{Utilization: 12.0, ResetsAt: time.Now().Add(time.Hour)}},
+		Usage:     &anthro.Usage{FiveHour: &anthro.Bucket{Utilization: 12.0, ResetsAt: timePtr(time.Now().Add(time.Hour))}},
 		Source:    "api",
 		UpdatedAt: time.Now(),
 	}
@@ -739,7 +747,7 @@ func TestQuotaMsgApplied(t *testing.T) {
 func TestHeaderShowsDevChip(t *testing.T) {
 	m := New(Deps{IsDev: true})
 	m.w, m.h = 120, 40
-	m.window = status.Window{Percent: 5, MinutesToReset: 60, CeilingLabel: "max_20x"}
+	m.window = status.Window{Percent: 5, MinutesToReset: intPtr(60), CeilingLabel: "max_20x"}
 	got := m.View()
 	if !strings.Contains(got, "[DEV]") {
 		t.Errorf("expected [DEV] chip in dev header, got:\n%s", got)
@@ -756,7 +764,7 @@ func TestHeaderShowsDevChip(t *testing.T) {
 func TestFooterRightAlignsIndicators(t *testing.T) {
 	m := New(Deps{IsDev: true})
 	m.w, m.h = 120, 40
-	m.window = status.Window{Percent: 5, MinutesToReset: 60}
+	m.window = status.Window{Percent: 5, MinutesToReset: intPtr(60)}
 	updated, _ := m.Update(IndexProgressMsg{Done: 12, Total: 30, Active: true})
 	m = updated.(Model)
 	v := m.View()
@@ -785,7 +793,7 @@ func TestFooterRightAlignsIndicators(t *testing.T) {
 func TestHeaderHidesDevChipInRelease(t *testing.T) {
 	m := New(Deps{}) // IsDev defaults to false
 	m.w, m.h = 120, 40
-	m.window = status.Window{Percent: 5, MinutesToReset: 60, CeilingLabel: "max_20x"}
+	m.window = status.Window{Percent: 5, MinutesToReset: intPtr(60), CeilingLabel: "max_20x"}
 	got := m.View()
 	if strings.Contains(got, "[DEV]") {
 		t.Errorf("release header should not contain [DEV] chip:\n%s", got)
@@ -1750,8 +1758,8 @@ func seedScrollTestModel(t *testing.T, count int) (*Model, func()) {
 	}
 	for i := 0; i < 10; i++ {
 		u := anthro.Usage{
-			FiveHour: &anthro.Bucket{Utilization: float64(10 + i*5), ResetsAt: now.Add(time.Hour)},
-			SevenDay: &anthro.Bucket{Utilization: float64(5 + i*2), ResetsAt: now.Add(24 * time.Hour)},
+			FiveHour: &anthro.Bucket{Utilization: float64(10 + i*5), ResetsAt: timePtr(now.Add(time.Hour))},
+			SevenDay: &anthro.Bucket{Utilization: float64(5 + i*2), ResetsAt: timePtr(now.Add(24 * time.Hour))},
 		}
 		if err := c.RecordUsageSample(u, now.Add(time.Duration(-i)*5*time.Minute)); err != nil {
 			c.Close()
@@ -2776,8 +2784,8 @@ func TestRefreshChart_RemainingMode(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Minute)
 	for i := 0; i < 10; i++ {
 		u := anthro.Usage{
-			FiveHour: &anthro.Bucket{Utilization: float64(i * 10), ResetsAt: now.Add(time.Hour)},
-			SevenDay: &anthro.Bucket{Utilization: float64(i * 5), ResetsAt: now.Add(24 * time.Hour)},
+			FiveHour: &anthro.Bucket{Utilization: float64(i * 10), ResetsAt: timePtr(now.Add(time.Hour))},
+			SevenDay: &anthro.Bucket{Utilization: float64(i * 5), ResetsAt: timePtr(now.Add(24 * time.Hour))},
 		}
 		if err := c.RecordUsageSample(u, now.Add(time.Duration(-i)*3*time.Minute)); err != nil {
 			t.Fatalf("RecordUsageSample: %v", err)
@@ -2831,8 +2839,8 @@ func TestBeginUnitAnimation_BarToLine(t *testing.T) {
 	}
 
 	u := anthro.Usage{
-		FiveHour: &anthro.Bucket{Utilization: 50.0, ResetsAt: now.Add(time.Hour)},
-		SevenDay: &anthro.Bucket{Utilization: 25.0, ResetsAt: now.Add(24 * time.Hour)},
+		FiveHour: &anthro.Bucket{Utilization: 50.0, ResetsAt: timePtr(now.Add(time.Hour))},
+		SevenDay: &anthro.Bucket{Utilization: 25.0, ResetsAt: timePtr(now.Add(24 * time.Hour))},
 	}
 	if err := c.RecordUsageSample(u, now); err != nil {
 		t.Fatalf("RecordUsageSample: %v", err)
@@ -2883,7 +2891,7 @@ func TestBeginUnitAnimation_LineToBar(t *testing.T) {
 	}
 
 	u := anthro.Usage{
-		FiveHour: &anthro.Bucket{Utilization: 50.0, ResetsAt: now.Add(time.Hour)},
+		FiveHour: &anthro.Bucket{Utilization: 50.0, ResetsAt: timePtr(now.Add(time.Hour))},
 	}
 	if err := c.RecordUsageSample(u, now); err != nil {
 		t.Fatalf("RecordUsageSample: %v", err)
@@ -2932,8 +2940,8 @@ func TestView_RemainingModeShowsYTicks(t *testing.T) {
 	}
 
 	u := anthro.Usage{
-		FiveHour: &anthro.Bucket{Utilization: 40.0, ResetsAt: now.Add(time.Hour)},
-		SevenDay: &anthro.Bucket{Utilization: 20.0, ResetsAt: now.Add(24 * time.Hour)},
+		FiveHour: &anthro.Bucket{Utilization: 40.0, ResetsAt: timePtr(now.Add(time.Hour))},
+		SevenDay: &anthro.Bucket{Utilization: 20.0, ResetsAt: timePtr(now.Add(24 * time.Hour))},
 	}
 	if err := c.RecordUsageSample(u, now); err != nil {
 		t.Fatalf("RecordUsageSample: %v", err)
@@ -3097,8 +3105,8 @@ func TestFullUnitCycle_TokensCostRemaining(t *testing.T) {
 		t.Fatalf("InsertMessages: %v", err)
 	}
 	u := anthro.Usage{
-		FiveHour: &anthro.Bucket{Utilization: 40.0, ResetsAt: now.Add(time.Hour)},
-		SevenDay: &anthro.Bucket{Utilization: 20.0, ResetsAt: now.Add(24 * time.Hour)},
+		FiveHour: &anthro.Bucket{Utilization: 40.0, ResetsAt: timePtr(now.Add(time.Hour))},
+		SevenDay: &anthro.Bucket{Utilization: 20.0, ResetsAt: timePtr(now.Add(24 * time.Hour))},
 	}
 	if err := c.RecordUsageSample(u, now); err != nil {
 		t.Fatalf("RecordUsageSample: %v", err)
@@ -4037,8 +4045,8 @@ func TestIntro_QuotaBars_NoData7d_PlaceholderUnchanged(t *testing.T) {
 func quotaUsage(utilFiveHour, utilSevenDay float64) *anthro.Usage {
 	now := time.Now()
 	return &anthro.Usage{
-		FiveHour: &anthro.Bucket{Utilization: utilFiveHour, ResetsAt: now.Add(2 * time.Hour)},
-		SevenDay: &anthro.Bucket{Utilization: utilSevenDay, ResetsAt: now.Add(48 * time.Hour)},
+		FiveHour: &anthro.Bucket{Utilization: utilFiveHour, ResetsAt: timePtr(now.Add(2 * time.Hour))},
+		SevenDay: &anthro.Bucket{Utilization: utilSevenDay, ResetsAt: timePtr(now.Add(48 * time.Hour))},
 	}
 }
 

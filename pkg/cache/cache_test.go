@@ -17,6 +17,11 @@ import (
 	"github.com/martinciu/ccpulse/pkg/pricing"
 )
 
+// timePtr returns &t. Test-only helper to satisfy the pointer-typed
+// anthro.Bucket.ResetsAt field for sites that build the value inline
+// (Go can't take the address of a function-call result directly).
+func timePtr(t time.Time) *time.Time { return &t }
+
 // withTimeLocal swaps time.Local for the duration of the test. Tests
 // calling this MUST NOT use t.Parallel() — mutating time.Local races
 // with any other tz-aware test in the same package.
@@ -198,8 +203,8 @@ func TestRecordUsageSample_RoundTrip(t *testing.T) {
 	sevenResets := when.Add(48 * time.Hour)
 	util := 42.5
 	u := anthro.Usage{
-		FiveHour: &anthro.Bucket{Utilization: 12.0, ResetsAt: fiveResets},
-		SevenDay: &anthro.Bucket{Utilization: 67.0, ResetsAt: sevenResets},
+		FiveHour: &anthro.Bucket{Utilization: 12.0, ResetsAt: &fiveResets},
+		SevenDay: &anthro.Bucket{Utilization: 67.0, ResetsAt: &sevenResets},
 		ExtraUsage: &anthro.ExtraUsage{
 			IsEnabled: true, MonthlyLimit: 100, UsedCredits: 42, Utilization: &util, Currency: "USD",
 		},
@@ -272,8 +277,8 @@ func TestRecordUsageSample_DuplicateTs(t *testing.T) {
 	defer c.Close()
 
 	when := time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)
-	first := anthro.Usage{FiveHour: &anthro.Bucket{Utilization: 10.0, ResetsAt: when.Add(time.Hour)}}
-	second := anthro.Usage{FiveHour: &anthro.Bucket{Utilization: 99.0, ResetsAt: when.Add(time.Hour)}}
+	first := anthro.Usage{FiveHour: &anthro.Bucket{Utilization: 10.0, ResetsAt: timePtr(when.Add(time.Hour))}}
+	second := anthro.Usage{FiveHour: &anthro.Bucket{Utilization: 99.0, ResetsAt: timePtr(when.Add(time.Hour))}}
 
 	if err := c.RecordUsageSample(first, when); err != nil {
 		t.Fatal(err)
@@ -313,7 +318,7 @@ func TestPruneUsageSamples(t *testing.T) {
 		base,
 	}
 	for i, when := range samples {
-		u := anthro.Usage{FiveHour: &anthro.Bucket{Utilization: float64(i), ResetsAt: when.Add(time.Hour)}}
+		u := anthro.Usage{FiveHour: &anthro.Bucket{Utilization: float64(i), ResetsAt: timePtr(when.Add(time.Hour))}}
 		if err := c.RecordUsageSample(u, when); err != nil {
 			t.Fatal(err)
 		}
@@ -355,7 +360,7 @@ func TestRecordUsageSample_NilBucket(t *testing.T) {
 
 	when := time.Date(2026, 5, 9, 12, 34, 56, 0, time.UTC)
 	u := anthro.Usage{
-		FiveHour: &anthro.Bucket{Utilization: 12.5, ResetsAt: when.Add(2 * time.Hour)},
+		FiveHour: &anthro.Bucket{Utilization: 12.5, ResetsAt: timePtr(when.Add(2 * time.Hour))},
 		// SevenDay deliberately nil
 	}
 
@@ -382,6 +387,35 @@ func TestRecordUsageSample_NilBucket(t *testing.T) {
 	}
 	if sevenResets.Valid {
 		t.Errorf("seven_day_resets_at = %q, want NULL", sevenResets.String)
+	}
+}
+
+func TestRecordUsageSampleNullResetsAt(t *testing.T) {
+	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	u := anthro.Usage{
+		FiveHour:         &anthro.Bucket{Utilization: 0.0, ResetsAt: nil},
+		SevenDay:         &anthro.Bucket{Utilization: 0.0, ResetsAt: nil},
+		SevenDayOmelette: &anthro.Bucket{Utilization: 0.0, ResetsAt: nil},
+	}
+	if err := c.RecordUsageSample(u, time.Unix(1_700_000_000, 0)); err != nil {
+		t.Fatalf("RecordUsageSample: %v", err)
+	}
+
+	var n int
+	if err := c.DB().QueryRow(`
+		SELECT count(*) FROM usage_samples
+		WHERE five_hour_resets_at IS NULL
+		  AND seven_day_resets_at IS NULL
+		  AND seven_day_omelette_resets_at IS NULL`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("expected 1 row with all *_resets_at NULL, got %d", n)
 	}
 }
 
@@ -1572,7 +1606,7 @@ func TestSevenDaySamplesSince_OrderingAndFilter(t *testing.T) {
 	resetsA := time.Date(2026, 5, 18, 11, 0, 0, 0, time.UTC) // bucket A reset
 	mkUsage := func(pct float64, resetsAt time.Time) anthro.Usage {
 		return anthro.Usage{
-			SevenDay: &anthro.Bucket{Utilization: pct, ResetsAt: resetsAt},
+			SevenDay: &anthro.Bucket{Utilization: pct, ResetsAt: &resetsAt},
 		}
 	}
 
@@ -1620,7 +1654,7 @@ func TestSevenDaySamplesSince_NullPctExcluded(t *testing.T) {
 
 	// One sample with SevenDay populated; one with SevenDay nil (NULL pct).
 	if err := c.RecordUsageSample(anthro.Usage{
-		SevenDay: &anthro.Bucket{Utilization: 25.0, ResetsAt: now.Add(96 * time.Hour)},
+		SevenDay: &anthro.Bucket{Utilization: 25.0, ResetsAt: timePtr(now.Add(96 * time.Hour))},
 	}, now.Add(-2*time.Hour)); err != nil {
 		t.Fatalf("Record populated: %v", err)
 	}
@@ -1659,12 +1693,12 @@ func TestSevenDaySamplesSince_ResetsAtNormalized(t *testing.T) {
 	resets2 := time.Date(2026, 5, 17, 9, 0, 0, 719504000, time.UTC)
 
 	if err := c.RecordUsageSample(anthro.Usage{
-		SevenDay: &anthro.Bucket{Utilization: 70.0, ResetsAt: resets1},
+		SevenDay: &anthro.Bucket{Utilization: 70.0, ResetsAt: &resets1},
 	}, now.Add(-12*time.Hour)); err != nil {
 		t.Fatalf("Record 1: %v", err)
 	}
 	if err := c.RecordUsageSample(anthro.Usage{
-		SevenDay: &anthro.Bucket{Utilization: 80.0, ResetsAt: resets2},
+		SevenDay: &anthro.Bucket{Utilization: 80.0, ResetsAt: &resets2},
 	}, now); err != nil {
 		t.Fatalf("Record 2: %v", err)
 	}
@@ -1696,9 +1730,9 @@ func TestUtilizationSince(t *testing.T) {
 		fiveHour *anthro.Bucket
 		sevenDay *anthro.Bucket
 	}{
-		{now.Add(-6 * time.Minute), &anthro.Bucket{Utilization: 10.0, ResetsAt: now.Add(time.Hour)}, &anthro.Bucket{Utilization: 5.0, ResetsAt: now.Add(24 * time.Hour)}},
-		{now.Add(-3 * time.Minute), &anthro.Bucket{Utilization: 25.0, ResetsAt: now.Add(time.Hour)}, nil},
-		{now, &anthro.Bucket{Utilization: 50.0, ResetsAt: now.Add(time.Hour)}, &anthro.Bucket{Utilization: 15.0, ResetsAt: now.Add(24 * time.Hour)}},
+		{now.Add(-6 * time.Minute), &anthro.Bucket{Utilization: 10.0, ResetsAt: timePtr(now.Add(time.Hour))}, &anthro.Bucket{Utilization: 5.0, ResetsAt: timePtr(now.Add(24 * time.Hour))}},
+		{now.Add(-3 * time.Minute), &anthro.Bucket{Utilization: 25.0, ResetsAt: timePtr(now.Add(time.Hour))}, nil},
+		{now, &anthro.Bucket{Utilization: 50.0, ResetsAt: timePtr(now.Add(time.Hour))}, &anthro.Bucket{Utilization: 15.0, ResetsAt: timePtr(now.Add(24 * time.Hour))}},
 	}
 	for _, s := range samples {
 		u := anthro.Usage{FiveHour: s.fiveHour, SevenDay: s.sevenDay}

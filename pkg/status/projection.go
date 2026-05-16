@@ -19,14 +19,18 @@ const (
 //
 // Inputs:
 //   - utilization: raw float from anthro.Bucket.Utilization (NOT the clamped Window.Percent).
-//   - resetsAt:    bucket reset time.
+//   - resetsAt:    bucket reset time, or nil when the API reported `resets_at: null`.
 //   - now:         caller-supplied current time (testable).
 //   - window:      configured window duration (5h or 7d).
 //   - lowCutoff:   elapsed threshold below which Confidence is "low".
 //
-// When elapsed <= 0 (clock skew) the function returns a zeroed projection
-// with Confidence "low" rather than dividing by zero.
-func projectBucket(utilization float64, resetsAt, now time.Time, window, lowCutoff time.Duration) Projection {
+// When resetsAt is nil (idle window or upstream glitch) or elapsed <= 0
+// (clock skew) the function returns a zeroed projection with Confidence
+// "low" rather than dividing by zero.
+func projectBucket(utilization float64, resetsAt *time.Time, now time.Time, window, lowCutoff time.Duration) Projection {
+	if resetsAt == nil {
+		return Projection{Confidence: "low"}
+	}
 	// Defend the JSON output: a corrupt usage.json cache or future API
 	// change could surface NaN / ±Inf in Utilization, which would propagate
 	// into SlopePctPerHour and make encoding/json reject the whole Window
@@ -80,8 +84,12 @@ const (
 func projectSevenDay(
 	samples []cache.SevenDaySample,
 	currentPct float64,
-	resetsAt, now time.Time,
+	resetsAt *time.Time,
+	now time.Time,
 ) Projection {
+	if resetsAt == nil {
+		return Projection{Confidence: "low"}
+	}
 	linear := projectBucket(currentPct, resetsAt, now, sevenDayWindow, sevenDayLowConfidenceCutoff)
 
 	if len(samples) < minSamplesForSlope {

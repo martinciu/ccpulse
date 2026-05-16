@@ -8,11 +8,14 @@ import (
 )
 
 // Window is the snapshot consumed by the TUI header and `status --json`.
+// MinutesToReset and MinutesToReset7d are *int so the "no reset target"
+// case (5h idle, 7d upstream glitch) round-trips faithfully through
+// `status --json` instead of collapsing to an ambiguous 0.
 type Window struct {
 	Percent          int           `json:"percent"`
-	MinutesToReset   int           `json:"minutes_to_reset"`
+	MinutesToReset   *int          `json:"minutes_to_reset"`
 	Percent7d        int           `json:"percent_7d,omitempty"`
-	MinutesToReset7d int           `json:"minutes_to_reset_7d,omitempty"`
+	MinutesToReset7d *int          `json:"minutes_to_reset_7d,omitempty"`
 	Has7d            bool          `json:"has_7d,omitempty"`
 	CeilingLabel     string        `json:"ceiling_label"`
 	CeilingPretty    string        `json:"ceiling_pretty"`
