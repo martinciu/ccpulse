@@ -319,6 +319,18 @@ func TestZoomCycle_PreservesTimeAnchorInRemaining(t *testing.T) {
 	defer cleanup()
 	m.zoomIdx = 0 // 15m — widest canvas
 	m.unitIdx = int(chartUnitRemaining)
+
+	// Insert an early usage sample so the remaining-mode lower-bound clamp
+	// (#200) doesn't snap startBucket (at 1/4 of the canvas, ≈ now-131h)
+	// forward. Without this, the only usage_samples are from the last 45
+	// minutes, making minX > startBucket and collapsing the valid range.
+	earlyNow := time.Now().UTC().Truncate(15 * time.Minute)
+	earlyUsage := anthro.Usage{
+		FiveHour: &anthro.Bucket{Utilization: 5.0, ResetsAt: earlyNow},
+	}
+	if err := m.deps.Cache.RecordUsageSample(earlyUsage, earlyNow.Add(-160*time.Hour)); err != nil {
+		t.Fatalf("RecordUsageSample early: %v", err)
+	}
 	m.refreshChart()
 
 	if m.lastCanvasW <= m.viewport.Width+10 {

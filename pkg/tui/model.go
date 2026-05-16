@@ -1268,21 +1268,44 @@ func earliestRemainingSampleAt(pts5h, pts7d []cache.UtilizationPoint) time.Time 
 //     renderSpringFrame's slack-handling computeSpringSlice was tuned
 //     against. The bucket-aligned canvas guarantees lastStarts and
 //     visibleBuckets line up.
-//   - Remaining mode: clamp against (lastCanvasW - viewport.Width) /
+//   - Remaining mode: upper bound is (lastCanvasW - viewport.Width) /
 //     stride. lastStarts in remaining mode is sparse sample points
 //     (not bucket-aligned), so the bar-mode clamp would collapse to
 //     0 the moment usage_samples count drops below visibleBuckets.
 //     The canvas-width clamp matches the column-based anchor logic
 //     in refreshChart.
+//
+//     Remaining mode also enforces a LOWER bound at the earliest
+//     usage_samples timestamp (per #200): the user cannot pan earlier
+//     than the first sample, since the canvas left of it shows blank
+//     line with axis labels but no data. The bound is derived from
+//     m.lastPts5h[0].At / m.lastPts7d[0].At via timeToColumn against
+//     the active canvas span. When both slices are empty (fresh install
+//     with no API fetch yet) the lower bound stays 0 and the existing
+//     canvas-clamp behaviour applies — no panic, no spurious snap.
+//
+//     Mode-switch auto-snap (also #200) falls out for free: when the
+//     user presses `u` to enter remaining mode while scrolled out of
+//     range, refreshChart's anchor-restore block calls setX with the
+//     pre-switch anchor's column; this clamp pulls it up to the
+//     earliest in-range bucket before the spring animation samples
+//     m.springXOffset.
 func (m *Model) setX(n int) {
 	stride := ZoomLevels[m.zoomIdx].stride()
-	var maxX int
+	var minX, maxX int
 	if chartUnit(m.unitIdx) == chartUnitRemaining {
 		maxX = max(0, m.lastCanvasW-m.viewport.Width) / stride
+		if earliest := earliestRemainingSampleAt(m.lastPts5h, m.lastPts7d); !earliest.IsZero() &&
+			!m.lastChartFrom.IsZero() && m.lastChartTo.After(m.lastChartFrom) {
+			minX = timeToColumn(earliest, m.lastCanvasW, m.lastChartFrom, m.lastChartTo) / stride
+			if minX > maxX {
+				minX = maxX
+			}
+		}
 	} else {
 		maxX = max(0, len(m.lastStarts)-m.visibleBuckets())
 	}
-	n = min(max(n, 0), maxX)
+	n = min(max(n, minX), maxX)
 	m.viewport.SetXOffset(n * stride)
 	m.viewportXOffset = n
 }
