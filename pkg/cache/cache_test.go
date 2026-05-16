@@ -392,6 +392,40 @@ func TestRecordUsageSample_NilBucket(t *testing.T) {
 	}
 }
 
+func TestSevenDaySamplesSinceSkipsNullResetsAt(t *testing.T) {
+	resetNullResetsWarnedForTest()
+
+	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	// Mix: two valid rows, two glitch rows (pct non-null, resets_at NULL).
+	if _, err := c.DB().Exec(`
+		INSERT INTO usage_samples(ts, source, seven_day_pct, seven_day_resets_at) VALUES
+			(1, 'api', 88, '2026-05-10T09:00:00Z'),
+			(2, 'api', 89, NULL),
+			(3, 'api', 90, '2026-05-10T09:00:00Z'),
+			(4, 'api', 91, NULL)
+	`); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	got, err := c.SevenDaySamplesSince(time.Unix(0, 0))
+	if err != nil {
+		t.Fatalf("SevenDaySamplesSince: %v", err)
+	}
+	if len(got) != 2 {
+		t.Errorf("expected 2 valid samples (glitch rows filtered), got %d: %+v", len(got), got)
+	}
+	for _, s := range got {
+		if s.Pct != 88 && s.Pct != 90 {
+			t.Errorf("unexpected sample passed through: %+v", s)
+		}
+	}
+}
+
 func TestWarnOnceNullResets(t *testing.T) {
 	// Reset the package-level once-flags to a clean state — necessary
 	// because Go tests share package state. Use the unexported reset

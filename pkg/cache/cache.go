@@ -291,14 +291,19 @@ ORDER BY ts ASC`, since.UTC().Unix())
 		if err := rows.Scan(&ts, &pct, &resetsAt); err != nil {
 			return nil, fmt.Errorf("scan usage_samples row: %w", err)
 		}
+		if !resetsAt.Valid {
+			// Upstream Anthropic glitch: 7d bucket has a real pct but
+			// resets_at came back null. Filter so projection slope math
+			// doesn't ingest a bogus bucket boundary.
+			warnOnceNullResets("seven_day_resets_at")
+			continue
+		}
 		// Normalize ResetsAt to second precision so sub-second jitter in the
 		// API response (nanoseconds differ across calls for the same logical
 		// reset boundary) doesn't create spurious distinct bucket IDs.
 		normalizedResetsAt := resetsAt.String
-		if resetsAt.Valid {
-			if t, err := time.Parse(time.RFC3339Nano, resetsAt.String); err == nil {
-				normalizedResetsAt = t.UTC().Truncate(time.Second).Format(time.RFC3339)
-			}
+		if t, err := time.Parse(time.RFC3339Nano, resetsAt.String); err == nil {
+			normalizedResetsAt = t.UTC().Truncate(time.Second).Format(time.RFC3339)
 		}
 		out = append(out, SevenDaySample{
 			At:       time.Unix(ts, 0).UTC(),
