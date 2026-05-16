@@ -1498,7 +1498,7 @@ func (m *Model) refreshChart() {
 		}
 		unit = chartUnitRemaining
 	default: // tokens
-		buckets, err := m.deps.Cache.TokenBuckets(zoom.Duration, from, to)
+		buckets, err := m.deps.Cache.OutputTokenBuckets(zoom.Duration, from, to)
 		if err != nil || len(buckets) == 0 {
 			m.viewport.SetContent(emptyPlaceholder(m.chartWidth(), m.chartHeight()))
 			m.lastValues = nil

@@ -731,9 +731,9 @@ func TestRefreshChart_FromEarliest(t *testing.T) {
 	from := cache.BucketAlign(earliest, zoom.Duration)
 	wantMin := int(to.Sub(from)/zoom.Duration) - 1 // tolerate ±1 bucket on boundary
 
-	buckets, err := c.TokenBuckets(zoom.Duration, from, to)
+	buckets, err := c.OutputTokenBuckets(zoom.Duration, from, to)
 	if err != nil {
-		t.Fatalf("TokenBuckets: %v", err)
+		t.Fatalf("OutputTokenBuckets: %v", err)
 	}
 	if len(buckets) < wantMin {
 		t.Errorf("got %d buckets, want at least %d (≈3h at 15m)", len(buckets), wantMin)

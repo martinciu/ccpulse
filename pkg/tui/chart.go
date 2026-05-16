@@ -134,7 +134,7 @@ func timeToColumn(t time.Time, canvasW int, from, to time.Time) int {
 }
 
 // bucketCountInRange counts the bucket slots covering [from, to) at the
-// given zoom duration. Matches cache.TokenBuckets / cache.CostBuckets
+// given zoom duration. Matches cache.OutputTokenBuckets / cache.CostBuckets
 // return-length semantics:
 //   - For sub-day durations, the count is int(to.Sub(from) / dur).
 //   - For 24h, the count is the number of local-tz calendar days in
@@ -199,7 +199,7 @@ func computeSpringSlice(start, prevLongest, vpWidth, stride int) (sliceStart, sp
 // returns the single closest point as a baseline anchor (the first
 // point if pts are all after to, the last point if all before from).
 //
-// pts is assumed to be sorted by At ascending — true for cache.TokenBuckets
+// pts is assumed to be sorted by At ascending — true for cache.OutputTokenBuckets
 // and status.Compute output. Linear scan; binary search is unnecessary
 // at the n=O(thousands) sizes seen by the line branch.
 func slicePointsInRange(pts []cache.UtilizationPoint, from, to time.Time) []cache.UtilizationPoint {
