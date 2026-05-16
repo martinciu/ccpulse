@@ -321,14 +321,15 @@ func TestZoomCycle_PreservesTimeAnchorInRemaining(t *testing.T) {
 	m.unitIdx = int(chartUnitRemaining)
 
 	// Insert an early usage sample so the remaining-mode lower-bound clamp
-	// (#200) doesn't snap startBucket (at 1/4 of the canvas, ≈ now-131h)
-	// forward. Without this, the only usage_samples are from the last 45
-	// minutes, making minX > startBucket and collapsing the valid range.
-	earlyNow := time.Now().UTC().Truncate(15 * time.Minute)
+	// (#200) doesn't prevent backward scrolling. The sample is placed exactly
+	// at m.lastChartFrom (the canvas left edge populated by seedScrollTestModel's
+	// initial refreshChart call). timeToColumn clamps any t <= from to column 0,
+	// so minX resolves to 0 and never blocks startBucket. This no longer depends
+	// on the seed's row count or a hard-coded hour offset.
 	earlyUsage := anthro.Usage{
-		FiveHour: &anthro.Bucket{Utilization: 5.0, ResetsAt: earlyNow},
+		FiveHour: &anthro.Bucket{Utilization: 5.0, ResetsAt: time.Now().UTC()},
 	}
-	if err := m.deps.Cache.RecordUsageSample(earlyUsage, earlyNow.Add(-160*time.Hour)); err != nil {
+	if err := m.deps.Cache.RecordUsageSample(earlyUsage, m.lastChartFrom); err != nil {
 		t.Fatalf("RecordUsageSample early: %v", err)
 	}
 	m.refreshChart()
@@ -365,6 +366,45 @@ func TestZoomCycle_PreservesTimeAnchorInRemaining(t *testing.T) {
 			t.Errorf("zoom %s shifted anchor: want=%v got=%v (tol=%v)",
 				ZoomLevels[m.zoomIdx].Label, wantTime, gotTime, tolerance)
 		}
+	}
+}
+
+// TestRemainingClamp_DoesNotBlockZoomAnchorRestore verifies the precondition
+// that the remaining-mode lower-bound clamp (pkg/tui/model.go, the minX guard
+// inside setX when unitIdx == chartUnitRemaining) does NOT prevent a backward
+// scroll once an early usage sample is anchored at m.lastChartFrom. If that
+// clamp regresses, TestZoomCycle_PreservesTimeAnchorInRemaining fails with a
+// confusing "zoom shifted anchor" message. This test asserts the precondition
+// directly so a clamp regression is caught here with an unambiguous message.
+func TestRemainingClamp_DoesNotBlockZoomAnchorRestore(t *testing.T) {
+	m, cleanup := seedScrollTestModel(t, 700)
+	defer cleanup()
+	m.zoomIdx = 0 // 15m — widest canvas
+	m.unitIdx = int(chartUnitRemaining)
+
+	// Place an early usage sample at m.lastChartFrom (the canvas left edge).
+	// timeToColumn clamps any t <= from to column 0, so minX resolves to 0
+	// and the clamp never blocks startBucket. This mirrors the setup in
+	// TestZoomCycle_PreservesTimeAnchorInRemaining.
+	earlyUsage := anthro.Usage{
+		FiveHour: &anthro.Bucket{Utilization: 5.0, ResetsAt: time.Now().UTC()},
+	}
+	if err := m.deps.Cache.RecordUsageSample(earlyUsage, m.lastChartFrom); err != nil {
+		t.Fatalf("RecordUsageSample early: %v", err)
+	}
+	m.refreshChart()
+
+	if m.lastCanvasW <= m.viewport.Width+10 {
+		t.Skipf("seeded canvas (%d) too narrow for a meaningful scroll", m.lastCanvasW)
+	}
+
+	stride := ZoomLevels[m.zoomIdx].stride()
+	startBucket := (m.lastCanvasW / 4) / stride
+	m.setX(startBucket)
+
+	if m.viewportXOffset != startBucket {
+		t.Fatalf("setX(%d) clamped to %d — remaining-mode lower-bound (minX) regressed; canvasW=%d viewport.Width=%d",
+			startBucket, m.viewportXOffset, m.lastCanvasW, m.viewport.Width)
 	}
 }
 
