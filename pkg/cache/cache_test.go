@@ -701,6 +701,56 @@ func TestOutputTokenBuckets_ContiguousRange(t *testing.T) {
 	}
 }
 
+// TestOutputTokenBuckets_OutputOnly_CacheReadIgnored is the regression guard
+// for issue #209: a bucket whose volume is dominated by cache_read_tokens
+// must render the output_tokens value, not the total.
+func TestOutputTokenBuckets_OutputOnly_CacheReadIgnored(t *testing.T) {
+	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	tab, _ := pricing.Load()
+
+	// One message: tiny output, huge cache_read, plus non-zero values in every
+	// other token column. If the aggregate were the 5-column sum the bucket
+	// would total 30_001_750; under SUM(output_tokens) it must be exactly 50.
+	ts := time.Date(2026, 5, 9, 11, 50, 0, 0, time.UTC)
+	msgs := []parse.Message{{
+		SessionID:          "s1",
+		ProjectSlug:        "p",
+		Model:              "claude-sonnet-4-6",
+		Timestamp:          ts,
+		InputTokens:        1_000,
+		OutputTokens:       50,
+		CacheReadTokens:    30_000_000,
+		CacheWrite5mTokens: 500,
+		CacheWrite1hTokens: 200,
+	}}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatal(err)
+	}
+
+	from := time.Date(2026, 5, 9, 11, 45, 0, 0, time.UTC)
+	to := time.Date(2026, 5, 9, 11, 55, 0, 0, time.UTC)
+	buckets, err := c.OutputTokenBuckets(5*time.Minute, from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(buckets) != 2 {
+		t.Fatalf("want 2 buckets, got %d: %+v", len(buckets), buckets)
+	}
+	// buckets[0] is 11:45-11:49 (empty); buckets[1] is 11:50-11:54 (the row).
+	if buckets[0].Tokens != 0 {
+		t.Errorf("buckets[0].Tokens = %d, want 0 (empty)", buckets[0].Tokens)
+	}
+	if buckets[1].Tokens != 50 {
+		t.Errorf("buckets[1].Tokens = %d, want 50 (output_tokens only); huge cache_read must NOT contribute",
+			buckets[1].Tokens)
+	}
+}
+
 func TestOutputTokenBuckets_AllEmpty(t *testing.T) {
 	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
