@@ -1135,6 +1135,34 @@ func (m *Model) renderSpringFrame() {
 			pts5h, pts7d = m.oldPts5h, m.oldPts7d
 		}
 
+		fullFrom, fullTo := m.lastChartFrom, m.lastChartTo
+		if fullFrom.IsZero() {
+			fullFrom = time.Now().Add(-5 * time.Hour)
+		}
+		if fullTo.IsZero() {
+			fullTo = time.Now()
+		}
+
+		// PERF (#180): window the line chart to the visible viewport.
+		// Full-canvas rebuild at canvasW=2880 blows the 60fps frame
+		// budget (~93ms per real-binary probe). The windowed render at
+		// canvasW=viewport.Width is pixel-identical inside the visible
+		// region because timeserieslinechart's WithTimeRange maps
+		// time→col linearly — so the settle transition to refreshChart's
+		// full canvas doesn't visibly snap. Parallels the bar branch's
+		// computeSpringSlice windowing.
+		fullCanvasW := zoom.CanvasWidth(bucketCountInRange(fullFrom, fullTo, zoom.Duration))
+		if fullCanvasW < m.viewport.Width {
+			fullCanvasW = m.viewport.Width
+		}
+		vpW := m.viewport.Width
+		chartXOffset := m.viewportXOffset * zoom.stride()
+		viewFrom := columnToTime(chartXOffset, fullCanvasW, fullFrom, fullTo)
+		viewTo := columnToTime(chartXOffset+vpW, fullCanvasW, fullFrom, fullTo)
+
+		slicedPts5h := slicePointsInRange(pts5h, viewFrom, viewTo)
+		slicedPts7d := slicePointsInRange(pts7d, viewFrom, viewTo)
+
 		interpPt := func(p cache.UtilizationPoint) cache.UtilizationPoint {
 			target := max(0, 1.0-p.Pct/100.0)
 			// displayed ∈ [1.0, target]: 1.0 (flat) when maxR=0, target (real) when maxR=1.
@@ -1142,30 +1170,16 @@ func (m *Model) renderSpringFrame() {
 			return cache.UtilizationPoint{At: p.At, Pct: (1.0 - displayed) * 100.0}
 		}
 
-		interp5h := make([]cache.UtilizationPoint, len(pts5h))
-		for i, p := range pts5h {
+		interp5h := make([]cache.UtilizationPoint, len(slicedPts5h))
+		for i, p := range slicedPts5h {
 			interp5h[i] = interpPt(p)
 		}
-		interp7d := make([]cache.UtilizationPoint, len(pts7d))
-		for i, p := range pts7d {
+		interp7d := make([]cache.UtilizationPoint, len(slicedPts7d))
+		for i, p := range slicedPts7d {
 			interp7d[i] = interpPt(p)
 		}
 
-		from, to := m.lastChartFrom, m.lastChartTo
-		if from.IsZero() {
-			from = time.Now().Add(-5 * time.Hour)
-		}
-		if to.IsZero() {
-			to = time.Now()
-		}
-		// PERF (#180): during the spring, cap chartW to the viewport
-		// width — the per-tick rebuild cost is linear in canvasW, and a
-		// 2880-col rebuild blows the 16.7ms 60fps budget. The
-		// steady-state refreshChart call after settle restores the full
-		// canvas. User sees a brief "compressed" line for ~500ms during
-		// the toggle (accepted trade-off per spec option 1).
-		chartW := m.chartWidth()
-		m.viewport.SetContent(buildLineChart(interp5h, interp7d, from, to, chartW, chartH, time.Now(), zoom, m.dateOrder, "spring"))
+		m.viewport.SetContent(buildLineChart(interp5h, interp7d, viewFrom, viewTo, vpW, chartH, time.Now(), zoom, m.dateOrder, "spring"))
 		m.viewport.SetXOffset(0)
 		return
 	}
