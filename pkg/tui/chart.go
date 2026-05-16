@@ -574,7 +574,24 @@ func buildLineChart(pts5h, pts7d []cache.UtilizationPoint,
 		}
 	}
 
-	tslc.DrawBrailleAll()
+	// Explicit draw order: 7d first, 5h ("default") last. ntcharts'
+	// DrawBraille* OR-merges rune dot bits via CombineBraillePatterns
+	// but overwrites the cell STYLE per draw call (graph.go's
+	// DrawBrailleRune calls canvas.NewCellWithStyle with the new
+	// dataset's style each time), so the last name in the slice wins
+	// coloring in any shared braille cell. 5h is the actionable
+	// rate-limit indicator and must remain visible in shared y-bands;
+	// 7d is the slower context line and accepts being overdrawn.
+	//
+	// Do NOT switch back to DrawBrailleAll: its internal sort.Strings
+	// silently reshuffles this invariant the moment a third dataset
+	// is added whose name sorts after "default" (e.g. "future"). The
+	// overlap_5h_wins regression subtest in chart_test.go guards this.
+	//
+	// "default" matches timeserieslinechart.DefaultDataSetName — used
+	// inline because buildLineChart already targets the default
+	// dataset implicitly via tslc.Push / tslc.SetStyle above.
+	tslc.DrawBrailleDataSets([]string{ds7d, "default"})
 	body := tslc.View()
 
 	if showXLabels {

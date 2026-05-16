@@ -1101,12 +1101,13 @@ func absInt(x int) int {
 // geometry (barsH=17) so a pre-fix run gives the canonical row 2 vs
 // row 1, col ~198 vs col ~200 split.
 //
-// Overdraw constraint: DrawBrailleAll sorts dataset names
-// alphabetically, so "7d" draws before "default" (5h). Identical
-// data on both series would make 5h overwrite 7d at every shared
-// cell post-fix, yielding zero visible 7d cells and a vacuous
-// failure. Both subtests below place the two series in
-// non-overlapping cells.
+// Overdraw constraint: 5h ("default") deliberately wins shared
+// braille cells via the explicit draw order in buildLineChart
+// (issue #196). The column_shared_scale and row_shared_scale
+// subtests below place the two series in non-overlapping cells
+// so the per-series rightmost/topmost assertions are not eaten
+// by overdraw; the adjacent overlap_5h_wins subtest exercises
+// the overdraw invariant directly with identical-data series.
 func TestBuildLineChart_5hAnd7dShareScale(t *testing.T) {
 	withForcedColor(t)
 	withForcedDarkBackground(t, true)
@@ -1184,6 +1185,34 @@ func TestBuildLineChart_5hAnd7dShareScale(t *testing.T) {
 		if scan.topmost5h != scan.topmost7d {
 			t.Errorf("issue #194: 5h topmost row=%d != 7d topmost row=%d (datasets do not share Y scale)",
 				scan.topmost5h, scan.topmost7d)
+		}
+	})
+
+	t.Run("overlap_5h_wins", func(t *testing.T) {
+		// Both series have IDENTICAL data: same Y, same time
+		// range, same point count. Every braille cell that
+		// holds a 5h dot also holds a 7d dot — maximum
+		// overdraw. Post-fix invariant: 5h ("default") wins
+		// every shared cell, so the rendered body must contain
+		// 5h-styled cells but ZERO 7d-styled cells.
+		//
+		// This test guards against a future regression where
+		// someone switches back to DrawBrailleAll (whose
+		// internal sort.Strings would reshuffle the winner the
+		// moment a third dataset's name sorts after "default")
+		// or rearranges the explicit name list in buildLineChart.
+		pts5h := makeUniformPoints(from, to, 24, 12.0) // Y = 0.88
+		pts7d := makeUniformPoints(from, to, 24, 12.0) // identical
+
+		body := buildLineChart(pts5h, pts7d, from, to, chartW, chartH, now, ZoomLevels[1], dateOrderMonthFirst)
+
+		scan := scanSeries(body, sgrOpen5h, sgrClose5h, sgrOpen7d, sgrClose7d)
+
+		if scan.count5h == 0 {
+			t.Fatalf("no 5h cells found — test setup broken (palette mismatch or chart empty)")
+		}
+		if scan.count7d != 0 {
+			t.Errorf("issue #196: 5h must consistently win shared cells; got %d visible 7d cells (expected 0)", scan.count7d)
 		}
 	})
 }
