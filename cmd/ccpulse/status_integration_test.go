@@ -422,6 +422,96 @@ func TestStatusJSONProjectionOverreach(t *testing.T) {
 	}
 }
 
+func TestStatusQuietSuppressesStdout(t *testing.T) {
+	cacheDir := t.TempDir()
+	credDir := t.TempDir()
+	t.Setenv("CCPULSE_CACHE_DIR", cacheDir)
+	t.Setenv("HOME", credDir)
+	writeTempCache(t, cacheDir)
+	writeTempCredential(t, credDir)
+
+	cmd := newStatusCmd()
+	cmd.SetArgs([]string{"--quiet"})
+	var out, errBuf bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errBuf)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("status --quiet: %v", err)
+	}
+	if got := out.String(); got != "" {
+		t.Errorf("stdout should be empty with --quiet, got: %q", got)
+	}
+}
+
+func TestStatusQuietStillRecordsSample(t *testing.T) {
+	cacheDir := t.TempDir()
+	credDir := t.TempDir()
+	t.Setenv("CCPULSE_CACHE_DIR", cacheDir)
+	t.Setenv("HOME", credDir)
+	writeTempCredential(t, credDir)
+
+	// Spin up a fake Anthropic API so anthro.Fetch returns source=api.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(sampleAPIBody))
+	}))
+	t.Cleanup(srv.Close)
+	restore := anthro.SetAPIURLForTest(srv.URL)
+	t.Cleanup(restore)
+
+	cmd := newStatusCmd()
+	cmd.SetArgs([]string{"--quiet"})
+	var out, errBuf bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errBuf)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("status --quiet: %v", err)
+	}
+	if out.Len() != 0 {
+		t.Errorf("stdout should be empty, got: %q", out.String())
+	}
+
+	// Verify the row landed in usage_samples.
+	dbPath := filepath.Join(cacheDir, "state.db")
+	c, err := cache.Open(dbPath)
+	if err != nil {
+		t.Fatalf("reopen cache: %v", err)
+	}
+	t.Cleanup(func() { c.Close() })
+	var count int
+	if err := c.DB().QueryRow(`SELECT COUNT(*) FROM usage_samples`).Scan(&count); err != nil {
+		t.Fatalf("count usage_samples: %v", err)
+	}
+	if count == 0 {
+		t.Errorf("expected at least one usage_samples row after --quiet fetch, got 0")
+	}
+	// Belt-and-braces: silence the unused import warning if runtime stops being needed.
+	_ = runtime.GOOS
+}
+
+func TestStatusQuietHardErrorStillExitsNonZero(t *testing.T) {
+	cacheDir := t.TempDir()
+	credDir := t.TempDir()
+	t.Setenv("CCPULSE_CACHE_DIR", cacheDir)
+	t.Setenv("HOME", credDir)
+
+	// Make state.db a directory so cache.Open fails.
+	if err := os.MkdirAll(filepath.Join(cacheDir, "state.db"), 0700); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	cmd := newStatusCmd()
+	cmd.SetArgs([]string{"--quiet"})
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	var out, errBuf bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errBuf)
+	if err := cmd.Execute(); err == nil {
+		t.Fatalf("expected non-nil error from hard cache-open failure with --quiet, got nil")
+	}
+}
+
 func TestStatusPrunesWhenRetentionConfigured(t *testing.T) {
 	cacheDir := t.TempDir()
 	credDir := t.TempDir()
