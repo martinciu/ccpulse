@@ -736,11 +736,15 @@ func (m Model) quotaIntroRatio(side quotaSide, target float64) float64 {
 // The burn-rate row pulls projection data from the same status.Window
 // the bars row uses — no separate compute path.
 func (m Model) quotaBars() string {
+	resetTxt := "idle"
+	if m.window.MinutesToReset != nil {
+		resetTxt = durString(*m.window.MinutesToReset)
+	}
 	left := renderQuotaSide(
 		"5h ",
 		m.progress,
 		m.quotaIntroRatio(quotaSide5h, float64(m.window.Percent)/100.0),
-		durString(m.window.MinutesToReset),
+		resetTxt,
 	)
 	// Derive the per-side slot from the actual rendered bars-row left,
 	// not from a theoretical formula: newProgressBar clamps to a 10-col
@@ -751,12 +755,12 @@ func (m Model) quotaBars() string {
 	slotW := lipgloss.Width(left)
 
 	var right string
-	if m.window.Has7d {
+	if m.window.Has7d && m.window.MinutesToReset7d != nil {
 		right = renderQuotaSide(
 			"7d ",
 			m.progress7d,
 			m.quotaIntroRatio(quotaSide7d, float64(m.window.Percent7d)/100.0),
-			formatReset7d(m.window.MinutesToReset7d),
+			formatReset7d(*m.window.MinutesToReset7d),
 		)
 	} else {
 		// The "(no data)" placeholder genuinely needs a fixed slot so the

@@ -6,9 +6,11 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,6 +18,11 @@ import (
 	"github.com/martinciu/ccpulse/pkg/parse"
 	"github.com/martinciu/ccpulse/pkg/pricing"
 )
+
+// timePtr returns &t. Test-only helper to satisfy the pointer-typed
+// anthro.Bucket.ResetsAt field for sites that build the value inline
+// (Go can't take the address of a function-call result directly).
+func timePtr(t time.Time) *time.Time { return &t }
 
 // withTimeLocal swaps time.Local for the duration of the test. Tests
 // calling this MUST NOT use t.Parallel() — mutating time.Local races
@@ -198,8 +205,8 @@ func TestRecordUsageSample_RoundTrip(t *testing.T) {
 	sevenResets := when.Add(48 * time.Hour)
 	util := 42.5
 	u := anthro.Usage{
-		FiveHour: &anthro.Bucket{Utilization: 12.0, ResetsAt: fiveResets},
-		SevenDay: &anthro.Bucket{Utilization: 67.0, ResetsAt: sevenResets},
+		FiveHour: &anthro.Bucket{Utilization: 12.0, ResetsAt: &fiveResets},
+		SevenDay: &anthro.Bucket{Utilization: 67.0, ResetsAt: &sevenResets},
 		ExtraUsage: &anthro.ExtraUsage{
 			IsEnabled: true, MonthlyLimit: 100, UsedCredits: 42, Utilization: &util, Currency: "USD",
 		},
@@ -272,8 +279,8 @@ func TestRecordUsageSample_DuplicateTs(t *testing.T) {
 	defer c.Close()
 
 	when := time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)
-	first := anthro.Usage{FiveHour: &anthro.Bucket{Utilization: 10.0, ResetsAt: when.Add(time.Hour)}}
-	second := anthro.Usage{FiveHour: &anthro.Bucket{Utilization: 99.0, ResetsAt: when.Add(time.Hour)}}
+	first := anthro.Usage{FiveHour: &anthro.Bucket{Utilization: 10.0, ResetsAt: timePtr(when.Add(time.Hour))}}
+	second := anthro.Usage{FiveHour: &anthro.Bucket{Utilization: 99.0, ResetsAt: timePtr(when.Add(time.Hour))}}
 
 	if err := c.RecordUsageSample(first, when); err != nil {
 		t.Fatal(err)
@@ -313,7 +320,7 @@ func TestPruneUsageSamples(t *testing.T) {
 		base,
 	}
 	for i, when := range samples {
-		u := anthro.Usage{FiveHour: &anthro.Bucket{Utilization: float64(i), ResetsAt: when.Add(time.Hour)}}
+		u := anthro.Usage{FiveHour: &anthro.Bucket{Utilization: float64(i), ResetsAt: timePtr(when.Add(time.Hour))}}
 		if err := c.RecordUsageSample(u, when); err != nil {
 			t.Fatal(err)
 		}
@@ -355,7 +362,7 @@ func TestRecordUsageSample_NilBucket(t *testing.T) {
 
 	when := time.Date(2026, 5, 9, 12, 34, 56, 0, time.UTC)
 	u := anthro.Usage{
-		FiveHour: &anthro.Bucket{Utilization: 12.5, ResetsAt: when.Add(2 * time.Hour)},
+		FiveHour: &anthro.Bucket{Utilization: 12.5, ResetsAt: timePtr(when.Add(2 * time.Hour))},
 		// SevenDay deliberately nil
 	}
 
@@ -382,6 +389,200 @@ func TestRecordUsageSample_NilBucket(t *testing.T) {
 	}
 	if sevenResets.Valid {
 		t.Errorf("seven_day_resets_at = %q, want NULL", sevenResets.String)
+	}
+}
+
+func TestUtilizationSincePerColumnNullPolicy(t *testing.T) {
+	resetNullResetsWarnedForTest()
+
+	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	// 5h: pct non-null, resets_at NULL → idle, keep.
+	// 7d: pct non-null, resets_at NULL → glitch, filter.
+	if _, err := c.DB().Exec(`
+		INSERT INTO usage_samples(ts, source, five_hour_pct, five_hour_resets_at, seven_day_pct, seven_day_resets_at) VALUES
+			(1, 'api', 0,  NULL,                   88, '2026-05-10T09:00:00Z'),
+			(2, 'api', 5,  '2026-05-09T16:10:00Z', 89, NULL),
+			(3, 'api', 10, '2026-05-09T16:10:00Z', 90, '2026-05-10T09:00:00Z')
+	`); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	fh, err := c.UtilizationSince("five_hour_pct", time.Unix(0, 0))
+	if err != nil {
+		t.Fatalf("five_hour: %v", err)
+	}
+	if len(fh) != 3 {
+		t.Errorf("five_hour: expected 3 points (idle rows kept), got %d: %+v", len(fh), fh)
+	}
+
+	sd, err := c.UtilizationSince("seven_day_pct", time.Unix(0, 0))
+	if err != nil {
+		t.Fatalf("seven_day: %v", err)
+	}
+	if len(sd) != 2 {
+		t.Errorf("seven_day: expected 2 points (glitch row filtered), got %d: %+v", len(sd), sd)
+	}
+}
+
+func TestSevenDaySamplesSinceSkipsNullResetsAt(t *testing.T) {
+	resetNullResetsWarnedForTest()
+
+	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	// Mix: two valid rows, two glitch rows (pct non-null, resets_at NULL).
+	if _, err := c.DB().Exec(`
+		INSERT INTO usage_samples(ts, source, seven_day_pct, seven_day_resets_at) VALUES
+			(1, 'api', 88, '2026-05-10T09:00:00Z'),
+			(2, 'api', 89, NULL),
+			(3, 'api', 90, '2026-05-10T09:00:00Z'),
+			(4, 'api', 91, NULL)
+	`); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	got, err := c.SevenDaySamplesSince(time.Unix(0, 0))
+	if err != nil {
+		t.Fatalf("SevenDaySamplesSince: %v", err)
+	}
+	if len(got) != 2 {
+		t.Errorf("expected 2 valid samples (glitch rows filtered), got %d: %+v", len(got), got)
+	}
+	for _, s := range got {
+		if s.Pct != 88 && s.Pct != 90 {
+			t.Errorf("unexpected sample passed through: %+v", s)
+		}
+	}
+}
+
+func TestWarnOnceNullResets(t *testing.T) {
+	// Reset the package-level once-flags to a clean state — necessary
+	// because Go tests share package state. Use the unexported reset
+	// hook added in the impl step.
+	resetNullResetsWarnedForTest()
+
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	warnOnceNullResets("seven_day_resets_at")
+	warnOnceNullResets("seven_day_resets_at") // suppressed
+	warnOnceNullResets("seven_day_sonnet_resets_at")
+
+	got := buf.String()
+	if count := strings.Count(got, "filtered row with null resets_at"); count != 2 {
+		t.Errorf("expected 2 WARN lines (one per column), got %d:\n%s", count, got)
+	}
+	if !strings.Contains(got, `column=seven_day_resets_at`) {
+		t.Errorf("missing seven_day column attribute: %s", got)
+	}
+	if !strings.Contains(got, `column=seven_day_sonnet_resets_at`) {
+		t.Errorf("missing seven_day_sonnet column attribute: %s", got)
+	}
+}
+
+func TestOpenNormalisesLegacyResetsAtSentinel(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.db")
+
+	c, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Seed three rows with the sentinel across multiple *_resets_at
+	// columns, simulating the pre-fix corruption pattern.
+	if _, err := c.DB().Exec(`
+		INSERT INTO usage_samples(ts, source,
+			five_hour_pct,            five_hour_resets_at,
+			seven_day_pct,            seven_day_resets_at,
+			seven_day_omelette_pct,   seven_day_omelette_resets_at)
+		VALUES
+			(1, 'api', 0,    '0001-01-01T00:00:00Z', 89, '2026-05-10T09:00:00Z', 0, '0001-01-01T00:00:00Z'),
+			(2, 'api', 10,   '2026-05-09T16:10:00Z', 90, '0001-01-01T00:00:00Z', 0, '0001-01-01T00:00:00Z'),
+			(3, 'api', NULL, NULL,                   91, '2026-05-10T09:00:00Z', 0, '0001-01-01T00:00:00Z')
+	`); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	c.Close()
+
+	// Re-open: the normalisation should run and convert all sentinel
+	// strings to NULL.
+	c, err = Open(path)
+	if err != nil {
+		t.Fatalf("re-open: %v", err)
+	}
+	defer c.Close()
+
+	var sentinelCount int
+	if err := c.DB().QueryRow(`
+		SELECT count(*) FROM usage_samples
+		WHERE five_hour_resets_at          = '0001-01-01T00:00:00Z'
+		   OR seven_day_resets_at          = '0001-01-01T00:00:00Z'
+		   OR seven_day_omelette_resets_at = '0001-01-01T00:00:00Z'
+	`).Scan(&sentinelCount); err != nil {
+		t.Fatal(err)
+	}
+	if sentinelCount != 0 {
+		t.Errorf("expected 0 sentinel rows after Open, got %d", sentinelCount)
+	}
+
+	// Spot-check: row 1's five_hour_resets_at is now NULL; row 2's
+	// seven_day_resets_at is now NULL; row 3's seven_day_omelette is NULL.
+	var n int
+	if err := c.DB().QueryRow(`
+		SELECT count(*) FROM usage_samples
+		WHERE ts = 1 AND five_hour_resets_at IS NULL AND seven_day_resets_at = '2026-05-10T09:00:00Z'
+	`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("row 1 not normalised correctly: matched %d", n)
+	}
+
+	// Idempotency: a third Open should be a no-op.
+	c.Close()
+	c, err = Open(path)
+	if err != nil {
+		t.Fatalf("third open: %v", err)
+	}
+	defer c.Close()
+}
+
+func TestRecordUsageSampleNullResetsAt(t *testing.T) {
+	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	u := anthro.Usage{
+		FiveHour:         &anthro.Bucket{Utilization: 0.0, ResetsAt: nil},
+		SevenDay:         &anthro.Bucket{Utilization: 0.0, ResetsAt: nil},
+		SevenDayOmelette: &anthro.Bucket{Utilization: 0.0, ResetsAt: nil},
+	}
+	if err := c.RecordUsageSample(u, time.Unix(1_700_000_000, 0)); err != nil {
+		t.Fatalf("RecordUsageSample: %v", err)
+	}
+
+	var n int
+	if err := c.DB().QueryRow(`
+		SELECT count(*) FROM usage_samples
+		WHERE five_hour_resets_at IS NULL
+		  AND seven_day_resets_at IS NULL
+		  AND seven_day_omelette_resets_at IS NULL`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("expected 1 row with all *_resets_at NULL, got %d", n)
 	}
 }
 
@@ -1572,7 +1773,7 @@ func TestSevenDaySamplesSince_OrderingAndFilter(t *testing.T) {
 	resetsA := time.Date(2026, 5, 18, 11, 0, 0, 0, time.UTC) // bucket A reset
 	mkUsage := func(pct float64, resetsAt time.Time) anthro.Usage {
 		return anthro.Usage{
-			SevenDay: &anthro.Bucket{Utilization: pct, ResetsAt: resetsAt},
+			SevenDay: &anthro.Bucket{Utilization: pct, ResetsAt: &resetsAt},
 		}
 	}
 
@@ -1620,7 +1821,7 @@ func TestSevenDaySamplesSince_NullPctExcluded(t *testing.T) {
 
 	// One sample with SevenDay populated; one with SevenDay nil (NULL pct).
 	if err := c.RecordUsageSample(anthro.Usage{
-		SevenDay: &anthro.Bucket{Utilization: 25.0, ResetsAt: now.Add(96 * time.Hour)},
+		SevenDay: &anthro.Bucket{Utilization: 25.0, ResetsAt: timePtr(now.Add(96 * time.Hour))},
 	}, now.Add(-2*time.Hour)); err != nil {
 		t.Fatalf("Record populated: %v", err)
 	}
@@ -1659,12 +1860,12 @@ func TestSevenDaySamplesSince_ResetsAtNormalized(t *testing.T) {
 	resets2 := time.Date(2026, 5, 17, 9, 0, 0, 719504000, time.UTC)
 
 	if err := c.RecordUsageSample(anthro.Usage{
-		SevenDay: &anthro.Bucket{Utilization: 70.0, ResetsAt: resets1},
+		SevenDay: &anthro.Bucket{Utilization: 70.0, ResetsAt: &resets1},
 	}, now.Add(-12*time.Hour)); err != nil {
 		t.Fatalf("Record 1: %v", err)
 	}
 	if err := c.RecordUsageSample(anthro.Usage{
-		SevenDay: &anthro.Bucket{Utilization: 80.0, ResetsAt: resets2},
+		SevenDay: &anthro.Bucket{Utilization: 80.0, ResetsAt: &resets2},
 	}, now); err != nil {
 		t.Fatalf("Record 2: %v", err)
 	}
@@ -1696,9 +1897,9 @@ func TestUtilizationSince(t *testing.T) {
 		fiveHour *anthro.Bucket
 		sevenDay *anthro.Bucket
 	}{
-		{now.Add(-6 * time.Minute), &anthro.Bucket{Utilization: 10.0, ResetsAt: now.Add(time.Hour)}, &anthro.Bucket{Utilization: 5.0, ResetsAt: now.Add(24 * time.Hour)}},
-		{now.Add(-3 * time.Minute), &anthro.Bucket{Utilization: 25.0, ResetsAt: now.Add(time.Hour)}, nil},
-		{now, &anthro.Bucket{Utilization: 50.0, ResetsAt: now.Add(time.Hour)}, &anthro.Bucket{Utilization: 15.0, ResetsAt: now.Add(24 * time.Hour)}},
+		{now.Add(-6 * time.Minute), &anthro.Bucket{Utilization: 10.0, ResetsAt: timePtr(now.Add(time.Hour))}, &anthro.Bucket{Utilization: 5.0, ResetsAt: timePtr(now.Add(24 * time.Hour))}},
+		{now.Add(-3 * time.Minute), &anthro.Bucket{Utilization: 25.0, ResetsAt: timePtr(now.Add(time.Hour))}, nil},
+		{now, &anthro.Bucket{Utilization: 50.0, ResetsAt: timePtr(now.Add(time.Hour))}, &anthro.Bucket{Utilization: 15.0, ResetsAt: timePtr(now.Add(24 * time.Hour))}},
 	}
 	for _, s := range samples {
 		u := anthro.Usage{FiveHour: s.fiveHour, SevenDay: s.sevenDay}

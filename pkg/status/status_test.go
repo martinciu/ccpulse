@@ -13,6 +13,13 @@ import (
 	"github.com/martinciu/ccpulse/pkg/cache"
 )
 
+// intPtr returns &n. Test-only helper for the *int Window fields.
+func intPtr(n int) *int { return &n }
+
+// timePtr returns &t. Test-only helper for the *time.Time
+// anthro.Bucket.ResetsAt field on sites that build the value inline.
+func timePtr(t time.Time) *time.Time { return &t }
+
 func freshDB(t *testing.T) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("sqlite", ":memory:")
@@ -41,8 +48,8 @@ func TestComputeWithoutQuota(t *testing.T) {
 	if w.Percent != 0 {
 		t.Errorf("Percent = %d, want 0 without quota", w.Percent)
 	}
-	if w.MinutesToReset < 230 || w.MinutesToReset > 250 {
-		t.Errorf("MinutesToReset = %d, want ~240", w.MinutesToReset)
+	if w.MinutesToReset == nil || *w.MinutesToReset < 230 || *w.MinutesToReset > 250 {
+		t.Errorf("MinutesToReset = %v, want ~240", w.MinutesToReset)
 	}
 	if w.CeilingLabel != "unknown" {
 		t.Errorf("CeilingLabel = %q", w.CeilingLabel)
@@ -53,7 +60,7 @@ func TestComputeWithQuota(t *testing.T) {
 	db := freshDB(t)
 	now := time.Date(2026, 5, 9, 15, 0, 0, 0, time.UTC)
 	resetsAt := now.Add(70 * time.Minute)
-	usage := &anthro.Usage{FiveHour: &anthro.Bucket{Utilization: 12.7, ResetsAt: resetsAt}}
+	usage := &anthro.Usage{FiveHour: &anthro.Bucket{Utilization: 12.7, ResetsAt: &resetsAt}}
 	w, err := Compute(db, now, QuotaInput{
 		Usage: usage, Source: "api", UpdatedAt: now,
 		TierSlug: "max_20x", TierPretty: "Max 20x",
@@ -64,8 +71,8 @@ func TestComputeWithQuota(t *testing.T) {
 	if w.Percent != 13 {
 		t.Errorf("Percent = %d, want 13 (rounded)", w.Percent)
 	}
-	if w.MinutesToReset != 70 {
-		t.Errorf("MinutesToReset = %d, want 70", w.MinutesToReset)
+	if w.MinutesToReset == nil || *w.MinutesToReset != 70 {
+		t.Errorf("MinutesToReset = %v, want 70", w.MinutesToReset)
 	}
 	if w.CeilingLabel != "max_20x" || w.CeilingPretty != "Max 20x" {
 		t.Errorf("Ceiling labels: %q / %q", w.CeilingLabel, w.CeilingPretty)
@@ -77,7 +84,7 @@ func TestComputeWithQuota(t *testing.T) {
 
 func TestJSONOutputIncludesQuota(t *testing.T) {
 	w := Window{
-		Percent: 13, MinutesToReset: 70,
+		Percent: 13, MinutesToReset: intPtr(70),
 		CeilingLabel: "max_20x", CeilingPretty: "Max 20x",
 		Quota:          &anthro.Usage{FiveHour: &anthro.Bucket{Utilization: 12.7}},
 		QuotaSource:    "api",
@@ -115,8 +122,8 @@ func TestCompute_PopulatesSevenDay(t *testing.T) {
 	resets5h := now.Add(2*time.Hour + 3*time.Minute)
 	resets7d := now.Add(17*time.Hour + 33*time.Minute)
 	usage := &anthro.Usage{
-		FiveHour: &anthro.Bucket{Utilization: 14.0, ResetsAt: resets5h},
-		SevenDay: &anthro.Bucket{Utilization: 89.0, ResetsAt: resets7d},
+		FiveHour: &anthro.Bucket{Utilization: 14.0, ResetsAt: &resets5h},
+		SevenDay: &anthro.Bucket{Utilization: 89.0, ResetsAt: &resets7d},
 	}
 	w, err := Compute(db, now, QuotaInput{Usage: usage, Source: "api", UpdatedAt: now})
 	if err != nil {
@@ -128,8 +135,8 @@ func TestCompute_PopulatesSevenDay(t *testing.T) {
 	if w.Percent7d != 89 {
 		t.Errorf("Percent7d = %d, want 89", w.Percent7d)
 	}
-	if w.MinutesToReset7d != 17*60+33 {
-		t.Errorf("MinutesToReset7d = %d, want %d", w.MinutesToReset7d, 17*60+33)
+	if w.MinutesToReset7d == nil || *w.MinutesToReset7d != 17*60+33 {
+		t.Errorf("MinutesToReset7d = %v, want %d", w.MinutesToReset7d, 17*60+33)
 	}
 }
 
@@ -137,7 +144,7 @@ func TestCompute_OmitsSevenDayWhenSevenDayNil(t *testing.T) {
 	db := freshDB(t)
 	now := time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)
 	usage := &anthro.Usage{
-		FiveHour: &anthro.Bucket{Utilization: 14.0, ResetsAt: now.Add(2 * time.Hour)},
+		FiveHour: &anthro.Bucket{Utilization: 14.0, ResetsAt: timePtr(now.Add(2 * time.Hour))},
 	}
 	w, err := Compute(db, now, QuotaInput{Usage: usage, Source: "api", UpdatedAt: now})
 	if err != nil {
@@ -146,8 +153,8 @@ func TestCompute_OmitsSevenDayWhenSevenDayNil(t *testing.T) {
 	if w.Has7d {
 		t.Errorf("Has7d = true, want false")
 	}
-	if w.Percent7d != 0 || w.MinutesToReset7d != 0 {
-		t.Errorf("7d fields nonzero: percent=%d minutes=%d", w.Percent7d, w.MinutesToReset7d)
+	if w.Percent7d != 0 || w.MinutesToReset7d != nil {
+		t.Errorf("7d fields nonzero: percent=%d minutes=%v", w.Percent7d, w.MinutesToReset7d)
 	}
 }
 
@@ -171,8 +178,8 @@ func TestCompute_PopulatesProjection(t *testing.T) {
 	// 7d: 3 days elapsed, 30% used → projects 70% at reset, ok confidence.
 	resets7d := now.Add(4 * 24 * time.Hour)
 	usage := &anthro.Usage{
-		FiveHour: &anthro.Bucket{Utilization: 12.0, ResetsAt: resets5h},
-		SevenDay: &anthro.Bucket{Utilization: 30.0, ResetsAt: resets7d},
+		FiveHour: &anthro.Bucket{Utilization: 12.0, ResetsAt: &resets5h},
+		SevenDay: &anthro.Bucket{Utilization: 30.0, ResetsAt: &resets7d},
 	}
 	w, err := Compute(db, now, QuotaInput{Usage: usage, Source: "api", UpdatedAt: now})
 	if err != nil {
@@ -215,7 +222,7 @@ func TestCompute_OmitsSevenDayProjectionWhenSevenDayNil(t *testing.T) {
 	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
 	resets5h := now.Add(4 * time.Hour)
 	usage := &anthro.Usage{
-		FiveHour: &anthro.Bucket{Utilization: 12.0, ResetsAt: resets5h},
+		FiveHour: &anthro.Bucket{Utilization: 12.0, ResetsAt: &resets5h},
 	}
 	w, err := Compute(db, now, QuotaInput{Usage: usage, Source: "api", UpdatedAt: now})
 	if err != nil {
@@ -229,6 +236,26 @@ func TestCompute_OmitsSevenDayProjectionWhenSevenDayNil(t *testing.T) {
 	}
 	if w.Projection.SevenDay != nil {
 		t.Errorf("Projection.SevenDay = %+v, want nil when SevenDay is nil", w.Projection.SevenDay)
+	}
+}
+
+func TestCompute_OmitsSevenDayProjectionWhenResetsAtNil(t *testing.T) {
+	db := freshDB(t)
+	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	resets5h := now.Add(4 * time.Hour)
+	usage := &anthro.Usage{
+		FiveHour: &anthro.Bucket{Utilization: 12.0, ResetsAt: &resets5h},
+		SevenDay: &anthro.Bucket{Utilization: 30.0, ResetsAt: nil},
+	}
+	w, err := Compute(db, now, QuotaInput{Usage: usage, Source: "api", UpdatedAt: now})
+	if err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+	if w.Has7d {
+		t.Errorf("Has7d = true, want false when SevenDay.ResetsAt is nil")
+	}
+	if w.Projection != nil && w.Projection.SevenDay != nil {
+		t.Errorf("Projection.SevenDay = %+v, want nil when SevenDay.ResetsAt is nil (avoid 'warming up' on the 7d-glitch path)", w.Projection.SevenDay)
 	}
 }
 
@@ -292,7 +319,7 @@ func TestCompute_SevenDayUsesRecencyWeightedProjection(t *testing.T) {
 	for _, hoursBack := range []int{24, 18, 12, 6, 0} {
 		when := now.Add(-time.Duration(hoursBack) * time.Hour)
 		if err := c.RecordUsageSample(anthro.Usage{
-			SevenDay: &anthro.Bucket{Utilization: 50.0, ResetsAt: resetsAt},
+			SevenDay: &anthro.Bucket{Utilization: 50.0, ResetsAt: &resetsAt},
 		}, when); err != nil {
 			t.Fatalf("RecordUsageSample: %v", err)
 		}
@@ -300,7 +327,7 @@ func TestCompute_SevenDayUsesRecencyWeightedProjection(t *testing.T) {
 
 	q := QuotaInput{
 		Usage: &anthro.Usage{
-			SevenDay: &anthro.Bucket{Utilization: 50.0, ResetsAt: resetsAt},
+			SevenDay: &anthro.Bucket{Utilization: 50.0, ResetsAt: &resetsAt},
 		},
 		Source:    "api",
 		UpdatedAt: now,

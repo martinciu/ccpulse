@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/martinciu/ccpulse/pkg/anthro"
@@ -70,6 +72,24 @@ var schemaSQL string
 
 const SchemaVersion = "6"
 
+// normalizeResetsAtSQL flips legacy `0001-01-01T00:00:00Z` sentinels
+// (written before issue #189 landed) to SQL NULL across every
+// *_resets_at column. Runs on every Open; idempotent — re-running on a
+// clean DB matches zero rows. Cheap: usage_samples holds <2000 rows
+// over ccpulse's useful history.
+const normalizeResetsAtSQL = `
+UPDATE usage_samples SET five_hour_resets_at            = NULL WHERE five_hour_resets_at            = '0001-01-01T00:00:00Z';
+UPDATE usage_samples SET seven_day_resets_at            = NULL WHERE seven_day_resets_at            = '0001-01-01T00:00:00Z';
+UPDATE usage_samples SET seven_day_sonnet_resets_at     = NULL WHERE seven_day_sonnet_resets_at     = '0001-01-01T00:00:00Z';
+UPDATE usage_samples SET seven_day_opus_resets_at       = NULL WHERE seven_day_opus_resets_at       = '0001-01-01T00:00:00Z';
+UPDATE usage_samples SET seven_day_omelette_resets_at   = NULL WHERE seven_day_omelette_resets_at   = '0001-01-01T00:00:00Z';
+UPDATE usage_samples SET seven_day_oauth_apps_resets_at = NULL WHERE seven_day_oauth_apps_resets_at = '0001-01-01T00:00:00Z';
+UPDATE usage_samples SET seven_day_cowork_resets_at     = NULL WHERE seven_day_cowork_resets_at     = '0001-01-01T00:00:00Z';
+UPDATE usage_samples SET tangelo_resets_at              = NULL WHERE tangelo_resets_at              = '0001-01-01T00:00:00Z';
+UPDATE usage_samples SET iguana_necktie_resets_at       = NULL WHERE iguana_necktie_resets_at       = '0001-01-01T00:00:00Z';
+UPDATE usage_samples SET omelette_promotional_resets_at = NULL WHERE omelette_promotional_resets_at = '0001-01-01T00:00:00Z';
+`
+
 // cachePragmas is appended to the DSN so modernc.org/sqlite applies them
 // on every new pool connection, not just the first one. Issuing pragmas
 // post-Open via db.Exec only configures whichever connection database/sql
@@ -112,6 +132,10 @@ func Open(path string) (*Cache, error) {
 	if _, err := db.Exec(`INSERT OR IGNORE INTO meta(key,value) VALUES('schema_version',?)`, SchemaVersion); err != nil {
 		db.Close()
 		return nil, err
+	}
+	if _, err := db.Exec(normalizeResetsAtSQL); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("normalize legacy resets_at sentinels: %w", err)
 	}
 	return &Cache{db: db}, nil
 }
@@ -198,6 +222,9 @@ func bucketArgs(b *anthro.Bucket) []any {
 	if b == nil {
 		return []any{nil, nil}
 	}
+	if b.ResetsAt == nil {
+		return []any{b.Utilization, nil}
+	}
 	return []any{b.Utilization, b.ResetsAt.UTC().Format(time.RFC3339Nano)}
 }
 
@@ -264,14 +291,19 @@ ORDER BY ts ASC`, since.UTC().Unix())
 		if err := rows.Scan(&ts, &pct, &resetsAt); err != nil {
 			return nil, fmt.Errorf("scan usage_samples row: %w", err)
 		}
+		if !resetsAt.Valid {
+			// Upstream Anthropic glitch: 7d bucket has a real pct but
+			// resets_at came back null. Filter so projection slope math
+			// doesn't ingest a bogus bucket boundary.
+			warnOnceNullResets("seven_day_resets_at")
+			continue
+		}
 		// Normalize ResetsAt to second precision so sub-second jitter in the
 		// API response (nanoseconds differ across calls for the same logical
 		// reset boundary) doesn't create spurious distinct bucket IDs.
 		normalizedResetsAt := resetsAt.String
-		if resetsAt.Valid {
-			if t, err := time.Parse(time.RFC3339Nano, resetsAt.String); err == nil {
-				normalizedResetsAt = t.UTC().Truncate(time.Second).Format(time.RFC3339)
-			}
+		if t, err := time.Parse(time.RFC3339Nano, resetsAt.String); err == nil {
+			normalizedResetsAt = t.UTC().Truncate(time.Second).Format(time.RFC3339)
 		}
 		out = append(out, SevenDaySample{
 			At:       time.Unix(ts, 0).UTC(),
@@ -292,23 +324,41 @@ type UtilizationPoint struct {
 	Pct float64
 }
 
-// utilizationColumns is the allowlist of columns that UtilizationSince
-// accepts. Prevents SQL injection — the column name is interpolated
-// into the query string (not parameterisable in SQLite).
-var utilizationColumns = map[string]bool{
-	"five_hour_pct": true,
-	"seven_day_pct": true,
+// utilizationPolicy is the read-time policy for one (pct, resets_at)
+// pair: which resets_at column to inspect, and whether NULL resets_at
+// rows should be filtered out (true for calendar-aligned 7d buckets
+// where NULL is an Anthropic-side glitch; false for the 5h rolling
+// window where NULL means "idle" and pct=0 is truthful).
+type utilizationPolicy struct {
+	resetsAtCol     string
+	filterNullReset bool
+}
+
+// utilizationColumns is the allowlist + per-column policy that
+// UtilizationSince consults. Prevents SQL injection — the pct column
+// name is interpolated into the query string (not parameterisable in
+// SQLite), and the resets_at column name comes from the policy.
+var utilizationColumns = map[string]utilizationPolicy{
+	"five_hour_pct": {"five_hour_resets_at", false},
+	"seven_day_pct": {"seven_day_resets_at", true},
 }
 
 // UtilizationSince returns timestamped utilization percentages from
 // usage_samples for the given column, oldest-first. Rows where the
 // column IS NULL are skipped. column must be in the allowlist.
+//
+// Per-column null-resets_at policy: 5h rows with NULL resets_at are
+// kept (idle window — pct=0 is truthful); 7d rows with NULL resets_at
+// are filtered + emit the once-per-process WARN (calendar-bucket
+// glitch). See issue #189.
 func (c *Cache) UtilizationSince(column string, since time.Time) ([]UtilizationPoint, error) {
-	if !utilizationColumns[column] {
+	policy, ok := utilizationColumns[column]
+	if !ok {
 		return nil, fmt.Errorf("invalid utilization column: %q", column)
 	}
 	rows, err := c.db.Query(
-		fmt.Sprintf(`SELECT ts, %s FROM usage_samples WHERE ts >= ? AND %s IS NOT NULL ORDER BY ts ASC`, column, column),
+		fmt.Sprintf(`SELECT ts, %s, %s FROM usage_samples WHERE ts >= ? AND %s IS NOT NULL ORDER BY ts ASC`,
+			column, policy.resetsAtCol, column),
 		since.UTC().Unix(),
 	)
 	if err != nil {
@@ -320,8 +370,13 @@ func (c *Cache) UtilizationSince(column string, since time.Time) ([]UtilizationP
 	for rows.Next() {
 		var ts int64
 		var pct float64
-		if err := rows.Scan(&ts, &pct); err != nil {
+		var resetsAt sql.NullString
+		if err := rows.Scan(&ts, &pct, &resetsAt); err != nil {
 			return nil, fmt.Errorf("scan usage_samples row: %w", err)
+		}
+		if policy.filterNullReset && !resetsAt.Valid {
+			warnOnceNullResets(policy.resetsAtCol)
+			continue
 		}
 		out = append(out, UtilizationPoint{
 			At:  time.Unix(ts, 0).UTC(),
@@ -754,4 +809,38 @@ func (c *Cache) EarliestMessageTime() (time.Time, bool, error) {
 		return time.Time{}, false, fmt.Errorf("parse earliest ts %q: %w", s.String, err)
 	}
 	return t.UTC(), true, nil
+}
+
+// nullResetsWarned tracks which column names have already produced a
+// once-per-process WARN from warnOnceNullResets. Keyed by column name
+// string → *atomic.Bool; LoadOrStore + Swap give a lock-free
+// "log the first call per key" gate.
+var nullResetsWarned sync.Map
+
+// warnOnceNullResets emits a single WARN line per (column, process
+// lifetime) when the read layer filters a usage_samples row whose
+// *_resets_at value is NULL. Used by the 7d-glitch filter in
+// SevenDaySamplesSince and the per-column policy in UtilizationSince
+// (see issue #189). At most three keys are expected today
+// (seven_day_resets_at, seven_day_sonnet_resets_at,
+// seven_day_opus_resets_at); 5h null-resets rows are kept (idle window
+// is legitimate) and don't trigger this.
+func warnOnceNullResets(column string) {
+	flag, _ := nullResetsWarned.LoadOrStore(column, &atomic.Bool{})
+	if !flag.(*atomic.Bool).Swap(true) {
+		slog.Warn("cache.UtilizationSince: filtered row with null resets_at",
+			"column", column,
+			"advisory", "treating as upstream glitch; see issue #189")
+	}
+}
+
+// resetNullResetsWarnedForTest clears the once-per-column flag map.
+// Test-only: production code never calls this. Exported via lowercase
+// name within the package so tests in the same package can reset state
+// between cases.
+func resetNullResetsWarnedForTest() {
+	nullResetsWarned.Range(func(k, _ any) bool {
+		nullResetsWarned.Delete(k)
+		return true
+	})
 }

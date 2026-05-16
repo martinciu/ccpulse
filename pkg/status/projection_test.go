@@ -273,7 +273,7 @@ func TestProjectBucket(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			windowStart := now.Add(-tc.elapsed)
 			resetsAt := windowStart.Add(tc.window)
-			got := projectBucket(tc.utilization, resetsAt, now, tc.window, tc.lowCutoff)
+			got := projectBucket(tc.utilization, &resetsAt, now, tc.window, tc.lowCutoff)
 
 			if got.ElapsedMinutes != tc.want.ElapsedMinutes {
 				t.Errorf("ElapsedMinutes = %d, want %d", got.ElapsedMinutes, tc.want.ElapsedMinutes)
@@ -309,8 +309,8 @@ func TestProjectSevenDay_ColdStartAndFallback(t *testing.T) {
 	bucketResetID := resetsAt.UTC().Format(time.RFC3339Nano)
 
 	t.Run("zero samples falls back to linear", func(t *testing.T) {
-		linear := projectBucket(20.0, resetsAt, now, sevenDayWindow, sevenDayLowConfidenceCutoff)
-		got := projectSevenDay(nil, 20.0, resetsAt, now)
+		linear := projectBucket(20.0, &resetsAt, now, sevenDayWindow, sevenDayLowConfidenceCutoff)
+		got := projectSevenDay(nil, 20.0, &resetsAt, now)
 		if got != linear {
 			t.Errorf("got %+v, want linear fallback %+v", got, linear)
 		}
@@ -320,8 +320,8 @@ func TestProjectSevenDay_ColdStartAndFallback(t *testing.T) {
 		samples := []cache.SevenDaySample{
 			{At: now.Add(-2 * time.Hour), Pct: 18.0, ResetsAt: bucketResetID},
 		}
-		linear := projectBucket(20.0, resetsAt, now, sevenDayWindow, sevenDayLowConfidenceCutoff)
-		got := projectSevenDay(samples, 20.0, resetsAt, now)
+		linear := projectBucket(20.0, &resetsAt, now, sevenDayWindow, sevenDayLowConfidenceCutoff)
+		got := projectSevenDay(samples, 20.0, &resetsAt, now)
 		if got != linear {
 			t.Errorf("got %+v, want linear fallback %+v", got, linear)
 		}
@@ -332,8 +332,8 @@ func TestProjectSevenDay_ColdStartAndFallback(t *testing.T) {
 			{At: now.Add(-2 * time.Hour), Pct: 18.0, ResetsAt: bucketResetID},
 			{At: now.Add(-30 * time.Minute), Pct: 19.5, ResetsAt: bucketResetID},
 		}
-		linear := projectBucket(20.0, resetsAt, now, sevenDayWindow, sevenDayLowConfidenceCutoff)
-		got := projectSevenDay(samples, 20.0, resetsAt, now)
+		linear := projectBucket(20.0, &resetsAt, now, sevenDayWindow, sevenDayLowConfidenceCutoff)
+		got := projectSevenDay(samples, 20.0, &resetsAt, now)
 		if got != linear {
 			t.Errorf("got %+v, want linear fallback %+v", got, linear)
 		}
@@ -467,7 +467,7 @@ func TestProjectSevenDay_SlopeCases(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := projectSevenDay(tc.samples, tc.currentPct, resetsAt, now)
+			got := projectSevenDay(tc.samples, tc.currentPct, &resetsAt, now)
 			if math.Abs(got.SlopePctPerHour-tc.wantSlopeApprox) > epsilon {
 				t.Errorf("SlopePctPerHour = %v, want ≈ %v (±%v)", got.SlopePctPerHour, tc.wantSlopeApprox, epsilon)
 			}
