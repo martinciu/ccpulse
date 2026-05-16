@@ -95,7 +95,7 @@ FROM messages WHERE ts >= ?`, cutoff)
 			)
 			p.FiveHour = &fh
 		}
-		if q.Usage.SevenDay != nil {
+		if q.Usage.SevenDay != nil && q.Usage.SevenDay.ResetsAt != nil {
 			var samples []cache.SevenDaySample
 			if db != nil {
 				cc := cache.NewFromDB(db)

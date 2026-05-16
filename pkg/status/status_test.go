@@ -239,6 +239,26 @@ func TestCompute_OmitsSevenDayProjectionWhenSevenDayNil(t *testing.T) {
 	}
 }
 
+func TestCompute_OmitsSevenDayProjectionWhenResetsAtNil(t *testing.T) {
+	db := freshDB(t)
+	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	resets5h := now.Add(4 * time.Hour)
+	usage := &anthro.Usage{
+		FiveHour: &anthro.Bucket{Utilization: 12.0, ResetsAt: &resets5h},
+		SevenDay: &anthro.Bucket{Utilization: 30.0, ResetsAt: nil},
+	}
+	w, err := Compute(db, now, QuotaInput{Usage: usage, Source: "api", UpdatedAt: now})
+	if err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+	if w.Has7d {
+		t.Errorf("Has7d = true, want false when SevenDay.ResetsAt is nil")
+	}
+	if w.Projection != nil && w.Projection.SevenDay != nil {
+		t.Errorf("Projection.SevenDay = %+v, want nil when SevenDay.ResetsAt is nil (avoid 'warming up' on the 7d-glitch path)", w.Projection.SevenDay)
+	}
+}
+
 func TestJSONOutputIncludesProjection(t *testing.T) {
 	mins := 165
 	w := Window{

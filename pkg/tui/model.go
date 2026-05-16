@@ -765,8 +765,6 @@ func (m Model) quotaBars() string {
 	} else {
 		// The "(no data)" placeholder genuinely needs a fixed slot so the
 		// box right edge stays stable when 7d toggles between data ↔ no-data.
-		// Also covers the null-resets-at glitch path where Has7d is true
-		// but MinutesToReset7d couldn't be derived — same visual surface.
 		right = dimStyle.Width(slotW).Render("(no data)")
 	}
 
