@@ -17,20 +17,21 @@ import (
 )
 
 func newStatusCmd() *cobra.Command {
-	var asJSON bool
+	var asJSON, quiet bool
 	c := &cobra.Command{
 		Use:   "status",
 		Short: "Print 5-hour window status",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runStatus(cmd, asJSON)
+			return runStatus(cmd, asJSON, quiet)
 		},
 	}
 	c.Flags().BoolVar(&asJSON, "json", false, "emit JSON")
+	c.Flags().BoolVar(&quiet, "quiet", false, "suppress stdout (cache still written; stderr unchanged)")
 	return c
 }
 
-func runStatus(cmd *cobra.Command, asJSON bool) error {
+func runStatus(cmd *cobra.Command, asJSON, quiet bool) error {
 	cfg, _ := config.Load(config.DefaultPath())
 	cacheDir := envOr("CCPULSE_CACHE_DIR", expand(cfg.Paths.CacheDir))
 	dbPath := filepath.Join(cacheDir, "state.db")
@@ -65,6 +66,10 @@ func runStatus(cmd *cobra.Command, asJSON bool) error {
 	w, err := status.Compute(c.DB(), time.Now(), q)
 	if err != nil {
 		return err
+	}
+
+	if quiet {
+		return nil
 	}
 
 	switch {
