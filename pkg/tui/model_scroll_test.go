@@ -166,3 +166,21 @@ func TestSetX_BarModeAfterRemaining_BarBoundsRestored(t *testing.T) {
 		t.Errorf("viewportXOffset after setX(5) in bar mode = %d, want %d (no remaining-mode clamp)", got, want)
 	}
 }
+
+func TestSetX_RemainingMode_MinXAboveMaxX_CollapsesToMaxX(t *testing.T) {
+	from := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+	// Earliest sample at 20h into the 24h canvas → column 80.
+	// remainingModeModel has lastCanvasW=96, viewport.Width=30, stride=1
+	// → maxX = (96 - 30)/1 = 66. Since 80 > 66, the explicit
+	// `if minX > maxX { minX = maxX }` branch in setX must collapse
+	// minX to 66. Without that collapse, min(max(n, 80), 66) would
+	// produce 80 — wrong direction past maxX.
+	pts5h := []cache.UtilizationPoint{{At: from.Add(20 * time.Hour)}}
+	m := remainingModeModel(t, pts5h, nil)
+
+	m.setX(0) // any value; clamp pulls up to the collapsed minX (= maxX).
+
+	if got, want := m.viewportXOffset, 66; got != want {
+		t.Errorf("viewportXOffset after setX(0) with minX > maxX = %d, want %d (collapsed to maxX)", got, want)
+	}
+}
