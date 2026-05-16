@@ -124,3 +124,51 @@ func TestCheckClaudeCodeHook_MalformedJSON(t *testing.T) {
 		t.Errorf("must not echo settings.json contents, got: %q", got)
 	}
 }
+
+func TestHookCommandMentionsCcpulse(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{
+			name: "empty object",
+			in:   `{}`,
+			want: false,
+		},
+		{
+			name: "hooks present but Stop absent",
+			in:   `{"hooks": {"PreToolUse": []}}`,
+			want: false,
+		},
+		{
+			name: "canonical matching shape",
+			in:   `{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"ccpulse status"}]}]}}`,
+			want: true,
+		},
+		{
+			name: "command contains ccpulse as substring",
+			in:   `{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"my-ccpulse-wrapper"}]}]}}`,
+			want: true,
+		},
+		{
+			name: "command is an array, not a string",
+			in:   `{"hooks":{"Stop":[{"hooks":[{"type":"command","command":["ccpulse"]}]}]}}`,
+			want: false,
+		},
+		{
+			name: "top-level value is an array",
+			in:   `[]`,
+			want: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := hookCommandMentionsCcpulse([]byte(tc.in))
+			if got != tc.want {
+				t.Errorf("input: %s\ngot %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
