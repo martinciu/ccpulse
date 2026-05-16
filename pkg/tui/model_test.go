@@ -1047,15 +1047,15 @@ func TestUnitKeyInHelp(t *testing.T) {
 	// bare "u" also appears in "quit" and "scroll" so the substring is
 	// vacuous on its own.
 	footer := m.help.View(m.keys)
-	if !strings.Contains(footer, "u tokens/cost/remaining") {
-		t.Errorf("footer help missing 'u tokens/cost/remaining' binding:\n%s", footer)
+	if !strings.Contains(footer, "u tokens/cost/usage") {
+		t.Errorf("footer help missing 'u tokens/cost/usage' binding:\n%s", footer)
 	}
 
 	// Help overlay: triggered by '?'. Asserts on the FullHelp view.
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
 	overlay := updated.(Model).View()
-	if !strings.Contains(overlay, "tokens/cost/remaining") {
-		t.Errorf("help overlay missing 'tokens/cost/remaining' binding:\n%s", overlay)
+	if !strings.Contains(overlay, "tokens/cost/usage") {
+		t.Errorf("help overlay missing 'tokens/cost/usage' binding:\n%s", overlay)
 	}
 }
 
