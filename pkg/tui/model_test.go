@@ -705,7 +705,7 @@ func TestRefreshChart_FromEarliest(t *testing.T) {
 	// After issue #53, refreshChart must load from the earliest cached
 	// message (aligned to the active zoom's bucket boundary) up to "now".
 	// We verify this by inserting a single message ~3 hours ago and
-	// confirming TokenBuckets returns at least the matching number of
+	// confirming OutputTokenBuckets returns at least the matching number of
 	// 15m buckets at zoom index 0 (15m zoom, the default).
 	c, err := cache.Open(filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
@@ -1642,7 +1642,7 @@ func TestRefreshDoesNotAnimate(t *testing.T) {
 }
 
 func TestRefreshChart_CostMode(t *testing.T) {
-	// With unitIdx=1 (cost), refreshChart must call CostBuckets and cache
+	// With unitIdx=int(chartUnitCost), refreshChart must call CostBuckets and cache
 	// the cost values into m.lastValues, with m.peak set to max(cost).
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "state.db")
@@ -2079,7 +2079,7 @@ func TestRefreshChart_PreservesScroll_Issue134(t *testing.T) {
 }
 
 // TestRefreshChart_ScrollAnchorAcrossZooms verifies the 24h zoom path:
-// - tokenBucketsDaily returns day-aligned buckets (~24h apart)
+// - outputTokenBucketsDaily returns day-aligned buckets (~24h apart)
 // - the anchor is preserved across a subsequent refreshChart in 24h zoom
 //
 // Seeds 40 days of data (40*24*4=3840 15m-spaced messages) so that 24h
@@ -2336,11 +2336,11 @@ func TestUnitToggle_24hPinnedScrollRestoration(t *testing.T) {
 }
 
 // TestUnitToggle_24hCycle verifies that a full 'u' cycle
-// (tokens → cost → remaining → tokens) preserves the user's right-edge
+// (cost → tokens → remaining → cost) preserves the user's right-edge
 // anchor at every step. The first leg of #206 fixed bar→bar transitions;
 // this test locks the bar↔line legs, where the original patch routed
 // remaining mode through a still-buggy setX(rightEdgeCol/stride). Once
-// the second toggle (cost→remaining) snapped the offset to maxX−1, every
+// the second toggle (tokens→remaining) snapped the offset to maxX−1, every
 // subsequent toggle inherited the broken position via refreshChart's
 // anchor-time round-trip and the chart sat one stride left of the right
 // edge with today's bucket clipped or absent from the spring frame.
@@ -2420,7 +2420,7 @@ func TestUnitToggle_24hCycle(t *testing.T) {
 			// viewport.Width == chartWidth(), so bar-mode and
 			// remaining-mode maxX coincide; one maxX suffices for all
 			// three modes at the same zoom.
-			transitions := []string{"tokens→cost", "cost→remaining", "remaining→tokens"}
+			transitions := []string{"cost→tokens", "tokens→remaining", "remaining→cost"}
 			for i, label := range transitions {
 				updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
 				mm := updated.(Model)
