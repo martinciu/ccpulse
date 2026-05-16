@@ -1238,6 +1238,23 @@ func (m *Model) renderSpringFrame() {
 	m.viewport.SetXOffset(springXOff)
 }
 
+// earliestRemainingSampleAt returns the earliest UtilizationPoint
+// timestamp from pts5h and pts7d. Returns the zero time.Time if both
+// slices are empty. Used by setX to clamp the remaining-mode viewport
+// to the in-range left edge — the user cannot pan earlier than the
+// first usage_samples row, which is what they would see as blank
+// canvas otherwise.
+func earliestRemainingSampleAt(pts5h, pts7d []cache.UtilizationPoint) time.Time {
+	var earliest time.Time
+	if len(pts5h) > 0 {
+		earliest = pts5h[0].At
+	}
+	if len(pts7d) > 0 && (earliest.IsZero() || pts7d[0].At.Before(earliest)) {
+		earliest = pts7d[0].At
+	}
+	return earliest
+}
+
 // setX is the single point of entry for changing the viewport's horizontal
 // scroll position. n is a bucket index (not a column count); setX clamps
 // it then multiplies by the per-bar stride (BarWidth+BarGap, defensively
