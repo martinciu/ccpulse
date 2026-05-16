@@ -949,6 +949,7 @@ func BenchmarkBuildLineChart(b *testing.B) {
 	}{
 		{"w100_24h", 100, 24 * time.Hour, ZoomLevels[1]},
 		{"w1000_7d", 1000, 7 * 24 * time.Hour, ZoomLevels[1]},
+		{"w2880_30d_15m", 2880, 30 * 24 * time.Hour, ZoomLevels[0]},
 		{"w5000_30d_15m", 5000, 30 * 24 * time.Hour, ZoomLevels[0]},
 	}
 	for _, tc := range cases {
