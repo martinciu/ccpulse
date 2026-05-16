@@ -550,6 +550,7 @@ func TestStatusQuietStillEmitsStderrDiagnostics(t *testing.T) {
 }
 
 func TestStatusJSONQuietMutuallyExclusive(t *testing.T) {
+	t.Setenv("CCPULSE_CACHE_DIR", t.TempDir())
 	cmd := newStatusCmd()
 	cmd.SetArgs([]string{"--json", "--quiet"})
 	var out, errBuf bytes.Buffer
@@ -558,6 +559,12 @@ func TestStatusJSONQuietMutuallyExclusive(t *testing.T) {
 	err := cmd.Execute()
 	if err == nil {
 		t.Fatalf("expected error for mutually exclusive flags, got nil")
+	}
+	if !strings.Contains(err.Error(), "json") {
+		t.Errorf("error should mention 'json' flag: %v", err)
+	}
+	if !strings.Contains(err.Error(), "quiet") {
+		t.Errorf("error should mention 'quiet' flag: %v", err)
 	}
 }
 
