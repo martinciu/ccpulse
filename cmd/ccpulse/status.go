@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
+	"io"
 	"path/filepath"
 	"time"
 
@@ -46,18 +46,18 @@ func runStatus(cmd *cobra.Command, asJSON bool) error {
 	}
 	c.AutoRecost(cmd.Context(), hist)
 
-	q := buildQuotaInput(cmd.Context(), cacheDir, time.Now())
+	q := buildQuotaInput(cmd.Context(), cacheDir, time.Now(), cmd.ErrOrStderr())
 
 	// Record a usage sample whenever Fetch returned genuinely fresh data.
 	// Best-effort — failure to record never blocks the visible quota number.
 	if q.Source == "api" && q.Usage != nil {
 		if recErr := c.RecordUsageSample(*q.Usage, q.UpdatedAt); recErr != nil {
-			fmt.Fprintf(os.Stderr, "ccpulse: record sample: %v\n", recErr)
+			fmt.Fprintf(cmd.ErrOrStderr(), "ccpulse: record sample: %v\n", recErr)
 		}
 		if cfg.History.RetentionDays > 0 {
 			cutoff := time.Now().Add(-time.Duration(cfg.History.RetentionDays) * 24 * time.Hour)
 			if _, prErr := c.PruneUsageSamples(cutoff); prErr != nil {
-				fmt.Fprintf(os.Stderr, "ccpulse: prune samples: %v\n", prErr)
+				fmt.Fprintf(cmd.ErrOrStderr(), "ccpulse: prune samples: %v\n", prErr)
 			}
 		}
 	}
@@ -84,12 +84,12 @@ func runStatus(cmd *cobra.Command, asJSON bool) error {
 // buildQuotaInput resolves the credential and (best-effort) fetches usage data.
 // Any failure → empty QuotaInput with TierSlug="unknown" so Compute falls back
 // to the JSONL heuristic. Errors are silently swallowed except for diagnostics
-// to stderr (visible from the status command).
-func buildQuotaInput(ctx context.Context, cacheDir string, now time.Time) status.QuotaInput {
+// written to errOut.
+func buildQuotaInput(ctx context.Context, cacheDir string, now time.Time, errOut io.Writer) status.QuotaInput {
 	cred, err := anthro.LoadCredential()
 	if err != nil {
 		if !errors.Is(err, anthro.ErrNoCredential) {
-			fmt.Fprintf(os.Stderr, "ccpulse: %v\n", err)
+			fmt.Fprintf(errOut, "ccpulse: %v\n", err)
 		}
 		return status.QuotaInput{TierSlug: "unknown", TierPretty: "Unknown"}
 	}
@@ -98,7 +98,7 @@ func buildQuotaInput(ctx context.Context, cacheDir string, now time.Time) status
 		TierPretty: anthro.TierPretty(cred.RateLimitTier),
 	}
 	if cred.Expired(now) {
-		fmt.Fprintln(os.Stderr, "ccpulse: OAuth credential expired — run /login in claude")
+		fmt.Fprintln(errOut, "ccpulse: OAuth credential expired — run /login in claude")
 	}
 	fetchCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()

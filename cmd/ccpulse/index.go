@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -23,14 +22,15 @@ func newIndexCmd() *cobra.Command {
 		Short: "Rebuild SQLite cache from JSONL",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runIndex(cmd.Context(), rebuild)
+			return runIndex(cmd, rebuild)
 		},
 	}
 	c.Flags().BoolVar(&rebuild, "rebuild", false, "Drop the cache before scanning")
 	return c
 }
 
-func runIndex(ctx context.Context, rebuild bool) error {
+func runIndex(cmd *cobra.Command, rebuild bool) error {
+	ctx := cmd.Context()
 	if !rebuild {
 		return fmt.Errorf("`ccpulse index` (no flag) was removed; the TUI now backfills on launch. Use `ccpulse index --rebuild` to drop and rebuild the cache from JSONL")
 	}
@@ -89,7 +89,7 @@ func runIndex(ctx context.Context, rebuild bool) error {
 	if err := c.DB().QueryRow(`SELECT count(*) FROM messages`).Scan(&n); err != nil {
 		return err
 	}
-	fmt.Printf("rebuilt: %d messages\n", n)
+	fmt.Fprintf(cmd.OutOrStdout(), "rebuilt: %d messages\n", n)
 	return nil
 }
 
