@@ -2209,6 +2209,230 @@ func TestUnitToggle_SpringStartsAtScrolledOffset(t *testing.T) {
 	}
 }
 
+// TestUnitToggle_24hPinnedScrollRestoration verifies that pressing 'u' at the
+// right edge of a 24h-zoom chart always restores viewportXOffset to maxX, not
+// maxX-1. At 24h zoom stride=12; when (canvasW - vpWidth) is not divisible by
+// 12 the old floor-division produced maxX-1 at certain terminal widths.
+func TestUnitToggle_24hPinnedScrollRestoration(t *testing.T) {
+	dir := t.TempDir()
+	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	t.Cleanup(func() { c.Close() })
+
+	tab, err := pricing.Load()
+	if err != nil {
+		t.Fatalf("pricing.Load: %v", err)
+	}
+
+	// Seed 20 days of data (one message per day) so maxX > 0 at all tested widths.
+	now := time.Now()
+	today := cache.DayStartLocal(now)
+	msgs := make([]parse.Message, 20)
+	for i := range msgs {
+		msgs[i] = parse.Message{
+			SessionID:   "s1",
+			ProjectSlug: "p",
+			Model:       "claude-opus-4-7",
+			Timestamp:   today.AddDate(0, 0, -(19 - i)),
+			InputTokens: int64(1000 + i*100),
+		}
+	}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	cases := []struct {
+		w    int
+		name string
+		bug  bool // true = was broken before the fix
+	}{
+		{100, "w=100", true},
+		{121, "w=121", true},
+		{120, "w=120", false},
+		{132, "w=132", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := New(Deps{Cache: c})
+			m.w, m.h = tc.w, 40
+			m.zoomIdx = 2 // 24h zoom
+			m.viewport.Width = m.chartWidth()
+			m.viewport.Height = m.chartHeight()
+			m.introPending = false
+			m.refreshChart()
+
+			if len(m.lastStarts) == 0 {
+				t.Fatal("no 24h buckets after seed")
+			}
+
+			maxX := max(0, len(m.lastStarts)-m.visibleBuckets())
+			if maxX == 0 {
+				t.Skipf("w=%d produces no scroll room (maxX=0)", tc.w)
+			}
+
+			// Scroll to right edge.
+			m.setX(maxX)
+			if m.viewportXOffset != maxX {
+				t.Fatalf("setup: setX(%d) -> viewportXOffset=%d", maxX, m.viewportXOffset)
+			}
+
+			// Press 'u' to toggle unit.
+			updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+			mm := updated.(Model)
+
+			if mm.viewportXOffset != maxX {
+				t.Errorf("viewportXOffset = %d, want %d (maxX); delta = %d (was %v before fix)",
+					mm.viewportXOffset, maxX, mm.viewportXOffset-maxX, tc.bug)
+			}
+			if mm.springXOffset != maxX {
+				t.Errorf("springXOffset = %d, want %d (maxX)", mm.springXOffset, maxX)
+			}
+
+			// At the first width, verify the first Phase 1 frame has bars visible
+			// (today's bucket is still rendered, even mid-shrink).
+			if tc.w == 100 {
+				view := mm.View()
+				body := strings.Join(chartBodyLines(view), "\n")
+				if !strings.ContainsAny(body, "▁▂▃▄▅▆▇█") {
+					t.Errorf("Phase 1 frame-0 chart body has no bar glyphs; today's bucket dropped:\n%s", body)
+				}
+			}
+
+			// Drive through Phase 1 → Hold → Phase 2 → settle.
+			m = mm
+			const maxTicks = 200
+			for i := 0; i < maxTicks && m.springActive; i++ {
+				var u tea.Model
+				u, _ = m.Update(springTickMsg{})
+				m = u.(Model)
+			}
+			if m.springActive {
+				t.Fatalf("animation never settled in %d ticks", maxTicks)
+			}
+
+			if m.viewportXOffset != maxX {
+				t.Errorf("post-settle viewportXOffset = %d, want %d (maxX)", m.viewportXOffset, maxX)
+			}
+		})
+	}
+}
+
+// TestUnitToggle_24hCycle verifies that a full 'u' cycle
+// (tokens → cost → remaining → tokens) preserves the user's right-edge
+// anchor at every step. The first leg of #206 fixed bar→bar transitions;
+// this test locks the bar↔line legs, where the original patch routed
+// remaining mode through a still-buggy setX(rightEdgeCol/stride). Once
+// the second toggle (cost→remaining) snapped the offset to maxX−1, every
+// subsequent toggle inherited the broken position via refreshChart's
+// anchor-time round-trip and the chart sat one stride left of the right
+// edge with today's bucket clipped or absent from the spring frame.
+//
+// Seeds usage_samples in addition to messages so cost→remaining and
+// remaining→tokens both fire the two-phase spring (not the empty-data
+// early return in beginUnitAnimation).
+func TestUnitToggle_24hCycle(t *testing.T) {
+	dir := t.TempDir()
+	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	t.Cleanup(func() { c.Close() })
+
+	tab, err := pricing.Load()
+	if err != nil {
+		t.Fatalf("pricing.Load: %v", err)
+	}
+
+	now := time.Now()
+	today := cache.DayStartLocal(now)
+	msgs := make([]parse.Message, 20)
+	for i := range msgs {
+		msgs[i] = parse.Message{
+			SessionID:   "s1",
+			ProjectSlug: "p",
+			Model:       "claude-opus-4-7",
+			Timestamp:   today.AddDate(0, 0, -(19 - i)),
+			InputTokens: int64(1000 + i*100),
+		}
+	}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+	for i := 0; i < 5; i++ {
+		u := anthro.Usage{
+			FiveHour: &anthro.Bucket{Utilization: float64(10 + i*5), ResetsAt: timePtr(now.Add(time.Hour))},
+			SevenDay: &anthro.Bucket{Utilization: float64(5 + i*2), ResetsAt: timePtr(now.Add(24 * time.Hour))},
+		}
+		if err := c.RecordUsageSample(u, now.Add(time.Duration(-i)*time.Hour)); err != nil {
+			t.Fatalf("RecordUsageSample: %v", err)
+		}
+	}
+
+	cases := []struct {
+		w    int
+		name string
+	}{
+		{100, "w=100"}, // bug width
+		{121, "w=121"}, // bug width
+		{120, "w=120"}, // stride-aligned (was already passing)
+		{132, "w=132"}, // stride-aligned (was already passing)
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := New(Deps{Cache: c})
+			m.w, m.h = tc.w, 40
+			m.zoomIdx = 2 // 24h
+			m.viewport.Width = m.chartWidth()
+			m.viewport.Height = m.chartHeight()
+			m.introPending = false
+			m.refreshChart()
+
+			maxX := max(0, len(m.lastStarts)-m.visibleBuckets())
+			if maxX == 0 {
+				t.Skipf("w=%d produces no scroll room (maxX=0)", tc.w)
+			}
+			m.setX(maxX)
+			if m.viewportXOffset != maxX {
+				t.Fatalf("setup: setX(%d) -> viewportXOffset=%d", maxX, m.viewportXOffset)
+			}
+
+			// Cycle through all three transitions; assert the right-edge
+			// anchor is preserved at every step. In production
+			// viewport.Width == chartWidth(), so bar-mode and
+			// remaining-mode maxX coincide; one maxX suffices for all
+			// three modes at the same zoom.
+			transitions := []string{"tokens→cost", "cost→remaining", "remaining→tokens"}
+			for i, label := range transitions {
+				updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+				mm := updated.(Model)
+
+				if mm.springActive && mm.springXOffset != maxX {
+					t.Errorf("toggle %d (%s): springXOffset = %d, want %d (today's bucket would be sliced off the spring frame)",
+						i+1, label, mm.springXOffset, maxX)
+				}
+
+				const maxTicks = 200
+				for j := 0; j < maxTicks && mm.springActive; j++ {
+					u, _ := mm.Update(springTickMsg{})
+					mm = u.(Model)
+				}
+				if mm.springActive {
+					t.Fatalf("toggle %d (%s): animation never settled in %d ticks", i+1, label, maxTicks)
+				}
+				if mm.viewportXOffset != maxX {
+					t.Errorf("toggle %d (%s): post-settle viewportXOffset = %d, want %d",
+						i+1, label, mm.viewportXOffset, maxX)
+				}
+				m = mm
+			}
+		})
+	}
+}
+
 func TestYLabel_Phase1ShowsOldUnit(t *testing.T) {
 	// During Phase 1 (shrinking), View() must render the Y-label with
 	// the OLD unit's value and the OLD peak. We assert by string
