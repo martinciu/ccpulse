@@ -28,6 +28,7 @@ func newStatusCmd() *cobra.Command {
 	}
 	c.Flags().BoolVar(&asJSON, "json", false, "emit JSON")
 	c.Flags().BoolVar(&quiet, "quiet", false, "suppress stdout (cache still written; stderr unchanged)")
+	c.MarkFlagsMutuallyExclusive("json", "quiet")
 	return c
 }
 
