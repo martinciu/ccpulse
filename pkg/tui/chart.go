@@ -519,7 +519,7 @@ func isLineMode(u chartUnit) bool {
 // SetStyles(line, color) would fail to compile against ntcharts v0.5.1.
 func buildLineChart(pts5h, pts7d []cache.UtilizationPoint,
 	from, to time.Time, chartW, chartH int,
-	now time.Time, zoom ZoomLevel, order dateOrder) string {
+	now time.Time, zoom ZoomLevel, order dateOrder, source string) string {
 
 	logStart := time.Now()
 	if chartH < 1 {
@@ -608,6 +608,7 @@ func buildLineChart(pts5h, pts7d []cache.UtilizationPoint,
 	}
 
 	slog.Debug("tui.buildLineChart",
+		"source", source,
 		"dur_ms", time.Since(logStart).Milliseconds(),
 		"pts5h", len(pts5h),
 		"pts7d", len(pts7d),

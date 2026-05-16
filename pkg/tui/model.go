@@ -1170,7 +1170,7 @@ func (m *Model) renderSpringFrame() {
 		// viewport.SetXOffset(0) would snap the chart back to the
 		// canvas origin on every spring tick, which looks like a jump
 		// when the user was scrolled to mid-history.
-		m.viewport.SetContent(buildLineChart(interp5h, interp7d, from, to, chartW, chartH, time.Now(), zoom, m.dateOrder))
+		m.viewport.SetContent(buildLineChart(interp5h, interp7d, from, to, chartW, chartH, time.Now(), zoom, m.dateOrder, "spring"))
 		m.viewport.SetXOffset(m.viewportXOffset * zoom.stride())
 		return
 	}
@@ -1511,7 +1511,7 @@ func (m *Model) refreshChart() {
 		if canvasW < m.chartWidth() {
 			canvasW = m.chartWidth()
 		}
-		m.viewport.SetContent(buildLineChart(m.lastPts5h, m.lastPts7d, from, to, canvasW, chartH, time.Now(), zoom, m.dateOrder))
+		m.viewport.SetContent(buildLineChart(m.lastPts5h, m.lastPts7d, from, to, canvasW, chartH, time.Now(), zoom, m.dateOrder, "refresh"))
 	} else {
 		canvasW = zoom.CanvasWidth(len(values))
 		m.viewport.SetContent(buildChart(values, starts, peak, canvasW, chartH, time.Now(), zoom, unit, m.dateOrder))
