@@ -1996,7 +1996,7 @@ func TestRefreshChart_PreservesWallClockAnchor(t *testing.T) {
 			m.refreshChart()
 		}},
 		{"unit toggle keeps anchor", false, func(m *Model) {
-			m.unitIdx = (m.unitIdx + 1) % 2
+			m.unitIdx = (m.unitIdx + 1) % int(chartUnitCount)
 			m.refreshChart()
 		}},
 		{"resize keeps anchor", false, func(m *Model) {
