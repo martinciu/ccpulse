@@ -134,7 +134,7 @@ func timeToColumn(t time.Time, canvasW int, from, to time.Time) int {
 }
 
 // bucketCountInRange counts the bucket slots covering [from, to) at the
-// given zoom duration. Matches cache.TokenBuckets / cache.CostBuckets
+// given zoom duration. Matches cache.OutputTokenBuckets / cache.CostBuckets
 // return-length semantics:
 //   - For sub-day durations, the count is int(to.Sub(from) / dur).
 //   - For 24h, the count is the number of local-tz calendar days in
@@ -199,7 +199,7 @@ func computeSpringSlice(start, prevLongest, vpWidth, stride int) (sliceStart, sp
 // returns the single closest point as a baseline anchor (the first
 // point if pts are all after to, the last point if all before from).
 //
-// pts is assumed to be sorted by At ascending — true for cache.TokenBuckets
+// pts is assumed to be sorted by At ascending — true for cache.OutputTokenBuckets
 // and status.Compute output. Linear scan; binary search is unnecessary
 // at the n=O(thousands) sizes seen by the line branch.
 func slicePointsInRange(pts []cache.UtilizationPoint, from, to time.Time) []cache.UtilizationPoint {
@@ -366,11 +366,16 @@ func formatXLabel(t time.Time, zoom ZoomLevel, now time.Time, order dateOrder) s
 // chartUnit selects what `peak` and bar values represent. Used by
 // formatUnitValue to pick the right Y-label format. Spring-animation
 // rendering also reads this through Model.unitIdx.
+//
+// Cost is declared first so the zero-value default of Model.unitIdx (0)
+// renders the cost histogram on launch; the `u` cycle then advances
+// cost → tokens → remaining → cost via (unitIdx+1) % chartUnitCount.
+// Resets to cost on every launch — no persistence (see issue #209).
 type chartUnit int
 
 const (
-	chartUnitTokens    chartUnit = iota
-	chartUnitCost
+	chartUnitCost      chartUnit = iota
+	chartUnitTokens
 	chartUnitRemaining
 	chartUnitCount // sentinel — cycle modulus
 )
@@ -473,9 +478,10 @@ func formatUnitValue(v float64, unit chartUnit) string {
 // state, or 1.0 during ratio-space animation (when values are
 // already normalised to [0, 1]).
 //
-// unit selects the bar color (Blue for chartUnitTokens, Amber for
-// chartUnitCost). It is also read by the Y-label overlay path in
-// Model.View() — passed through here for that reason too.
+// unit selects the bar color (Blue for chartUnitTokens — output tokens
+// since issue #209, Amber for chartUnitCost). It is also read by the
+// Y-label overlay path in Model.View() — passed through here for that
+// reason too.
 func buildChart(values []float64, starts []time.Time, peak float64,
 	chartW, chartH int, now time.Time, zoom ZoomLevel, unit chartUnit, order dateOrder) string {
 	start := time.Now()

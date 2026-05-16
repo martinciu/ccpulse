@@ -635,7 +635,7 @@ func TestOpenWipesOnSchemaVersionMismatch(t *testing.T) {
 	}
 }
 
-func TestTokenBuckets_ContiguousRange(t *testing.T) {
+func TestOutputTokenBuckets_ContiguousRange(t *testing.T) {
 	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -665,7 +665,7 @@ func TestTokenBuckets_ContiguousRange(t *testing.T) {
 
 	from := time.Date(2026, 5, 9, 11, 0, 0, 0, time.UTC)
 	to := time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)
-	buckets, err := c.TokenBuckets(5*time.Minute, from, to)
+	buckets, err := c.OutputTokenBuckets(5*time.Minute, from, to)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -681,15 +681,17 @@ func TestTokenBuckets_ContiguousRange(t *testing.T) {
 		}
 	}
 	// Indices 10 (11:50), 11 (11:55) carry data; everything else is zero.
+	// Aggregate is SUM(output_tokens) only — input and cache_* columns are
+	// excluded. See issue #209.
 	for i, b := range buckets {
 		switch i {
 		case 10:
-			if b.Tokens != 1500 {
-				t.Errorf("bucket[10].Tokens = %d, want 1500", b.Tokens)
+			if b.Tokens != 500 {
+				t.Errorf("bucket[10].Tokens = %d, want 500 (output_tokens only)", b.Tokens)
 			}
 		case 11:
-			if b.Tokens != 3500 {
-				t.Errorf("bucket[11].Tokens = %d, want 3500", b.Tokens)
+			if b.Tokens != 1000 {
+				t.Errorf("bucket[11].Tokens = %d, want 1000 (output_tokens only)", b.Tokens)
 			}
 		default:
 			if b.Tokens != 0 {
@@ -699,7 +701,57 @@ func TestTokenBuckets_ContiguousRange(t *testing.T) {
 	}
 }
 
-func TestTokenBuckets_AllEmpty(t *testing.T) {
+// TestOutputTokenBuckets_OutputOnly_CacheReadIgnored is the regression guard
+// for issue #209: a bucket whose volume is dominated by cache_read_tokens
+// must render the output_tokens value, not the total.
+func TestOutputTokenBuckets_OutputOnly_CacheReadIgnored(t *testing.T) {
+	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	tab, _ := pricing.Load()
+
+	// One message: tiny output, huge cache_read, plus non-zero values in every
+	// other token column. If the aggregate were the 5-column sum the bucket
+	// would total 30_001_750; under SUM(output_tokens) it must be exactly 50.
+	ts := time.Date(2026, 5, 9, 11, 50, 0, 0, time.UTC)
+	msgs := []parse.Message{{
+		SessionID:          "s1",
+		ProjectSlug:        "p",
+		Model:              "claude-sonnet-4-6",
+		Timestamp:          ts,
+		InputTokens:        1_000,
+		OutputTokens:       50,
+		CacheReadTokens:    30_000_000,
+		CacheWrite5mTokens: 500,
+		CacheWrite1hTokens: 200,
+	}}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatal(err)
+	}
+
+	from := time.Date(2026, 5, 9, 11, 45, 0, 0, time.UTC)
+	to := time.Date(2026, 5, 9, 11, 55, 0, 0, time.UTC)
+	buckets, err := c.OutputTokenBuckets(5*time.Minute, from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(buckets) != 2 {
+		t.Fatalf("want 2 buckets, got %d: %+v", len(buckets), buckets)
+	}
+	// buckets[0] is 11:45-11:49 (empty); buckets[1] is 11:50-11:54 (the row).
+	if buckets[0].Tokens != 0 {
+		t.Errorf("buckets[0].Tokens = %d, want 0 (empty)", buckets[0].Tokens)
+	}
+	if buckets[1].Tokens != 50 {
+		t.Errorf("buckets[1].Tokens = %d, want 50 (output_tokens only); huge cache_read must NOT contribute",
+			buckets[1].Tokens)
+	}
+}
+
+func TestOutputTokenBuckets_AllEmpty(t *testing.T) {
 	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -708,7 +760,7 @@ func TestTokenBuckets_AllEmpty(t *testing.T) {
 
 	from := time.Date(2026, 5, 9, 0, 0, 0, 0, time.UTC)
 	to := time.Date(2026, 5, 9, 6, 0, 0, 0, time.UTC)
-	buckets, err := c.TokenBuckets(15*time.Minute, from, to)
+	buckets, err := c.OutputTokenBuckets(15*time.Minute, from, to)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -726,7 +778,7 @@ func TestTokenBuckets_AllEmpty(t *testing.T) {
 	}
 }
 
-func TestTokenBuckets_BoundsSnap(t *testing.T) {
+func TestOutputTokenBuckets_BoundsSnap(t *testing.T) {
 	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -737,7 +789,7 @@ func TestTokenBuckets_BoundsSnap(t *testing.T) {
 	// [11:00, 12:05) → 13 buckets.
 	from := time.Date(2026, 5, 9, 11, 3, 30, 0, time.UTC)
 	to := time.Date(2026, 5, 9, 12, 7, 45, 0, time.UTC)
-	buckets, err := c.TokenBuckets(5*time.Minute, from, to)
+	buckets, err := c.OutputTokenBuckets(5*time.Minute, from, to)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -758,7 +810,7 @@ func TestTokenBuckets_BoundsSnap(t *testing.T) {
 	}
 }
 
-func TestTokenBuckets_IncludesInFlightBucket(t *testing.T) {
+func TestOutputTokenBuckets_IncludesInFlightBucket(t *testing.T) {
 	// Regression: when callers anchor at to = BucketAlign(now) + dur, the
 	// in-flight bucket containing now must be included as the rightmost
 	// bucket in the [from, to) range — otherwise a freshly-recorded
@@ -786,7 +838,7 @@ func TestTokenBuckets_IncludesInFlightBucket(t *testing.T) {
 	dur := 5 * time.Minute
 	to := BucketAlign(now, dur).Add(dur)
 	from := to.Add(-time.Hour)
-	buckets, err := c.TokenBuckets(dur, from, to)
+	buckets, err := c.OutputTokenBuckets(dur, from, to)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -798,8 +850,8 @@ func TestTokenBuckets_IncludesInFlightBucket(t *testing.T) {
 		t.Errorf("rightmost BucketStart = %v, want %v (bucket containing now)",
 			last.BucketStart, BucketAlign(now, dur))
 	}
-	if last.Tokens != 1500 {
-		t.Errorf("rightmost Tokens = %d, want 1500 (in-flight message)", last.Tokens)
+	if last.Tokens != 500 {
+		t.Errorf("rightmost Tokens = %d, want 500 (output_tokens of in-flight message)", last.Tokens)
 	}
 }
 
@@ -988,8 +1040,8 @@ func TestConcurrentReadWriteNoBusy(t *testing.T) {
 				return
 			default:
 			}
-			if _, err := c.TokenBuckets(5*time.Minute, from, to); err != nil {
-				errs <- fmt.Errorf("TokenBuckets: %w", err)
+			if _, err := c.OutputTokenBuckets(5*time.Minute, from, to); err != nil {
+				errs <- fmt.Errorf("OutputTokenBuckets: %w", err)
 				return
 			}
 		}
@@ -1067,7 +1119,7 @@ func TestBucketAlign(t *testing.T) {
 
 // TestInsertMessages_NormalizesNonUTCTimestamp locks in the invariant
 // that messages.ts is always stored as a Z-suffixed UTC string and that
-// TokenBuckets compares its query bounds in UTC, regardless of the
+// OutputTokenBuckets compares its query bounds in UTC, regardless of the
 // time.Time zone the caller hands in. Without normalization at both
 // boundaries the WHERE ts >= ? AND ts < ? lex comparison silently
 // misbehaves when a caller passes non-UTC values.
@@ -1095,7 +1147,7 @@ func TestInsertMessages_NormalizesNonUTCTimestamp(t *testing.T) {
 
 	from := time.Date(2026, 5, 9, 11, 0, 0, 0, loc)
 	to := time.Date(2026, 5, 9, 12, 0, 0, 0, loc)
-	buckets, err := c.TokenBuckets(5*time.Minute, from, to)
+	buckets, err := c.OutputTokenBuckets(5*time.Minute, from, to)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1105,8 +1157,8 @@ func TestInsertMessages_NormalizesNonUTCTimestamp(t *testing.T) {
 	if len(buckets) != 12 {
 		t.Fatalf("want 12 buckets, got %d: %+v", len(buckets), buckets)
 	}
-	if buckets[10].Tokens != 1500 {
-		t.Errorf("bucket[10].Tokens = %d, want 1500 (input+output of the non-UTC insert)",
+	if buckets[10].Tokens != 500 {
+		t.Errorf("bucket[10].Tokens = %d, want 500 (output_tokens of the non-UTC insert)",
 			buckets[10].Tokens)
 	}
 }
@@ -1258,14 +1310,14 @@ INSERT INTO messages
  cache_write_5m_tokens, cache_write_1h_tokens,
  cost_usd_estimate, pricing_version, pricing_unknown,
  is_subagent, parent_session_id, cwd, git_branch)
-VALUES('s','p',?,'assistant','m',?,0,0,0,0,0,'v1',0,0,'','','')`,
+VALUES('s','p',?,'assistant','m',0,?,0,0,0,0,'v1',0,0,'','','')`,
 		ts.UTC().Format("2006-01-02T15:04:05.000Z07:00"), tokens)
 	if err != nil {
 		t.Fatalf("insert: %v", err)
 	}
 }
 
-func TestTokenBuckets_24h_LocalAlignment(t *testing.T) {
+func TestOutputTokenBuckets_24h_LocalAlignment(t *testing.T) {
 	withTimeLocal(t, "Europe/Berlin")
 	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
@@ -1282,7 +1334,7 @@ func TestTokenBuckets_24h_LocalAlignment(t *testing.T) {
 
 	from := DayStartLocal(time.Date(2026, 5, 13, 0, 0, 0, 0, time.Local))
 	to := DayStartLocal(time.Date(2026, 5, 15, 0, 0, 0, 0, time.Local))
-	buckets, err := c.TokenBuckets(24*time.Hour, from, to)
+	buckets, err := c.OutputTokenBuckets(24*time.Hour, from, to)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1300,7 +1352,7 @@ func TestTokenBuckets_24h_LocalAlignment(t *testing.T) {
 	}
 }
 
-func TestTokenBuckets_24h_EmptyDays(t *testing.T) {
+func TestOutputTokenBuckets_24h_EmptyDays(t *testing.T) {
 	withTimeLocal(t, "Europe/Berlin")
 	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
@@ -1312,7 +1364,7 @@ func TestTokenBuckets_24h_EmptyDays(t *testing.T) {
 
 	from := DayStartLocal(time.Date(2026, 5, 13, 0, 0, 0, 0, time.Local))
 	to := DayStartLocal(time.Date(2026, 5, 16, 0, 0, 0, 0, time.Local))
-	buckets, err := c.TokenBuckets(24*time.Hour, from, to)
+	buckets, err := c.OutputTokenBuckets(24*time.Hour, from, to)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1325,7 +1377,7 @@ func TestTokenBuckets_24h_EmptyDays(t *testing.T) {
 	}
 }
 
-func TestTokenBuckets_24h_UTCFallback(t *testing.T) {
+func TestOutputTokenBuckets_24h_UTCFallback(t *testing.T) {
 	withTimeLocal(t, "UTC")
 	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
@@ -1338,7 +1390,7 @@ func TestTokenBuckets_24h_UTCFallback(t *testing.T) {
 
 	from := DayStartLocal(time.Date(2026, 5, 13, 0, 0, 0, 0, time.Local))
 	to := DayStartLocal(time.Date(2026, 5, 15, 0, 0, 0, 0, time.Local))
-	buckets, err := c.TokenBuckets(24*time.Hour, from, to)
+	buckets, err := c.OutputTokenBuckets(24*time.Hour, from, to)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1347,7 +1399,7 @@ func TestTokenBuckets_24h_UTCFallback(t *testing.T) {
 	}
 }
 
-func TestTokenBuckets_24h_DST_SpringForward(t *testing.T) {
+func TestOutputTokenBuckets_24h_DST_SpringForward(t *testing.T) {
 	withTimeLocal(t, "Europe/Berlin")
 	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
@@ -1372,7 +1424,7 @@ func TestTokenBuckets_24h_DST_SpringForward(t *testing.T) {
 
 	from := DayStartLocal(time.Date(2026, 3, 29, 0, 0, 0, 0, time.Local))
 	to := DayStartLocal(time.Date(2026, 3, 31, 0, 0, 0, 0, time.Local))
-	buckets, err := c.TokenBuckets(24*time.Hour, from, to)
+	buckets, err := c.OutputTokenBuckets(24*time.Hour, from, to)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1387,7 +1439,7 @@ func TestTokenBuckets_24h_DST_SpringForward(t *testing.T) {
 	}
 }
 
-func TestTokenBuckets_24h_DST_FallBack(t *testing.T) {
+func TestOutputTokenBuckets_24h_DST_FallBack(t *testing.T) {
 	withTimeLocal(t, "Europe/Berlin")
 	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
@@ -1410,7 +1462,7 @@ func TestTokenBuckets_24h_DST_FallBack(t *testing.T) {
 
 	from := DayStartLocal(time.Date(2026, 10, 25, 0, 0, 0, 0, time.Local))
 	to := DayStartLocal(time.Date(2026, 10, 27, 0, 0, 0, 0, time.Local))
-	buckets, err := c.TokenBuckets(24*time.Hour, from, to)
+	buckets, err := c.OutputTokenBuckets(24*time.Hour, from, to)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1425,7 +1477,7 @@ func TestTokenBuckets_24h_DST_FallBack(t *testing.T) {
 	}
 }
 
-func TestTokenBuckets_24h_HalfHourOffsetTz(t *testing.T) {
+func TestOutputTokenBuckets_24h_HalfHourOffsetTz(t *testing.T) {
 	withTimeLocal(t, "Asia/Kolkata") // UTC+5:30, no DST
 	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
@@ -1440,7 +1492,7 @@ func TestTokenBuckets_24h_HalfHourOffsetTz(t *testing.T) {
 
 	from := DayStartLocal(time.Date(2026, 5, 13, 0, 0, 0, 0, time.Local))
 	to := DayStartLocal(time.Date(2026, 5, 15, 0, 0, 0, 0, time.Local))
-	buckets, err := c.TokenBuckets(24*time.Hour, from, to)
+	buckets, err := c.OutputTokenBuckets(24*time.Hour, from, to)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1578,7 +1630,7 @@ func TestCostBuckets_ContiguousRange(t *testing.T) {
 
 	tab, _ := pricing.Load()
 
-	// Same shape as TestTokenBuckets_ContiguousRange so a future Metric
+	// Same shape as TestOutputTokenBuckets_ContiguousRange so a future Metric
 	// refactor (#93) can grep for the parallel structure.
 	ts1 := time.Date(2026, 5, 9, 11, 50, 0, 0, time.UTC)
 	ts2 := time.Date(2026, 5, 9, 11, 55, 0, 0, time.UTC)

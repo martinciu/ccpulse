@@ -185,7 +185,7 @@ func TestView_YLabelFixedAcrossScroll(t *testing.T) {
 	m.viewport.Height = m.chartHeight()
 	m.refreshChart()
 
-	expected := formatUnitValue(niceFloorFloat(m.peak), chartUnitTokens)
+	expected := formatUnitValue(niceFloorFloat(m.peak), chartUnit(m.unitIdx))
 	if expected == "" || expected == "0" {
 		t.Fatalf("expected non-empty Y label; m.peak = %v", m.peak)
 	}
@@ -705,7 +705,7 @@ func TestRefreshChart_FromEarliest(t *testing.T) {
 	// After issue #53, refreshChart must load from the earliest cached
 	// message (aligned to the active zoom's bucket boundary) up to "now".
 	// We verify this by inserting a single message ~3 hours ago and
-	// confirming TokenBuckets returns at least the matching number of
+	// confirming OutputTokenBuckets returns at least the matching number of
 	// 15m buckets at zoom index 0 (15m zoom, the default).
 	c, err := cache.Open(filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
@@ -731,9 +731,9 @@ func TestRefreshChart_FromEarliest(t *testing.T) {
 	from := cache.BucketAlign(earliest, zoom.Duration)
 	wantMin := int(to.Sub(from)/zoom.Duration) - 1 // tolerate ±1 bucket on boundary
 
-	buckets, err := c.TokenBuckets(zoom.Duration, from, to)
+	buckets, err := c.OutputTokenBuckets(zoom.Duration, from, to)
 	if err != nil {
-		t.Fatalf("TokenBuckets: %v", err)
+		t.Fatalf("OutputTokenBuckets: %v", err)
 	}
 	if len(buckets) < wantMin {
 		t.Errorf("got %d buckets, want at least %d (≈3h at 15m)", len(buckets), wantMin)
@@ -1036,9 +1036,19 @@ func TestViewRendersFadeIndicator(t *testing.T) {
 	}
 }
 
+// TestNewModel_DefaultsToCost guards the issue #209 contract: a freshly
+// constructed Model must start in cost-mode (m.unitIdx == chartUnitCost)
+// before any user input. Resets-on-launch wording lives in model.go:115.
+func TestNewModel_DefaultsToCost(t *testing.T) {
+	m := New(Deps{})
+	if got, want := m.unitIdx, int(chartUnitCost); got != want {
+		t.Errorf("New(Deps{}).unitIdx = %d, want %d (chartUnitCost)", got, want)
+	}
+}
+
 func TestUnitKeyToggles(t *testing.T) {
-	// Pressing 'u' cycles unitIdx through 0 (tokens) → 1 (cost) → 2 (remaining) → 0.
-	// Initial state is 0 (default reset per spec — no persistence across launches).
+	// Pressing 'u' cycles unitIdx through 0 (cost) → 1 (output tokens) → 2 (remaining) → 0.
+	// Initial state is 0 (cost — default reset per issue #209, no persistence across launches).
 	m := New(Deps{})
 	m.w, m.h = 120, 40
 
@@ -1074,30 +1084,30 @@ func TestUnitKeyInHelp(t *testing.T) {
 	m.w, m.h = 120, 40
 
 	// Footer help line: ShortHelp() result, rendered through bubbles/help.
-	// Match the full "u tokens/cost" pair to avoid false positives —
+	// Match the full "u cost/output/usage" pair to avoid false positives —
 	// bare "u" also appears in "quit" and "scroll" so the substring is
 	// vacuous on its own.
 	footer := m.help.View(m.keys)
-	if !strings.Contains(footer, "u tokens/cost/usage") {
-		t.Errorf("footer help missing 'u tokens/cost/usage' binding:\n%s", footer)
+	if !strings.Contains(footer, "u cost/output/usage") {
+		t.Errorf("footer help missing 'u cost/output/usage' binding:\n%s", footer)
 	}
 
 	// Help overlay: triggered by '?'. Asserts on the FullHelp view.
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
 	overlay := updated.(Model).View()
-	if !strings.Contains(overlay, "tokens/cost/usage") {
-		t.Errorf("help overlay missing 'tokens/cost/usage' binding:\n%s", overlay)
+	if !strings.Contains(overlay, "cost/output/usage") {
+		t.Errorf("help overlay missing 'cost/output/usage' binding:\n%s", overlay)
 	}
 }
 
 func TestBeginUnitAnimation(t *testing.T) {
-	// Drive a model to a known token state, then call beginUnitAnimation
-	// after flipping unitIdx to cost. Two-phase contract: springActive
+	// Drive a model to a known cost state, then call beginUnitAnimation
+	// after flipping unitIdx to tokens. Two-phase contract: springActive
 	// flips true, springPhase = springShrinking, springProjectiles is
 	// sized to the bucket count, springTargetRatios is all zeros (Phase 1
 	// target), springFinalTargets holds the new-unit ratios, oldPeak /
 	// oldUnitIdx capture the pre-toggle state, and m.peak is the new
-	// (cost) peak so refreshChart already wrote the new viewport content.
+	// (tokens) peak so refreshChart already wrote the new viewport content.
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "state.db")
 	c, err := cache.Open(dbPath)
@@ -1126,16 +1136,16 @@ func TestBeginUnitAnimation(t *testing.T) {
 	m.viewport.Width = m.chartWidth()
 	m.viewport.Height = m.chartHeight()
 
-	// Render in token mode first so lastValues + peak hold the OLD state.
+	// Render in cost mode first (default) so lastValues + peak hold the OLD state.
 	m.refreshChart()
 	if len(m.lastValues) == 0 {
-		t.Fatalf("token-mode lastValues unexpectedly empty")
+		t.Fatalf("cost-mode lastValues unexpectedly empty")
 	}
 	oldValues := append([]float64(nil), m.lastValues...)
 	oldPeak := m.peak
 
-	// Flip and start animation toward the cost values.
-	m.unitIdx = 1
+	// Flip and start animation toward the token values (forward step: cost→tokens).
+	m.unitIdx = int(chartUnitTokens)
 	m.beginUnitAnimation()
 
 	if !m.springActive {
@@ -1163,11 +1173,11 @@ func TestBeginUnitAnimation(t *testing.T) {
 		t.Errorf("len(springFinalTargets) = %d, want %d", got, want)
 	}
 
-	// Initial spring state must equal old token ratios.
+	// Initial spring state must equal old cost ratios.
 	for i, v := range oldValues {
 		want := v / oldPeak
 		if diff := m.springRatios[i] - want; diff < -1e-9 || diff > 1e-9 {
-			t.Errorf("springRatios[%d] = %v, want %v (old token ratio)", i, m.springRatios[i], want)
+			t.Errorf("springRatios[%d] = %v, want %v (old cost ratio)", i, m.springRatios[i], want)
 		}
 	}
 
@@ -1197,24 +1207,25 @@ func TestBeginUnitAnimation(t *testing.T) {
 		}
 	}
 	if !anyNonZero {
-		t.Errorf("all springFinalTargets are zero; expected at least one non-zero cost bucket")
+		t.Errorf("all springFinalTargets are zero; expected at least one non-zero token bucket")
 	}
 
 	// View() reads oldPeak / oldUnitIdx during Phase 1 to show the OLD
 	// unit's label. oldUnitIdx is the unit before m.unitIdx was toggled.
 	if m.oldPeak != oldPeak {
-		t.Errorf("oldPeak = %v, want %v (pre-toggle token peak)", m.oldPeak, oldPeak)
+		t.Errorf("oldPeak = %v, want %v (pre-toggle cost peak)", m.oldPeak, oldPeak)
 	}
-	if m.oldUnitIdx != 0 {
-		t.Errorf("oldUnitIdx = %d, want 0 (tokens, pre-toggle)", m.oldUnitIdx)
+	if m.oldUnitIdx != int(chartUnitCost) {
+		t.Errorf("oldUnitIdx = %d, want %d (cost, pre-toggle)", m.oldUnitIdx, int(chartUnitCost))
 	}
 
-	// m.peak should hold the COST peak — refreshChart already swapped state.
+	// m.peak should hold the TOKEN peak — refreshChart already swapped state.
+	// Token peaks are integer counts (thousands), so much larger than dollar costs.
 	if m.peak == 0 {
-		t.Errorf("m.peak unexpectedly 0 after beginUnitAnimation; expected cost peak")
+		t.Errorf("m.peak unexpectedly 0 after beginUnitAnimation; expected token peak")
 	}
-	if m.peak >= oldPeak {
-		t.Errorf("m.peak = %v not less than oldPeak = %v; cost peak should be much smaller for these inputs",
+	if m.peak <= oldPeak*100 {
+		t.Errorf("m.peak = %v should be >> oldPeak = %v; token peak should be much larger than cost for these inputs",
 			m.peak, oldPeak)
 	}
 }
@@ -1244,8 +1255,9 @@ func TestUnitKey_ReduceMotion_SnapsWithoutTick(t *testing.T) {
 	if m.springActive {
 		t.Errorf("ReduceMotion 'u' press: springActive = true, want false (snap, not animate)")
 	}
-	if m.unitIdx != 1 {
-		t.Errorf("ReduceMotion 'u' press: unitIdx = %d, want 1 (advanced from tokens to cost)", m.unitIdx)
+	if m.unitIdx != int(chartUnitTokens) {
+		t.Errorf("ReduceMotion 'u' press: unitIdx = %d, want %d (advanced from cost to tokens)",
+			m.unitIdx, int(chartUnitTokens))
 	}
 	// And lastValues must differ from the token snapshot. Bucket counts
 	// are identical (same zoom level, same cache state), so a slice-equal
@@ -1630,7 +1642,7 @@ func TestRefreshDoesNotAnimate(t *testing.T) {
 }
 
 func TestRefreshChart_CostMode(t *testing.T) {
-	// With unitIdx=1 (cost), refreshChart must call CostBuckets and cache
+	// With unitIdx=int(chartUnitCost), refreshChart must call CostBuckets and cache
 	// the cost values into m.lastValues, with m.peak set to max(cost).
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "state.db")
@@ -1660,7 +1672,9 @@ func TestRefreshChart_CostMode(t *testing.T) {
 	m.viewport.Width = m.chartWidth()
 	m.viewport.Height = m.chartHeight()
 
-	// Token mode (default): peak should match max token count in any bucket.
+	// Token mode (explicit — default is now cost per issue #209): peak should
+	// match max output_tokens in any bucket.
+	m.unitIdx = int(chartUnitTokens)
 	m.refreshChart()
 	tokenPeak := m.peak
 	if tokenPeak == 0 {
@@ -1671,7 +1685,7 @@ func TestRefreshChart_CostMode(t *testing.T) {
 	}
 
 	// Cost mode: same buckets, but peak/lastValues now reflect dollar cost.
-	m.unitIdx = 1
+	m.unitIdx = int(chartUnitCost)
 	m.refreshChart()
 	costPeak := m.peak
 	if costPeak == 0 {
@@ -1982,7 +1996,7 @@ func TestRefreshChart_PreservesWallClockAnchor(t *testing.T) {
 			m.refreshChart()
 		}},
 		{"unit toggle keeps anchor", false, func(m *Model) {
-			m.unitIdx = (m.unitIdx + 1) % 2
+			m.unitIdx = (m.unitIdx + 1) % int(chartUnitCount)
 			m.refreshChart()
 		}},
 		{"resize keeps anchor", false, func(m *Model) {
@@ -2065,7 +2079,7 @@ func TestRefreshChart_PreservesScroll_Issue134(t *testing.T) {
 }
 
 // TestRefreshChart_ScrollAnchorAcrossZooms verifies the 24h zoom path:
-// - tokenBucketsDaily returns day-aligned buckets (~24h apart)
+// - outputTokenBucketsDaily returns day-aligned buckets (~24h apart)
 // - the anchor is preserved across a subsequent refreshChart in 24h zoom
 //
 // Seeds 40 days of data (40*24*4=3840 15m-spaced messages) so that 24h
@@ -2145,14 +2159,15 @@ func TestView_CostModeRendersDollarPrefix(t *testing.T) {
 	m.viewport.Width = m.chartWidth()
 	m.viewport.Height = m.chartHeight()
 
-	// Token mode (default): View() must NOT contain a "$" Y label.
+	// Token mode (explicit — default is cost per issue #209): View() must NOT contain a "$" Y label.
+	m.unitIdx = int(chartUnitTokens)
 	m.refreshChart()
 	if strings.Contains(m.View(), "$") {
 		t.Errorf("token-mode View contains '$' unexpectedly:\n%s", m.View())
 	}
 
 	// Cost mode: View() must contain a "$" Y label.
-	m.unitIdx = 1
+	m.unitIdx = int(chartUnitCost)
 	m.refreshChart()
 	if !strings.Contains(m.View(), "$") {
 		t.Errorf("cost-mode View missing '$' Y label:\n%s", m.View())
@@ -2187,7 +2202,7 @@ func TestQuotaMsg_DoesNotRebuildChart(t *testing.T) {
 }
 
 func TestUnitToggle_SpringStartsAtScrolledOffset(t *testing.T) {
-	// A scrolled-away user pressing 'u' to toggle tokens↔cost should
+	// A scrolled-away user pressing 'u' to toggle cost↔tokens should
 	// have the spring animation start from their actual viewport offset,
 	// not from the right edge. Otherwise the animation renders against
 	// the wrong slice of bars.
@@ -2321,11 +2336,11 @@ func TestUnitToggle_24hPinnedScrollRestoration(t *testing.T) {
 }
 
 // TestUnitToggle_24hCycle verifies that a full 'u' cycle
-// (tokens → cost → remaining → tokens) preserves the user's right-edge
+// (cost → tokens → remaining → cost) preserves the user's right-edge
 // anchor at every step. The first leg of #206 fixed bar→bar transitions;
 // this test locks the bar↔line legs, where the original patch routed
 // remaining mode through a still-buggy setX(rightEdgeCol/stride). Once
-// the second toggle (cost→remaining) snapped the offset to maxX−1, every
+// the second toggle (tokens→remaining) snapped the offset to maxX−1, every
 // subsequent toggle inherited the broken position via refreshChart's
 // anchor-time round-trip and the chart sat one stride left of the right
 // edge with today's bucket clipped or absent from the spring frame.
@@ -2405,7 +2420,7 @@ func TestUnitToggle_24hCycle(t *testing.T) {
 			// viewport.Width == chartWidth(), so bar-mode and
 			// remaining-mode maxX coincide; one maxX suffices for all
 			// three modes at the same zoom.
-			transitions := []string{"tokens→cost", "cost→remaining", "remaining→tokens"}
+			transitions := []string{"cost→tokens", "tokens→remaining", "remaining→cost"}
 			for i, label := range transitions {
 				updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
 				mm := updated.(Model)
@@ -2436,12 +2451,12 @@ func TestUnitToggle_24hCycle(t *testing.T) {
 func TestYLabel_Phase1ShowsOldUnit(t *testing.T) {
 	// During Phase 1 (shrinking), View() must render the Y-label with
 	// the OLD unit's value and the OLD peak. We assert by string
-	// inspection: the rendered View must contain a tokens-format label
-	// (e.g. "45k") and NOT a dollar-format label.
+	// inspection: the rendered View must contain a cost-format label
+	// (e.g. "$0.50") since the default is now cost per issue #209.
 	m := seedTwoPhaseAnimationModel(t)
 
-	// We're starting from tokens; toggle to cost. Phase 1 should show
-	// the old (tokens) label.
+	// We're starting from cost (default); toggle to tokens. Phase 1 should
+	// show the old (cost) label with '$'.
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
 	m = updated.(Model)
 	if m.springPhase != springShrinking {
@@ -2458,17 +2473,17 @@ func TestYLabel_Phase1ShowsOldUnit(t *testing.T) {
 	}
 
 	body := strings.Join(chartBodyLines(m.View()), "\n")
-	// Phase 1 should still expose a token-shaped label (e.g. "45k", "30k")
-	// — no dollar sign in the chart body.
-	if !strings.Contains(body, "k") || strings.Contains(body, "$") {
-		t.Errorf("Phase 1 chart body should show OLD (tokens) Y-label; got body:\n%s", body)
+	// Phase 1 should still expose a cost-shaped label (contains '$')
+	// — no token-only format in the chart body.
+	if !strings.Contains(body, "$") {
+		t.Errorf("Phase 1 chart body should show OLD (cost) Y-label with '$'; got body:\n%s", body)
 	}
 }
 
 func TestYLabel_Phase2ShowsNewUnit(t *testing.T) {
 	// During Phase 2 (growing), View() must render the Y-label with
-	// the NEW unit's value and the NEW peak. After toggling to cost
-	// and reaching Phase 2, the label format flips to "$N.NN".
+	// the NEW unit's value and the NEW peak. After toggling from cost
+	// to tokens and reaching Phase 2, the label format shows token counts (no "$").
 	m := seedTwoPhaseAnimationModel(t)
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
@@ -2496,9 +2511,9 @@ func TestYLabel_Phase2ShowsNewUnit(t *testing.T) {
 	}
 
 	body := strings.Join(chartBodyLines(m.View()), "\n")
-	// Phase 2 should expose a cost-shaped label (contains "$") in the chart body.
-	if !strings.Contains(body, "$") {
-		t.Errorf("Phase 2 chart body should show NEW (cost) Y-label; got body:\n%s", body)
+	// Phase 2 should expose a token-shaped label (contains "k" or "M", no "$") in the chart body.
+	if strings.Contains(body, "$") || (!strings.Contains(body, "k") && !strings.Contains(body, "M")) {
+		t.Errorf("Phase 2 chart body should show NEW (tokens) Y-label without '$'; got body:\n%s", body)
 	}
 }
 
@@ -2511,10 +2526,10 @@ func TestLabelFade_SyncedWithMaxRatio(t *testing.T) {
 	// = false), the Y-label must be present.
 	m := seedTwoPhaseAnimationModel(t)
 
-	// Pre-toggle baseline: the Y-label is present at steady state.
+	// Pre-toggle baseline: the Y-label is present at steady state (cost mode by default).
 	pre := m.View()
-	if !strings.Contains(pre, "k") {
-		t.Fatalf("baseline View has no token-shaped label; test setup wrong:\n%s", pre)
+	if !strings.Contains(pre, "$") {
+		t.Fatalf("baseline View has no cost-shaped label ('$'); test setup wrong:\n%s", pre)
 	}
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
@@ -2744,7 +2759,7 @@ func TestBeginUnitAnimation_EmptyCache(t *testing.T) {
 
 	// Pretend the user toggled the unit (Update's keybinding already
 	// increments unitIdx; replicate that here to exercise the same path).
-	m.unitIdx = 1
+	m.unitIdx = int(chartUnitCost)
 	m.beginUnitAnimation()
 
 	if m.springActive {
@@ -3131,7 +3146,7 @@ func TestBeginUnitAnimation_LineToBar(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Minute)
 	msgs := []parse.Message{{
 		SessionID: "s1", ProjectSlug: "p", Model: "claude-sonnet-4-6",
-		Timestamp: now.Add(-30 * time.Minute), InputTokens: 5000,
+		Timestamp: now.Add(-30 * time.Minute), InputTokens: 5000, OutputTokens: 2000,
 	}}
 	if err := c.InsertMessages(msgs, tab); err != nil {
 		t.Fatalf("InsertMessages: %v", err)
@@ -3153,8 +3168,10 @@ func TestBeginUnitAnimation_LineToBar(t *testing.T) {
 	m.unitIdx = int(chartUnitRemaining)
 	m.refreshChart()
 
-	// Toggle to tokens (line→bar).
-	m.unitIdx = int(chartUnitTokens)
+	// Toggle to cost — the forward step from remaining(2) is cost(0), not tokens(1).
+	// beginUnitAnimation derives oldUnitIdx via (newIdx+count-1)%count, so
+	// cost(0) → oldUnitIdx=(0+2)%3=2=remaining (line). Line→bar transition.
+	m.unitIdx = int(chartUnitCost)
 	m.beginUnitAnimation()
 
 	if !m.springActive {
@@ -3211,8 +3228,8 @@ func TestView_RemainingModeShowsYTicks(t *testing.T) {
 	}
 }
 
-// TestFullUnitCycle_TokensCostRemaining verifies that three presses of the
-// 'u' key cycle through tokens → cost → remaining → tokens, and that each
+// TestFullUnitCycle_CostTokensRemaining verifies that three presses of the
+// 'u' key cycle through cost → tokens → remaining → cost, and that each
 // mode produces a non-empty view with the expected mode-specific marker.
 // TestRenderSpringFrame_LineBranchUsesOldSnapshot verifies that the line-
 // rendering branch of renderSpringFrame reads from m.oldPts5h / m.oldPts7d
@@ -3334,7 +3351,7 @@ func TestRenderSpringFrame_LineBranchUsesOldSnapshot(t *testing.T) {
 	// would blank the viewport). Already covered by the non-empty check above.
 }
 
-func TestFullUnitCycle_TokensCostRemaining(t *testing.T) {
+func TestFullUnitCycle_CostTokensRemaining(t *testing.T) {
 	dir := t.TempDir()
 	c, err := cache.Open(filepath.Join(dir, "state.db"))
 	if err != nil {
@@ -3374,34 +3391,35 @@ func TestFullUnitCycle_TokensCostRemaining(t *testing.T) {
 		m.refreshChart()
 	}
 
-	// Press 1: tokens (0) → cost (1)
+	// Press 1: cost (0) → tokens (1). Tokens-mode view has the bare
+	// k/M-formatted Y-overlay (no '$', no '100%').
 	pressU()
-	if m.unitIdx != int(chartUnitCost) {
-		t.Fatalf("after 1st press: want unitIdx=%d (cost), got %d", int(chartUnitCost), m.unitIdx)
+	if m.unitIdx != int(chartUnitTokens) {
+		t.Fatalf("after 1st press: want unitIdx=%d (tokens), got %d", int(chartUnitTokens), m.unitIdx)
 	}
 	view1 := m.View()
-	if !strings.Contains(view1, "$") {
-		t.Error("cost mode view should contain '$'")
+	if strings.Contains(view1, "$") {
+		t.Errorf("tokens mode view must not contain '$':\n%s", view1)
 	}
 
-	// Press 2: cost (1) → remaining (2)
+	// Press 2: tokens (1) → remaining (2). Remaining view is a 0-100% line chart.
 	pressU()
 	if m.unitIdx != int(chartUnitRemaining) {
 		t.Fatalf("after 2nd press: want unitIdx=%d (remaining), got %d", int(chartUnitRemaining), m.unitIdx)
 	}
 	view2 := m.View()
 	if !strings.Contains(view2, "100%") {
-		t.Error("remaining mode view should contain '100%'")
+		t.Errorf("remaining mode view should contain '100%%':\n%s", view2)
 	}
 
-	// Press 3: remaining (2) → tokens (0)
+	// Press 3: remaining (2) → cost (0). Back to start; cost view contains '$'.
 	pressU()
-	if m.unitIdx != int(chartUnitTokens) {
-		t.Fatalf("after 3rd press: want unitIdx=%d (tokens), got %d", int(chartUnitTokens), m.unitIdx)
+	if m.unitIdx != int(chartUnitCost) {
+		t.Fatalf("after 3rd press: want unitIdx=%d (cost), got %d", int(chartUnitCost), m.unitIdx)
 	}
 	view3 := m.View()
-	if view3 == "" {
-		t.Error("tokens mode view should not be empty")
+	if !strings.Contains(view3, "$") {
+		t.Errorf("cost mode view should contain '$':\n%s", view3)
 	}
 }
 

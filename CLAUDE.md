@@ -42,7 +42,7 @@ These env vars override `config.toml` at runtime — useful for testing against 
    - On each event: `parse.ParseFromOffsetWithErrors` tails the file from the last byte offset → `cache.InsertMessages` (writes `cwd` and `git_branch` captured per-message from the JSONL envelope) → sends `tui.RefreshMsg` to the Bubble Tea program.
    - `ccpulse index` does a full cold walk via `parse.Walk`.
 
-2. The TUI (`pkg/tui`) is a pure Bubble Tea model. It renders a single view: a bordered header with side-by-side 5h and 7d quota bars (`bubbles/progress`), followed by a horizontally-scrollable bar chart (`ntcharts/barchart`) of token usage per time bucket, heat-coloured relative to the peak bucket. On `RefreshMsg` it calls `status.Compute` (for the quota window) and `cache.TokenBuckets` (for the histogram at the current zoom level) and redraws. The `z` key cycles zoom (15m / 1h / 24h); `←`/`→` scroll the chart; `?` toggles a full-help overlay. The TUI never writes to the cache.
+2. The TUI (`pkg/tui`) is a pure Bubble Tea model. It renders a single view: a bordered header with side-by-side 5h and 7d quota bars (`bubbles/progress`), followed by a horizontally-scrollable bar chart (`ntcharts/barchart`) of token usage per time bucket, heat-coloured relative to the peak bucket. On `RefreshMsg` it calls `status.Compute` (for the quota window) and `cache.OutputTokenBuckets` (for the histogram at the current zoom level; output tokens only since issue #209 — see the cost branch for the rate-weighted blend) and redraws. Defaults to the cost view on launch. The `z` key cycles zoom (15m / 1h / 24h); `←`/`→` scroll the chart; `?` toggles a full-help overlay. The TUI never writes to the cache.
 
 ### Package map
 
@@ -50,7 +50,7 @@ These env vars override `config.toml` at runtime — useful for testing against 
 |---|---|
 | `cmd/ccpulse` | Cobra CLI wiring: `runTUI`, `status`, `index`, `config`, `doctor`, `version` |
 | `pkg/parse` | JSONL transcript → `[]Message`; `ParseFromOffsetWithErrors` for incremental tail |
-| `pkg/cache` | SQLite via `modernc.org/sqlite`; schema embedded in `schema.sql`; tracks file cursors (`files` table), per-message rows in `messages` (including `cwd` / `git_branch` from JSONL), and time-bucketed token aggregates (`TokenBuckets`) |
+| `pkg/cache` | SQLite via `modernc.org/sqlite`; schema embedded in `schema.sql`; tracks file cursors (`files` table), per-message rows in `messages` (including `cwd` / `git_branch` from JSONL), and time-bucketed output-token aggregates (`OutputTokenBuckets`) |
 | `pkg/watcher` | fsnotify wrapper with 100 ms debounce; auto-subscribes new subdirectories |
 | `pkg/pricing` | Embeds `pricing.json`; `Table.CostFor(Message)` returns USD cost |
 | `pkg/status` | 5-hour rolling window + 7-day window computation; tier → token ceiling mapping; consumed by TUI header and `status --json` |
