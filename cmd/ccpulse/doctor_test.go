@@ -80,6 +80,36 @@ func TestCheckClaudeCodeHook_NoMatchingHook(t *testing.T) {
 	}
 }
 
+func TestREADMEContainsHookSnippet(t *testing.T) {
+	// Walk up from this test's working dir to the repo root so the test
+	// works from worktrees and the top-level checkout alike.
+	data, err := os.ReadFile(filepath.Join("..", "..", "README.md"))
+	if err != nil {
+		t.Fatalf("read README.md: %v", err)
+	}
+	if !strings.Contains(string(data), claudeStopHookSnippet) {
+		t.Errorf("README.md must contain the claudeStopHookSnippet verbatim — doctor and README drifted apart.\n"+
+			"snippet:\n%s\n\nREADME excerpt around 'Claude Code':\n%s",
+			claudeStopHookSnippet, excerptAround(string(data), "Claude Code", 200))
+	}
+}
+
+func excerptAround(s, needle string, radius int) string {
+	i := strings.Index(s, needle)
+	if i < 0 {
+		return "(needle not found)"
+	}
+	start := i - radius
+	if start < 0 {
+		start = 0
+	}
+	end := i + radius
+	if end > len(s) {
+		end = len(s)
+	}
+	return s[start:end]
+}
+
 func TestCheckClaudeCodeHook_MalformedJSON(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

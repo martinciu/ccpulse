@@ -123,6 +123,32 @@ ccpulse status --json     # JSON: 5h + 7d percent/reset, tokens_5h, cost_5h_usd,
 
 `--json` is useful for scripting or status bars that consume structured data.
 
+#### Claude Code hook
+
+`ccpulse status --quiet` is designed to be called from Claude Code's `Stop`
+hook, which fires after every assistant turn. The internal 3-minute cache
+TTL absorbs the burst rate, so the Anthropic usage API is hit at most
+once every few minutes even during heavy use — no daemon, no blind
+polling. Add this to `~/.claude/settings.json` (or merge the `"hooks"` key
+if you already have one):
+
+```json
+{
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          { "type": "command", "command": "ccpulse status --quiet" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+`ccpulse doctor` reports whether this hook is configured.
+
 ### `ccpulse config`
 
 ```sh
