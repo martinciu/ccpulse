@@ -422,6 +422,133 @@ func TestStatusJSONProjectionOverreach(t *testing.T) {
 	}
 }
 
+func TestStatusQuietSuppressesStdout(t *testing.T) {
+	cacheDir := t.TempDir()
+	credDir := t.TempDir()
+	t.Setenv("CCPULSE_CACHE_DIR", cacheDir)
+	t.Setenv("HOME", credDir)
+	writeTempCache(t, cacheDir)
+	writeTempCredential(t, credDir)
+
+	cmd := newStatusCmd()
+	cmd.SetArgs([]string{"--quiet"})
+	var out, errBuf bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errBuf)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("status --quiet: %v", err)
+	}
+	if got := out.String(); got != "" {
+		t.Errorf("stdout should be empty with --quiet, got: %q", got)
+	}
+}
+
+func TestStatusQuietStillRecordsSample(t *testing.T) {
+	cacheDir := t.TempDir()
+	credDir := t.TempDir()
+	t.Setenv("CCPULSE_CACHE_DIR", cacheDir)
+	t.Setenv("HOME", credDir)
+	writeTempCredential(t, credDir)
+
+	// Spin up a fake Anthropic API so anthro.Fetch returns source=api.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(sampleAPIBody))
+	}))
+	t.Cleanup(srv.Close)
+	restore := anthro.SetAPIURLForTest(srv.URL)
+	t.Cleanup(restore)
+
+	cmd := newStatusCmd()
+	cmd.SetArgs([]string{"--quiet"})
+	var out, errBuf bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errBuf)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("status --quiet: %v", err)
+	}
+	if out.Len() != 0 {
+		t.Errorf("stdout should be empty, got: %q", out.String())
+	}
+
+	// Verify the row landed in usage_samples.
+	dbPath := filepath.Join(cacheDir, "state.db")
+	c, err := cache.Open(dbPath)
+	if err != nil {
+		t.Fatalf("reopen cache: %v", err)
+	}
+	t.Cleanup(func() { c.Close() })
+	var count int
+	if err := c.DB().QueryRow(`SELECT COUNT(*) FROM usage_samples`).Scan(&count); err != nil {
+		t.Fatalf("count usage_samples: %v", err)
+	}
+	if count == 0 {
+		t.Errorf("expected at least one usage_samples row after --quiet fetch, got 0")
+	}
+}
+
+func TestStatusQuietHardErrorStillExitsNonZero(t *testing.T) {
+	cacheDir := t.TempDir()
+	credDir := t.TempDir()
+	t.Setenv("CCPULSE_CACHE_DIR", cacheDir)
+	t.Setenv("HOME", credDir)
+
+	// Make state.db a directory so cache.Open fails.
+	if err := os.MkdirAll(filepath.Join(cacheDir, "state.db"), 0700); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	cmd := newStatusCmd()
+	cmd.SetArgs([]string{"--quiet"})
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	var out, errBuf bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errBuf)
+	if err := cmd.Execute(); err == nil {
+		t.Fatalf("expected non-nil error from hard cache-open failure with --quiet, got nil")
+	}
+}
+
+func TestStatusQuietStillEmitsStderrDiagnostics(t *testing.T) {
+	// intent: --quiet is stdout-only — stderr diagnostics must still flow.
+	// we force the "OAuth credential expired" diagnostic by writing a credential
+	// with expiresAt in the past, then assert stderr contains the marker.
+	// stdout must remain empty.
+	cacheDir := t.TempDir()
+	credDir := t.TempDir()
+	t.Setenv("CCPULSE_CACHE_DIR", cacheDir)
+	t.Setenv("HOME", credDir)
+	t.Setenv("CCPULSE_DISABLE_KEYCHAIN", "1")
+
+	// Write a credential whose expiresAt is epoch+1ms (well in the past).
+	body := `{"claudeAiOauth":{"accessToken":"tok","subscriptionType":"max","rateLimitTier":"default_claude_max_20x","expiresAt":1}}`
+	claudeDir := filepath.Join(credDir, ".claude")
+	if err := os.MkdirAll(claudeDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(claudeDir, ".credentials.json"), []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newStatusCmd()
+	cmd.SetArgs([]string{"--quiet"})
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	var out, errBuf bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errBuf)
+	// Expired credential is a soft failure; status still computes via JSONL fallback.
+	_ = cmd.Execute()
+
+	if out.Len() != 0 {
+		t.Errorf("stdout should be empty with --quiet, got: %q", out.String())
+	}
+	if !strings.Contains(errBuf.String(), "OAuth credential expired") {
+		t.Errorf("expected 'OAuth credential expired' in stderr buffer, got: %q", errBuf.String())
+	}
+}
+
 func TestStatusPrunesWhenRetentionConfigured(t *testing.T) {
 	cacheDir := t.TempDir()
 	credDir := t.TempDir()

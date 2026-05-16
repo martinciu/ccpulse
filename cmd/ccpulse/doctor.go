@@ -1,11 +1,13 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/martinciu/ccpulse/pkg/anthro"
@@ -102,6 +104,9 @@ func newDoctorCmd() *cobra.Command {
 				check(out, "parse-errors.log: not present", true, nil)
 			}
 
+			// Claude Code Stop hook check
+			checkClaudeCodeHook(out)
+
 			// Log file: location and level depend on channel + --log-level.
 			if resolvedLogLevel == devlog.LevelOff {
 				fmt.Fprintf(out, "ℹ log file: (disabled — --log-level off)\n")
@@ -135,4 +140,78 @@ func check(out io.Writer, msg string, ok bool, err error) {
 		fmt.Fprintf(out, " — %v", err)
 	}
 	fmt.Fprintln(out, "")
+}
+
+// claudeStopHookSnippet is the copy-pasteable settings.json fragment that
+// configures the recommended Stop hook. Both `doctor` and README.md print
+// this same string verbatim; a drift-guard test in doctor_test.go enforces
+// the README contains it as a substring.
+const claudeStopHookSnippet = `{
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          { "type": "command", "command": "ccpulse status --quiet" }
+        ]
+      }
+    ]
+  }
+}`
+
+// checkClaudeCodeHook detects whether the user's global Claude Code
+// settings.json (~/.claude/settings.json) configures a Stop hook that
+// invokes ccpulse. Substring match on "ccpulse" — users may wrap the
+// invocation in a shell function or script.
+//
+// All outcomes are informational; the check never fails the overall doctor
+// report. Settings.json contents are NEVER echoed back — only the outcome
+// line and the static snippet print.
+func checkClaudeCodeHook(out io.Writer) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		fmt.Fprintf(out, "ℹ Claude Code settings.json: cannot resolve home dir: %v\n", err)
+		return
+	}
+	path := filepath.Join(home, ".claude", "settings.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			fmt.Fprintln(out, "ℹ Claude Code settings.json not found")
+			return
+		}
+		fmt.Fprintf(out, "ℹ Claude Code settings.json: %v\n", err)
+		return
+	}
+	if hookCommandMentionsCcpulse(data) {
+		fmt.Fprintln(out, "✓ ccpulse Stop hook detected")
+		return
+	}
+	fmt.Fprintln(out, "✗ no ccpulse Stop hook")
+	fmt.Fprintln(out, claudeStopHookSnippet)
+}
+
+// hookCommandMentionsCcpulse parses a settings.json byte slice and reports
+// whether any Stop-hook command string contains "ccpulse". Tolerant of
+// shape variations — returns false on parse errors rather than surfacing
+// them, because the caller has already decided that broken JSON is just
+// an info line.
+func hookCommandMentionsCcpulse(data []byte) bool {
+	var top map[string]any
+	if err := json.Unmarshal(data, &top); err != nil {
+		return false
+	}
+	hooks, _ := top["hooks"].(map[string]any)
+	stop, _ := hooks["Stop"].([]any)
+	for _, entry := range stop {
+		m, _ := entry.(map[string]any)
+		inner, _ := m["hooks"].([]any)
+		for _, h := range inner {
+			hm, _ := h.(map[string]any)
+			if cmd, ok := hm["command"].(string); ok && strings.Contains(cmd, "ccpulse") {
+				return true
+			}
+		}
+	}
+	return false
 }
