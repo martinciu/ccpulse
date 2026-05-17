@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -33,7 +34,10 @@ func newStatusCmd() *cobra.Command {
 }
 
 func runStatus(cmd *cobra.Command, asJSON, quiet bool) error {
-	cfg, _ := config.Load(config.DefaultPath())
+	cfg, err := config.Load(config.DefaultPath())
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
 	cacheDir := envOr("CCPULSE_CACHE_DIR", expand(cfg.Paths.CacheDir))
 	dbPath := filepath.Join(cacheDir, "state.db")
 	c, err := cache.Open(dbPath)

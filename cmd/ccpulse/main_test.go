@@ -2,11 +2,14 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/martinciu/ccpulse/pkg/devlog"
 )
@@ -121,5 +124,55 @@ func TestInitDevlog_LevelOffQuiet(t *testing.T) {
 	}
 	if buf.Len() != 0 {
 		t.Errorf("LevelOff should not write to w: %q", buf.String())
+	}
+}
+
+// TestRunTUI_MalformedConfig asserts that runTUI returns a non-nil error
+// when config.toml exists but is syntactically invalid (stray bracket).
+// Mirrors the runIndex pattern: os.IsNotExist → fine; any other error → fatal.
+func TestRunTUI_MalformedConfig(t *testing.T) {
+	cfgDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", cfgDir)
+
+	// channel is "dev" by default in tests; DefaultPath() → $XDG_CONFIG_HOME/ccpulse-dev/config.toml
+	ccpulseDir := filepath.Join(cfgDir, "ccpulse-dev")
+	if err := os.MkdirAll(ccpulseDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ccpulseDir, "config.toml"), []byte("[[broken\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := runTUI(t.Context(), io.Discard)
+	if err == nil {
+		t.Fatal("runTUI should return error for malformed config, got nil")
+	}
+	if !strings.Contains(err.Error(), "toml") {
+		t.Errorf("error should mention TOML parse failure, got: %v", err)
+	}
+}
+
+// TestRunTUI_AbsentConfigUsesDefaults asserts that runTUI proceeds normally
+// (doesn't error on the config step) when the config file simply doesn't exist.
+// The absent-config path is guarded by os.IsNotExist — defaults kick in.
+// We inject a no-op tea.Program so the test exits cleanly via 'q'.
+func TestRunTUI_AbsentConfigUsesDefaults(t *testing.T) {
+	// Point XDG_CONFIG_HOME at a dir with no ccpulse-dev subdirectory.
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "no-config-here"))
+	t.Setenv("CCPULSE_PROJECTS_ROOT", t.TempDir())
+	t.Setenv("CCPULSE_CACHE_DIR", t.TempDir())
+
+	originalNewTeaProgram := newTeaProgram
+	t.Cleanup(func() { newTeaProgram = originalNewTeaProgram })
+	newTeaProgram = func(m tea.Model) *tea.Program {
+		return tea.NewProgram(m,
+			tea.WithoutRenderer(),
+			tea.WithInput(strings.NewReader("q")),
+			tea.WithOutput(io.Discard),
+		)
+	}
+
+	if err := runTUI(t.Context(), io.Discard); err != nil {
+		t.Fatalf("runTUI should succeed with absent config (defaults), got: %v", err)
 	}
 }
