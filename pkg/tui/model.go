@@ -217,6 +217,15 @@ type Model struct {
 	// after the user stops scrolling. Mirrors springGen / springTickMsg
 	// (commit 1ee982c / #218).
 	scrollGen int
+	// preservePeakOnRefresh, when true, tells the next refreshChart call
+	// to keep the existing m.peak instead of recomputing it from the
+	// visible slice. Set true at unit-toggle / intro animation settle so
+	// the post-settle bars render against the SAME ceiling the spring
+	// rendered against — otherwise a watcher event that grows the
+	// visible-slice peak mid-animation would cause a visible drop in
+	// bar heights at the moment the spring ends. The flag is single-shot:
+	// refreshChart clears it after honouring.
+	preservePeakOnRefresh bool
 	// springXOffset is the leftmost bucket index visible in the viewport
 	// when animation started. The spring runs over all bucket ratios but
 	// only the visible window is re-rendered each tick — full-canvas
@@ -485,6 +494,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.springActive = false
 				m.springIntro = false
 				m.springPhase = springIdle
+				// Preserve the spring's ceiling across the refresh so a
+				// watcher event that grew m.peak mid-animation doesn't
+				// snap visible bars to a smaller height at settle.
+				m.preservePeakOnRefresh = true
 				m.refreshChart()
 				return m, nil
 			}
@@ -1675,11 +1688,18 @@ func (m *Model) refreshChart() {
 
 	// Peak is normalised against the slice currently under the viewport.
 	// Remaining-mode preserves its fixed 1.0 invariant (line chart).
-	if unit == chartUnitRemaining {
+	// preservePeakOnRefresh (set at animation settle) skips the recompute
+	// so a watcher event growing the visible-slice peak during the spring
+	// can't snap bar heights at the moment the animation ends.
+	switch {
+	case unit == chartUnitRemaining:
 		m.peak = 1.0
-	} else {
+	case m.preservePeakOnRefresh && m.peak > 0:
+		m.preservePeakOnRefresh = false
+	default:
 		visN := m.visibleBuckets()
 		m.peak = peakOf(values, predictedX, predictedX+visN)
+		m.preservePeakOnRefresh = false
 	}
 
 	// SetContent must happen BEFORE setX so the viewport's
