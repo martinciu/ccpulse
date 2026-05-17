@@ -530,11 +530,11 @@ type TokenBucket struct {
 // Empty intervals are returned with Tokens == 0; output is ordered
 // oldest-first, len = (to.Sub(from) / dur).
 //
-// The Tokens field is SUM(output_tokens) per bucket — cache reads/writes
-// and fresh input are deliberately excluded. Output is the only token
-// column that's always full-price and tracks generation effort; use
-// CostBuckets for the rate-weighted blend across all five columns. See
-// issue #209.
+// The Tokens field is SUM(input_tokens + output_tokens) per bucket —
+// matches Claude Code `/usage` Tokens-per-Day chart semantics. Cache
+// reads and writes are deliberately excluded; use CostBuckets for the
+// rate-weighted blend across all five columns. See issue #232 (revises
+// the output-only choice made in #209).
 func (c *Cache) OutputTokenBuckets(dur time.Duration, from, to time.Time) ([]TokenBucket, error) {
 	if dur == 24*time.Hour {
 		return c.outputTokenBucketsDaily(from, to)
@@ -551,7 +551,7 @@ func (c *Cache) OutputTokenBuckets(dur time.Duration, from, to time.Time) ([]Tok
 	rows, err := c.db.Query(`
 SELECT
   CAST(CAST(strftime('%s', ts) AS INTEGER) / ? AS INTEGER) * ? AS bucket_epoch,
-  SUM(output_tokens)
+  SUM(input_tokens + output_tokens)
 FROM messages
 WHERE ts >= ? AND ts < ?
 GROUP BY bucket_epoch
@@ -591,12 +591,12 @@ ORDER BY bucket_epoch ASC
 	return out, nil
 }
 
-// dailySQL is the shared 24h-zoom SQL form used by both outputTokenBucketsDaily
+// dailySQL is the shared 24h-zoom SQL form used by both ioTokenBucketsDaily
 // and costBucketsDaily, parameterised by the aggregate expression. The
 // local_day(ts) call uses the Go-registered scalar function (see init()
 // above) so day grouping honours time.Local on every platform.
 //
-// outputTokenBucketsDaily returns one TokenBucket per local-tz calendar day in
+// ioTokenBucketsDaily returns one TokenBucket per local-tz calendar day in
 // [from, to). Bucket boundaries are local midnight; SQLite groups via
 // the registered local_day(ts) function. Iteration uses AddDate(0, 0, 1)
 // so DST transitions (spring-forward 23h day, fall-back 25h day) each
@@ -615,7 +615,7 @@ func (c *Cache) outputTokenBucketsDaily(from, to time.Time) ([]TokenBucket, erro
 	rows, err := c.db.Query(`
 SELECT
   local_day(ts) AS day,
-  SUM(output_tokens)
+  SUM(input_tokens + output_tokens)
 FROM messages
 WHERE ts >= ? AND ts < ?
 GROUP BY day

@@ -681,17 +681,17 @@ func TestOutputTokenBuckets_ContiguousRange(t *testing.T) {
 		}
 	}
 	// Indices 10 (11:50), 11 (11:55) carry data; everything else is zero.
-	// Aggregate is SUM(output_tokens) only — input and cache_* columns are
-	// excluded. See issue #209.
+	// Aggregate is SUM(input_tokens + output_tokens) — cache_* columns excluded.
+	// See issue #232 (revises the output-only choice made in #209).
 	for i, b := range buckets {
 		switch i {
 		case 10:
-			if b.Tokens != 500 {
-				t.Errorf("bucket[10].Tokens = %d, want 500 (output_tokens only)", b.Tokens)
+			if b.Tokens != 1500 {
+				t.Errorf("bucket[10].Tokens = %d, want 1500 (1000 input + 500 output)", b.Tokens)
 			}
 		case 11:
-			if b.Tokens != 1000 {
-				t.Errorf("bucket[11].Tokens = %d, want 1000 (output_tokens only)", b.Tokens)
+			if b.Tokens != 3500 {
+				t.Errorf("bucket[11].Tokens = %d, want 3500 (2000+800 + 500+200)", b.Tokens)
 			}
 		default:
 			if b.Tokens != 0 {
@@ -701,9 +701,11 @@ func TestOutputTokenBuckets_ContiguousRange(t *testing.T) {
 	}
 }
 
-// TestOutputTokenBuckets_OutputOnly_CacheReadIgnored is the regression guard
-// for issue #209: a bucket whose volume is dominated by cache_read_tokens
-// must render the output_tokens value, not the total.
+// TestOutputTokenBuckets_OutputOnly_CacheReadIgnored verifies that the
+// token-bucket aggregator sums input_tokens + output_tokens per bucket
+// and excludes the three cache columns (cache_read, cache_write_5m,
+// cache_write_1h). Matches Claude Code /usage semantics — see #232.
+// Renamed in the follow-up rename task.
 func TestOutputTokenBuckets_OutputOnly_CacheReadIgnored(t *testing.T) {
 	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
@@ -713,20 +715,20 @@ func TestOutputTokenBuckets_OutputOnly_CacheReadIgnored(t *testing.T) {
 
 	tab, _ := pricing.Load()
 
-	// One message: tiny output, huge cache_read, plus non-zero values in every
-	// other token column. If the aggregate were the 5-column sum the bucket
-	// would total 30_001_750; under SUM(output_tokens) it must be exactly 50.
+	// One message: small input+output, large cache values. If the aggregate
+	// were the 5-column sum the bucket would total 1285; under
+	// SUM(input_tokens + output_tokens) it must be exactly 15.
 	ts := time.Date(2026, 5, 9, 11, 50, 0, 0, time.UTC)
 	msgs := []parse.Message{{
 		SessionID:          "s1",
 		ProjectSlug:        "p",
 		Model:              "claude-sonnet-4-6",
 		Timestamp:          ts,
-		InputTokens:        1_000,
-		OutputTokens:       50,
-		CacheReadTokens:    30_000_000,
-		CacheWrite5mTokens: 500,
-		CacheWrite1hTokens: 200,
+		InputTokens:        10,
+		OutputTokens:       5,
+		CacheReadTokens:    1000,
+		CacheWrite5mTokens: 200,
+		CacheWrite1hTokens: 75,
 	}}
 	if err := c.InsertMessages(msgs, tab); err != nil {
 		t.Fatal(err)
@@ -745,8 +747,8 @@ func TestOutputTokenBuckets_OutputOnly_CacheReadIgnored(t *testing.T) {
 	if buckets[0].Tokens != 0 {
 		t.Errorf("buckets[0].Tokens = %d, want 0 (empty)", buckets[0].Tokens)
 	}
-	if buckets[1].Tokens != 50 {
-		t.Errorf("buckets[1].Tokens = %d, want 50 (output_tokens only); huge cache_read must NOT contribute",
+	if buckets[1].Tokens != 15 {
+		t.Errorf("buckets[1].Tokens = %d, want 15 (= 10 input + 5 output); cache columns must NOT contribute",
 			buckets[1].Tokens)
 	}
 }
@@ -850,8 +852,8 @@ func TestOutputTokenBuckets_IncludesInFlightBucket(t *testing.T) {
 		t.Errorf("rightmost BucketStart = %v, want %v (bucket containing now)",
 			last.BucketStart, BucketAlign(now, dur))
 	}
-	if last.Tokens != 500 {
-		t.Errorf("rightmost Tokens = %d, want 500 (output_tokens of in-flight message)", last.Tokens)
+	if last.Tokens != 1500 {
+		t.Errorf("rightmost Tokens = %d, want 1500 (= 1000 input + 500 output of in-flight message)", last.Tokens)
 	}
 }
 
@@ -1157,8 +1159,8 @@ func TestInsertMessages_NormalizesNonUTCTimestamp(t *testing.T) {
 	if len(buckets) != 12 {
 		t.Fatalf("want 12 buckets, got %d: %+v", len(buckets), buckets)
 	}
-	if buckets[10].Tokens != 500 {
-		t.Errorf("bucket[10].Tokens = %d, want 500 (output_tokens of the non-UTC insert)",
+	if buckets[10].Tokens != 1500 {
+		t.Errorf("bucket[10].Tokens = %d, want 1500 (= 1000 input + 500 output of the non-UTC insert)",
 			buckets[10].Tokens)
 	}
 }
