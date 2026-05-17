@@ -56,7 +56,16 @@ type indexBannerClearMsg struct{}
 // re-scheduled by the springTickMsg handler until all springs are
 // settled, after which idle TUI cost returns to zero (no further
 // Cmd is returned).
-type springTickMsg struct{}
+//
+// gen is the animation generation the tick belongs to — captured at
+// schedule time from Model.springGen. The handler drops ticks whose
+// gen doesn't match the current generation so rapid 'u' presses can't
+// stack independent tick loops (issue #218). Without the gate, each
+// rapid press leaves the previous animation's already-rescheduled tick
+// in flight; both ticks then advance the new animation, doubling
+// (then tripling, etc.) the effective frame rate until the animation
+// visibly skips.
+type springTickMsg struct{ gen int }
 
 // springPhase tracks which leg of the two-phase unit-toggle animation
 // is currently running. Idle is the steady state; springActive=false
@@ -181,6 +190,13 @@ type Model struct {
 	springVelocities   []float64
 	springTargetRatios []float64
 	springActive       bool
+	// springGen is bumped each time a new animation arms (beginUnitAnimation,
+	// beginIntroAnimation, QuotaMsg late-arrival arm). Every tea.Tick →
+	// springTickMsg{} schedule captures the current value, and the handler
+	// drops ticks whose gen doesn't match. This is what stops rapid 'u'
+	// presses from stacking the previous animation's still-pending tick on
+	// top of the new animation's tick and accelerating it (#218).
+	springGen int
 	// springXOffset is the leftmost bucket index visible in the viewport
 	// when animation started. The spring runs over all bucket ratios but
 	// only the visible window is re-rendered each tick — full-canvas
@@ -357,9 +373,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.indexFadeStop = 0
 		return m, nil
 	case springTickMsg:
-		if !m.springActive {
+		if !m.springActive || msg.gen != m.springGen {
+			// springActive=false → no animation in flight at all.
+			// gen mismatch → tick belongs to a superseded animation
+			// generation (rapid 'u' press during animation). Either way,
+			// drop without rescheduling so the loop doesn't perpetuate.
 			return m, nil
 		}
+		gen := m.springGen
 		switch m.springPhase {
 		case springShrinking:
 			var maxR float64
@@ -384,12 +405,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.springPhase = springHolding
 				m.renderSpringFrame()
 				return m, tea.Tick(phaseHoldDuration, func(time.Time) tea.Msg {
-					return springTickMsg{}
+					return springTickMsg{gen: gen}
 				})
 			}
 			m.renderSpringFrame()
 			return m, tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
-				return springTickMsg{}
+				return springTickMsg{gen: gen}
 			})
 
 		case springHolding:
@@ -410,7 +431,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.springPhase = springGrowing
 			m.renderSpringFrame()
 			return m, tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
-				return springTickMsg{}
+				return springTickMsg{gen: gen}
 			})
 
 		case springGrowing:
@@ -449,7 +470,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.renderSpringFrame()
 			return m, tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
-				return springTickMsg{}
+				return springTickMsg{gen: gen}
 			})
 		}
 		return m, nil
@@ -508,8 +529,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.springActive = true
 				m.springIntro = true
 				m.springPhase = springGrowing
+				m.springGen++
+				gen := m.springGen
 				return m, tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
-					return springTickMsg{}
+					return springTickMsg{gen: gen}
 				})
 			}
 			// Targets both zero — nothing to animate. Clear the flag
@@ -570,8 +593,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// frame of refreshChart's new-unit content before the
 					// first tick paints the falling old-unit chart.
 					m.renderSpringFrame()
+					gen := m.springGen
 					return m, tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
-						return springTickMsg{}
+						return springTickMsg{gen: gen}
 					})
 				}
 			}
@@ -958,6 +982,7 @@ func (m *Model) beginUnitAnimation() {
 	}
 	m.springActive = true
 	m.springPhase = springShrinking
+	m.springGen++
 }
 
 // beginIntroAnimation primes the open-path slide-in. Caller must have
@@ -1033,6 +1058,7 @@ func (m *Model) beginIntroAnimation() {
 	m.springActive = true
 	m.springIntro = true
 	m.springPhase = springHolding
+	m.springGen++
 
 	// Render the zero-bars hold frame synchronously so the next View()
 	// call doesn't briefly show refreshChart's fully-formed bars before
@@ -1075,8 +1101,9 @@ func (m *Model) maybeArmIntro() tea.Cmd {
 	if !m.springActive {
 		return nil
 	}
+	gen := m.springGen
 	return tea.Tick(phaseHoldDuration, func(time.Time) tea.Msg {
-		return springTickMsg{}
+		return springTickMsg{gen: gen}
 	})
 }
 

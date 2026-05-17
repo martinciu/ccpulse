@@ -1301,7 +1301,7 @@ func TestUnitToggleAnimationSettles(t *testing.T) {
 	const maxTicks = 200
 	var lastCmd tea.Cmd
 	for i := 0; i < maxTicks && m.springActive; i++ {
-		updated, lastCmd = m.Update(springTickMsg{})
+		updated, lastCmd = m.Update(springTickMsg{gen: m.springGen})
 		m = updated.(Model)
 	}
 	if m.springActive {
@@ -1320,6 +1320,94 @@ func TestUnitToggleAnimationSettles(t *testing.T) {
 
 	if lastCmd != nil {
 		t.Errorf("settle tick returned non-nil Cmd; idle TUI must not keep ticking")
+	}
+}
+
+func TestUnitToggle_StaleSpringTickFromPriorAnimation_Dropped(t *testing.T) {
+	// Production sequence: press 'u', then press 'u' again BEFORE the first
+	// animation's scheduled tick has been delivered. Two springTickMsg are
+	// now pending in the bubbletea runtime — one from each press. The first
+	// is stale (its generation belongs to the now-aborted animation #1);
+	// only the second should advance state.
+	//
+	// Without generation-aware ticks (issue #218), the stale tick advances
+	// animation #2 by one frame, doubling its tick rate. Repeated rapid
+	// presses compound the loops until the animation visibly skips.
+	m := seedTwoPhaseAnimationModel(t)
+
+	// Seed usage_samples so the second u-press (tokens → remaining line
+	// chart) finds non-empty data and beginUnitAnimation arms a real
+	// animation #2 — without samples it bails on len(newValues)==0 and
+	// springActive flips back to false, hiding the bug we want to test.
+	for i := range 5 {
+		when := time.Now().UTC().Add(-time.Duration(i) * 30 * time.Minute)
+		fiveResets := when.Add(2 * time.Hour)
+		u := anthro.Usage{
+			FiveHour: &anthro.Bucket{Utilization: 20.0 + float64(i)*5.0, ResetsAt: &fiveResets},
+		}
+		if err := m.deps.Cache.RecordUsageSample(u, when); err != nil {
+			t.Fatalf("RecordUsageSample: %v", err)
+		}
+	}
+
+	updated, cmdA := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	m = updated.(Model)
+	if !m.springActive {
+		t.Fatalf("after first 'u': springActive = false, want true")
+	}
+	if cmdA == nil {
+		t.Fatalf("after first 'u': cmd = nil, want tea.Tick")
+	}
+	// Resolve cmdA to its springTickMsg payload. tea.Tick blocks for one
+	// frame (~16ms @ 60 FPS); acceptable for a one-shot unit test.
+	tickA, ok := cmdA().(springTickMsg)
+	if !ok {
+		t.Fatalf("cmdA produced %T, want springTickMsg", cmdA())
+	}
+
+	// Press 'u' again BEFORE delivering tickA. Animation #2 supersedes #1.
+	updated, cmdB := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	m = updated.(Model)
+	if !m.springActive {
+		t.Fatalf("after second 'u': springActive = false, want true")
+	}
+	if cmdB == nil {
+		t.Fatalf("after second 'u': cmd = nil, want tea.Tick")
+	}
+	tickB, ok := cmdB().(springTickMsg)
+	if !ok {
+		t.Fatalf("cmdB produced %T, want springTickMsg", cmdB())
+	}
+
+	// Snapshot animation #2's freshly-seeded state.
+	ratiosBefore := append([]float64(nil), m.springRatios...)
+	phaseBefore := m.springPhase
+
+	// Stale tickA must be dropped: no rescheduled Cmd (which would
+	// perpetuate the extra tick loop), no spring-state mutation. The
+	// dropped-cmd assertion is the sharp behavioral signal — without
+	// it, the handler reschedules a fresh tea.Tick, compounding the
+	// loop count on every rapid press and accelerating the animation.
+	updated, staleCmd := m.Update(tickA)
+	m = updated.(Model)
+	if staleCmd != nil {
+		t.Errorf("stale tick returned non-nil Cmd; must not perpetuate a stale loop")
+	}
+	for i, r := range m.springRatios {
+		if r != ratiosBefore[i] {
+			t.Errorf("stale tick advanced springRatios[%d]: before=%v after=%v", i, ratiosBefore[i], r)
+		}
+	}
+	if m.springPhase != phaseBefore {
+		t.Errorf("stale tick changed springPhase: before=%d after=%d", phaseBefore, m.springPhase)
+	}
+
+	// Live tickB must keep animation #2's frame loop alive — proves the
+	// generation gate doesn't accidentally drop fresh ticks too.
+	updated, freshCmd := m.Update(tickB)
+	m = updated.(Model)
+	if freshCmd == nil {
+		t.Errorf("live tick returned nil Cmd; animation #2 frame loop must continue")
 	}
 }
 
@@ -1364,7 +1452,7 @@ func TestPhaseTransition_AtThreshold(t *testing.T) {
 	// two ticks means the Projectile is frozen, almost certainly a
 	// range-copy regression in the handler.
 	for range 2 {
-		updated, _ = m.Update(springTickMsg{})
+		updated, _ = m.Update(springTickMsg{gen: m.springGen})
 		m = updated.(Model)
 	}
 	if m.springRatios[probeIdx] >= probeStart {
@@ -1375,7 +1463,7 @@ func TestPhaseTransition_AtThreshold(t *testing.T) {
 	// Drive ticks while still in Phase 1.
 	const maxTicks = 100
 	for i := 0; i < maxTicks && m.springPhase == springShrinking; i++ {
-		updated, _ = m.Update(springTickMsg{})
+		updated, _ = m.Update(springTickMsg{gen: m.springGen})
 		m = updated.(Model)
 	}
 	if m.springPhase == springShrinking {
@@ -1395,7 +1483,7 @@ func TestPhaseTransition_AtThreshold(t *testing.T) {
 	}
 
 	// Deliver the hold tick to transition Hold → Phase 2 and seed it.
-	updated, _ = m.Update(springTickMsg{})
+	updated, _ = m.Update(springTickMsg{gen: m.springGen})
 	m = updated.(Model)
 
 	if m.springPhase != springGrowing {
@@ -1441,7 +1529,7 @@ func TestUnitToggleAnimation_HoldPhaseTransitions(t *testing.T) {
 	// Drive ticks while still in Phase 1.
 	const maxTicks = 100
 	for i := 0; i < maxTicks && m.springPhase == springShrinking; i++ {
-		updated, _ = m.Update(springTickMsg{})
+		updated, _ = m.Update(springTickMsg{gen: m.springGen})
 		m = updated.(Model)
 	}
 	if m.springPhase == springShrinking {
@@ -1474,7 +1562,7 @@ func TestUnitToggleAnimation_HoldPhaseTransitions(t *testing.T) {
 
 	// Deliver the hold tick. This is the springTickMsg the one-shot
 	// tea.Tick(phaseHoldDuration) would have produced.
-	updated, _ = m.Update(springTickMsg{})
+	updated, _ = m.Update(springTickMsg{gen: m.springGen})
 	m = updated.(Model)
 
 	// Now in springGrowing.
@@ -1513,7 +1601,7 @@ func TestPhase2Settle_ClearsState(t *testing.T) {
 	const maxTicks = 200
 	var lastCmd tea.Cmd
 	for i := 0; i < maxTicks && m.springActive; i++ {
-		updated, lastCmd = m.Update(springTickMsg{})
+		updated, lastCmd = m.Update(springTickMsg{gen: m.springGen})
 		m = updated.(Model)
 	}
 	if m.springActive {
@@ -2321,7 +2409,7 @@ func TestUnitToggle_24hPinnedScrollRestoration(t *testing.T) {
 			const maxTicks = 200
 			for i := 0; i < maxTicks && m.springActive; i++ {
 				var u tea.Model
-				u, _ = m.Update(springTickMsg{})
+				u, _ = m.Update(springTickMsg{gen: m.springGen})
 				m = u.(Model)
 			}
 			if m.springActive {
@@ -2432,7 +2520,7 @@ func TestUnitToggle_24hCycle(t *testing.T) {
 
 				const maxTicks = 200
 				for j := 0; j < maxTicks && mm.springActive; j++ {
-					u, _ := mm.Update(springTickMsg{})
+					u, _ := mm.Update(springTickMsg{gen: mm.springGen})
 					mm = u.(Model)
 				}
 				if mm.springActive {
@@ -2465,7 +2553,7 @@ func TestYLabel_Phase1ShowsOldUnit(t *testing.T) {
 
 	// Drive a handful of ticks but stay inside Phase 1.
 	for i := 0; i < 5 && m.springPhase == springShrinking; i++ {
-		updated, _ = m.Update(springTickMsg{})
+		updated, _ = m.Update(springTickMsg{gen: m.springGen})
 		m = updated.(Model)
 	}
 	if m.springPhase != springShrinking {
@@ -2492,7 +2580,7 @@ func TestYLabel_Phase2ShowsNewUnit(t *testing.T) {
 	// Drive ticks until we cross into Phase 2.
 	const maxTicks = 100
 	for i := 0; i < maxTicks && m.springPhase != springGrowing; i++ {
-		updated, _ = m.Update(springTickMsg{})
+		updated, _ = m.Update(springTickMsg{gen: m.springGen})
 		m = updated.(Model)
 	}
 	if m.springPhase != springGrowing {
@@ -2503,7 +2591,7 @@ func TestYLabel_Phase2ShowsNewUnit(t *testing.T) {
 	// is above the fade-stop-1 threshold (≥ 0.2). At V0=5, omega=6 the
 	// spring reaches ~0.5 in a few ticks for non-zero targets.
 	for i := 0; i < 10 && m.springActive; i++ {
-		updated, _ = m.Update(springTickMsg{})
+		updated, _ = m.Update(springTickMsg{gen: m.springGen})
 		m = updated.(Model)
 	}
 	if !m.springActive {
@@ -2540,7 +2628,7 @@ func TestLabelFade_SyncedWithMaxRatio(t *testing.T) {
 	// tick after the hold tick arrives (#163).
 	const maxTicks = 50
 	for i := 0; i < maxTicks && m.springPhase == springShrinking; i++ {
-		updated, _ = m.Update(springTickMsg{})
+		updated, _ = m.Update(springTickMsg{gen: m.springGen})
 		m = updated.(Model)
 	}
 	if m.springPhase != springHolding {
@@ -2674,7 +2762,7 @@ func TestRefreshMsg_AbortsBothPhases(t *testing.T) {
 			// initial state after 'u', so the loop is a no-op for it.
 			const maxTicks = 100
 			for i := 0; i < maxTicks && m.springPhase != tc.phase; i++ {
-				updated, _ = m.Update(springTickMsg{})
+				updated, _ = m.Update(springTickMsg{gen: m.springGen})
 				m = updated.(Model)
 			}
 			if m.springPhase != tc.phase {
@@ -2708,7 +2796,7 @@ func TestVisualProbe_PhaseHandoffIsClean(t *testing.T) {
 
 	const maxTicks = 50
 	for i := 0; i < maxTicks && m.springPhase == springShrinking; i++ {
-		updated, _ = m.Update(springTickMsg{})
+		updated, _ = m.Update(springTickMsg{gen: m.springGen})
 		m = updated.(Model)
 	}
 	// Loop exits at the Phase 1 → Hold handoff. springRatios are snapped
@@ -2824,7 +2912,7 @@ func TestWindowSizeMsg_AbortsAnimation(t *testing.T) {
 			if phase == springGrowing {
 				const maxTicks = 100
 				for i := 0; i < maxTicks && m.springPhase != springGrowing; i++ {
-					updated, _ = m.Update(springTickMsg{})
+					updated, _ = m.Update(springTickMsg{gen: m.springGen})
 					m = updated.(Model)
 				}
 				if m.springPhase != springGrowing {
@@ -3617,7 +3705,7 @@ func TestIntro_GrowLadderSettles(t *testing.T) {
 	const maxTicks = 200
 	var lastCmd tea.Cmd
 	for i := 0; i < maxTicks && m.springActive; i++ {
-		updated, lastCmd = m.Update(springTickMsg{})
+		updated, lastCmd = m.Update(springTickMsg{gen: m.springGen})
 		m = updated.(Model)
 	}
 	if m.springActive {
@@ -3653,7 +3741,7 @@ func TestIntro_OneShot_NoReArmOnSecondWindowSize(t *testing.T) {
 	// Settle the animation.
 	const maxTicks = 200
 	for i := 0; i < maxTicks && m.springActive; i++ {
-		updated, _ = m.Update(springTickMsg{})
+		updated, _ = m.Update(springTickMsg{gen: m.springGen})
 		m = updated.(Model)
 	}
 	if m.springActive {
@@ -3808,7 +3896,7 @@ func TestIntro_RealisticStartupSequence(t *testing.T) {
 	const maxTicks = 200
 	settled := false
 	for i := 0; i < maxTicks; i++ {
-		updated, _ = m.Update(springTickMsg{})
+		updated, _ = m.Update(springTickMsg{gen: m.springGen})
 		m = updated.(Model)
 		if !m.springActive {
 			settled = true
@@ -4023,7 +4111,7 @@ func TestIntro_QuotaBars_HoldTickSeedsVelocities(t *testing.T) {
 
 	// Deliver the hold tick. The handler switches springPhase to
 	// springGrowing AND seeds Phase 2 state (target ratios + velocities).
-	updated, _ = m.Update(springTickMsg{})
+	updated, _ = m.Update(springTickMsg{gen: m.springGen})
 	m = updated.(Model)
 
 	if m.springPhase != springGrowing {
@@ -4058,7 +4146,7 @@ func TestIntro_QuotaBars_GrowLadderRisesMonotonically(t *testing.T) {
 	m.quotaTarget7d = 0.25
 
 	// Deliver the hold tick to enter springGrowing.
-	updated, _ = m.Update(springTickMsg{})
+	updated, _ = m.Update(springTickMsg{gen: m.springGen})
 	m = updated.(Model)
 	if m.springPhase != springGrowing {
 		t.Fatalf("springPhase = %d after hold tick; want springGrowing", m.springPhase)
@@ -4076,7 +4164,7 @@ func TestIntro_QuotaBars_GrowLadderRisesMonotonically(t *testing.T) {
 	sawRise5h := false
 	sawRise7d := false
 	for i := 0; i < maxTicks && m.springActive; i++ {
-		updated, _ = m.Update(springTickMsg{})
+		updated, _ = m.Update(springTickMsg{gen: m.springGen})
 		m = updated.(Model)
 		if m.quotaRatio5h+1e-9 < prev5h {
 			t.Fatalf("tick %d: quotaRatio5h regressed %v → %v", i, prev5h, m.quotaRatio5h)
@@ -4127,7 +4215,7 @@ func TestIntro_QuotaBars_SettleTogetherWithChart(t *testing.T) {
 
 	const maxTicks = 300
 	for i := 0; i < maxTicks && m.springActive; i++ {
-		updated, _ = m.Update(springTickMsg{})
+		updated, _ = m.Update(springTickMsg{gen: m.springGen})
 		m = updated.(Model)
 	}
 	if m.springActive {
@@ -4196,7 +4284,7 @@ func TestIntro_QuotaBars_OneShot_NoReArmAfterSettle(t *testing.T) {
 
 	const maxTicks = 300
 	for i := 0; i < maxTicks && m.springActive; i++ {
-		updated, _ = m.Update(springTickMsg{})
+		updated, _ = m.Update(springTickMsg{gen: m.springGen})
 		m = updated.(Model)
 	}
 	if m.springActive {
@@ -4354,7 +4442,7 @@ func TestIntro_QuotaBars_QuotaArrivesDuringHold(t *testing.T) {
 	// at the real targets (within phaseTransitionThreshold).
 	const maxTicks = 300
 	for i := 0; i < maxTicks && m.springActive; i++ {
-		updated, _ = m.Update(springTickMsg{})
+		updated, _ = m.Update(springTickMsg{gen: m.springGen})
 		m = updated.(Model)
 	}
 	if m.springActive {
@@ -4377,7 +4465,7 @@ func TestIntro_QuotaBars_QuotaArrivesDuringGrow(t *testing.T) {
 	m = updated.(Model)
 
 	// Hold tick → springGrowing.
-	updated, _ = m.Update(springTickMsg{})
+	updated, _ = m.Update(springTickMsg{gen: m.springGen})
 	m = updated.(Model)
 	if m.springPhase != springGrowing {
 		t.Fatalf("springPhase = %d after hold tick; want springGrowing", m.springPhase)
@@ -4389,7 +4477,7 @@ func TestIntro_QuotaBars_QuotaArrivesDuringGrow(t *testing.T) {
 	// A few grow ticks happen before quota arrives. With targets at 0
 	// the springs are stationary at 0 — no visible motion.
 	for i := 0; i < 5; i++ {
-		updated, _ = m.Update(springTickMsg{})
+		updated, _ = m.Update(springTickMsg{gen: m.springGen})
 		m = updated.(Model)
 	}
 	if m.quotaRatio5h != 0 {
@@ -4409,7 +4497,7 @@ func TestIntro_QuotaBars_QuotaArrivesDuringGrow(t *testing.T) {
 	// even though they were seeded with 0 velocities.
 	const maxTicks = 300
 	for i := 0; i < maxTicks && m.springActive; i++ {
-		updated, _ = m.Update(springTickMsg{})
+		updated, _ = m.Update(springTickMsg{gen: m.springGen})
 		m = updated.(Model)
 	}
 	if m.springActive {
@@ -4434,7 +4522,7 @@ func TestIntro_QuotaBars_QuotaArrivesAfterSettle(t *testing.T) {
 	// Drive the chart intro to settle.
 	const settleTicks = 300
 	for i := 0; i < settleTicks && m.springActive; i++ {
-		updated, _ = m.Update(springTickMsg{})
+		updated, _ = m.Update(springTickMsg{gen: m.springGen})
 		m = updated.(Model)
 	}
 	if m.springActive {
@@ -4480,7 +4568,7 @@ func TestIntro_QuotaBars_QuotaArrivesAfterSettle(t *testing.T) {
 	// Drive ticks to settle the late-arrival quota intro.
 	const maxTicks = 300
 	for i := 0; i < maxTicks && m.springActive; i++ {
-		updated, _ = m.Update(springTickMsg{})
+		updated, _ = m.Update(springTickMsg{gen: m.springGen})
 		m = updated.(Model)
 	}
 	if m.springActive {
@@ -4503,7 +4591,7 @@ func TestIntro_QuotaBars_LateArrival_NoFireAfterFirst(t *testing.T) {
 
 	// Settle chart intro (quota=nil throughout).
 	for i := 0; i < 300 && m.springActive; i++ {
-		updated, _ = m.Update(springTickMsg{})
+		updated, _ = m.Update(springTickMsg{gen: m.springGen})
 		m = updated.(Model)
 	}
 
@@ -4511,7 +4599,7 @@ func TestIntro_QuotaBars_LateArrival_NoFireAfterFirst(t *testing.T) {
 	updated, _ = m.Update(QuotaMsg{Usage: quotaUsage(80, 25), Source: "api", UpdatedAt: time.Now()})
 	m = updated.(Model)
 	for i := 0; i < 300 && m.springActive; i++ {
-		updated, _ = m.Update(springTickMsg{})
+		updated, _ = m.Update(springTickMsg{gen: m.springGen})
 		m = updated.(Model)
 	}
 
