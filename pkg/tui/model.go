@@ -688,7 +688,11 @@ func (m Model) View() string {
 			if renderingLine {
 				body = overlayYTicks(rawBody, m.chartHeight(), fade)
 			} else {
-				body = overlayYLabel(rawBody, labelPeak, labelUnit, m.chartHeight(), fade)
+				// Mirror the chartYHeadroom multiplier applied to buildChart
+				// in renderSpringFrame so the label's row math matches the
+				// bars' actual heights during the animation. Without this
+				// the label drifts above the niceFloor tick's bar.
+				body = overlayYLabel(rawBody, labelPeak*chartYHeadroom, labelUnit, m.chartHeight(), fade)
 			}
 		} else if chartUnit(m.unitIdx) == chartUnitRemaining {
 			body = overlayYTicks(rawBody, m.chartHeight(), 1.0)
@@ -1325,7 +1329,13 @@ func (m *Model) renderSpringFrame() {
 	if m.springPhase == springShrinking {
 		frameUnit = chartUnit(m.oldUnitIdx)
 	}
-	m.viewport.SetContent(buildChart(visibleRatios, visibleStarts, 1.0,
+	// Pass chartYHeadroom (not 1.0) as the bar-chart ceiling so the
+	// spring's tallest target ratio (= 1.0, since springTargetRatios[i]
+	// = v / m.peak with max v = peak) renders at 1.0 / chartYHeadroom
+	// = ~67% of the canvas — matching what refreshChart will paint at
+	// settle. Without this, the peak bar fills 100% mid-animation and
+	// then visibly snaps down to 67% the instant the spring ends.
+	m.viewport.SetContent(buildChart(visibleRatios, visibleStarts, chartYHeadroom,
 		zoom.CanvasWidth(len(visibleRatios)), chartH, time.Now(), zoom, frameUnit, m.dateOrder))
 	m.viewport.SetXOffset(springXOff)
 }

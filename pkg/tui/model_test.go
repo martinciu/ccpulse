@@ -3060,10 +3060,14 @@ func TestRenderSpringFrame_MatchesPreSpringBoundary(t *testing.T) {
 
 			// ── Pre-spring viewport: exactly what refreshChart produces ────────
 			// refreshChart calls buildChart on the full canvas then setX(len(values))
-			// which pins to the right edge.
+			// which pins to the right edge. Note: refreshChart passes
+			// peak * chartYHeadroom as the ceiling for the 20% y-axis
+			// headroom; renderSpringFrame mirrors that multiplier so the
+			// pre-spring view and the identity-ratio spring frame stay
+			// byte-equal.
 			canvasW := zoom.CanvasWidth(N)
 			m.viewport.SetContent(buildChart(
-				m.lastValues, m.lastStarts, peak,
+				m.lastValues, m.lastStarts, peak*chartYHeadroom,
 				canvasW, m.chartHeight(), now, zoom, chartUnitTokens, dateOrderMonthFirst,
 			))
 			m.setX(len(m.lastValues)) // pins to right edge
