@@ -211,7 +211,7 @@ func initDevlog(isDev bool, cacheDir string, level slog.Level, w io.Writer) io.C
 func runTUI(ctx context.Context, errOut io.Writer) error {
 	cfg, err := config.Load(config.DefaultPath())
 	if err != nil && !os.IsNotExist(err) {
-		return err
+		return fmt.Errorf("load config %s: %w", config.DefaultPath(), err)
 	}
 	cacheDir := envOr("CCPULSE_CACHE_DIR", expand(cfg.Paths.CacheDir))
 	if err := secfile.MkdirAll(cacheDir); err != nil {

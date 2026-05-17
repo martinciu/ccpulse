@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/BurntSushi/toml"
 
 	"github.com/martinciu/ccpulse/pkg/anthro"
 	"github.com/martinciu/ccpulse/pkg/cache"
@@ -596,15 +599,16 @@ func TestRunStatus_MalformedConfig(t *testing.T) {
 	if err == nil {
 		t.Fatal("runStatus should return error for malformed config, got nil")
 	}
-	if !strings.Contains(err.Error(), "toml") {
-		t.Errorf("error should mention TOML parse failure, got: %v", err)
+	var perr toml.ParseError
+	if !errors.As(err, &perr) {
+		t.Errorf("error should unwrap to *toml.ParseError, got: %v", err)
 	}
 }
 
 // TestRunStatus_AbsentConfigUsesDefaults asserts that runStatus proceeds
 // normally (no error on the config step) when config.toml is simply absent.
 // The os.IsNotExist guard means defaults kick in — same silent behavior as before.
-func TestRunStatus_AbsentConfigUsesDefaults(t *testing.T) {
+func TestRunStatus_AbsentConfig_ProducesJSON(t *testing.T) {
 	cacheDir := t.TempDir()
 	credDir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "no-config-here"))

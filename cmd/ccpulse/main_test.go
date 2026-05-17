@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/BurntSushi/toml"
 
 	"github.com/martinciu/ccpulse/pkg/devlog"
 )
@@ -147,8 +149,9 @@ func TestRunTUI_MalformedConfig(t *testing.T) {
 	if err == nil {
 		t.Fatal("runTUI should return error for malformed config, got nil")
 	}
-	if !strings.Contains(err.Error(), "toml") {
-		t.Errorf("error should mention TOML parse failure, got: %v", err)
+	var perr toml.ParseError
+	if !errors.As(err, &perr) {
+		t.Errorf("error should unwrap to *toml.ParseError, got: %v", err)
 	}
 }
 
