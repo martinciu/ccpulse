@@ -137,6 +137,18 @@ func Open(path string) (*Cache, error) {
 		db.Close()
 		return nil, fmt.Errorf("normalize legacy resets_at sentinels: %w", err)
 	}
+
+	// Harden file modes for pre-existing DB files (created before issue #59
+	// landed). modernc.org/sqlite opens these paths directly — not through
+	// secfile — so the chmod-on-access path in secfile does not cover them.
+	// Best-effort: missing siblings (WAL/SHM/journal) are normal depending on
+	// journal mode; other errors are warned but do not fail Open.
+	for _, suffix := range []string{"", "-wal", "-shm", "-journal"} {
+		if err := os.Chmod(path+suffix, 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {
+			slog.Warn("cache.Open: chmod db file", "path", path+suffix, "err", err)
+		}
+	}
+
 	return &Cache{db: db}, nil
 }
 

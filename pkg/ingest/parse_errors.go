@@ -6,6 +6,7 @@ package ingest
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 
@@ -31,6 +32,13 @@ func openRotated(logPath string) *os.File {
 	f, err := openLogFile(logPath)
 	if err != nil {
 		return nil
+	}
+	// Explicitly chmod to 0o600 to tighten pre-existing files where O_CREATE
+	// mode didn't apply (issue #224). secfile.OpenFile already does this via
+	// os.Chmod, but we add an explicit f.Chmod here as belt-and-suspenders.
+	// Best-effort: log on error, don't fail.
+	if err := f.Chmod(0o600); err != nil {
+		slog.Warn("ingest.openRotated: chmod parse-errors log", "path", logPath, "err", err)
 	}
 	return f
 }

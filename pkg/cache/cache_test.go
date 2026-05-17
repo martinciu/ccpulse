@@ -2003,3 +2003,53 @@ func TestUtilizationSince_InvalidColumn(t *testing.T) {
 		t.Fatal("expected error for invalid column, got nil")
 	}
 }
+
+// TestOpen_TightensPreExistingFileMode verifies that Open chmods a pre-existing
+// state.db (planted at 0644) down to 0600. WAL/SHM siblings are also
+// checked when they exist after Open.
+func TestOpen_TightensPreExistingFileMode(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "state.db")
+
+	// First open creates the DB at the default mode.
+	c, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("first Open: %v", err)
+	}
+	c.Close()
+
+	// Loosen the mode to simulate a pre-issue-#59 installation.
+	if err := os.Chmod(dbPath, 0o644); err != nil {
+		t.Fatalf("chmod to 0644: %v", err)
+	}
+
+	// Re-open; Open must tighten the mode back to 0600.
+	c2, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("second Open: %v", err)
+	}
+	defer c2.Close()
+
+	info, err := os.Stat(dbPath)
+	if err != nil {
+		t.Fatalf("stat state.db: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Errorf("state.db mode = %04o, want 0600", got)
+	}
+
+	// WAL and SHM files exist after Open with WAL journal mode — check them too.
+	for _, suffix := range []string{"-wal", "-shm"} {
+		sibling := dbPath + suffix
+		si, err := os.Stat(sibling)
+		if errors.Is(err, os.ErrNotExist) {
+			continue // sibling may not exist; that is fine
+		}
+		if err != nil {
+			t.Fatalf("stat %s: %v", sibling, err)
+		}
+		if got := si.Mode().Perm(); got != 0o600 {
+			t.Errorf("%s mode = %04o, want 0600", sibling, got)
+		}
+	}
+}
