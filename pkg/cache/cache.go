@@ -551,7 +551,7 @@ func (c *Cache) IOTokenBuckets(dur time.Duration, from, to time.Time) ([]TokenBu
 	rows, err := c.db.Query(`
 SELECT
   CAST(CAST(strftime('%s', ts) AS INTEGER) / ? AS INTEGER) * ? AS bucket_epoch,
-  SUM(input_tokens + output_tokens)
+  COALESCE(SUM(input_tokens + output_tokens), 0)
 FROM messages
 WHERE ts >= ? AND ts < ?
 GROUP BY bucket_epoch
@@ -615,7 +615,7 @@ func (c *Cache) ioTokenBucketsDaily(from, to time.Time) ([]TokenBucket, error) {
 	rows, err := c.db.Query(`
 SELECT
   local_day(ts) AS day,
-  SUM(input_tokens + output_tokens)
+  COALESCE(SUM(input_tokens + output_tokens), 0)
 FROM messages
 WHERE ts >= ? AND ts < ?
 GROUP BY day

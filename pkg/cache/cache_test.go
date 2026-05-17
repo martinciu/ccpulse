@@ -715,7 +715,7 @@ func TestIOTokenBuckets_InputOutput_CacheExcluded(t *testing.T) {
 	tab, _ := pricing.Load()
 
 	// One message: small input+output, large cache values. If the aggregate
-	// were the 5-column sum the bucket would total 1285; under
+	// were the 5-column sum the bucket would total 1290; under
 	// SUM(input_tokens + output_tokens) it must be exactly 15.
 	ts := time.Date(2026, 5, 9, 11, 50, 0, 0, time.UTC)
 	msgs := []parse.Message{{

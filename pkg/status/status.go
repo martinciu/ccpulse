@@ -12,20 +12,20 @@ import (
 // case (5h idle, 7d upstream glitch) round-trips faithfully through
 // `status --json` instead of collapsing to an ambiguous 0.
 type Window struct {
-	Percent          int           `json:"percent"`
-	MinutesToReset   *int          `json:"minutes_to_reset"`
-	Percent7d        int           `json:"percent_7d,omitempty"`
-	MinutesToReset7d *int          `json:"minutes_to_reset_7d,omitempty"`
-	Has7d            bool          `json:"has_7d,omitempty"`
-	CeilingLabel     string        `json:"ceiling_label"`
-	CeilingPretty    string        `json:"ceiling_pretty"`
+	Percent           int               `json:"percent"`
+	MinutesToReset    *int              `json:"minutes_to_reset"`
+	Percent7d         int               `json:"percent_7d,omitempty"`
+	MinutesToReset7d  *int              `json:"minutes_to_reset_7d,omitempty"`
+	Has7d             bool              `json:"has_7d,omitempty"`
+	CeilingLabel      string            `json:"ceiling_label"`
+	CeilingPretty     string            `json:"ceiling_pretty"`
 	Tokens5h          int64             `json:"tokens_5h"`
 	Tokens5hBreakdown Tokens5hBreakdown `json:"tokens_5h_breakdown"`
 	Cost5hUSD         float64           `json:"cost_5h_usd"`
-	Quota            *anthro.Usage `json:"quota,omitempty"`
-	QuotaSource      string        `json:"quota_source,omitempty"`
-	QuotaUpdatedAt   time.Time     `json:"quota_updated_at,omitzero"`
-	Projection       *Projections  `json:"projection,omitempty"`
+	Quota             *anthro.Usage     `json:"quota,omitempty"`
+	QuotaSource       string            `json:"quota_source,omitempty"`
+	QuotaUpdatedAt    time.Time         `json:"quota_updated_at,omitzero"`
+	Projection        *Projections      `json:"projection,omitempty"`
 }
 
 // Projections carries the per-bucket burn-rate predictions.
