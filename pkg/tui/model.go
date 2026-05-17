@@ -121,7 +121,7 @@ type Model struct {
 	showHelp   bool
 
 	zoomIdx int // index into ZoomLevels
-	unitIdx int // 0 = cost, 1 = output tokens, 2 = remaining. Cycled by 'u'. Resets to cost on launch.
+	unitIdx int // 0 = cost, 1 = tokens, 2 = remaining. Cycled by 'u'. Resets to cost on launch.
 
 	// lastValues / lastStarts are the per-bucket inputs fed to the
 	// most recent buildChart, in the active unit. Refreshed by
@@ -1525,7 +1525,7 @@ func (m *Model) refreshChart() {
 		}
 		unit = chartUnitRemaining
 	default: // tokens
-		buckets, err := m.deps.Cache.OutputTokenBuckets(zoom.Duration, from, to)
+		buckets, err := m.deps.Cache.IOTokenBuckets(zoom.Duration, from, to)
 		if err != nil || len(buckets) == 0 {
 			m.viewport.SetContent(emptyPlaceholder(m.chartWidth(), m.chartHeight()))
 			m.lastValues = nil

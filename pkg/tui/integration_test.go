@@ -113,7 +113,7 @@ func TestProgram_MultiStepInteraction(t *testing.T) {
 }
 
 // newSeededCache opens a fresh Cache at t.TempDir() and inserts a
-// small set of assistant messages so OutputTokenBuckets returns non-empty
+// small set of assistant messages so IOTokenBuckets returns non-empty
 // data. Returns the Cache for inclusion in Deps; the cleanup hook
 // closes the DB at test end.
 func newSeededCache(t *testing.T) *cache.Cache {

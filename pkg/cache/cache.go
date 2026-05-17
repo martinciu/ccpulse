@@ -499,7 +499,7 @@ func (c *Cache) IntegrityOK() bool {
 // BucketAlign snaps t down to the nearest multiple of dur in unix
 // seconds and returns the result in UTC. It is the canonical helper for
 // computing bucket-boundary times shared between cache and TUI; the
-// cache also re-applies it defensively on OutputTokenBuckets bounds.
+// cache also re-applies it defensively on IOTokenBuckets bounds.
 func BucketAlign(t time.Time, dur time.Duration) time.Time {
 	s := int64(dur.Seconds())
 	return time.Unix((t.Unix()/s)*s, 0).UTC()
@@ -524,7 +524,7 @@ type TokenBucket struct {
 	Tokens      int64
 }
 
-// OutputTokenBuckets returns one TokenBucket per `dur` interval covering
+// IOTokenBuckets returns one TokenBucket per `dur` interval covering
 // [from, to). Both bounds are snapped down to bucket boundaries before
 // query (BucketAlign is idempotent, so callers may also pre-snap).
 // Empty intervals are returned with Tokens == 0; output is ordered
@@ -535,9 +535,9 @@ type TokenBucket struct {
 // reads and writes are deliberately excluded; use CostBuckets for the
 // rate-weighted blend across all five columns. See issue #232 (revises
 // the output-only choice made in #209).
-func (c *Cache) OutputTokenBuckets(dur time.Duration, from, to time.Time) ([]TokenBucket, error) {
+func (c *Cache) IOTokenBuckets(dur time.Duration, from, to time.Time) ([]TokenBucket, error) {
 	if dur == 24*time.Hour {
-		return c.outputTokenBucketsDaily(from, to)
+		return c.ioTokenBucketsDaily(from, to)
 	}
 	start := time.Now()
 	from = BucketAlign(from, dur)
@@ -583,7 +583,7 @@ ORDER BY bucket_epoch ASC
 			Tokens:      totals[bs.Unix()],
 		}
 	}
-	slog.Debug("cache.OutputTokenBuckets",
+	slog.Debug("cache.IOTokenBuckets",
 		"dur_ms", time.Since(start).Milliseconds(),
 		"zoom", zoomLabel(dur),
 		"buckets", n,
@@ -603,7 +603,7 @@ ORDER BY bucket_epoch ASC
 // produce exactly one bucket.
 //
 // BucketStart values are in time.Local — callers must not assume UTC.
-func (c *Cache) outputTokenBucketsDaily(from, to time.Time) ([]TokenBucket, error) {
+func (c *Cache) ioTokenBucketsDaily(from, to time.Time) ([]TokenBucket, error) {
 	start := time.Now()
 	from = DayStartLocal(from)
 	to = DayStartLocal(to)
@@ -648,7 +648,7 @@ ORDER BY day ASC
 		key := d.Format("2006-01-02")
 		out = append(out, TokenBucket{BucketStart: d, Tokens: totals[key]})
 	}
-	slog.Debug("cache.outputTokenBucketsDaily",
+	slog.Debug("cache.ioTokenBucketsDaily",
 		"dur_ms", time.Since(start).Milliseconds(),
 		"buckets", len(out),
 		"rows_aggregated", len(totals))
@@ -666,7 +666,7 @@ type CostBucket struct {
 }
 
 // CostBuckets returns one CostBucket per `dur` interval covering
-// [from, to). Mirrors OutputTokenBuckets exactly except the aggregator is
+// [from, to). Mirrors IOTokenBuckets exactly except the aggregator is
 // SUM(cost_usd_estimate). Messages with pricing_unknown=1 contribute 0
 // to their bucket because cost_usd_estimate was stored as 0 at ingest;
 // no extra WHERE clause is needed.
@@ -728,8 +728,8 @@ ORDER BY bucket_epoch ASC
 	return out, nil
 }
 
-// costBucketsDaily mirrors outputTokenBucketsDaily for SUM(cost_usd_estimate).
-// See outputTokenBucketsDaily docs for the local-tz / DST / iteration rationale.
+// costBucketsDaily mirrors ioTokenBucketsDaily for SUM(cost_usd_estimate).
+// See ioTokenBucketsDaily docs for the local-tz / DST / iteration rationale.
 func (c *Cache) costBucketsDaily(from, to time.Time) ([]CostBucket, error) {
 	start := time.Now()
 	from = DayStartLocal(from)
@@ -766,7 +766,7 @@ ORDER BY day ASC
 		return nil, err
 	}
 
-	// See outputTokenBucketsDaily for the AddDate(0,0,1) DST-correctness rationale.
+	// See ioTokenBucketsDaily for the AddDate(0,0,1) DST-correctness rationale.
 	out := make([]CostBucket, 0, int(to.Sub(from)/(24*time.Hour))+1)
 	for d := from; d.Before(to); d = d.AddDate(0, 0, 1) {
 		key := d.Format("2006-01-02")

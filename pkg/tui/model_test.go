@@ -705,7 +705,7 @@ func TestRefreshChart_FromEarliest(t *testing.T) {
 	// After issue #53, refreshChart must load from the earliest cached
 	// message (aligned to the active zoom's bucket boundary) up to "now".
 	// We verify this by inserting a single message ~3 hours ago and
-	// confirming OutputTokenBuckets returns at least the matching number of
+	// confirming IOTokenBuckets returns at least the matching number of
 	// 15m buckets at zoom index 0 (15m zoom, the default).
 	c, err := cache.Open(filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
@@ -731,9 +731,9 @@ func TestRefreshChart_FromEarliest(t *testing.T) {
 	from := cache.BucketAlign(earliest, zoom.Duration)
 	wantMin := int(to.Sub(from)/zoom.Duration) - 1 // tolerate ±1 bucket on boundary
 
-	buckets, err := c.OutputTokenBuckets(zoom.Duration, from, to)
+	buckets, err := c.IOTokenBuckets(zoom.Duration, from, to)
 	if err != nil {
-		t.Fatalf("OutputTokenBuckets: %v", err)
+		t.Fatalf("IOTokenBuckets: %v", err)
 	}
 	if len(buckets) < wantMin {
 		t.Errorf("got %d buckets, want at least %d (≈3h at 15m)", len(buckets), wantMin)
@@ -2167,7 +2167,7 @@ func TestRefreshChart_PreservesScroll_Issue134(t *testing.T) {
 }
 
 // TestRefreshChart_ScrollAnchorAcrossZooms verifies the 24h zoom path:
-// - outputTokenBucketsDaily returns day-aligned buckets (~24h apart)
+// - ioTokenBucketsDaily returns day-aligned buckets (~24h apart)
 // - the anchor is preserved across a subsequent refreshChart in 24h zoom
 //
 // Seeds 40 days of data (40*24*4=3840 15m-spaced messages) so that 24h
