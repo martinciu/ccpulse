@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/BurntSushi/toml"
 
 	"github.com/martinciu/ccpulse/pkg/anthro"
 	"github.com/martinciu/ccpulse/pkg/cache"
@@ -565,6 +568,64 @@ func TestStatusJSONQuietMutuallyExclusive(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "quiet") {
 		t.Errorf("error should mention 'quiet' flag: %v", err)
+	}
+}
+
+// TestRunStatus_MalformedConfig asserts that runStatus returns a non-nil error
+// when config.toml exists but contains a TOML syntax error (stray bracket).
+// Mirrors the runIndex pattern: os.IsNotExist → fine; any other error → fatal.
+func TestRunStatus_MalformedConfig(t *testing.T) {
+	cfgDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", cfgDir)
+	t.Setenv("CCPULSE_CACHE_DIR", t.TempDir())
+
+	// channel is "dev" by default in tests; DefaultPath() → $XDG_CONFIG_HOME/ccpulse-dev/config.toml
+	ccpulseDir := filepath.Join(cfgDir, "ccpulse-dev")
+	if err := os.MkdirAll(ccpulseDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ccpulseDir, "config.toml"), []byte("[[broken\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newStatusCmd()
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	var out, errBuf bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errBuf)
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("runStatus should return error for malformed config, got nil")
+	}
+	var perr toml.ParseError
+	if !errors.As(err, &perr) {
+		t.Errorf("error should unwrap to *toml.ParseError, got: %v", err)
+	}
+}
+
+// TestRunStatus_AbsentConfigUsesDefaults asserts that runStatus proceeds
+// normally (no error on the config step) when config.toml is simply absent.
+// The os.IsNotExist guard means defaults kick in — same silent behavior as before.
+func TestRunStatus_AbsentConfig_ProducesJSON(t *testing.T) {
+	cacheDir := t.TempDir()
+	credDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "no-config-here"))
+	t.Setenv("CCPULSE_CACHE_DIR", cacheDir)
+	t.Setenv("HOME", credDir)
+	writeTempCache(t, cacheDir)
+	writeTempCredential(t, credDir)
+
+	cmd := newStatusCmd()
+	cmd.SetArgs([]string{"--json"})
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("runStatus should succeed with absent config (defaults), got: %v", err)
+	}
+	if !strings.Contains(buf.String(), `"ceiling_label"`) {
+		t.Errorf("expected JSON output on success, got: %s", buf.String())
 	}
 }
 
