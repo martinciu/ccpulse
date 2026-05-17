@@ -515,7 +515,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.unitIdx == int(chartUnitCost) {
 			unit = chartUnitCost
 		}
-		m.viewport.SetContent(buildChart(m.lastValues, m.lastStarts, m.peak, m.lastCanvasW, m.chartHeight(), time.Now(), ZoomLevels[m.zoomIdx], unit, m.dateOrder))
+		m.viewport.SetContent(buildChart(m.lastValues, m.lastStarts, m.peak*chartYHeadroom, m.lastCanvasW, m.chartHeight(), time.Now(), ZoomLevels[m.zoomIdx], unit, m.dateOrder))
 		return m, nil
 	case QuotaMsg:
 		m.quota = msg.Usage
@@ -693,7 +693,7 @@ func (m Model) View() string {
 		} else if chartUnit(m.unitIdx) == chartUnitRemaining {
 			body = overlayYTicks(rawBody, m.chartHeight(), 1.0)
 		} else {
-			body = overlayYLabel(rawBody, m.peak, chartUnit(m.unitIdx), m.chartHeight(), 1.0)
+			body = overlayYLabel(rawBody, m.peak*chartYHeadroom, chartUnit(m.unitIdx), m.chartHeight(), 1.0)
 		}
 	}
 	footer := m.renderFooter()
@@ -1670,7 +1670,7 @@ func (m *Model) refreshChart() {
 	if unit == chartUnitRemaining {
 		m.viewport.SetContent(buildLineChart(m.lastPts5h, m.lastPts7d, from, to, canvasW, chartH, time.Now(), zoom, m.dateOrder, "refresh"))
 	} else {
-		m.viewport.SetContent(buildChart(values, starts, m.peak, canvasW, chartH, time.Now(), zoom, unit, m.dateOrder))
+		m.viewport.SetContent(buildChart(values, starts, m.peak*chartYHeadroom, canvasW, chartH, time.Now(), zoom, unit, m.dateOrder))
 	}
 }
 

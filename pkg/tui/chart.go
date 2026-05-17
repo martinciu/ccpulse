@@ -380,6 +380,17 @@ const (
 	chartUnitCount // sentinel — cycle modulus
 )
 
+// chartYHeadroom is the multiplier applied to the visible-slice peak
+// to derive the bar chart's y-axis ceiling. The tallest visible bar
+// sits at 1/chartYHeadroom of the chart height (≈83% at 1.2), which
+// reads better than letting the bar touch the top edge. Applied at
+// the buildChart / overlayYLabel call boundaries in refreshChart, the
+// rescaleMsg handler, and Model.View() — m.peak itself continues to
+// mean "max of the visible data slice", so the spring animation's
+// ratio normalisation (against m.peak) and oldPeak snapshots are
+// unaffected. Tune here; no other surface needs updating.
+const chartYHeadroom = 1.2
+
 // niceFloorFloat returns the largest "nice" value <= peak from the
 // sequence {1, 2, 3, 5, 7} × 10ᵏ, where k may be negative to support
 // sub-1 peaks (cost-mode shows e.g. $0.45 buckets). The integer-only

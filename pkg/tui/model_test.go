@@ -185,7 +185,10 @@ func TestView_YLabelFixedAcrossScroll(t *testing.T) {
 	m.viewport.Height = m.chartHeight()
 	m.refreshChart()
 
-	expected := formatUnitValue(niceFloorFloat(m.peak), chartUnit(m.unitIdx))
+	// View overlays niceFloorFloat(m.peak * chartYHeadroom) as the Y label
+	// — the chart ceiling sits 20% above the data peak (chartYHeadroom),
+	// and niceFloor rounds the ceiling down to the displayed tick.
+	expected := formatUnitValue(niceFloorFloat(m.peak*chartYHeadroom), chartUnit(m.unitIdx))
 	if expected == "" || expected == "0" {
 		t.Fatalf("expected non-empty Y label; m.peak = %v", m.peak)
 	}
