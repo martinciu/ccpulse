@@ -4638,3 +4638,33 @@ func TestIntro_QuotaBars_QuotaLoadedAtArm_ClearsPending(t *testing.T) {
 		t.Errorf("quotaTarget5h = 0 at arm with quota loaded; expected non-zero target")
 	}
 }
+
+func TestPeakOf(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		values []float64
+		from   int
+		to     int
+		want   float64
+	}{
+		{"empty values", nil, 0, 0, 0},
+		{"empty window", []float64{1, 2, 3}, 1, 1, 0},
+		{"single bucket", []float64{5, 7, 3}, 1, 2, 7},
+		{"strict slice middle", []float64{10, 2, 3, 9, 1}, 1, 4, 9},
+		{"negative from clamps to 0", []float64{4, 2, 1}, -3, 2, 4},
+		{"to past end clamps to len", []float64{4, 2, 1}, 1, 99, 2},
+		{"from past end returns 0", []float64{4, 2, 1}, 5, 9, 0},
+		{"reversed range returns 0", []float64{4, 2, 1}, 2, 1, 0},
+		{"includes 0 max for all-zero slice", []float64{0, 0, 0}, 0, 3, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := peakOf(tt.values, tt.from, tt.to)
+			if got != tt.want {
+				t.Errorf("peakOf(%v, %d, %d) = %v, want %v", tt.values, tt.from, tt.to, got, tt.want)
+			}
+		})
+	}
+}

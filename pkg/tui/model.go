@@ -1641,6 +1641,33 @@ func (m *Model) recomputeWindow() {
 	m.progress7d = newProgressBar(m.progressWidth())
 }
 
+// peakOf returns the maximum value over values[from:to] with index
+// clamping. from < 0 clamps to 0; to > len(values) clamps to len(values);
+// from >= to (or from past end) returns 0. Used by refreshChart and the
+// rescaleMsg handler to derive the y-axis normalisation reference from
+// the bar slice currently under the viewport. Returns 0 for an empty
+// or degenerate window — refreshChart's emptyPlaceholder branch already
+// short-circuits before reaching this path, so 0 is only observed for
+// the empty-window edge case.
+func peakOf(values []float64, from, to int) float64 {
+	if from < 0 {
+		from = 0
+	}
+	if to > len(values) {
+		to = len(values)
+	}
+	if from >= to {
+		return 0
+	}
+	peak := values[from]
+	for _, v := range values[from+1 : to] {
+		if v > peak {
+			peak = v
+		}
+	}
+	return peak
+}
+
 // chartWidth returns the available width for the viewport. Floors at 10
 // so the ntcharts canvas never collapses to a degenerate width.
 func (m Model) chartWidth() int {
