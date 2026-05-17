@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -226,5 +227,120 @@ func TestSetX_RemainingMode_ZeroChartFromSkipsLowerBound(t *testing.T) {
 
 	if got, want := m.viewportXOffset, 0; got != want {
 		t.Errorf("viewportXOffset after setX(0) with zero lastChartFrom = %d, want %d (lower-bound clamp skipped)", got, want)
+	}
+}
+
+// seedRescaleModel builds a deps-free Model ready for rescaleMsg handler
+// tests. No cache needed — the handler only reads in-memory state.
+// values populates m.lastValues; lastStarts is filled with synthetic
+// minute-spaced timestamps so buildChart's X-label path doesn't trip on
+// zero times.
+func seedRescaleModel(t *testing.T, values []float64) Model {
+	t.Helper()
+	m := New(Deps{})
+	m.w, m.h = 120, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	m.lastValues = append([]float64(nil), values...)
+	m.lastStarts = make([]time.Time, len(values))
+	now := time.Now().UTC().Truncate(time.Minute)
+	for i := range m.lastStarts {
+		m.lastStarts[i] = now.Add(time.Duration(-i) * time.Minute)
+	}
+	m.lastCanvasW = m.chartWidth()
+	m.lastZoomStride = ZoomLevels[m.zoomIdx].stride()
+	return m
+}
+
+// TestScroll_StaleRescaleDropped reproduces the bug class #218 fixed for
+// spring ticks, now for rescale ticks. Two scroll bumps stack two
+// pending rescaleMsg generations; only the latest must update m.peak.
+func TestScroll_StaleRescaleDropped(t *testing.T) {
+	values := []float64{100, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2}
+	m := seedRescaleModel(t, values)
+	m.unitIdx = int(chartUnitCost)
+	m.peak = 100 // pre-rescale value (full-range max)
+
+	// Force xOffset over the quiet region. setX clamps to whatever
+	// the canvas allows; the absolute value matters less than that
+	// xOffset > 0 so peakOf can skip the outlier.
+	m.setX(5)
+	xOffsetBefore := m.viewportXOffset
+
+	// Bump scrollGen twice — simulates two rapid scroll keypresses.
+	m.scrollGen++ // gen=1
+	m.scrollGen++ // gen=2
+	if m.scrollGen != 2 {
+		t.Fatalf("scrollGen = %d after two bumps, want 2", m.scrollGen)
+	}
+
+	peakBeforeStale := m.peak
+
+	// Deliver stale tick (gen=1). Handler must drop it; m.peak unchanged.
+	updated, staleCmd := m.Update(rescaleMsg{gen: 1})
+	m = updated.(Model)
+	if staleCmd != nil {
+		t.Errorf("stale rescaleMsg returned non-nil Cmd; must not perpetuate a stale rebuild")
+	}
+	if m.peak != peakBeforeStale {
+		t.Errorf("stale rescaleMsg mutated m.peak: before=%v after=%v", peakBeforeStale, m.peak)
+	}
+	if m.viewportXOffset != xOffsetBefore {
+		t.Errorf("stale rescaleMsg mutated xOffset: before=%d after=%d", xOffsetBefore, m.viewportXOffset)
+	}
+
+	// Deliver fresh tick (gen=2). Handler must update m.peak to the
+	// visible-slice max.
+	updated, _ = m.Update(rescaleMsg{gen: 2})
+	m = updated.(Model)
+	visN := m.visibleBuckets()
+	want := peakOf(m.lastValues, m.viewportXOffset, m.viewportXOffset+visN)
+	if m.peak != want {
+		t.Errorf("fresh rescaleMsg m.peak = %v, want %v (visible slice max)", m.peak, want)
+	}
+}
+
+// TestRescale_WindowPeakMatchesVisibleSlice asserts the handler reads
+// m.viewportXOffset and computes peak over the visible slice — both
+// cost and tokens modes participate. Seeds enough buckets that the
+// visible window cannot cover the outlier from a non-zero xOffset.
+func TestRescale_WindowPeakMatchesVisibleSlice(t *testing.T) {
+	// Build a wide slice so chartWidth (120-2 = 118) doesn't swallow
+	// the outlier into the visible window. With 15m zoom (stride=1,
+	// BarWidth=1, BarGap=0), visibleBuckets ≈ 118; a slice of 300
+	// buckets with the outlier at 0 leaves quiet middle/right regions
+	// the viewport can land on after setX clamping.
+	values := make([]float64, 300)
+	values[0] = 500   // tall outlier far left
+	values[290] = 400 // tall outlier far right
+	for i := 1; i < 290; i++ {
+		values[i] = 5
+	}
+
+	for _, unit := range []chartUnit{chartUnitCost, chartUnitTokens} {
+		t.Run(fmt.Sprintf("unit=%d", unit), func(t *testing.T) {
+			m := seedRescaleModel(t, values)
+			m.unitIdx = int(unit)
+			m.peak = 500 // pre-rescale full-range max
+
+			// Position over the quiet middle region.
+			m.setX(150)
+			if m.viewportXOffset == 0 {
+				t.Fatalf("viewportXOffset still 0 after setX(150); test setup can't isolate the outlier — adjust seed shape")
+			}
+			m.scrollGen = 7 // arbitrary >0
+
+			updated, _ := m.Update(rescaleMsg{gen: 7})
+			m = updated.(Model)
+
+			visN := m.visibleBuckets()
+			want := peakOf(m.lastValues, m.viewportXOffset, m.viewportXOffset+visN)
+			if m.peak != want {
+				t.Errorf("unit=%v: m.peak = %v, want %v", unit, m.peak, want)
+			}
+			if m.peak >= 500 {
+				t.Errorf("unit=%v: m.peak = %v still pinned by full-range outlier", unit, m.peak)
+			}
+		})
 	}
 }

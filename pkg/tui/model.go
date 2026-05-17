@@ -67,6 +67,19 @@ type indexBannerClearMsg struct{}
 // visibly skips.
 type springTickMsg struct{ gen int }
 
+// rescaleDebounce is the delay between the last scroll keypress and the
+// y-axis rebuild at the new visible-slice peak. Held across key-repeat
+// so the y-axis doesn't jitter mid-scroll — only one rescale fires
+// after the user stops.
+const rescaleDebounce = 300 * time.Millisecond
+
+// rescaleMsg is the debounced "scroll has stopped" signal. The handler
+// recomputes m.peak from the visible slice and rebuilds buildChart at
+// the new peak — no DB hit, no anchor restore. Stale ticks (whose gen
+// no longer matches m.scrollGen) are dropped. Same pattern as
+// springTickMsg{gen} (#218).
+type rescaleMsg struct{ gen int }
+
 // springPhase tracks which leg of the two-phase unit-toggle animation
 // is currently running. Idle is the steady state; springActive=false
 // implies springPhase=springIdle. See issue #136.
@@ -197,6 +210,13 @@ type Model struct {
 	// presses from stacking the previous animation's still-pending tick on
 	// top of the new animation's tick and accelerating it (#218).
 	springGen int
+	// scrollGen is bumped each time scrollLeft/scrollRight mutates the
+	// viewport offset. Every tea.Tick → rescaleMsg{gen} schedule captures
+	// the current value; the rescaleMsg handler drops ticks whose gen no
+	// longer matches so key-repeat scroll only rebuilds the chart once
+	// after the user stops scrolling. Mirrors springGen / springTickMsg
+	// (commit 1ee982c / #218).
+	scrollGen int
 	// springXOffset is the leftmost bucket index visible in the viewport
 	// when animation started. The spring runs over all bucket ratios but
 	// only the visible window is re-rendered each tick — full-canvas
@@ -473,6 +493,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return springTickMsg{gen: gen}
 			})
 		}
+		return m, nil
+	case rescaleMsg:
+		// Stale tick from a superseded scroll generation — drop without
+		// rebuilding (a fresh tick is already in flight for the latest gen).
+		if msg.gen != m.scrollGen {
+			return m, nil
+		}
+		// Line-chart mode has a fixed peak=1.0; no rebuild needed. Empty
+		// data means the chart is at the emptyPlaceholder and there's
+		// nothing to recompute.
+		if m.unitIdx == int(chartUnitRemaining) || len(m.lastValues) == 0 {
+			return m, nil
+		}
+		visN := m.visibleBuckets()
+		from := m.viewportXOffset
+		m.peak = peakOf(m.lastValues, from, from+visN)
+		// Re-render at the new peak. No DB hit, no anchor restore — strictly
+		// a re-paint with the new normalisation reference.
+		var unit chartUnit = chartUnitTokens
+		if m.unitIdx == int(chartUnitCost) {
+			unit = chartUnitCost
+		}
+		m.viewport.SetContent(buildChart(m.lastValues, m.lastStarts, m.peak, m.lastCanvasW, m.chartHeight(), time.Now(), ZoomLevels[m.zoomIdx], unit, m.dateOrder))
 		return m, nil
 	case QuotaMsg:
 		m.quota = msg.Usage
