@@ -38,3 +38,11 @@ jobs:
           esac
           echo "Coverage: ${pct}% (threshold: ${THRESHOLD}%)"
           awk -v p="$pct" -v t="$THRESHOLD" 'BEGIN { exit !(p+0 >= t) }'
+
+  vulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: golang/govulncheck-action@b625fbe08f3bccbe446d94fbf87fcc875a4f50ee  # v1.0.4
+        with:
+          go-version-file: go.mod
+          go-package: ./...
