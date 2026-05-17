@@ -304,6 +304,99 @@ func TestJSONOutputOmitsProjectionWhenNil(t *testing.T) {
 	}
 }
 
+func TestCompute_Tokens5hBreakdown_SumsCorrectly(t *testing.T) {
+	dir := t.TempDir()
+	c, err := cache.Open(dir + "/state.db")
+	if err != nil {
+		t.Fatalf("Open cache: %v", err)
+	}
+	defer c.Close()
+	db := c.DB()
+
+	now := time.Now().UTC()
+	ts := now.Add(-1 * time.Hour).Format("2006-01-02T15:04:05.000Z07:00")
+
+	if _, err := db.Exec(`
+INSERT INTO messages (
+	session_id, project_slug, ts, role, model,
+	input_tokens, output_tokens, cache_read_tokens,
+	cache_write_5m_tokens, cache_write_1h_tokens,
+	cost_usd_estimate, pricing_version, pricing_unknown
+) VALUES ('s', 'p', ?, 'assistant', 'claude-opus-4-7',
+	100, 50, 1000, 200, 75, 0.012345, 'v1', 0)`, ts); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	w, err := Compute(db, now, QuotaInput{})
+	if err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+
+	// tokens_5h is input + output only (no cache).
+	if got, want := w.Tokens5h, int64(150); got != want {
+		t.Errorf("Tokens5h = %d, want %d (= 100 input + 50 output)", got, want)
+	}
+
+	// Breakdown carries all five kinds verbatim.
+	want := Tokens5hBreakdown{
+		Input:        100,
+		Output:       50,
+		CacheRead:    1000,
+		CacheWrite5m: 200,
+		CacheWrite1h: 75,
+	}
+	if w.Tokens5hBreakdown != want {
+		t.Errorf("Tokens5hBreakdown = %+v, want %+v", w.Tokens5hBreakdown, want)
+	}
+
+	// Invariant: tokens_5h == breakdown.Input + breakdown.Output.
+	if w.Tokens5h != w.Tokens5hBreakdown.Input+w.Tokens5hBreakdown.Output {
+		t.Errorf("Tokens5h (%d) != Breakdown.Input+Output (%d+%d)",
+			w.Tokens5h, w.Tokens5hBreakdown.Input, w.Tokens5hBreakdown.Output)
+	}
+
+	// Regression guard: breakdown five-field sum equals the pre-change broad total.
+	broad := w.Tokens5hBreakdown.Input + w.Tokens5hBreakdown.Output +
+		w.Tokens5hBreakdown.CacheRead + w.Tokens5hBreakdown.CacheWrite5m +
+		w.Tokens5hBreakdown.CacheWrite1h
+	if got, want := broad, int64(1425); got != want {
+		t.Errorf("breakdown sum = %d, want %d (= 100+50+1000+200+75)", got, want)
+	}
+}
+
+func TestJSON_IncludesTokens5hBreakdown(t *testing.T) {
+	w := Window{
+		Tokens5h: 150,
+		Tokens5hBreakdown: Tokens5hBreakdown{
+			Input:        100,
+			Output:       50,
+			CacheRead:    1000,
+			CacheWrite5m: 200,
+			CacheWrite1h: 75,
+		},
+	}
+	s, err := JSON(w)
+	if err != nil {
+		t.Fatalf("JSON: %v", err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal([]byte(s), &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	b, ok := got["tokens_5h_breakdown"].(map[string]any)
+	if !ok {
+		t.Fatalf("tokens_5h_breakdown missing or wrong type: %v", got["tokens_5h_breakdown"])
+	}
+
+	for _, key := range []string{"input", "output", "cache_read", "cache_write_5m", "cache_write_1h"} {
+		if _, ok := b[key]; !ok {
+			t.Errorf("tokens_5h_breakdown missing key %q (got keys: %v)", key, b)
+		}
+	}
+}
+
 func TestCompute_SevenDayUsesRecencyWeightedProjection(t *testing.T) {
 	dir := t.TempDir()
 	c, err := cache.Open(dir + "/state.db")

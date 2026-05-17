@@ -21,31 +21,40 @@ type QuotaInput struct {
 	TierPretty string
 }
 
-// Compute folds the last 5 hours of messages plus the quota input into a
-// Window. The DB query is unchanged from before — only the tail logic
-// (Percent, MinutesToReset) shifts depending on whether quota is available.
+// Compute folds the last 5 hours of messages plus the quota input into
+// a Window. `Tokens5h` is `input + output` only — see #232 for why this
+// matches Claude Code `/usage`. `Tokens5hBreakdown` exposes all five
+// token kinds for callers that still need the cache-vs-work split.
 func Compute(db *sql.DB, now time.Time, q QuotaInput) (Window, error) {
 	cutoff := now.UTC().Add(-5 * time.Hour).Format("2006-01-02T15:04:05.000Z07:00")
 	row := db.QueryRow(`
 SELECT
-  COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens
-              + cache_write_5m_tokens + cache_write_1h_tokens), 0),
+  COALESCE(SUM(input_tokens), 0),
+  COALESCE(SUM(output_tokens), 0),
+  COALESCE(SUM(cache_read_tokens), 0),
+  COALESCE(SUM(cache_write_5m_tokens), 0),
+  COALESCE(SUM(cache_write_1h_tokens), 0),
   COALESCE(SUM(cost_usd_estimate), 0),
   COALESCE(MIN(ts), '')
 FROM messages WHERE ts >= ?`, cutoff)
 
-	var tokens int64
+	var b Tokens5hBreakdown
 	var cost float64
 	var oldest string
-	if err := row.Scan(&tokens, &cost, &oldest); err != nil {
+	if err := row.Scan(
+		&b.Input, &b.Output, &b.CacheRead,
+		&b.CacheWrite5m, &b.CacheWrite1h,
+		&cost, &oldest,
+	); err != nil {
 		return Window{}, err
 	}
 
 	w := Window{
-		Tokens5h:      tokens,
-		Cost5hUSD:     cost,
-		CeilingLabel:  q.TierSlug,
-		CeilingPretty: q.TierPretty,
+		Tokens5h:          b.Input + b.Output,
+		Tokens5hBreakdown: b,
+		Cost5hUSD:         cost,
+		CeilingLabel:      q.TierSlug,
+		CeilingPretty:     q.TierPretty,
 	}
 
 	if q.Usage != nil && q.Usage.FiveHour != nil && q.Usage.FiveHour.ResetsAt != nil {
