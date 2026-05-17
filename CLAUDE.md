@@ -11,6 +11,7 @@ make build            # go build -o ccpulse ./cmd/ccpulse
 make install          # build → ~/.local/bin/ccpulse (release channel)
 make test             # go test ./...
 make lint             # go vet ./...
+make vulncheck        # govulncheck ./... (run before release-blocking PRs)
 
 make seed-dev         # populate fixture config + cache for TUI probes
 make reset-dev        # blow away seeded dev state

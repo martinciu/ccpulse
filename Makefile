@@ -1,4 +1,4 @@
-.PHONY: build install seed-dev seed-dev-config seed-dev-cache seed-front-loaded reset-dev test lint snapshot
+.PHONY: build install seed-dev seed-dev-config seed-dev-cache seed-front-loaded reset-dev test lint vulncheck snapshot
 
 BIN := ccpulse
 INSTALL_DIR := $(HOME)/.local/bin
@@ -26,6 +26,9 @@ test:
 
 lint:
 	go vet ./...
+
+vulncheck:
+	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
 snapshot:
 	HOMEBREW_TAP_GITHUB_TOKEN=dummy goreleaser release --snapshot --clean
