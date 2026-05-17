@@ -1399,12 +1399,14 @@ func earliestRemainingSampleAt(pts5h, pts7d []cache.UtilizationPoint) time.Time 
 //     pre-switch anchor's column; this clamp pulls it up to the
 //     earliest in-range bucket before the spring animation samples
 //     m.springXOffset.
-func (m *Model) setX(n int) {
+// clampX returns the value of n after applying setX's mode-specific
+// clamping, without mutating any state. Used by refreshChart to predict
+// the post-restore bucket index for the visible-slice peak compute,
+// before the actual SetContent + setX call sequence.
+func (m *Model) clampX(n int) int {
 	stride := ZoomLevels[m.zoomIdx].stride()
 	var minX, maxX int
 	if chartUnit(m.unitIdx) == chartUnitRemaining {
-		// Ceil-divide the column gap so maxX*stride reaches the canvas right
-		// edge (the previous floor lost up to stride-1 cols of slack — #206).
 		gap := max(0, m.lastCanvasW-m.viewport.Width)
 		maxX = (gap + stride - 1) / stride
 		if earliest := earliestRemainingSampleAt(m.lastPts5h, m.lastPts7d); !earliest.IsZero() &&
@@ -1417,7 +1419,12 @@ func (m *Model) setX(n int) {
 	} else {
 		maxX = max(0, len(m.lastStarts)-m.visibleBuckets())
 	}
-	n = min(max(n, minX), maxX)
+	return min(max(n, minX), maxX)
+}
+
+func (m *Model) setX(n int) {
+	stride := ZoomLevels[m.zoomIdx].stride()
+	n = m.clampX(n)
 	m.viewport.SetXOffset(n * stride)
 	m.viewportXOffset = n
 }
@@ -1633,40 +1640,38 @@ func (m *Model) refreshChart() {
 	m.lastCanvasW = canvasW
 	m.lastZoomStride = zoom.stride()
 
-	// Restore the user's anchor BEFORE peak compute and chart build so
-	// m.viewportXOffset reflects the slice the user will see after
-	// refresh — that slice is what the peak normalises against. Three
-	// cases:
+	// Determine the target bucket index (what setX would produce) so the
+	// visible-slice peak can be computed BEFORE the SetContent + setX
+	// pair runs. Three anchor cases:
 	//   - !hadAnchor (first load, or coming back from an empty-cache
 	//     placeholder): pin to the new right edge.
 	//   - wasPinned: user was at "now", keep them at "now" against the
 	//     new canvas width.
 	//   - else: map anchorTime → column in the new canvas.
 	//
-	// The anchor is restored via m.setX so the viewport offset and the
-	// m.viewportXOffset bucket-indexed shadow stay in sync — the invariant
-	// that all scroll mutations route through setX / scrollLeft / scrollRight.
+	// Passing a sentinel ≥ maxX in the right-edge path lets clampX/setX
+	// land on the mode-specific maxX. bucketCount = N when canvasW =
+	// N*stride-gap (the steady-state shape for both bar and remaining
+	// mode); when canvasW is floored at chartWidth() for short data,
+	// clampX's maxX still clamps to 0 gracefully. Floor-dividing
+	// rightEdgeCol by stride loses up to (stride-1) cols of slack at
+	// 24h zoom (BarGap=2) and produces maxX-1 in either mode — the
+	// original #206 symptom plus the stuck-at-maxX-1 fallout after a
+	// bar↔line toggle.
 	stride := zoom.stride()
 	rightEdgeCol := max(0, canvasW-m.viewport.Width)
+	var targetX int
 	switch {
 	case !hadAnchor, wasPinned:
-		// Pass a sentinel ≥ maxX so setX's clamp lands on the mode-specific
-		// maxX. bucketCount = N when canvasW = N*stride-gap (the steady-state
-		// shape for both bar and remaining mode); when canvasW is floored at
-		// chartWidth() for short data, bucketCount degrades gracefully because
-		// setX's maxX still clamps to 0. Floor-dividing rightEdgeCol by stride
-		// loses up to (stride-1) cols of slack at 24h zoom (BarGap=2) and
-		// produces maxX-1 in either mode — the original #206 symptom plus the
-		// stuck-at-maxX-1 fallout after a bar↔line toggle.
-		bucketCount := (canvasW + max(zoom.BarGap, 0)) / stride
-		m.setX(bucketCount)
+		targetX = (canvasW + max(zoom.BarGap, 0)) / stride
 	default:
 		targetCol := timeToColumn(anchorTime, canvasW, from, to)
 		if targetCol > rightEdgeCol {
 			targetCol = rightEdgeCol
 		}
-		m.setX(targetCol / stride)
+		targetX = targetCol / stride
 	}
+	predictedX := m.clampX(targetX)
 
 	// Peak is normalised against the slice currently under the viewport.
 	// Remaining-mode preserves its fixed 1.0 invariant (line chart).
@@ -1674,14 +1679,28 @@ func (m *Model) refreshChart() {
 		m.peak = 1.0
 	} else {
 		visN := m.visibleBuckets()
-		m.peak = peakOf(values, m.viewportXOffset, m.viewportXOffset+visN)
+		m.peak = peakOf(values, predictedX, predictedX+visN)
 	}
 
+	// SetContent must happen BEFORE setX so the viewport's
+	// longestLineWidth reflects the new (wide) canvas. Otherwise
+	// SetXOffset inside setX clamps against the previous SetContent's
+	// longestLineWidth (which can be tiny — e.g., the narrow per-frame
+	// canvas left behind by renderSpringFrame), forcing the actual
+	// xOffset to ~0 while m.viewportXOffset (the shadow) ends up at
+	// the target value, putting the viewport on the leftmost (oldest)
+	// columns even though the bucket-shadow says we're pinned right.
 	if unit == chartUnitRemaining {
 		m.viewport.SetContent(buildLineChart(m.lastPts5h, m.lastPts7d, from, to, canvasW, chartH, time.Now(), zoom, m.dateOrder, "refresh"))
 	} else {
 		m.viewport.SetContent(buildChart(values, starts, m.peak*chartYHeadroom, canvasW, chartH, time.Now(), zoom, unit, m.dateOrder))
 	}
+
+	// Apply anchor — setX's SetXOffset call now clamps against the
+	// just-painted canvas's longestLineWidth, not the stale spring-frame
+	// width. The bucket-shadow and the viewport's actual xOffset stay
+	// in sync.
+	m.setX(targetX)
 }
 
 // emptyPlaceholder returns a w×h block with "no Claude sessions yet"
