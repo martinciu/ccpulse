@@ -1459,7 +1459,6 @@ func (m *Model) refreshChart() {
 	var (
 		values []float64
 		starts []time.Time
-		peak   float64
 		unit   chartUnit
 	)
 	switch m.unitIdx {
@@ -1482,9 +1481,6 @@ func (m *Model) refreshChart() {
 		for i, b := range buckets {
 			values[i] = b.Cost
 			starts[i] = b.BucketStart
-			if values[i] > peak {
-				peak = values[i]
-			}
 		}
 		unit = chartUnitCost
 	case int(chartUnitRemaining): // remaining quota line chart
@@ -1512,7 +1508,6 @@ func (m *Model) refreshChart() {
 		}
 		m.lastPts5h = pts5h
 		m.lastPts7d = pts7d
-		peak = 1.0
 		anchor := pts5h
 		if len(anchor) == 0 {
 			anchor = pts7d
@@ -1543,14 +1538,10 @@ func (m *Model) refreshChart() {
 		for i, b := range buckets {
 			values[i] = float64(b.Tokens)
 			starts[i] = b.BucketStart
-			if values[i] > peak {
-				peak = values[i]
-			}
 		}
 		unit = chartUnitTokens
 	}
 
-	m.peak = peak
 	m.lastValues = values
 	m.lastStarts = starts
 
@@ -1566,17 +1557,18 @@ func (m *Model) refreshChart() {
 		if canvasW < m.chartWidth() {
 			canvasW = m.chartWidth()
 		}
-		m.viewport.SetContent(buildLineChart(m.lastPts5h, m.lastPts7d, from, to, canvasW, chartH, time.Now(), zoom, m.dateOrder, "refresh"))
 	} else {
 		canvasW = zoom.CanvasWidth(len(values))
-		m.viewport.SetContent(buildChart(values, starts, peak, canvasW, chartH, time.Now(), zoom, unit, m.dateOrder))
 	}
 	m.lastChartFrom = from
 	m.lastChartTo = to
 	m.lastCanvasW = canvasW
 	m.lastZoomStride = zoom.stride()
 
-	// Restore the user's anchor. Three cases:
+	// Restore the user's anchor BEFORE peak compute and chart build so
+	// m.viewportXOffset reflects the slice the user will see after
+	// refresh — that slice is what the peak normalises against. Three
+	// cases:
 	//   - !hadAnchor (first load, or coming back from an empty-cache
 	//     placeholder): pin to the new right edge.
 	//   - wasPinned: user was at "now", keep them at "now" against the
@@ -1606,6 +1598,21 @@ func (m *Model) refreshChart() {
 			targetCol = rightEdgeCol
 		}
 		m.setX(targetCol / stride)
+	}
+
+	// Peak is normalised against the slice currently under the viewport.
+	// Remaining-mode preserves its fixed 1.0 invariant (line chart).
+	if unit == chartUnitRemaining {
+		m.peak = 1.0
+	} else {
+		visN := m.visibleBuckets()
+		m.peak = peakOf(values, m.viewportXOffset, m.viewportXOffset+visN)
+	}
+
+	if unit == chartUnitRemaining {
+		m.viewport.SetContent(buildLineChart(m.lastPts5h, m.lastPts7d, from, to, canvasW, chartH, time.Now(), zoom, m.dateOrder, "refresh"))
+	} else {
+		m.viewport.SetContent(buildChart(values, starts, m.peak, canvasW, chartH, time.Now(), zoom, unit, m.dateOrder))
 	}
 }
 
