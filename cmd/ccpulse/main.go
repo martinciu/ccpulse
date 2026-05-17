@@ -203,15 +203,29 @@ func initDevlog(isDev bool, cacheDir string, level slog.Level, w io.Writer) io.C
 	return closer
 }
 
+// loadConfigOrDefault loads cfg from path, treating an absent file as
+// a signal to use embedded defaults. Other errors (TOML parse failures,
+// permission denied, etc.) are wrapped with the path and returned.
+//
+// Centralises the "config is optional" semantics so subcommand entry
+// points can't accidentally swallow a real error via `cfg, _ := config.Load(...)`.
+func loadConfigOrDefault(path string) (config.Config, error) {
+	cfg, err := config.Load(path)
+	if err != nil && !os.IsNotExist(err) {
+		return cfg, fmt.Errorf("load config %s: %w", path, err)
+	}
+	return cfg, nil
+}
+
 // runTUI launches the Bubble Tea program with the TUI model. The
 // passed ctx is the signal-aware root context — used as the parent
 // for the quota poller's context and for the startup backfill, so
 // SIGINT/SIGTERM cancels in-flight work even before the user quits
 // the TUI itself.
 func runTUI(ctx context.Context, errOut io.Writer) error {
-	cfg, err := config.Load(config.DefaultPath())
-	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("load config %s: %w", config.DefaultPath(), err)
+	cfg, err := loadConfigOrDefault(config.DefaultPath())
+	if err != nil {
+		return err
 	}
 	cacheDir := envOr("CCPULSE_CACHE_DIR", expand(cfg.Paths.CacheDir))
 	if err := secfile.MkdirAll(cacheDir); err != nil {

@@ -10,7 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/BurntSushi/toml"
 
 	"github.com/martinciu/ccpulse/pkg/devlog"
@@ -155,27 +154,36 @@ func TestRunTUI_MalformedConfig(t *testing.T) {
 	}
 }
 
-// TestRunTUI_AbsentConfigUsesDefaults asserts that runTUI proceeds normally
-// (doesn't error on the config step) when the config file simply doesn't exist.
-// The absent-config path is guarded by os.IsNotExist — defaults kick in.
-// We inject a no-op tea.Program so the test exits cleanly via 'q'.
-func TestRunTUI_AbsentConfigUsesDefaults(t *testing.T) {
-	// Point XDG_CONFIG_HOME at a dir with no ccpulse-dev subdirectory.
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "no-config-here"))
-	t.Setenv("CCPULSE_PROJECTS_ROOT", t.TempDir())
-	t.Setenv("CCPULSE_CACHE_DIR", t.TempDir())
-
-	originalNewTeaProgram := newTeaProgram
-	t.Cleanup(func() { newTeaProgram = originalNewTeaProgram })
-	newTeaProgram = func(m tea.Model) *tea.Program {
-		return tea.NewProgram(m,
-			tea.WithoutRenderer(),
-			tea.WithInput(strings.NewReader("q")),
-			tea.WithOutput(io.Discard),
-		)
+// TestLoadConfigOrDefault_AbsentReturnsDefaults asserts the absent-config
+// path of the helper: missing file is silent, caller gets a usable cfg.
+func TestLoadConfigOrDefault_AbsentReturnsDefaults(t *testing.T) {
+	cfg, err := loadConfigOrDefault(filepath.Join(t.TempDir(), "does-not-exist.toml"))
+	if err != nil {
+		t.Fatalf("absent config should be silent, got: %v", err)
 	}
+	if cfg.Paths.CacheDir == "" {
+		t.Error("cfg.Paths.CacheDir should be a sane default, got empty")
+	}
+}
 
-	if err := runTUI(t.Context(), io.Discard); err != nil {
-		t.Fatalf("runTUI should succeed with absent config (defaults), got: %v", err)
+// TestLoadConfigOrDefault_MalformedReturnsWrappedError asserts a syntax
+// error in config.toml surfaces as a wrapped error that includes the path
+// and unwraps to toml.ParseError — so callers in cmd/ccpulse/ can rely on
+// errors.As without owning the wrap pattern themselves.
+func TestLoadConfigOrDefault_MalformedReturnsWrappedError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("[[broken\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := loadConfigOrDefault(path)
+	if err == nil {
+		t.Fatal("expected error for malformed config, got nil")
+	}
+	if !strings.Contains(err.Error(), path) {
+		t.Errorf("error should include path %q, got: %v", path, err)
+	}
+	var perr toml.ParseError
+	if !errors.As(err, &perr) {
+		t.Errorf("error should unwrap to toml.ParseError, got: %v", err)
 	}
 }
