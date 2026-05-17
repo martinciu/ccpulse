@@ -20,7 +20,7 @@ func newRecostCmd() *cobra.Command {
 		Hidden: true,
 		Args:   cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.Load("")
+			cfg, err := config.Load(config.DefaultPath())
 			if err != nil {
 				return fmt.Errorf("load config: %w", err)
 			}
