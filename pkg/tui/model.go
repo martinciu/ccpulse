@@ -643,9 +643,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		case key.Matches(msg, m.keys.ScrollLeft):
-			m.scrollLeft(horizontalScrollStep)
+			return m, m.scrollLeft(horizontalScrollStep)
 		case key.Matches(msg, m.keys.ScrollRight):
-			m.scrollRight(horizontalScrollStep)
+			return m, m.scrollRight(horizontalScrollStep)
 		}
 	}
 	return m, nil
@@ -1412,8 +1412,23 @@ func (m *Model) setX(n int) {
 	m.viewportXOffset = n
 }
 
-func (m *Model) scrollLeft(n int)  { m.setX(m.viewportXOffset - n) }
-func (m *Model) scrollRight(n int) { m.setX(m.viewportXOffset + n) }
+// scrollLeft moves the viewport one step left and arms a debounced
+// y-axis rescale. The returned tea.Cmd produces a rescaleMsg ~rescaleDebounce
+// after the call; if another scroll fires before delivery, scrollGen
+// bumps and the older tick becomes stale (dropped by the handler).
+func (m *Model) scrollLeft(n int) tea.Cmd { return m.scrollAndArm(-n) }
+
+// scrollRight is the symmetric counterpart of scrollLeft.
+func (m *Model) scrollRight(n int) tea.Cmd { return m.scrollAndArm(+n) }
+
+func (m *Model) scrollAndArm(delta int) tea.Cmd {
+	m.setX(m.viewportXOffset + delta)
+	m.scrollGen++
+	gen := m.scrollGen
+	return tea.Tick(rescaleDebounce, func(time.Time) tea.Msg {
+		return rescaleMsg{gen: gen}
+	})
+}
 
 // refreshChart queries the cache and updates the viewport content.
 // Safe to call when deps.Cache is nil (no-op). Loads the full history
