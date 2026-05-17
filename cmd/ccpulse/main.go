@@ -80,6 +80,7 @@ func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:           "ccpulse",
 		Short:         "Claude Code usage TUI dashboard",
+		Args:          cobra.NoArgs,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
