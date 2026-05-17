@@ -19,8 +19,9 @@ type Window struct {
 	Has7d            bool          `json:"has_7d,omitempty"`
 	CeilingLabel     string        `json:"ceiling_label"`
 	CeilingPretty    string        `json:"ceiling_pretty"`
-	Tokens5h         int64         `json:"tokens_5h"`
-	Cost5hUSD        float64       `json:"cost_5h_usd"`
+	Tokens5h          int64             `json:"tokens_5h"`
+	Tokens5hBreakdown Tokens5hBreakdown `json:"tokens_5h_breakdown"`
+	Cost5hUSD         float64           `json:"cost_5h_usd"`
 	Quota            *anthro.Usage `json:"quota,omitempty"`
 	QuotaSource      string        `json:"quota_source,omitempty"`
 	QuotaUpdatedAt   time.Time     `json:"quota_updated_at,omitzero"`
@@ -43,6 +44,18 @@ type Projection struct {
 	WillOverreach       bool    `json:"will_overreach"`
 	MinutesTo100Pct     *int    `json:"minutes_to_100_pct"`
 	Confidence          string  `json:"confidence"`
+}
+
+// Tokens5hBreakdown carries the five-way split of `Tokens5h` across the
+// token kinds Anthropic bills separately. `Tokens5h` is `Input + Output`
+// alone — the cache fields are exposed here so `status --json` consumers
+// can still inspect the cache-vs-work ratio without re-querying.
+type Tokens5hBreakdown struct {
+	Input        int64 `json:"input"`
+	Output       int64 `json:"output"`
+	CacheRead    int64 `json:"cache_read"`
+	CacheWrite5m int64 `json:"cache_write_5m"`
+	CacheWrite1h int64 `json:"cache_write_1h"`
 }
 
 func JSON(w Window) (string, error) {
