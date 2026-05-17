@@ -101,3 +101,22 @@ func TestRoot_AcceptsValidLogLevels(t *testing.T) {
 		})
 	}
 }
+
+func TestRootRejectsExtraArgs(t *testing.T) {
+	root := newRootCmd()
+	var out, errOut bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&errOut)
+	root.SetArgs([]string{"stauts"})
+
+	err := root.Execute()
+	if err == nil {
+		t.Fatalf("expected error from `ccpulse stauts`, got nil")
+	}
+	combined := out.String() + errOut.String()
+	errMsg := err.Error()
+	if !strings.Contains(errMsg, "unknown command") && !strings.Contains(combined, "unknown command") &&
+		!strings.Contains(errMsg, "accepts 0 arg(s)") && !strings.Contains(combined, "accepts 0 arg(s)") {
+		t.Errorf("error should contain 'unknown command' or 'accepts 0 arg(s)'; error=%q, combined output=%q", errMsg, combined)
+	}
+}
