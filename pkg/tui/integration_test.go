@@ -453,3 +453,124 @@ func TestProgram_EmptyToFirstChart(t *testing.T) {
 		t.Errorf("final frame missing footer text 'z zoom' — program may not have rendered:\n%s", final)
 	}
 }
+
+// TestProgram_RescaleAfterScroll drives the program through the real
+// bubbletea runtime so the production tea.Tick → rescaleMsg path is
+// exercised — the path that the unit-level rescaleMsg handler tests
+// (model_scroll_test.go) skip by firing the message directly. The
+// generation-counter / message-ordering bug class #218 only surfaces
+// in this path.
+//
+// Setup: seed a wide cost-mode chart (large outlier near the right
+// edge), scroll several buckets left so the visible window moves past
+// the outlier, wait for the debounce, then assert m.peak no longer
+// reflects the outlier.
+func TestProgram_RescaleAfterScroll(t *testing.T) {
+	c := newRescaleSeededCache(t)
+	mInit := New(Deps{Cache: c})
+	mInit.unitIdx = int(chartUnitCost)
+	tm := teatest.NewTestModel(t, mInit,
+		teatest.WithInitialTermSize(120, 40))
+	t.Cleanup(func() { _ = tm.Quit() })
+
+	// Refresh so cost buckets populate and the chart pins to the right
+	// edge (where the seeded outlier lives).
+	tm.Send(RefreshMsg{})
+	// Wait for the first chart frame so we know refreshChart has set
+	// lastValues + viewportXOffset before we start scrolling.
+	teatest.WaitFor(t, tm.Output(),
+		func(bts []byte) bool { return bytes.Contains(bts, []byte("z zoom")) },
+		teatest.WithDuration(2*time.Second),
+	)
+
+	// Scroll left enough buckets to put a gap between the visible window
+	// and the right-edge outlier — but not so far that we clamp to 0
+	// (which would still be a valid post-scroll state, just less precise
+	// as a "scrolling actually moved the window" signal). 20 keys × 3
+	// buckets/key = 60 buckets, leaving ~120 buckets of left-room between
+	// the visible window's right edge and the outlier.
+	for range 20 {
+		tm.Send(tea.KeyMsg{Type: tea.KeyLeft})
+	}
+
+	// Wait past the 300ms debounce so the rescaleMsg fires. Generous
+	// margin for bubbletea's tick scheduler + buildChart re-render.
+	time.Sleep(rescaleDebounce + 400*time.Millisecond)
+
+	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	tm.WaitFinished(t, teatest.WithFinalTimeout(2*time.Second))
+
+	final := tm.FinalModel(t, teatest.WithFinalTimeout(2*time.Second))
+	m, ok := final.(Model)
+	if !ok {
+		t.Fatalf("FinalModel: expected tui.Model, got %T", final)
+	}
+	if len(m.lastValues) == 0 {
+		t.Fatalf("FinalModel has empty lastValues — seed didn't populate the chart")
+	}
+
+	visN := m.visibleBuckets()
+	want := peakOf(m.lastValues, m.viewportXOffset, m.viewportXOffset+visN)
+	if m.peak != want {
+		t.Errorf("post-scroll m.peak = %v, want %v (visible-slice max)\nviewportXOffset=%d visN=%d len(lastValues)=%d",
+			m.peak, want, m.viewportXOffset, visN, len(m.lastValues))
+	}
+
+	// Sanity: the seeded outlier on the far right (~$50 cost bucket)
+	// must be outside the visible window after 20 left-keypresses, so
+	// m.peak should be substantially below the outlier value. If the
+	// rescaleMsg never fired, m.peak would still reflect the outlier.
+	if m.peak >= 10.0 {
+		t.Errorf("post-scroll m.peak = %v unexpectedly large — outlier still pinning the scale (rescale didn't fire?)", m.peak)
+	}
+}
+
+// newRescaleSeededCache seeds a cache with a wide cost spread: one
+// large outlier bucket near "now" and many small buckets stretching
+// back several hours. Designed so a left-scroll at 15m zoom moves the
+// visible window past the outlier into a quiet region.
+func newRescaleSeededCache(t *testing.T) *cache.Cache {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "state.db")
+	c, err := cache.Open(path)
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+
+	tab, err := pricing.Load()
+	if err != nil {
+		t.Fatalf("pricing.Load: %v", err)
+	}
+
+	now := time.Now().UTC().Truncate(15 * time.Minute)
+	// 300 buckets, 15m apart, all small except the most recent which
+	// gets a heavy token load to dominate cost. Output tokens cost
+	// significantly more than input on Opus rates, so a single 200k
+	// output_tokens row at "now" produces an outlier ~$50 vs the
+	// ~$0.05 baseline of the rest.
+	msgs := make([]parse.Message, 0, 301)
+	for i := 1; i <= 300; i++ {
+		msgs = append(msgs, parse.Message{
+			SessionID:   "bg",
+			ProjectSlug: "p",
+			Role:        "assistant",
+			Model:       "claude-opus-4-7",
+			Timestamp:   now.Add(time.Duration(-i*15) * time.Minute),
+			InputTokens: 1000,
+		})
+	}
+	msgs = append(msgs, parse.Message{
+		SessionID:    "spike",
+		ProjectSlug:  "p",
+		Role:         "assistant",
+		Model:        "claude-opus-4-7",
+		Timestamp:    now,
+		InputTokens:  100000,
+		OutputTokens: 200000,
+	})
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+	return c
+}
