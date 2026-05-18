@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 
@@ -21,7 +22,7 @@ func newRecostCmd() *cobra.Command {
 		Args:   cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load(config.DefaultPath())
-			if err != nil {
+			if err != nil && !os.IsNotExist(err) {
 				return fmt.Errorf("load config: %w", err)
 			}
 			cacheDir := envOr("CCPULSE_CACHE_DIR", expand(cfg.Paths.CacheDir))
