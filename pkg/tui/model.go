@@ -1726,5 +1726,6 @@ func newProgressBar(w int) progress.Model {
 		progress.WithWidth(w),
 		progress.WithoutPercentage(),
 		progress.WithGradient(QuotaGradientStart, QuotaGradientEnd),
+		barProfile(),
 	)
 }
