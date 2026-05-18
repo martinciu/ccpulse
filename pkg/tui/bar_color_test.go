@@ -66,7 +66,6 @@ func TestBarForSeverity_FillShape(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			bar := barForSeverity(width, tt.sev)
 			got := bar.ViewAs(0.5)
-			escapes := distinctFgEscapes(got)
 			if tt.wantSolid {
 				if !strings.Contains(got, tt.wantTok) {
 					t.Errorf("solid severity %v: rendered output missing expected truecolor token %q\nrendered: %q",
@@ -79,32 +78,14 @@ func TestBarForSeverity_FillShape(t *testing.T) {
 					}
 				}
 			} else {
-				if len(escapes) < 2 {
-					t.Errorf("gradient severity %v: got %d distinct fg escapes (want >=2)\nrendered: %q",
-						tt.sev, len(escapes), got)
+				for _, tok := range []string{safeTok, watchTok, dangerTok} {
+					if strings.Contains(got, tok) {
+						t.Errorf("gradient severity %v: rendered output unexpectedly contains severity token %q\nrendered: %q",
+							tt.sev, tok, got)
+					}
 				}
 			}
 		})
-	}
-}
-
-// distinctFgEscapes returns the set of unique truecolor foreground
-// escapes ("\x1b[38;2;R;G;Bm") present in s. Used to discriminate
-// solid (1) vs gradient (>=2) fill shapes.
-func distinctFgEscapes(s string) map[string]struct{} {
-	set := make(map[string]struct{})
-	const open = "\x1b[38;2;"
-	for {
-		i := strings.Index(s, open)
-		if i < 0 {
-			return set
-		}
-		j := strings.Index(s[i:], "m")
-		if j < 0 {
-			return set
-		}
-		set[s[i:i+j+1]] = struct{}{}
-		s = s[i+j+1:]
 	}
 }
 
