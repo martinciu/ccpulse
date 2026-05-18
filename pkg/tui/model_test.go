@@ -249,8 +249,6 @@ func TestQuotaBarsRendersIdleForNil5hResetsAt(t *testing.T) {
 		Percent7d:        50,
 		MinutesToReset7d: intPtr(60 * 24),
 	}
-	m.progress = newProgressBar(m.progressWidth())
-	m.progress7d = newProgressBar(m.progressWidth())
 
 	out := m.quotaBars()
 	if !strings.Contains(out, "idle") {
@@ -543,8 +541,6 @@ func TestSevenDayBarRendered(t *testing.T) {
 	m := New(Deps{})
 	m.w, m.h = 120, 40
 	m.window = status.Window{Percent: 1, MinutesToReset: intPtr(100), Has7d: true, Percent7d: 12, MinutesToReset7d: intPtr(1000)}
-	m.progress = newProgressBar(m.progressWidth())
-	m.progress7d = newProgressBar(m.progressWidth())
 	v := m.View()
 	if !strings.Contains(v, " │ ") {
 		t.Errorf("expected dim divider ' │ ' in:\n%s", v)
@@ -633,8 +629,6 @@ func TestQuotaBarsSymmetric(t *testing.T) {
 			m := New(Deps{})
 			m.w, m.h = tt.w, 40
 			m.window = tt.win
-			m.progress = newProgressBar(m.progressWidth())
-			m.progress7d = newProgressBar(m.progressWidth())
 
 			bars := m.quotaBars()
 			// quotaBars stacks two rows (bars + burn-rate) via JoinVertical
@@ -660,7 +654,6 @@ func TestSevenDayBarPlaceholderWhenAbsent(t *testing.T) {
 	m := New(Deps{})
 	m.w, m.h = 120, 40
 	m.window = status.Window{Percent: 1, Has7d: false}
-	m.progress = newProgressBar(m.progressWidth())
 	v := m.View()
 	if !strings.Contains(v, "no data") {
 		t.Errorf("expected 'no data' placeholder in:\n%s", v)
@@ -674,12 +667,10 @@ func TestQuotaBarRendered(t *testing.T) {
 	low := New(Deps{})
 	low.w, low.h = 120, 40
 	low.window = status.Window{Percent: 0}
-	low.progress = newProgressBar(low.progressWidth())
 
 	hi := New(Deps{})
 	hi.w, hi.h = 120, 40
 	hi.window = status.Window{Percent: 80}
-	hi.progress = newProgressBar(hi.progressWidth())
 
 	if low.View() == hi.View() {
 		t.Errorf("quota bar must render differently at 0%% vs 80%%; got identical View output")

@@ -112,11 +112,9 @@ const (
 
 // Model is the root Bubble Tea model for the chart view.
 type Model struct {
-	deps       Deps
-	keys       KeyMap
-	progress   progress.Model // 5-hour quota bar
-	progress7d progress.Model // 7-day quota bar
-	viewport   viewport.Model
+	deps     Deps
+	keys     KeyMap
+	viewport viewport.Model
 	help       help.Model
 	showHelp   bool
 
@@ -302,8 +300,6 @@ func New(d Deps) Model {
 		zoomIdx:   0, // default: 15m
 		dateOrder: detectDateOrder(),
 	}
-	m.progress = newProgressBar(40)
-	m.progress7d = newProgressBar(40)
 	m.viewport = viewport.New(80, 20)
 	m.viewport.SetHorizontalStep(horizontalScrollStep)
 	m.introPending = !d.ReduceMotion
@@ -322,8 +318,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// help.Width controls when ShortHelp ellipsizes; if left at 0
 		// the footer can wrap onto the body row and break chartHeight().
 		m.help.Width = m.w
-		m.progress = newProgressBar(m.progressWidth())
-		m.progress7d = newProgressBar(m.progressWidth())
 		m.refreshChart()
 		return m, m.maybeArmIntro()
 	case IndexProgressMsg:
@@ -764,9 +758,18 @@ func (m Model) quotaBars() string {
 	if m.window.MinutesToReset != nil {
 		resetTxt = durString(*m.window.MinutesToReset)
 	}
+	// Per-side severity drives the bar fill. Pre-projection severities
+	// (noData / warmingUp) fall through to the green->red gradient via
+	// barForSeverity's default arm so the startup look is preserved.
+	var fiveHourProj, sevenDayProj *status.Projection
+	if m.window.Projection != nil {
+		fiveHourProj = m.window.Projection.FiveHour
+		sevenDayProj = m.window.Projection.SevenDay
+	}
+	barW := m.progressWidth()
 	left := renderQuotaSide(
 		"5h ",
-		m.progress,
+		barForSeverity(barW, severityFor(fiveHourProj, 5*time.Hour)),
 		m.quotaIntroRatio(quotaSide5h, float64(m.window.Percent)/100.0),
 		resetTxt,
 	)
@@ -782,7 +785,7 @@ func (m Model) quotaBars() string {
 	if m.window.Has7d && m.window.MinutesToReset7d != nil {
 		right = renderQuotaSide(
 			"7d ",
-			m.progress7d,
+			barForSeverity(barW, severityFor(sevenDayProj, 7*24*time.Hour)),
 			m.quotaIntroRatio(quotaSide7d, float64(m.window.Percent7d)/100.0),
 			formatReset7d(*m.window.MinutesToReset7d),
 		)
@@ -803,11 +806,6 @@ func (m Model) quotaBars() string {
 	// Both projection pointers can be nil (no quota loaded yet, or 7d
 	// not exposed by the server) — the side renderer handles that by
 	// emitting a dim "(no data)" placeholder.
-	var fiveHourProj, sevenDayProj *status.Projection
-	if m.window.Projection != nil {
-		fiveHourProj = m.window.Projection.FiveHour
-		sevenDayProj = m.window.Projection.SevenDay
-	}
 	burnLeft := renderBurnRateSide(burnPad, fiveHourProj, slotW, 5*time.Hour, burnRateUnitPerHour)
 	burnRight := renderBurnRateSide(burnPad, sevenDayProj, slotW, 7*24*time.Hour, burnRateUnitPerDay)
 	burnRow := lipgloss.JoinHorizontal(lipgloss.Top, burnLeft, divider, burnRight)
@@ -1637,8 +1635,6 @@ func (m *Model) recomputeWindow() {
 	if w, err := status.Compute(m.deps.Cache.DB(), time.Now(), in); err == nil {
 		m.window = w
 	}
-	m.progress = newProgressBar(m.progressWidth())
-	m.progress7d = newProgressBar(m.progressWidth())
 }
 
 // chartWidth returns the available width for the viewport. Floors at 10

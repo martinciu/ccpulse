@@ -561,3 +561,74 @@ func TestRenderQuotaSide_ProducesExactSlotWidth(t *testing.T) {
 		})
 	}
 }
+
+// newTestModelWithProjections builds the minimum Model needed to
+// exercise quotaBars() with synthetic 5h and 7d projections. The
+// window has Has7d=true so the 7d side renders, and a width large
+// enough for newProgressBar's 10-col minimum to be exceeded.
+func newTestModelWithProjections(t *testing.T, fiveH, sevenD *status.Projection) Model {
+	t.Helper()
+	resetMins := 30
+	reset7d := 4320
+	return Model{
+		w: 120,
+		h: 30,
+		window: status.Window{
+			Percent:          50,
+			MinutesToReset:   &resetMins,
+			Has7d:            true,
+			Percent7d:        70,
+			MinutesToReset7d: &reset7d,
+			Projection: &status.Projections{
+				FiveHour: fiveH,
+				SevenDay: sevenD,
+			},
+		},
+	}
+}
+
+// TestQuotaBars_UsesSeverityColors confirms quotaBars() picks the
+// per-side bar color from each side's projection. The 5h side gets
+// a safe projection (expect colorSafe), the 7d side gets a danger
+// projection (expect colorDanger), and the rendered output must
+// contain both colors' truecolor tokens.
+func TestQuotaBars_UsesSeverityColors(t *testing.T) {
+	withForcedColor(t)
+	withForcedDarkBackground(t, true)
+
+	etaSafe := 600 // 10h to limit on the 5h projection — safe
+	etaDanger := 5 // 5m to limit on the 7d projection — danger
+	m := newTestModelWithProjections(t,
+		&status.Projection{
+			Confidence:          "high",
+			SlopePctPerHour:     5.0,
+			ProjectedPctAtReset: 30,
+			WillOverreach:       false,
+			MinutesTo100Pct:     &etaSafe,
+		},
+		&status.Projection{
+			Confidence:          "high",
+			SlopePctPerHour:     2.0,
+			ProjectedPctAtReset: 110,
+			WillOverreach:       true,
+			MinutesTo100Pct:     &etaDanger,
+		},
+	)
+
+	// quotaBars() joins the bars row and burn-rate row vertically.
+	// The burn-rate row already renders text in colorSafe / colorDanger
+	// via burnSafeStyle / burnDangerStyle, so we MUST restrict the
+	// assertion to the bars row (line 0) to actually probe the bar fill.
+	got := m.quotaBars()
+	barsRow := strings.SplitN(got, "\n", 2)[0]
+	wantSafe := hexToTruecolorTok(colorSafe.Dark)
+	wantDanger := hexToTruecolorTok(colorDanger.Dark)
+	if !strings.Contains(barsRow, wantSafe) {
+		t.Errorf("bars row missing colorSafe token %q (5h side should be safe)\nbars row: %q",
+			wantSafe, barsRow)
+	}
+	if !strings.Contains(barsRow, wantDanger) {
+		t.Errorf("bars row missing colorDanger token %q (7d side should be danger)\nbars row: %q",
+			wantDanger, barsRow)
+	}
+}
