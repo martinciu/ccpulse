@@ -364,29 +364,107 @@ func TestDateLabel(t *testing.T) {
 	}
 }
 
-func TestOverlayYLabel_InjectsAtNiceFloorRow(t *testing.T) {
+// TestOverlayYLabel_InjectsCeilingAndMidpoint pins the post-#250 splice
+// behaviour: max label at row 0 (= niceCeilingFloat(peak)), mid label
+// at row barsH/2 (= ceiling/2), both right-aligned in a yLabelSlotW
+// (=5) column. Other rows stay untouched.
+//
+// peak = 87000 → niceCeiling = 100000 → max label "100k" → " 100k" (5 cols)
+// mid          =  50000                → mid label  "50k" → "  50k" (5 cols)
+// chartH = 6   → barsH = 5             → midRow = 2
+func TestOverlayYLabel_InjectsCeilingAndMidpoint(t *testing.T) {
 	t.Parallel()
-	// peak = 87000 → niceFloorFloat(87000) = 70000 → label "70k".
-	// chartH=6 → barsH=5 → row = 5 - round(70000/87000 * 5) = 1.
 	body := "AAAAAAAAAA\nBBBBBBBBBB\nCCCCCCCCCC\nDDDDDDDDDD\nEEEEEEEEEE\nFFFFFFFFFF"
 	out := overlayYLabel(body, 87_000, chartUnitTokens, 6, 1.0)
 	rows := strings.Split(out, "\n")
 	if len(rows) != 6 {
 		t.Fatalf("expected 6 rows, got %d:\n%q", len(rows), out)
 	}
-	if !strings.Contains(rows[1], "70k") {
-		t.Errorf("expected '70k' on row 1, got %q", rows[1])
+	// Row 0 — max label.
+	row0 := stripANSIForTest(rows[0])
+	if !strings.HasPrefix(row0, " 100k") {
+		t.Errorf("expected row 0 to start with \" 100k\", got %q", row0)
 	}
-	// Other rows untouched.
-	for i, r := range []string{"AAAAAAAAAA", "CCCCCCCCCC", "DDDDDDDDDD", "EEEEEEEEEE", "FFFFFFFFFF"} {
-		idx := i
-		if idx >= 1 {
-			idx++ // skip row 1
-		}
-		if !strings.Contains(rows[idx], r) {
-			t.Errorf("row %d should still contain %q, got %q", idx, r, rows[idx])
+	if !strings.HasSuffix(row0, "AAAAA") {
+		t.Errorf("expected row 0 to keep 5 trailing 'A's after the 5-col label, got %q", row0)
+	}
+	// Row 2 — mid label.
+	row2 := stripANSIForTest(rows[2])
+	if !strings.HasPrefix(row2, "  50k") {
+		t.Errorf("expected row 2 to start with \"  50k\", got %q", row2)
+	}
+	if !strings.HasSuffix(row2, "CCCCC") {
+		t.Errorf("expected row 2 to keep 5 trailing 'C's after the 5-col label, got %q", row2)
+	}
+	// Rows 1, 3, 4, 5 untouched.
+	for _, c := range []struct {
+		row    int
+		expect string
+	}{
+		{1, "BBBBBBBBBB"},
+		{3, "DDDDDDDDDD"},
+		{4, "EEEEEEEEEE"},
+		{5, "FFFFFFFFFF"},
+	} {
+		if !strings.Contains(rows[c.row], c.expect) {
+			t.Errorf("row %d should still contain %q, got %q", c.row, c.expect, rows[c.row])
 		}
 	}
+}
+
+// TestOverlayYLabel_SmallPeakSkipsMid pins the yLabelMidFloor guard:
+// when peak is small enough that the mid would format as "$0.00" /
+// "0", the mid splice is skipped entirely and the original row
+// content survives intact.
+func TestOverlayYLabel_SmallPeakSkipsMid(t *testing.T) {
+	t.Parallel()
+	// 12-row body (chartH=12 → barsH=11 → midRow=5). Each row is a
+	// distinct repeated letter so we can pinpoint untouched rows.
+	letters := []byte("ABCDEFGHIJKL")
+	lines := make([]string, 12)
+	for i, c := range letters {
+		lines[i] = strings.Repeat(string(c), 20)
+	}
+	body := strings.Join(lines, "\n")
+
+	t.Run("cost", func(t *testing.T) {
+		// peak = 0.005 → niceCeiling = 0.005 → max label "$0.01"
+		// mid = 0.0025 < yLabelMidFloor(cost)=0.005 → skip mid
+		out := overlayYLabel(body, 0.005, chartUnitCost, 12, 1.0)
+		rows := strings.Split(out, "\n")
+		if len(rows) != 12 {
+			t.Fatalf("expected 12 rows, got %d", len(rows))
+		}
+		row0 := stripANSIForTest(rows[0])
+		if !strings.HasPrefix(row0, "$0.01") {
+			t.Errorf("expected row 0 max label '$0.01', got %q", row0)
+		}
+		// Mid row (5, letter 'F') untouched — first 5 cols should be
+		// 'FFFFF', not "$0.00" or pure spaces from a clobbered splice.
+		midSlot := stripANSIForTest(rows[5])[:yLabelSlotW]
+		if midSlot != "FFFFF" {
+			t.Errorf("expected mid row untouched (5×'F'), got %q (full row %q)", midSlot, rows[5])
+		}
+	})
+
+	t.Run("tokens", func(t *testing.T) {
+		// peak = 1.0 → niceCeiling = 1.0 → max label "1"
+		// mid = 0.5 < yLabelMidFloor(tokens)=1.0 → skip mid
+		out := overlayYLabel(body, 1.0, chartUnitTokens, 12, 1.0)
+		rows := strings.Split(out, "\n")
+		if len(rows) != 12 {
+			t.Fatalf("expected 12 rows, got %d", len(rows))
+		}
+		row0 := stripANSIForTest(rows[0])
+		if !strings.HasPrefix(row0, "    1") {
+			t.Errorf("expected row 0 max label padded '    1', got %q", row0)
+		}
+		// Mid row (5, letter 'F') untouched.
+		midSlot := stripANSIForTest(rows[5])[:yLabelSlotW]
+		if midSlot != "FFFFF" {
+			t.Errorf("expected mid row untouched (5×'F'), got %q (full row %q)", midSlot, rows[5])
+		}
+	})
 }
 
 func TestOverlayYLabel_BlankWhenEmpty(t *testing.T) {

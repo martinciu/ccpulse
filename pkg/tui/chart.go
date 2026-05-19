@@ -309,42 +309,59 @@ func yLabelMidFloor(unit chartUnit) float64 {
 	return 0
 }
 
-// overlayYLabel splices `formatUnitValue(niceFloorFloat(peak), unit)` in
-// the chosen fade style into the niceFloorFloat(peak) row of an already-rendered
-// chart string, replacing the first 5 visible columns of that row.
-// Operates ANSI-aware on the post-scroll viewport output so the label
-// stays pinned to the viewport's left edge regardless of horizontal
-// scroll position (issue #132) — applied in Model.View() after
-// m.viewport.View(), not inside buildChart.
+// overlayYLabel splices two right-aligned labels into the bar-chart
+// canvas: the max label (= niceCeilingFloat(peak)) at row 0 and the
+// midpoint label (= ceiling/2) at row barsH/2. Both occupy a fixed
+// yLabelSlotW-wide column at the viewport's left edge, replacing the
+// underlying bar content via ansi.TruncateLeft. Operates ANSI-aware
+// on the post-scroll viewport output so the labels stay pinned to the
+// viewport's left edge regardless of horizontal scroll position
+// (issue #132) — applied in Model.View() after m.viewport.View(), not
+// inside buildChart.
 //
-// fade ∈ [0, 1] selects the label's discrete fade stop via
+// fade ∈ [0, 1] selects the labels' discrete fade stop via
 // labelFadeStyle. fade <= 0 short-circuits and returns body unchanged
 // (the empty-moment frame of the two-phase unit-toggle animation,
 // issue #136). At steady state Model.View passes fade=1.0.
 //
-// Other early-returns: peak <= 0, chartH < 6, niceFloorFloat(peak) == 0,
-// or body == "" all return body unchanged.
+// Skip semantics:
+//
+//	peak <= 0 || chartH < 6 || body == "" || fade <= 0:
+//	  return body unchanged (top-of-function early return).
+//	niceCeilingFloat(peak) <= 0: defensive — return body unchanged.
+//	mid < yLabelMidFloor(unit): skip the mid splice (formatUnitValue
+//	  would render the value as "$0.00" / "0"); render max only.
+//	midRow >= len(lines): defensive — skip mid only.
+//
+// max and mid share labelFadeStyle(fade) — one style instance, two
+// renders, same allocation pattern as the prior single-label path.
 func overlayYLabel(body string, peak float64, unit chartUnit, chartH int, fade float64) string {
 	if peak <= 0 || chartH < 6 || body == "" || fade <= 0 {
 		return body
 	}
-	tick := niceFloorFloat(peak)
-	if tick <= 0 {
+	top := niceCeilingFloat(peak)
+	if top <= 0 {
 		return body
 	}
-	barsH := chartH - 1
-	row := barsH - int(math.Round(tick/peak*float64(barsH)))
-	row = max(row, 0)
-	row = min(row, barsH-1)
 
-	label := labelFadeStyle(fade).Render(formatUnitValue(tick, unit))
-	labelW := lipgloss.Width(label)
+	barsH := chartH - 1
+	midRow := barsH / 2
 
 	lines := strings.Split(body, "\n")
-	if row >= len(lines) {
+	if len(lines) < 1 {
 		return body
 	}
-	lines[row] = ansi.TruncateLeft(lines[row], labelW, label)
+
+	style := labelFadeStyle(fade)
+	maxLabel := style.Render(padYLabel(formatUnitValue(top, unit)))
+	lines[0] = ansi.TruncateLeft(lines[0], yLabelSlotW, maxLabel)
+
+	mid := top / 2
+	if mid >= yLabelMidFloor(unit) && midRow < len(lines) {
+		midLabel := style.Render(padYLabel(formatUnitValue(mid, unit)))
+		lines[midRow] = ansi.TruncateLeft(lines[midRow], yLabelSlotW, midLabel)
+	}
+
 	return strings.Join(lines, "\n")
 }
 
