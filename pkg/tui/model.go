@@ -497,6 +497,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			})
 		}
 		return m, nil
+	case rescaleMsg:
+		// Stale: a newer scroll superseded this debounce window.
+		// Drop without rescheduling — the newer scroll's own tick
+		// is already in flight (#230).
+		if msg.gen != m.scrollGen {
+			return m, nil
+		}
+		m.rebuildAtVisiblePeak()
+		return m, nil
 	case QuotaMsg:
 		m.quota = msg.Usage
 		m.quotaSource = msg.Source
@@ -624,8 +633,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case key.Matches(msg, m.keys.ScrollLeft):
 			m.scrollLeft(horizontalScrollStep)
+			m.scrollGen++
+			gen := m.scrollGen
+			return m, tea.Tick(rescaleDebounce, func(time.Time) tea.Msg {
+				return rescaleMsg{gen: gen}
+			})
 		case key.Matches(msg, m.keys.ScrollRight):
 			m.scrollRight(horizontalScrollStep)
+			m.scrollGen++
+			gen := m.scrollGen
+			return m, tea.Tick(rescaleDebounce, func(time.Time) tea.Msg {
+				return rescaleMsg{gen: gen}
+			})
 		}
 	}
 	return m, nil
