@@ -404,6 +404,16 @@ func runQuotaPoller(
 	}
 }
 
+// exitCodeFor maps a top-level error to a Unix exit code. Defaults
+// to 1 (general error); ErrLockHeld maps to 75 (BSD sysexits
+// EX_TEMPFAIL — "temporary failure, retry possible").
+func exitCodeFor(err error) int {
+	if errors.Is(err, cache.ErrLockHeld) {
+		return 75
+	}
+	return 1
+}
+
 func main() {
 	channel.Set(buildChannel)
 	ctx, stop := signal.NotifyContext(context.Background(),
@@ -411,6 +421,6 @@ func main() {
 	defer stop()
 	if err := newRootCmd().ExecuteContext(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		os.Exit(exitCodeFor(err))
 	}
 }
