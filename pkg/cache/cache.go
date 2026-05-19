@@ -10,6 +10,7 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/martinciu/ccpulse/pkg/anthro"
@@ -102,10 +103,26 @@ const cachePragmas = "_pragma=busy_timeout(5000)" +
 	"&_pragma=temp_store(memory)"
 
 type Cache struct {
-	db *sql.DB
+	db       *sql.DB
+	// lockFile is the fd holding the cache flock. Must not be dup'd or passed
+	// to a subprocess (would defeat OS-on-close release).
+	lockFile *os.File
 }
 
-func Open(path string) (*Cache, error) {
+// errSchemaMismatch is the internal signal openDB returns when the
+// on-disk schema_version differs from SchemaVersion. Callers that
+// want auto-rebuild dispatch to LockedRebuild; callers that don't
+// (LockedRebuild itself) treat it as a hard error since they just
+// recreated the DB.
+var errSchemaMismatch = errors.New("on-disk schema version mismatch")
+
+// openDB opens the SQLite DB at path, applies the embedded schema,
+// reads the schema_version row, and runs post-open normalization.
+// Returns errSchemaMismatch if the on-disk version differs from
+// SchemaVersion — caller decides how to handle it.
+//
+// openDB takes NO lock; the caller owns the flock policy.
+func openDB(path string) (*sql.DB, error) {
 	db, err := sql.Open("sqlite", path+"?"+cachePragmas)
 	if err != nil {
 		return nil, err
@@ -123,12 +140,8 @@ func Open(path string) (*Cache, error) {
 	}
 	if err == nil && version != SchemaVersion {
 		db.Close()
-		if rmErr := RemoveWithSiblings(path); rmErr != nil {
-			return nil, fmt.Errorf("wipe stale schema: %w", rmErr)
-		}
-		return Open(path)
+		return nil, errSchemaMismatch
 	}
-
 	if _, err := db.Exec(`INSERT OR IGNORE INTO meta(key,value) VALUES('schema_version',?)`, SchemaVersion); err != nil {
 		db.Close()
 		return nil, err
@@ -137,7 +150,34 @@ func Open(path string) (*Cache, error) {
 		db.Close()
 		return nil, fmt.Errorf("normalize legacy resets_at sentinels: %w", err)
 	}
-	return &Cache{db: db}, nil
+	return db, nil
+}
+
+// Open opens the cache at path and acquires LOCK_SH on path+".lock".
+// Returns ErrLockHeld if another process holds LOCK_EX (i.e. a
+// rebuild is in progress). On schema-version mismatch, Open releases
+// its SH lock and dispatches to LockedRebuild; the cross-fd race
+// during binary upgrades surfaces as ErrLockHeld for the loser.
+//
+// Cache.Close releases the lock fd.
+func Open(path string) (*Cache, error) {
+	lockFile, err := acquireCacheLock(path+".lock", syscall.LOCK_SH)
+	if err != nil {
+		return nil, err
+	}
+	db, err := openDB(path)
+	if errors.Is(err, errSchemaMismatch) {
+		// Release SH so LockedRebuild can take EX on a fresh fd
+		// without contention from this process. LockedRebuild
+		// performs the unlink itself.
+		lockFile.Close()
+		return LockedRebuild(path)
+	}
+	if err != nil {
+		lockFile.Close()
+		return nil, err
+	}
+	return &Cache{db: db, lockFile: lockFile}, nil
 }
 
 // NewFromDB wraps an already-open *sql.DB in a *Cache without re-running
@@ -150,17 +190,43 @@ func NewFromDB(db *sql.DB) *Cache {
 
 func (c *Cache) DB() *sql.DB { return c.db }
 
-func (c *Cache) Close() error { return c.db.Close() }
+// Close closes the underlying DB and releases the cache lock fd.
+// Both operations run unconditionally; the DB close error is
+// returned in preference to the lock release error (DB close is
+// the more interesting failure mode in practice).
+//
+// Close is not safe for concurrent use; the caller must serialize.
+func (c *Cache) Close() error {
+	var dbErr error
+	if c.db != nil {
+		dbErr = c.db.Close()
+	}
+	var lockErr error
+	if c.lockFile != nil {
+		// flock release is implicit on close — no separate LOCK_UN needed.
+		lockErr = c.lockFile.Close()
+		c.lockFile = nil
+	}
+	if dbErr != nil {
+		if lockErr != nil {
+			slog.Warn("cache.lockReleaseFailed", "err", lockErr)
+		}
+		return dbErr
+	}
+	return lockErr
+}
 
-// RemoveWithSiblings deletes path plus its SQLite sidecar files
+// removeWithSiblings deletes path plus its SQLite sidecar files
 // (-wal, -shm, -journal). path must be the SQLite DB file path (not a
 // directory and without a trailing separator); the sidecar names are
 // formed by simple suffix concatenation. Missing files are not an
 // error; any other removal failure is wrapped and returned without
-// attempting later siblings. Use this — not raw os.Remove — at every
-// state.db rebuild site, so a leftover -wal from a prior schema cannot
-// be replayed onto a freshly-rebuilt main file.
-func RemoveWithSiblings(path string) error {
+// attempting later siblings.
+//
+// Unexported: LockedRebuild is the ONLY legal caller. Direct unlinks
+// from outside pkg/cache risk the silent-corruption vector from
+// issue #219.
+func removeWithSiblings(path string) error {
 	for _, suffix := range []string{"", "-wal", "-shm", "-journal"} {
 		if err := os.Remove(path + suffix); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("remove %s%s: %w", path, suffix, err)

@@ -5,7 +5,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+
+	"github.com/martinciu/ccpulse/pkg/cache"
+	"github.com/martinciu/ccpulse/pkg/secfile"
 )
 
 // writeSettings creates a temp HOME with ~/.claude/settings.json containing
@@ -188,5 +192,48 @@ func TestHookCommandMentionsCcpulse(t *testing.T) {
 				t.Errorf("input: %q\ngot %v, want %v", tc.input, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestDoctor_SurfacesLockHeld confirms that when another fd holds
+// LOCK_EX on the cache lock file, `ccpulse doctor` surfaces the
+// wrapped ErrLockHeld message on the existing "cache db opens" line.
+//
+// Per-fd flock semantics: two fds in the same process are treated
+// independently, so this in-process holder reliably blocks
+// cache.Open's LOCK_SH acquire.
+func TestDoctor_SurfacesLockHeld(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CCPULSE_CACHE_DIR", dir)
+	t.Setenv("CCPULSE_PROJECTS_ROOT", dir) // dummy; doctor only stats it
+
+	dbPath := filepath.Join(dir, "state.db")
+	lockPath := dbPath + ".lock"
+
+	// Pre-create the lock file at the same perms acquireCacheLock
+	// would; then take LOCK_EX on it from a fixture fd.
+	holder, err := secfile.OpenFile(lockPath, os.O_RDWR|os.O_CREATE)
+	if err != nil {
+		t.Fatalf("open holder lock file: %v", err)
+	}
+	t.Cleanup(func() { holder.Close() })
+	if err := syscall.Flock(int(holder.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatalf("flock LOCK_EX on holder: %v", err)
+	}
+
+	// Run doctor with stdout captured.
+	var buf bytes.Buffer
+	cmd := newDoctorCmd()
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("doctor execute: %v", err)
+	}
+	out := buf.String()
+	if !bytes.Contains([]byte(out), []byte("cache db opens")) {
+		t.Fatalf("doctor output missing 'cache db opens' line:\n%s", out)
+	}
+	if !bytes.Contains([]byte(out), []byte(cache.ErrLockHeld.Error())) {
+		t.Fatalf("doctor output missing ErrLockHeld message:\n%s", out)
 	}
 }

@@ -42,6 +42,10 @@ func runStatus(cmd *cobra.Command, asJSON, quiet bool) error {
 	dbPath := filepath.Join(cacheDir, "state.db")
 	c, err := cache.Open(dbPath)
 	if err != nil {
+		if errors.Is(err, cache.ErrLockHeld) {
+			fmt.Fprintln(cmd.ErrOrStderr(),
+				"ccpulse status: cache locked by another ccpulse process; skipping this tick.")
+		}
 		return err
 	}
 	defer c.Close()

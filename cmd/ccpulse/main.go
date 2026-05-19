@@ -224,15 +224,22 @@ func runTUI(ctx context.Context, errOut io.Writer) error {
 	dbPath := filepath.Join(cacheDir, "state.db")
 	c, err := cache.Open(dbPath)
 	if err != nil {
+		if errors.Is(err, cache.ErrLockHeld) {
+			fmt.Fprintln(errOut,
+				"ccpulse: cache locked by another ccpulse process (likely `index --rebuild`). Retry shortly.")
+		}
 		return err
 	}
 	// Integrity check; if the cache is corrupt, rebuild from scratch.
 	// JSONL is the source of truth; SQLite is derived.
 	if !c.IntegrityOK() {
 		c.Close()
-		_ = cache.RemoveWithSiblings(dbPath)
-		c, err = cache.Open(dbPath)
+		c, err = cache.LockedRebuild(dbPath)
 		if err != nil {
+			if errors.Is(err, cache.ErrLockHeld) {
+				fmt.Fprintln(errOut,
+					"ccpulse: cache integrity check failed and rebuild blocked by another ccpulse process. Close the other instance and retry.")
+			}
 			return err
 		}
 	}
@@ -397,6 +404,16 @@ func runQuotaPoller(
 	}
 }
 
+// exitCodeFor maps a top-level error to a Unix exit code. Defaults
+// to 1 (general error); ErrLockHeld maps to 75 (BSD sysexits
+// EX_TEMPFAIL — "temporary failure, retry possible").
+func exitCodeFor(err error) int {
+	if errors.Is(err, cache.ErrLockHeld) {
+		return 75
+	}
+	return 1
+}
+
 func main() {
 	channel.Set(buildChannel)
 	ctx, stop := signal.NotifyContext(context.Background(),
@@ -404,6 +421,6 @@ func main() {
 	defer stop()
 	if err := newRootCmd().ExecuteContext(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		os.Exit(exitCodeFor(err))
 	}
 }
