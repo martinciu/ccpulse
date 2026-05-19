@@ -107,19 +107,26 @@ type Cache struct {
 	lockFile *os.File
 }
 
-func Open(path string) (*Cache, error) {
-	lockFile, err := acquireCacheLock(path+".lock", syscall.LOCK_SH)
-	if err != nil {
-		return nil, err
-	}
+// errSchemaMismatch is the internal signal openDB returns when the
+// on-disk schema_version differs from SchemaVersion. Callers that
+// want auto-rebuild dispatch to LockedRebuild; callers that don't
+// (LockedRebuild itself) treat it as a hard error since they just
+// recreated the DB.
+var errSchemaMismatch = errors.New("on-disk schema version mismatch")
+
+// openDB opens the SQLite DB at path, applies the embedded schema,
+// reads the schema_version row, and runs post-open normalization.
+// Returns errSchemaMismatch if the on-disk version differs from
+// SchemaVersion — caller decides how to handle it.
+//
+// openDB takes NO lock; the caller owns the flock policy.
+func openDB(path string) (*sql.DB, error) {
 	db, err := sql.Open("sqlite", path+"?"+cachePragmas)
 	if err != nil {
-		lockFile.Close()
 		return nil, err
 	}
 	if _, err := db.Exec(schemaSQL); err != nil {
 		db.Close()
-		lockFile.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
 
@@ -127,27 +134,48 @@ func Open(path string) (*Cache, error) {
 	err = db.QueryRow(`SELECT value FROM meta WHERE key = 'schema_version'`).Scan(&version)
 	if err != nil && err != sql.ErrNoRows {
 		db.Close()
-		lockFile.Close()
 		return nil, err
 	}
 	if err == nil && version != SchemaVersion {
 		db.Close()
-		lockFile.Close()
-		if rmErr := RemoveWithSiblings(path); rmErr != nil {
-			return nil, fmt.Errorf("wipe stale schema: %w", rmErr)
-		}
-		return Open(path)
+		return nil, errSchemaMismatch
 	}
-
 	if _, err := db.Exec(`INSERT OR IGNORE INTO meta(key,value) VALUES('schema_version',?)`, SchemaVersion); err != nil {
 		db.Close()
-		lockFile.Close()
 		return nil, err
 	}
 	if _, err := db.Exec(normalizeResetsAtSQL); err != nil {
 		db.Close()
-		lockFile.Close()
 		return nil, fmt.Errorf("normalize legacy resets_at sentinels: %w", err)
+	}
+	return db, nil
+}
+
+// Open opens the cache at path and acquires LOCK_SH on path+".lock".
+// Returns ErrLockHeld if another process holds LOCK_EX (i.e. a
+// rebuild is in progress). On schema-version mismatch, Open releases
+// its SH lock and dispatches to LockedRebuild; the cross-fd race
+// during binary upgrades surfaces as ErrLockHeld for the loser.
+//
+// Cache.Close releases the lock fd.
+func Open(path string) (*Cache, error) {
+	lockFile, err := acquireCacheLock(path+".lock", syscall.LOCK_SH)
+	if err != nil {
+		return nil, err
+	}
+	db, err := openDB(path)
+	if errors.Is(err, errSchemaMismatch) {
+		// Release SH so LockedRebuild can take EX on a fresh fd
+		// without contention from this process.
+		lockFile.Close()
+		if rmErr := RemoveWithSiblings(path); rmErr != nil {
+			return nil, fmt.Errorf("wipe stale schema: %w", rmErr)
+		}
+		return LockedRebuild(path)
+	}
+	if err != nil {
+		lockFile.Close()
+		return nil, err
 	}
 	return &Cache{db: db, lockFile: lockFile}, nil
 }

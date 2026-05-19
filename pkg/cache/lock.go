@@ -56,3 +56,40 @@ func lockModeLabel(mode int) string {
 		return fmt.Sprintf("invalid(%d)", mode)
 	}
 }
+
+// LockedRebuild acquires LOCK_EX on path+".lock", calls the
+// (internal) removeWithSiblings, opens a fresh DB via openDB,
+// then atomically downgrades the lock fd to LOCK_SH before
+// returning. Cache.Close releases the lock.
+//
+// flock(2) guarantees atomic lock-mode conversion when called on
+// an already-held fd, so no race window exists between unlock and
+// re-acquire during the downgrade.
+//
+// Returns ErrLockHeld if any other process holds the lock.
+// LockedRebuild is the ONLY legal way to unlink state.db outside
+// of tests.
+func LockedRebuild(path string) (*Cache, error) {
+	lockFile, err := acquireCacheLock(path+".lock", syscall.LOCK_EX)
+	if err != nil {
+		return nil, err
+	}
+	if err := RemoveWithSiblings(path); err != nil {
+		lockFile.Close()
+		return nil, fmt.Errorf("rebuild remove: %w", err)
+	}
+	db, err := openDB(path)
+	if err != nil {
+		lockFile.Close()
+		return nil, err
+	}
+	// Atomic EX → SH downgrade. flock(2): "subsequent flock()
+	// calls on an already locked file will convert an existing
+	// lock to the new lock mode."
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_SH); err != nil {
+		db.Close()
+		lockFile.Close()
+		return nil, fmt.Errorf("downgrade cache lock %s: %w", path+".lock", err)
+	}
+	return &Cache{db: db, lockFile: lockFile}, nil
+}
