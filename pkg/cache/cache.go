@@ -104,7 +104,7 @@ const cachePragmas = "_pragma=busy_timeout(5000)" +
 
 type Cache struct {
 	db       *sql.DB
-	lockFile *os.File
+	lockFile *os.File // lockFile holds the cache flock. Must not be dup'd or passed to a subprocess (would defeat OS-on-close release).
 }
 
 // errSchemaMismatch is the internal signal openDB returns when the
@@ -192,8 +192,13 @@ func (c *Cache) DB() *sql.DB { return c.db }
 // Both operations run unconditionally; the DB close error is
 // returned in preference to the lock release error (DB close is
 // the more interesting failure mode in practice).
+//
+// Close is not safe for concurrent use; the caller must serialize.
 func (c *Cache) Close() error {
-	dbErr := c.db.Close()
+	var dbErr error
+	if c.db != nil {
+		dbErr = c.db.Close()
+	}
 	var lockErr error
 	if c.lockFile != nil {
 		// flock release is implicit on close — no separate LOCK_UN needed.
@@ -201,6 +206,9 @@ func (c *Cache) Close() error {
 		c.lockFile = nil
 	}
 	if dbErr != nil {
+		if lockErr != nil {
+			slog.Warn("cache.lockReleaseFailed", "err", lockErr)
+		}
 		return dbErr
 	}
 	return lockErr

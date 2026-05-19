@@ -32,6 +32,7 @@ func acquireCacheLock(lockPath string, mode int) (*os.File, error) {
 	}
 	if err := syscall.Flock(int(f.Fd()), mode|syscall.LOCK_NB); err != nil {
 		f.Close()
+		// syscall.EWOULDBLOCK == syscall.EAGAIN on darwin and linux; checking either is sufficient.
 		if errors.Is(err, syscall.EWOULDBLOCK) {
 			slog.Warn("cache.lockHeld",
 				"path", lockPath,
