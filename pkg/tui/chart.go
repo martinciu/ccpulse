@@ -233,42 +233,135 @@ func slicePointsInRange(pts []cache.UtilizationPoint, from, to time.Time) []cach
 	return pts[startIdx:endIdx]
 }
 
-// overlayYLabel splices `formatUnitValue(niceFloorFloat(peak), unit)` in
-// the chosen fade style into the niceFloorFloat(peak) row of an already-rendered
-// chart string, replacing the first 5 visible columns of that row.
-// Operates ANSI-aware on the post-scroll viewport output so the label
-// stays pinned to the viewport's left edge regardless of horizontal
-// scroll position (issue #132) — applied in Model.View() after
-// m.viewport.View(), not inside buildChart.
+// niceCeilingFloat returns the smallest "nice" value >= peak from the
+// sequence {1, 2, 3, 5, 7, 10} × 10^k. The 10 stop is the same value
+// as 1 × 10^(k+1) — listing it explicitly keeps the switch flat.
+// Companion to niceFloorFloat: callers use niceCeiling for the chart's
+// Y-axis top (so labels live on exact rows) and niceFloor when they
+// want the largest nice value not exceeding the data.
 //
-// fade ∈ [0, 1] selects the label's discrete fade stop via
+// Returns 0 when peak <= 0 so callers can guard the overlay write.
+func niceCeilingFloat(peak float64) float64 {
+	if peak <= 0 {
+		return 0
+	}
+	mag := math.Pow10(int(math.Floor(math.Log10(peak))))
+	norm := peak / mag
+	var nice float64
+	switch {
+	case norm <= 1.0:
+		nice = 1.0
+	case norm <= 2.0:
+		nice = 2.0
+	case norm <= 3.0:
+		nice = 3.0
+	case norm <= 5.0:
+		nice = 5.0
+	case norm <= 7.0:
+		nice = 7.0
+	default:
+		nice = 10.0
+	}
+	return nice * mag
+}
+
+// yLabelSlotW is the fixed visible-column width reserved for the
+// bar-chart Y-axis label slot (cost / tokens). overlayYLabel splices
+// both max and midpoint labels right-aligned in this slot so they
+// share a stable left-edge column across refreshes regardless of how
+// formatUnitValue's output width shifts (e.g. peak crossing $1k →
+// "$700" 4 cols vs "$1k" 3 cols). Matches the line chart's manual
+// "100%" / " 50%" pattern (4 cols there; one wider here for the "$"
+// prefix and sub-1 "$0.45"-style labels).
+const yLabelSlotW = 5
+
+// padYLabel right-aligns s in a yLabelSlotW-wide column with leading
+// spaces. Returns s unchanged when its visible width is already >=
+// slot width.
+func padYLabel(s string) string {
+	if w := lipgloss.Width(s); w < yLabelSlotW {
+		return strings.Repeat(" ", yLabelSlotW-w) + s
+	}
+	return s
+}
+
+// yLabelMidFloor returns the smallest mid value that formatUnitValue
+// will render as a non-zero label for the given unit. Used by
+// overlayYLabel to skip the midpoint when FP-rounding inside
+// formatUnitValue would otherwise collapse the value to "$0.00" / "0".
+//
+// niceCeilingFloat returns positive output for positive peak, but
+// halving it crosses per-unit format-precision floors:
+//
+//	chartUnitCost   — 2-decimal FormatFloat; mid in [0, 0.005)
+//	                  rounds to "$0.00".
+//	chartUnitTokens — int64 cast inside formatTokenCount; mid in
+//	                  [0, 1) drops to 0 and renders as "0".
+//
+// Returns 0 for unknown units (defensive — no skip).
+func yLabelMidFloor(unit chartUnit) float64 {
+	switch unit {
+	case chartUnitCost:
+		return 0.005
+	case chartUnitTokens:
+		return 1
+	}
+	return 0
+}
+
+// overlayYLabel splices two right-aligned labels into the bar-chart
+// canvas: the max label (= niceCeilingFloat(peak)) at row 0 and the
+// midpoint label (= ceiling/2) at row barsH/2. Both occupy a fixed
+// yLabelSlotW-wide column at the viewport's left edge, replacing the
+// underlying bar content via ansi.TruncateLeft. Operates ANSI-aware
+// on the post-scroll viewport output so the labels stay pinned to the
+// viewport's left edge regardless of horizontal scroll position
+// (issue #132) — applied in Model.View() after m.viewport.View(), not
+// inside buildChart.
+//
+// fade ∈ [0, 1] selects the labels' discrete fade stop via
 // labelFadeStyle. fade <= 0 short-circuits and returns body unchanged
 // (the empty-moment frame of the two-phase unit-toggle animation,
 // issue #136). At steady state Model.View passes fade=1.0.
 //
-// Other early-returns: peak <= 0, chartH < 6, niceFloorFloat(peak) == 0,
-// or body == "" all return body unchanged.
+// Skip semantics:
+//
+//	peak <= 0 || chartH < 6 || body == "" || fade <= 0:
+//	  return body unchanged (top-of-function early return).
+//	niceCeilingFloat(peak) <= 0: defensive — return body unchanged.
+//	mid < yLabelMidFloor(unit): skip the mid splice (formatUnitValue
+//	  would render the value as "$0.00" / "0"); render max only.
+//	midRow >= len(lines): defensive — skip mid only.
+//
+// max and mid share labelFadeStyle(fade) — one style instance, two
+// renders, same allocation pattern as the prior single-label path.
 func overlayYLabel(body string, peak float64, unit chartUnit, chartH int, fade float64) string {
 	if peak <= 0 || chartH < 6 || body == "" || fade <= 0 {
 		return body
 	}
-	tick := niceFloorFloat(peak)
-	if tick <= 0 {
+	top := niceCeilingFloat(peak)
+	if top <= 0 {
 		return body
 	}
-	barsH := chartH - 1
-	row := barsH - int(math.Round(tick/peak*float64(barsH)))
-	row = max(row, 0)
-	row = min(row, barsH-1)
 
-	label := labelFadeStyle(fade).Render(formatUnitValue(tick, unit))
-	labelW := lipgloss.Width(label)
+	barsH := chartH - 1
+	midRow := barsH / 2
 
 	lines := strings.Split(body, "\n")
-	if row >= len(lines) {
+	if len(lines) < 1 {
 		return body
 	}
-	lines[row] = ansi.TruncateLeft(lines[row], labelW, label)
+
+	style := labelFadeStyle(fade)
+	maxLabel := style.Render(padYLabel(formatUnitValue(top, unit)))
+	lines[0] = ansi.TruncateLeft(lines[0], yLabelSlotW, maxLabel)
+
+	mid := top / 2
+	if mid >= yLabelMidFloor(unit) && midRow < len(lines) {
+		midLabel := style.Render(padYLabel(formatUnitValue(mid, unit)))
+		lines[midRow] = ansi.TruncateLeft(lines[midRow], yLabelSlotW, midLabel)
+	}
+
 	return strings.Join(lines, "\n")
 }
 
@@ -411,7 +504,7 @@ func niceFloorFloat(peak float64) float64 {
 // formatTokenCount renders an int64 token count compactly with a k/M/G
 // suffix, suitable for the Y label and other in-chart annotations.
 // Always returns an integer label (no fractional digits). Pair with
-// niceFloorFloat so the integer-rounded label exactly matches its row.
+// niceCeilingFloat so the integer-rounded label exactly matches its row.
 //
 //	n <= 0       -> "0"
 //	n < 1000     -> raw integer
@@ -459,8 +552,7 @@ func formatUnitValue(v float64, unit chartUnit) string {
 		}
 		return "$" + strconv.FormatFloat(v/1_000_000_000, 'f', 0, 64) + "G"
 	default: // chartUnitTokens
-		// Reuse formatTokenCount's exact behaviour by casting to int64
-		// after the niceFloorFloat path has already snapped to an integer.
+		// Reuse formatTokenCount's exact behaviour by casting to int64.
 		return formatTokenCount(int64(v))
 	}
 }
@@ -476,7 +568,9 @@ func formatUnitValue(v float64, unit chartUnit) string {
 // is plotted at column i, with starts[i] feeding the X-axis label.
 // peak is the normalisation reference; pass max(values) for steady
 // state, or 1.0 during ratio-space animation (when values are
-// already normalised to [0, 1]).
+// already normalised to [0, 1]). The chart's Y range tops out at
+// niceCeilingFloat(peak) so overlayYLabel's max/mid labels land on
+// exact rows (row 0 and row barsH/2 respectively) — see #250.
 //
 // unit selects the bar color (Blue for chartUnitTokens — tokens
 // (input+output, see issue #232), Amber for chartUnitCost). It is also read by the
@@ -515,7 +609,7 @@ func buildChart(values []float64, starts []time.Time, peak float64,
 		}
 	}
 
-	maxValue := peak
+	maxValue := niceCeilingFloat(peak)
 	if maxValue == 0 {
 		maxValue = 1 // ntcharts requires non-zero max; bars will all be empty anyway
 	}
@@ -667,11 +761,13 @@ func buildLineChart(pts5h, pts7d []cache.UtilizationPoint,
 	return body
 }
 
-// overlayYTicks splices fixed "100%", "50%", "0%" labels and a colored
-// legend ("5h", "7d") into the left edge of an already-rendered line
-// chart string. Operates ANSI-aware on the post-scroll viewport output
-// so labels stay pinned to the viewport's left edge regardless of
-// horizontal scroll position.
+// overlayYTicks splices fixed "100%" and " 50%" Y-axis labels and a
+// colored legend ("5h", "7d") into the left edge of an already-rendered
+// line chart string. The 0% baseline label was dropped in #250 — the
+// chart's bottom edge conveys the zero level visually, so the explicit
+// label was redundant chrome. Operates ANSI-aware on the post-scroll
+// viewport output so labels stay pinned to the viewport's left edge
+// regardless of horizontal scroll position.
 //
 // fade ∈ [0, 1] controls label visibility via labelFadeStyle. fade <= 0
 // returns body unchanged.
@@ -694,7 +790,6 @@ func overlayYTicks(body string, chartH int, fade float64) string {
 	ticks := []tick{
 		{0, "100%"},
 		{barsH / 2, " 50%"},
-		{barsH - 1, "  0%"},
 	}
 	for _, tk := range ticks {
 		if tk.row >= len(lines) {
