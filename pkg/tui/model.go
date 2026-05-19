@@ -23,6 +23,14 @@ import (
 // horizontalScrollStep is the per-keypress shift in columns.
 const horizontalScrollStep = 3
 
+// rescaleDebounce is the hold time after the last scroll keypress
+// before the dynamic-peak rescale fires. 300ms is long enough to
+// coalesce typical key-repeat (~30ms intervals) and short enough that
+// a deliberate scroll-stop feels responsive. Hard-snap rescale on
+// fire (no harmonica) per the project's continuous-input animation
+// guidance in CLAUDE.md (#230).
+const rescaleDebounce = 300 * time.Millisecond
+
 // viewLogThreshold gates the slog.Debug emitted from View(); frames
 // faster than this aren't logged so idle/animation renders stay quiet
 // on the dev channel. 5 ms is below the perception floor.
@@ -66,6 +74,14 @@ type indexBannerClearMsg struct{}
 // (then tripling, etc.) the effective frame rate until the animation
 // visibly skips.
 type springTickMsg struct{ gen int }
+
+// rescaleMsg signals that the debounced scroll-stop window has expired
+// and the chart should recompute peak from the current visible slice.
+// Scheduled by Update on each scrollLeft / scrollRight; the handler
+// drops messages whose gen != m.scrollGen (key-repeat coalescing) and
+// drops while m.springActive (let the unit-toggle spring own peak).
+// Same generation-counter shape as springTickMsg (#218 / commit 1ee982c).
+type rescaleMsg struct{ gen int }
 
 // springPhase tracks which leg of the two-phase unit-toggle animation
 // is currently running. Idle is the steady state; springActive=false
@@ -197,6 +213,13 @@ type Model struct {
 	// presses from stacking the previous animation's still-pending tick on
 	// top of the new animation's tick and accelerating it (#218).
 	springGen int
+	// scrollGen is bumped each time scrollLeft / scrollRight mutates
+	// viewportXOffset. Every tea.Tick that schedules a rescaleMsg
+	// captures the current gen; the handler drops messages whose gen
+	// no longer matches, so key-repeat scrolls coalesce into a single
+	// rescale fired after the user stops (#230). Same generation-
+	// counter pattern as springGen.
+	scrollGen int
 	// springXOffset is the leftmost bucket index visible in the viewport
 	// when animation started. The spring runs over all bucket ratios but
 	// only the visible window is re-rendered each tick — full-canvas
@@ -474,6 +497,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			})
 		}
 		return m, nil
+	case rescaleMsg:
+		// Stale: a newer scroll superseded this debounce window.
+		// Drop without rescheduling — the newer scroll's own tick
+		// is already in flight (#230).
+		if msg.gen != m.scrollGen {
+			return m, nil
+		}
+		// Spring owns peak during a unit-toggle animation — its frame
+		// renderer normalizes bar heights against niceCeilingFloat(m.peak),
+		// and the spring's target ratios were computed against the
+		// peak at spring-start. Changing peak mid-spring would shift the
+		// rendered heights under the spring (#230). After the spring
+		// completes, the next scroll will arm a fresh rescale.
+		if m.springActive {
+			return m, nil
+		}
+		m.rebuildAtVisiblePeak()
+		return m, nil
 	case QuotaMsg:
 		m.quota = msg.Usage
 		m.quotaSource = msg.Source
@@ -601,8 +642,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case key.Matches(msg, m.keys.ScrollLeft):
 			m.scrollLeft(horizontalScrollStep)
+			m.scrollGen++
+			gen := m.scrollGen
+			return m, tea.Tick(rescaleDebounce, func(time.Time) tea.Msg {
+				return rescaleMsg{gen: gen}
+			})
 		case key.Matches(msg, m.keys.ScrollRight):
 			m.scrollRight(horizontalScrollStep)
+			m.scrollGen++
+			gen := m.scrollGen
+			return m, tea.Tick(rescaleDebounce, func(time.Time) tea.Msg {
+				return rescaleMsg{gen: gen}
+			})
 		}
 	}
 	return m, nil
@@ -1482,9 +1533,6 @@ func (m *Model) refreshChart() {
 		for i, b := range buckets {
 			values[i] = b.Cost
 			starts[i] = b.BucketStart
-			if values[i] > peak {
-				peak = values[i]
-			}
 		}
 		unit = chartUnitCost
 	case int(chartUnitRemaining): // remaining quota line chart
@@ -1543,14 +1591,10 @@ func (m *Model) refreshChart() {
 		for i, b := range buckets {
 			values[i] = float64(b.Tokens)
 			starts[i] = b.BucketStart
-			if values[i] > peak {
-				peak = values[i]
-			}
 		}
 		unit = chartUnitTokens
 	}
 
-	m.peak = peak
 	m.lastValues = values
 	m.lastStarts = starts
 
@@ -1566,17 +1610,16 @@ func (m *Model) refreshChart() {
 		if canvasW < m.chartWidth() {
 			canvasW = m.chartWidth()
 		}
-		m.viewport.SetContent(buildLineChart(m.lastPts5h, m.lastPts7d, from, to, canvasW, chartH, time.Now(), zoom, m.dateOrder, "refresh"))
 	} else {
 		canvasW = zoom.CanvasWidth(len(values))
-		m.viewport.SetContent(buildChart(values, starts, peak, canvasW, chartH, time.Now(), zoom, unit, m.dateOrder))
 	}
 	m.lastChartFrom = from
 	m.lastChartTo = to
 	m.lastCanvasW = canvasW
 	m.lastZoomStride = zoom.stride()
 
-	// Restore the user's anchor. Three cases:
+	// Restore the user's anchor BEFORE computing peak so the post-anchor
+	// viewportXOffset can drive the visible-slice peak (#230). Three cases:
 	//   - !hadAnchor (first load, or coming back from an empty-cache
 	//     placeholder): pin to the new right edge.
 	//   - wasPinned: user was at "now", keep them at "now" against the
@@ -1607,6 +1650,52 @@ func (m *Model) refreshChart() {
 		}
 		m.setX(targetCol / stride)
 	}
+
+	// Compute peak from the visible slice (#230 unified policy).
+	// Remaining-mode line chart keeps peak = 1.0 (set in the switch above).
+	if unit != chartUnitRemaining {
+		peak = peakOfVisibleSlice(values, m.viewportXOffset, m.visibleBuckets())
+	}
+	m.peak = peak
+
+	// Build chart against the post-anchor peak.
+	if unit == chartUnitRemaining {
+		m.viewport.SetContent(buildLineChart(m.lastPts5h, m.lastPts7d, from, to, canvasW, chartH, time.Now(), zoom, m.dateOrder, "refresh"))
+	} else {
+		m.viewport.SetContent(buildChart(values, starts, peak, canvasW, chartH, time.Now(), zoom, unit, m.dateOrder))
+	}
+}
+
+// rebuildAtVisiblePeak recomputes m.peak from the current visible slice
+// of m.lastValues and re-renders the bar chart against the cached
+// lastStarts / lastCanvasW — no DB query (#230). Used by the debounced
+// scroll-stop rescaleMsg handler to fire a cheap rebuild after the
+// user stops scrolling.
+//
+// Callers must guard against m.springActive — the unit-toggle spring
+// reads m.peak as the normalization base for its target ratios, so
+// changing peak mid-spring would corrupt the animation. The rescaleMsg
+// handler does this gate; if you call this helper from a new site,
+// add the same gate.
+//
+// No-op when:
+//   - lastValues is empty (empty-cache state — buildChart would render
+//     all-zero bars against the cached canvas, which is fine but pointless)
+//   - the active unit is chartUnitRemaining (line chart keeps fixed
+//     peak=1.0; no rescale path)
+//   - lastCanvasW is 0 (canvas was never built — pre-init state)
+func (m *Model) rebuildAtVisiblePeak() {
+	if len(m.lastValues) == 0 || m.lastCanvasW == 0 {
+		return
+	}
+	unit := chartUnit(m.unitIdx)
+	if unit == chartUnitRemaining {
+		return
+	}
+	zoom := ZoomLevels[m.zoomIdx]
+	m.peak = peakOfVisibleSlice(m.lastValues, m.viewportXOffset, m.visibleBuckets())
+	m.viewport.SetContent(buildChart(m.lastValues, m.lastStarts, m.peak,
+		m.lastCanvasW, m.chartHeight(), time.Now(), zoom, unit, m.dateOrder))
 }
 
 // emptyPlaceholder returns a w×h block with "no Claude sessions yet"
@@ -1670,6 +1759,29 @@ func (m Model) visibleBuckets() int {
 		return 1
 	}
 	return v
+}
+
+// peakOfVisibleSlice returns the maximum of values[xOff : xOff+visibleN],
+// clamped to slice bounds. Returns 0 for an empty slice or non-positive
+// width — niceCeilingFloat handles peak=0 by returning 0 and buildChart
+// guards WithMaxValue against zero (chart.go:613-614).
+//
+// Used by both refreshChart's post-anchor peak computation and the
+// rescaleMsg handler's rebuildAtVisiblePeak() to compute the dynamic
+// y-axis peak from the currently-visible bucket window (#230).
+func peakOfVisibleSlice(values []float64, xOff, visibleN int) float64 {
+	if len(values) == 0 || visibleN <= 0 {
+		return 0
+	}
+	lo := max(0, xOff)
+	hi := min(len(values), xOff+visibleN)
+	var peak float64
+	for i := lo; i < hi; i++ {
+		if values[i] > peak {
+			peak = values[i]
+		}
+	}
+	return peak
 }
 
 // chartHeight returns the available rows for the chart, leaving room for

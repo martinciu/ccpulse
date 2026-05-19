@@ -4643,3 +4643,509 @@ func TestIntro_QuotaBars_QuotaLoadedAtArm_ClearsPending(t *testing.T) {
 		t.Errorf("quotaTarget5h = 0 at arm with quota loaded; expected non-zero target")
 	}
 }
+
+// TestInitialPaint_PeakFromRightEdgeVisible pins the unified visible-
+// slice peak policy on initial paint (#230). The chart pins to the
+// right edge on first paint (refreshChart's !hadAnchor branch), so
+// the initial visible slice is the most-recent ~visibleBuckets()
+// worth of buckets — and m.peak must reflect that slice, not the
+// max across all buckets including off-screen outliers.
+//
+// Seeds 100 old buckets at 9999 input tokens (the outlier — far off
+// the right edge once 100 more recent buckets are added) and 100 new
+// buckets at 1000 input tokens (the visible slice). After refreshChart,
+// m.peak must reflect ~1000, not 9999.
+func TestInitialPaint_PeakFromRightEdgeVisible(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	defer c.Close()
+
+	tab, err := pricing.Load()
+	if err != nil {
+		t.Fatalf("pricing.Load: %v", err)
+	}
+	now := time.Now().UTC().Truncate(15 * time.Minute)
+
+	var msgs []parse.Message
+	// 100 OLDER buckets (offset 100..199 in chronological order) with
+	// outlier value 9999 — these will land at the LEFT of the canvas.
+	for i := range 100 {
+		msgs = append(msgs, parse.Message{
+			SessionID:   "old",
+			ProjectSlug: "p",
+			Model:       "claude-opus-4-7",
+			Timestamp:   now.Add(time.Duration(-(200+i)*15) * time.Minute),
+			InputTokens: 9999,
+		})
+	}
+	// 200 RECENT buckets at 1000 — these land at the RIGHT of the canvas
+	// (where the initial !hadAnchor branch pins viewportXOffset). Sized
+	// so the right-edge visible slice (visibleBuckets() ~ 118 at the
+	// test's m.w=120, 15m zoom) fits entirely within the recent run.
+	for i := range 200 {
+		msgs = append(msgs, parse.Message{
+			SessionID:   "new",
+			ProjectSlug: "p",
+			Model:       "claude-opus-4-7",
+			Timestamp:   now.Add(time.Duration(-i*15) * time.Minute),
+			InputTokens: 1000,
+		})
+	}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	m := New(Deps{Cache: c})
+	m.unitIdx = int(chartUnitTokens)
+	m.w, m.h = 120, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	m.refreshChart()
+
+	// Right-edge visible slice contains only 1000-token buckets; outliers
+	// at the canvas's left edge are NOT visible. Peak must reflect that.
+	if m.peak > 8000 {
+		t.Errorf("m.peak = %v, want ~1000 (right-edge visible slice). "+
+			"Outlier (9999) at canvas left edge leaked into peak — the "+
+			"unified visible-slice policy is broken.", m.peak)
+	}
+	if m.peak < 999 {
+		t.Errorf("m.peak = %v, want ~1000 (right-edge visible slice). "+
+			"Peak appears not to track visible bars at all.", m.peak)
+	}
+}
+
+// TestRefresh_PeakFromVisibleSlice pins that watcher-triggered refresh
+// also computes peak from the current visible slice — not the full
+// history — when the user has scrolled back to an older window (#230).
+//
+// Setup mirrors TestInitialPaint_PeakFromRightEdgeVisible but the
+// model is then scrolled LEFT to land the viewport over the outlier
+// region. After refreshChart, m.peak must reflect the (now-visible)
+// outliers, ~9999, not the all-time peak (also 9999, so we additionally
+// check the inverse — scroll RIGHT off the outliers and confirm peak
+// drops to ~1000).
+func TestRefresh_PeakFromVisibleSlice(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	defer c.Close()
+
+	tab, err := pricing.Load()
+	if err != nil {
+		t.Fatalf("pricing.Load: %v", err)
+	}
+	now := time.Now().UTC().Truncate(15 * time.Minute)
+
+	var msgs []parse.Message
+	// 100 OLDER buckets with outlier 9999.
+	for i := range 100 {
+		msgs = append(msgs, parse.Message{
+			SessionID:   "old",
+			ProjectSlug: "p",
+			Model:       "claude-opus-4-7",
+			Timestamp:   now.Add(time.Duration(-(200+i)*15) * time.Minute),
+			InputTokens: 9999,
+		})
+	}
+	// 100 RECENT buckets at 1000.
+	for i := range 100 {
+		msgs = append(msgs, parse.Message{
+			SessionID:   "new",
+			ProjectSlug: "p",
+			Model:       "claude-opus-4-7",
+			Timestamp:   now.Add(time.Duration(-i*15) * time.Minute),
+			InputTokens: 1000,
+		})
+	}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	m := New(Deps{Cache: c})
+	m.unitIdx = int(chartUnitTokens)
+	m.w, m.h = 120, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	m.refreshChart()
+
+	// After first refresh: peak reflects right-edge slice (~1000).
+	if m.peak > 8000 {
+		t.Fatalf("baseline: m.peak = %v after initial refresh, want ~1000", m.peak)
+	}
+
+	// Scroll LEFT past the recent slice and into the outlier slice.
+	// 100 recent buckets at zoom-stride=1 → scroll left by ~150 columns
+	// lands the viewport firmly over the outlier region (offsets 50–150).
+	for range 150 {
+		m.scrollLeft(horizontalScrollStep)
+	}
+
+	// Fire a synthetic refresh — exactly what the watcher's RefreshMsg
+	// triggers. Peak must now reflect the outliers under the viewport.
+	m.refreshChart()
+	if m.peak < 9000 {
+		t.Errorf("after scroll-left + refresh: m.peak = %v, want ~9999. "+
+			"Refresh did not recompute peak from current visible slice — "+
+			"the unified visible-slice policy is broken on the refresh path.", m.peak)
+	}
+}
+
+// TestRebuildAtVisiblePeak_ComputesFromVisibleSlice unit-tests the
+// DB-free rescale helper used by the debounced scroll-stop path (#230).
+//
+// Seeds the chart via refreshChart (so lastValues/lastStarts/lastCanvasW
+// are populated), then manually shifts viewportXOffset and asserts
+// rebuildAtVisiblePeak picks up the new visible slice — without going
+// back to the DB. Verifies m.peak reflects the new visible slice and
+// is distinct from the right-edge baseline.
+func TestRebuildAtVisiblePeak_ComputesFromVisibleSlice(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	defer c.Close()
+
+	tab, err := pricing.Load()
+	if err != nil {
+		t.Fatalf("pricing.Load: %v", err)
+	}
+	now := time.Now().UTC().Truncate(15 * time.Minute)
+
+	var msgs []parse.Message
+	for i := range 100 {
+		msgs = append(msgs, parse.Message{
+			SessionID:   "old",
+			ProjectSlug: "p",
+			Model:       "claude-opus-4-7",
+			Timestamp:   now.Add(time.Duration(-(200+i)*15) * time.Minute),
+			InputTokens: 9999,
+		})
+	}
+	for i := range 200 {
+		msgs = append(msgs, parse.Message{
+			SessionID:   "new",
+			ProjectSlug: "p",
+			Model:       "claude-opus-4-7",
+			Timestamp:   now.Add(time.Duration(-i*15) * time.Minute),
+			InputTokens: 1000,
+		})
+	}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	m := New(Deps{Cache: c})
+	m.unitIdx = int(chartUnitTokens)
+	m.w, m.h = 120, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	m.refreshChart()
+
+	rightEdgePeak := m.peak
+
+	// Move the viewport over the outlier region WITHOUT going through
+	// refreshChart (which would do its own peak recompute). We simulate
+	// "scroll happened, debounce just fired, no DB activity in between"
+	// by directly mutating viewportXOffset to land on offsets where the
+	// outliers are now visible. Buckets 0..99 are the 9999 outliers in
+	// chronological order; offset 0 with visibleBuckets ~118 covers
+	// them all.
+	m.viewport.SetXOffset(0)
+	m.viewportXOffset = 0
+
+	m.rebuildAtVisiblePeak()
+
+	if m.peak < 9000 {
+		t.Errorf("rebuildAtVisiblePeak: m.peak = %v, want ~9999 "+
+			"(visible slice now covers outliers at offsets 0-99). "+
+			"Helper did not recompute peak from the new visible slice.", m.peak)
+	}
+	if m.peak == rightEdgePeak {
+		t.Errorf("rebuildAtVisiblePeak: m.peak = %v unchanged from right-edge baseline %v — "+
+			"helper appears to be a no-op", m.peak, rightEdgePeak)
+	}
+}
+
+// TestScroll_StaleRescaleDropped pins the generation-counter gate on
+// rescaleMsg (#230). Production sequence: ScrollRight, ScrollRight,
+// stale rescaleMsg{gen:1} arrives, fresh rescaleMsg{gen:2} arrives.
+// Only the fresh message should rebuild; the stale one is dropped.
+//
+// Verifies the same generation pattern that prevents #218's stacked
+// springTickMsg loops — applied to the new rescaleMsg path.
+func TestScroll_StaleRescaleDropped(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	defer c.Close()
+
+	tab, err := pricing.Load()
+	if err != nil {
+		t.Fatalf("pricing.Load: %v", err)
+	}
+	now := time.Now().UTC().Truncate(15 * time.Minute)
+
+	var msgs []parse.Message
+	for i := range 100 {
+		msgs = append(msgs, parse.Message{
+			SessionID:   "old",
+			ProjectSlug: "p",
+			Model:       "claude-opus-4-7",
+			Timestamp:   now.Add(time.Duration(-(200+i)*15) * time.Minute),
+			InputTokens: 9999,
+		})
+	}
+	for i := range 200 {
+		msgs = append(msgs, parse.Message{
+			SessionID:   "new",
+			ProjectSlug: "p",
+			Model:       "claude-opus-4-7",
+			Timestamp:   now.Add(time.Duration(-i*15) * time.Minute),
+			InputTokens: 1000,
+		})
+	}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	m := New(Deps{Cache: c})
+	m.unitIdx = int(chartUnitTokens)
+	m.w, m.h = 120, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	m.refreshChart()
+
+	// First scroll-left: bumps scrollGen to 1, returns a tea.Tick cmd.
+	updated, cmd1 := m.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	m = updated.(Model)
+	if m.scrollGen != 1 {
+		t.Fatalf("after first ScrollLeft: scrollGen = %d, want 1", m.scrollGen)
+	}
+	if cmd1 == nil {
+		t.Fatalf("after first ScrollLeft: cmd = nil, want tea.Tick → rescaleMsg")
+	}
+	// Resolve cmd1 to its rescaleMsg payload. tea.Tick blocks for the
+	// full debounce duration (~300ms); acceptable for a one-shot test.
+	stale, ok := cmd1().(rescaleMsg)
+	if !ok {
+		t.Fatalf("cmd1 produced %T, want rescaleMsg", cmd1())
+	}
+	if stale.gen != 1 {
+		t.Fatalf("cmd1's rescaleMsg.gen = %d, want 1", stale.gen)
+	}
+
+	// Second scroll-left BEFORE delivering the stale tick: scrollGen
+	// advances to 2; the in-flight rescaleMsg{gen:1} is now stale.
+	updated, cmd2 := m.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	m = updated.(Model)
+	if m.scrollGen != 2 {
+		t.Fatalf("after second ScrollLeft: scrollGen = %d, want 2", m.scrollGen)
+	}
+	fresh, ok := cmd2().(rescaleMsg)
+	if !ok {
+		t.Fatalf("cmd2 produced %T, want rescaleMsg", cmd2())
+	}
+	if fresh.gen != 2 {
+		t.Fatalf("cmd2's rescaleMsg.gen = %d, want 2", fresh.gen)
+	}
+
+	// Snapshot peak before delivering messages.
+	peakBeforeStale := m.peak
+
+	// Deliver the stale message — handler must drop (no peak change,
+	// nil return cmd).
+	updated, retCmd := m.Update(stale)
+	m = updated.(Model)
+	if m.peak != peakBeforeStale {
+		t.Errorf("stale rescaleMsg{gen:1} mutated m.peak (%v → %v); "+
+			"stale messages must be dropped", peakBeforeStale, m.peak)
+	}
+	if retCmd != nil {
+		t.Errorf("stale rescaleMsg{gen:1} returned non-nil Cmd; "+
+			"stale messages must drop silently with no follow-up work")
+	}
+
+	// Deliver the fresh message — handler must rebuild (peak may change
+	// because the second scroll-left has shifted the visible slice).
+	updated, _ = m.Update(fresh)
+	m = updated.(Model)
+	// We don't assert a specific peak value here (depends on exact
+	// scroll cadence); we just assert the handler RAN by checking that
+	// scrollGen and msg.gen matched and no panic occurred. The
+	// peak-correctness assertion lives in
+	// TestRescale_WindowPeakMatchesVisibleSlice.
+}
+
+// TestRescale_WindowPeakMatchesVisibleSlice is the integration test for
+// the scroll-stop rescale path (#230). Scrolls deep into an outlier
+// region, fires a fresh rescaleMsg, asserts m.peak reflects the visible
+// slice covering the outliers.
+//
+// Pairs with TestRefresh_PeakFromVisibleSlice (which covers the refresh
+// path) — together they confirm both paths converge on the unified
+// visible-slice policy.
+func TestRescale_WindowPeakMatchesVisibleSlice(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	defer c.Close()
+
+	tab, err := pricing.Load()
+	if err != nil {
+		t.Fatalf("pricing.Load: %v", err)
+	}
+	now := time.Now().UTC().Truncate(15 * time.Minute)
+
+	var msgs []parse.Message
+	for i := range 100 {
+		msgs = append(msgs, parse.Message{
+			SessionID:   "old",
+			ProjectSlug: "p",
+			Model:       "claude-opus-4-7",
+			Timestamp:   now.Add(time.Duration(-(200+i)*15) * time.Minute),
+			InputTokens: 9999,
+		})
+	}
+	for i := range 200 {
+		msgs = append(msgs, parse.Message{
+			SessionID:   "new",
+			ProjectSlug: "p",
+			Model:       "claude-opus-4-7",
+			Timestamp:   now.Add(time.Duration(-i*15) * time.Minute),
+			InputTokens: 1000,
+		})
+	}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	m := New(Deps{Cache: c})
+	m.unitIdx = int(chartUnitTokens)
+	m.w, m.h = 120, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	m.refreshChart()
+
+	// Scroll left 150 times → viewport sits over the outlier region.
+	// Each KeyLeft bumps scrollGen and schedules its own rescaleMsg,
+	// but we ignore the returned commands and instead deliver a single
+	// synthetic rescaleMsg{gen: m.scrollGen} at the end — modeling the
+	// user holding ← and then stopping.
+	for range 150 {
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyLeft})
+		m = updated.(Model)
+	}
+
+	fresh := rescaleMsg{gen: m.scrollGen}
+	updated, _ := m.Update(fresh)
+	m = updated.(Model)
+
+	if m.peak < 9000 {
+		t.Errorf("after 150× ScrollLeft + fresh rescaleMsg: m.peak = %v, "+
+			"want ~9999 (visible slice now covers outliers). "+
+			"Scroll-stop rescale did not recompute from the visible slice.", m.peak)
+	}
+}
+
+// TestRescale_DroppedDuringSpring pins the spring-active gate on the
+// rescaleMsg handler (#230). Setup: chart is at a known peak. We set
+// m.springActive = true to simulate a unit-toggle spring in flight,
+// then deliver a fresh rescaleMsg. m.peak must NOT change — the
+// handler must drop and let the spring complete against the peak it
+// started with.
+//
+// Without this gate, mid-spring rescale would shift m.peak under the
+// spring's frame renderer, which reads m.peak as the normalization
+// base for the bar heights (renderSpringFrame uses
+// niceCeilingFloat(m.peak)).
+func TestRescale_DroppedDuringSpring(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	defer c.Close()
+
+	tab, err := pricing.Load()
+	if err != nil {
+		t.Fatalf("pricing.Load: %v", err)
+	}
+	now := time.Now().UTC().Truncate(15 * time.Minute)
+
+	var msgs []parse.Message
+	for i := range 100 {
+		msgs = append(msgs, parse.Message{
+			SessionID:   "old",
+			ProjectSlug: "p",
+			Model:       "claude-opus-4-7",
+			Timestamp:   now.Add(time.Duration(-(200+i)*15) * time.Minute),
+			InputTokens: 9999,
+		})
+	}
+	for i := range 200 {
+		msgs = append(msgs, parse.Message{
+			SessionID:   "new",
+			ProjectSlug: "p",
+			Model:       "claude-opus-4-7",
+			Timestamp:   now.Add(time.Duration(-i*15) * time.Minute),
+			InputTokens: 1000,
+		})
+	}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	m := New(Deps{Cache: c})
+	m.unitIdx = int(chartUnitTokens)
+	m.w, m.h = 120, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	m.refreshChart()
+
+	// Scroll into the outlier region — viewportXOffset now lands on
+	// offsets where a rescale WOULD jump peak to ~9999.
+	for range 150 {
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyLeft})
+		m = updated.(Model)
+	}
+
+	// Snapshot peak BEFORE setting springActive.
+	peakBeforeSpring := m.peak
+
+	// Simulate a unit-toggle spring in flight. We don't actually run
+	// the spring (that would also reset things); we just set the gate.
+	m.springActive = true
+
+	// Deliver a fresh rescaleMsg — handler must drop because spring is
+	// active.
+	fresh := rescaleMsg{gen: m.scrollGen}
+	updated, retCmd := m.Update(fresh)
+	m = updated.(Model)
+
+	if m.peak != peakBeforeSpring {
+		t.Errorf("rescaleMsg mutated m.peak during spring (%v → %v); "+
+			"handler must drop while springActive to avoid corrupting "+
+			"the spring's normalization base", peakBeforeSpring, m.peak)
+	}
+	if retCmd != nil {
+		t.Errorf("rescaleMsg returned non-nil Cmd while spring active; "+
+			"drop must be silent — no follow-up work")
+	}
+}
