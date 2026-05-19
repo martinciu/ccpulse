@@ -23,6 +23,14 @@ import (
 // horizontalScrollStep is the per-keypress shift in columns.
 const horizontalScrollStep = 3
 
+// rescaleDebounce is the hold time after the last scroll keypress
+// before the dynamic-peak rescale fires. 300ms is long enough to
+// coalesce typical key-repeat (~30ms intervals) and short enough that
+// a deliberate scroll-stop feels responsive. Hard-snap rescale on
+// fire (no harmonica) per the project's continuous-input animation
+// guidance in CLAUDE.md (#230).
+const rescaleDebounce = 300 * time.Millisecond
+
 // viewLogThreshold gates the slog.Debug emitted from View(); frames
 // faster than this aren't logged so idle/animation renders stay quiet
 // on the dev channel. 5 ms is below the perception floor.
@@ -66,6 +74,14 @@ type indexBannerClearMsg struct{}
 // (then tripling, etc.) the effective frame rate until the animation
 // visibly skips.
 type springTickMsg struct{ gen int }
+
+// rescaleMsg signals that the debounced scroll-stop window has expired
+// and the chart should recompute peak from the current visible slice.
+// Scheduled by Update on each scrollLeft / scrollRight; the handler
+// drops messages whose gen != m.scrollGen (key-repeat coalescing) and
+// drops while m.springActive (let the unit-toggle spring own peak).
+// Same generation-counter shape as springTickMsg (#218 / commit 1ee982c).
+type rescaleMsg struct{ gen int }
 
 // springPhase tracks which leg of the two-phase unit-toggle animation
 // is currently running. Idle is the steady state; springActive=false
@@ -197,6 +213,13 @@ type Model struct {
 	// presses from stacking the previous animation's still-pending tick on
 	// top of the new animation's tick and accelerating it (#218).
 	springGen int
+	// scrollGen is bumped each time scrollLeft / scrollRight mutates
+	// viewportXOffset. Every tea.Tick that schedules a rescaleMsg
+	// captures the current gen; the handler drops messages whose gen
+	// no longer matches, so key-repeat scrolls coalesce into a single
+	// rescale fired after the user stops (#230). Same generation-
+	// counter pattern as springGen.
+	scrollGen int
 	// springXOffset is the leftmost bucket index visible in the viewport
 	// when animation started. The spring runs over all bucket ratios but
 	// only the visible window is re-rendered each tick — full-canvas
@@ -1670,6 +1693,29 @@ func (m Model) visibleBuckets() int {
 		return 1
 	}
 	return v
+}
+
+// peakOfVisibleSlice returns the maximum of values[xOff : xOff+visibleN],
+// clamped to slice bounds. Returns 0 for an empty slice or non-positive
+// width — niceCeilingFloat handles peak=0 by returning 0 and buildChart
+// guards WithMaxValue against zero (chart.go:613-614).
+//
+// Used by both refreshChart's post-anchor peak computation and the
+// rescaleMsg handler's rebuildAtVisiblePeak() to compute the dynamic
+// y-axis peak from the currently-visible bucket window (#230).
+func peakOfVisibleSlice(values []float64, xOff, visibleN int) float64 {
+	if len(values) == 0 || visibleN <= 0 {
+		return 0
+	}
+	lo := max(0, xOff)
+	hi := min(len(values), xOff+visibleN)
+	var peak float64
+	for i := lo; i < hi; i++ {
+		if values[i] > peak {
+			peak = values[i]
+		}
+	}
+	return peak
 }
 
 // chartHeight returns the available rows for the chart, leaving room for
