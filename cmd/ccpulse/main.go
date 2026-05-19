@@ -224,15 +224,22 @@ func runTUI(ctx context.Context, errOut io.Writer) error {
 	dbPath := filepath.Join(cacheDir, "state.db")
 	c, err := cache.Open(dbPath)
 	if err != nil {
+		if errors.Is(err, cache.ErrLockHeld) {
+			fmt.Fprintln(errOut,
+				"ccpulse: cache locked by another ccpulse process (likely `index --rebuild`). Retry shortly.")
+		}
 		return err
 	}
 	// Integrity check; if the cache is corrupt, rebuild from scratch.
 	// JSONL is the source of truth; SQLite is derived.
 	if !c.IntegrityOK() {
 		c.Close()
-		_ = cache.RemoveWithSiblings(dbPath)
-		c, err = cache.Open(dbPath)
+		c, err = cache.LockedRebuild(dbPath)
 		if err != nil {
+			if errors.Is(err, cache.ErrLockHeld) {
+				fmt.Fprintln(errOut,
+					"ccpulse: cache integrity check failed and rebuild blocked by another ccpulse process. Close the other instance and retry.")
+			}
 			return err
 		}
 	}
