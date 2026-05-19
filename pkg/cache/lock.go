@@ -74,7 +74,7 @@ func LockedRebuild(path string) (*Cache, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := RemoveWithSiblings(path); err != nil {
+	if err := removeWithSiblings(path); err != nil {
 		lockFile.Close()
 		return nil, fmt.Errorf("rebuild remove: %w", err)
 	}

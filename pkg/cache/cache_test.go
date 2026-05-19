@@ -1068,8 +1068,8 @@ func TestRemoveWithSiblings(t *testing.T) {
 		}
 	}
 
-	if err := RemoveWithSiblings(base); err != nil {
-		t.Fatalf("RemoveWithSiblings: %v", err)
+	if err := removeWithSiblings(base); err != nil {
+		t.Fatalf("removeWithSiblings: %v", err)
 	}
 
 	for _, suffix := range []string{"", "-wal", "-shm", "-journal"} {
@@ -1083,8 +1083,8 @@ func TestRemoveWithSiblings_AllMissing(t *testing.T) {
 	dir := t.TempDir()
 	base := filepath.Join(dir, "absent.db")
 
-	if err := RemoveWithSiblings(base); err != nil {
-		t.Fatalf("RemoveWithSiblings on missing tree: %v", err)
+	if err := removeWithSiblings(base); err != nil {
+		t.Fatalf("removeWithSiblings on missing tree: %v", err)
 	}
 }
 

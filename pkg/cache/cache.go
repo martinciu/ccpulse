@@ -206,15 +206,17 @@ func (c *Cache) Close() error {
 	return lockErr
 }
 
-// RemoveWithSiblings deletes path plus its SQLite sidecar files
+// removeWithSiblings deletes path plus its SQLite sidecar files
 // (-wal, -shm, -journal). path must be the SQLite DB file path (not a
 // directory and without a trailing separator); the sidecar names are
 // formed by simple suffix concatenation. Missing files are not an
 // error; any other removal failure is wrapped and returned without
-// attempting later siblings. Use this — not raw os.Remove — at every
-// state.db rebuild site, so a leftover -wal from a prior schema cannot
-// be replayed onto a freshly-rebuilt main file.
-func RemoveWithSiblings(path string) error {
+// attempting later siblings.
+//
+// Unexported: LockedRebuild is the ONLY legal caller. Direct unlinks
+// from outside pkg/cache risk the silent-corruption vector from
+// issue #219.
+func removeWithSiblings(path string) error {
 	for _, suffix := range []string{"", "-wal", "-shm", "-journal"} {
 		if err := os.Remove(path + suffix); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("remove %s%s: %w", path, suffix, err)
