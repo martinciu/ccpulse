@@ -4,14 +4,19 @@
 //
 // Callers must pass paths that ccpulse owns (e.g. ~/.cache/ccpulse,
 // not ~/.cache). Pre-existing parent dirs created by the user or
-// the OS are not chmod'd. The chmod step uses os.Chmod, which follows
-// symlinks; a hostile symlink at the leaf path would chmod its target,
-// so callers must own the entire path tree.
+// the OS are not chmod'd.
+//
+// OpenFile opens with O_NOFOLLOW and uses fchmod on the open fd, so it
+// refuses symlinks at the leaf path and has no TOCTOU window.
+// WriteFile and MkdirAll use os.Chmod, which follows symlinks; a hostile
+// symlink at the leaf path would chmod its target, so callers must own
+// the entire path tree for those two functions.
 package secfile
 
 import (
 	"os"
 	"path/filepath"
+	"syscall"
 )
 
 const (
@@ -42,18 +47,22 @@ func WriteFile(path string, data []byte) error {
 	return os.Chmod(path, FileMode)
 }
 
-// OpenFile is os.OpenFile with FileMode, followed by os.Chmod after
-// open to tighten a pre-existing file. The caller owns closing.
+// OpenFile is os.OpenFile with FileMode, followed by fchmod on the open
+// fd to tighten a pre-existing file. The caller owns closing.
 //
-// If chmod fails after a successful open, the file may remain on disk
-// (created by O_CREATE at FileMode); the caller sees only the chmod
-// error.
+// O_NOFOLLOW is added to flag: if path is a symlink the open fails
+// immediately (ELOOP), so the fd always refers to the actual inode at
+// path. fchmod on the fd closes the TOCTOU window that os.Chmod(path)
+// would leave open.
+//
+// If fchmod fails after a successful open, the file may remain on disk
+// (created by O_CREATE at FileMode); the caller sees only the fchmod error.
 func OpenFile(path string, flag int) (*os.File, error) {
-	f, err := os.OpenFile(path, flag, FileMode)
+	f, err := os.OpenFile(path, flag|syscall.O_NOFOLLOW, FileMode)
 	if err != nil {
 		return nil, err
 	}
-	if err := os.Chmod(path, FileMode); err != nil {
+	if err := f.Chmod(FileMode); err != nil {
 		f.Close()
 		return nil, err
 	}
