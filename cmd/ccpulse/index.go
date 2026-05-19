@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -54,10 +55,12 @@ func runIndex(cmd *cobra.Command, rebuild bool) error {
 	}
 	dbPath := filepath.Join(cacheDir, "state.db")
 
-	_ = cache.RemoveWithSiblings(dbPath)
-
-	c, err := cache.Open(dbPath)
+	c, err := cache.LockedRebuild(dbPath)
 	if err != nil {
+		if errors.Is(err, cache.ErrLockHeld) {
+			fmt.Fprintln(cmd.ErrOrStderr(),
+				"ccpulse index --rebuild: cache locked by another ccpulse process. Close the TUI or any other ccpulse command and retry.")
+		}
 		return err
 	}
 	defer c.Close()
