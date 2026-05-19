@@ -504,7 +504,7 @@ func niceFloorFloat(peak float64) float64 {
 // formatTokenCount renders an int64 token count compactly with a k/M/G
 // suffix, suitable for the Y label and other in-chart annotations.
 // Always returns an integer label (no fractional digits). Pair with
-// niceFloorFloat so the integer-rounded label exactly matches its row.
+// niceCeilingFloat so the integer-rounded label exactly matches its row.
 //
 //	n <= 0       -> "0"
 //	n < 1000     -> raw integer
@@ -552,8 +552,7 @@ func formatUnitValue(v float64, unit chartUnit) string {
 		}
 		return "$" + strconv.FormatFloat(v/1_000_000_000, 'f', 0, 64) + "G"
 	default: // chartUnitTokens
-		// Reuse formatTokenCount's exact behaviour by casting to int64
-		// after the niceFloorFloat path has already snapped to an integer.
+		// Reuse formatTokenCount's exact behaviour by casting to int64.
 		return formatTokenCount(int64(v))
 	}
 }
