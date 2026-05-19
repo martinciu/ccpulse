@@ -12,8 +12,7 @@ import (
 
 // ErrLockHeld signals a non-blocking flock acquire failure. Callers
 // check via errors.Is; subcommands map to a user-facing message and
-// exit code 75 (EX_TEMPFAIL). See spec
-// .superpowers/specs/2026-05-18-219-cache-lock.md.
+// exit code 75 (EX_TEMPFAIL). See issue #219.
 var ErrLockHeld = errors.New("cache lock held by another ccpulse process")
 
 // acquireCacheLock opens lockPath via secfile.OpenFile (0600 with
