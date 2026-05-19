@@ -1388,3 +1388,92 @@ func TestSlicePointsInRange(t *testing.T) {
 		})
 	}
 }
+
+func TestNiceCeilingFloat(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		peak float64
+		want float64
+	}{
+		{"zero returns zero", 0, 0},
+		{"negative returns zero", -10, 0},
+		// Sub-1 (cost mode), exponent k = -2.
+		{"0.04 rises to 0.05", 0.04, 0.05},
+		{"0.05 stays 0.05", 0.05, 0.05},
+		{"0.06 rises to 0.07", 0.06, 0.07},
+		// k = -1.
+		{"0.12 rises to 0.2", 0.12, 0.2},
+		{"0.71 rises to 1.0", 0.71, 1.0},
+		// k = 0.
+		{"1.0 stays 1", 1.0, 1.0},
+		{"1.4 rises to 2", 1.4, 2.0},
+		{"2.0 stays 2", 2.0, 2.0},
+		{"4.7 rises to 5", 4.7, 5.0},
+		{"7.0 stays 7", 7.0, 7.0},
+		{"7.1 rises to 10", 7.1, 10.0},
+		// k = 1.
+		{"23 rises to 30", 23, 30.0},
+		// k = 4.
+		{"70001 rises to 100000", 70001, 100_000.0},
+		{"87000 rises to 100000", 87000, 100_000.0},
+		{"70000 stays 70000", 70000, 70_000.0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := niceCeilingFloat(tt.peak)
+			// Sub-1 results carry binary-FP residue from math.Pow10(-1/-2);
+			// allow 1e-9 slack rather than asserting exact equality. Same
+			// pattern as TestNiceFloorFloat.
+			if diff := got - tt.want; diff < -1e-9 || diff > 1e-9 {
+				t.Errorf("niceCeilingFloat(%v) = %v, want %v", tt.peak, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPadYLabel(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"", "     "},
+		{"1", "    1"},
+		{"99", "   99"},
+		{"$99", "  $99"},
+		{"100k", " 100k"},
+		{"$0.45", "$0.45"},   // already at slot width — unchanged
+		{"$1000k", "$1000k"}, // wider than slot — unchanged
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			t.Parallel()
+			if got := padYLabel(tt.in); got != tt.want {
+				t.Errorf("padYLabel(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestYLabelMidFloor(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		unit chartUnit
+		want float64
+	}{
+		{"cost", chartUnitCost, 0.005},
+		{"tokens", chartUnitTokens, 1.0},
+		{"unknown unit returns 0", chartUnit(999), 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := yLabelMidFloor(tt.unit); got != tt.want {
+				t.Errorf("yLabelMidFloor(%v) = %v, want %v", tt.unit, got, tt.want)
+			}
+		})
+	}
+}

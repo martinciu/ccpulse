@@ -233,6 +233,82 @@ func slicePointsInRange(pts []cache.UtilizationPoint, from, to time.Time) []cach
 	return pts[startIdx:endIdx]
 }
 
+// niceCeilingFloat returns the smallest "nice" value >= peak from the
+// sequence {1, 2, 3, 5, 7, 10} × 10^k. The 10 stop is the same value
+// as 1 × 10^(k+1) — listing it explicitly keeps the switch flat.
+// Companion to niceFloorFloat: callers use niceCeiling for the chart's
+// Y-axis top (so labels live on exact rows) and niceFloor when they
+// want the largest nice value not exceeding the data.
+//
+// Returns 0 when peak <= 0 so callers can guard the overlay write.
+func niceCeilingFloat(peak float64) float64 {
+	if peak <= 0 {
+		return 0
+	}
+	mag := math.Pow10(int(math.Floor(math.Log10(peak))))
+	norm := peak / mag
+	var nice float64
+	switch {
+	case norm <= 1.0:
+		nice = 1.0
+	case norm <= 2.0:
+		nice = 2.0
+	case norm <= 3.0:
+		nice = 3.0
+	case norm <= 5.0:
+		nice = 5.0
+	case norm <= 7.0:
+		nice = 7.0
+	default:
+		nice = 10.0
+	}
+	return nice * mag
+}
+
+// yLabelSlotW is the fixed visible-column width reserved for the
+// bar-chart Y-axis label slot (cost / tokens). overlayYLabel splices
+// both max and midpoint labels right-aligned in this slot so they
+// share a stable left-edge column across refreshes regardless of how
+// formatUnitValue's output width shifts (e.g. peak crossing $1k →
+// "$700" 4 cols vs "$1k" 3 cols). Matches the line chart's manual
+// "100%" / " 50%" pattern (4 cols there; one wider here for the "$"
+// prefix and sub-1 "$0.45"-style labels).
+const yLabelSlotW = 5
+
+// padYLabel right-aligns s in a yLabelSlotW-wide column with leading
+// spaces. Returns s unchanged when its visible width is already >=
+// slot width.
+func padYLabel(s string) string {
+	if w := lipgloss.Width(s); w < yLabelSlotW {
+		return strings.Repeat(" ", yLabelSlotW-w) + s
+	}
+	return s
+}
+
+// yLabelMidFloor returns the smallest mid value that formatUnitValue
+// will render as a non-zero label for the given unit. Used by
+// overlayYLabel to skip the midpoint when FP-rounding inside
+// formatUnitValue would otherwise collapse the value to "$0.00" / "0".
+//
+// niceCeilingFloat returns positive output for positive peak, but
+// halving it crosses per-unit format-precision floors:
+//
+//	chartUnitCost   — 2-decimal FormatFloat; mid in [0, 0.005)
+//	                  rounds to "$0.00".
+//	chartUnitTokens — int64 cast inside formatTokenCount; mid in
+//	                  [0, 1) drops to 0 and renders as "0".
+//
+// Returns 0 for unknown units (defensive — no skip).
+func yLabelMidFloor(unit chartUnit) float64 {
+	switch unit {
+	case chartUnitCost:
+		return 0.005
+	case chartUnitTokens:
+		return 1
+	}
+	return 0
+}
+
 // overlayYLabel splices `formatUnitValue(niceFloorFloat(peak), unit)` in
 // the chosen fade style into the niceFloorFloat(peak) row of an already-rendered
 // chart string, replacing the first 5 visible columns of that row.
