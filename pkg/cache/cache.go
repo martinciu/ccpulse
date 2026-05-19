@@ -166,11 +166,9 @@ func Open(path string) (*Cache, error) {
 	db, err := openDB(path)
 	if errors.Is(err, errSchemaMismatch) {
 		// Release SH so LockedRebuild can take EX on a fresh fd
-		// without contention from this process.
+		// without contention from this process. LockedRebuild
+		// performs the unlink itself.
 		lockFile.Close()
-		if rmErr := RemoveWithSiblings(path); rmErr != nil {
-			return nil, fmt.Errorf("wipe stale schema: %w", rmErr)
-		}
 		return LockedRebuild(path)
 	}
 	if err != nil {
