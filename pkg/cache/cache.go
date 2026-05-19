@@ -227,7 +227,7 @@ func (c *Cache) Close() error {
 // from outside pkg/cache risk the silent-corruption vector from
 // issue #219.
 func removeWithSiblings(path string) error {
-	for _, suffix := range []string{"", "-wal", "-shm", "-journal"} {
+	for _, suffix := range []string{"-wal", "-shm", "-journal", ""} {
 		if err := os.Remove(path + suffix); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("remove %s%s: %w", path, suffix, err)
 		}
