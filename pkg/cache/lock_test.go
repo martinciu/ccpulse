@@ -244,3 +244,45 @@ func TestLockedRebuild_DowngradesToShared(t *testing.T) {
 	}
 	t.Cleanup(func() { c2.Close() })
 }
+
+// TestOpen_SchemaMismatch_LosesToConcurrentHolder covers the dispatch
+// path Open → errSchemaMismatch → LockedRebuild → ErrLockHeld under
+// concurrent SH-holder contention. Open releases its own SH fd before
+// calling LockedRebuild, so LockedRebuild's LOCK_EX|LOCK_NB acquire
+// must fail against the unrelated SH holder and surface as ErrLockHeld
+// to the caller — never errSchemaMismatch, never a wrapped
+// EWOULDBLOCK, never a panic. See issue #243.
+func TestOpen_SchemaMismatch_LosesToConcurrentHolder(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.db")
+
+	// Seed schema_version='0' on disk. Mirrors the
+	// TestOpenWipesOnSchemaVersionMismatch pattern in cache_test.go.
+	c, err := Open(path)
+	if err != nil {
+		t.Fatalf("seed Open: %v", err)
+	}
+	if _, err := c.DB().Exec(`UPDATE meta SET value = '0' WHERE key = 'schema_version'`); err != nil {
+		t.Fatalf("seed UPDATE: %v", err)
+	}
+	if err := c.Close(); err != nil {
+		t.Fatalf("seed Close: %v", err)
+	}
+
+	// Hold LOCK_SH on the lock file from a fixture fd. BSD flock is
+	// fd-scoped on darwin and linux, so an independent open() in this
+	// same process contends identically to a separate process.
+	holder, err := acquireCacheLock(path+".lock", syscall.LOCK_SH)
+	if err != nil {
+		t.Fatalf("acquire holder SH: %v", err)
+	}
+	t.Cleanup(func() { holder.Close() })
+
+	// Open succeeds on its own SH (multiple SH coexist), openDB
+	// returns errSchemaMismatch, Open releases its SH, LockedRebuild
+	// attempts LOCK_EX with LOCK_NB → blocked by holder → ErrLockHeld.
+	_, err = Open(path)
+	if !errors.Is(err, ErrLockHeld) {
+		t.Fatalf("Open with schema mismatch + concurrent SH holder: got %v, want ErrLockHeld", err)
+	}
+}
