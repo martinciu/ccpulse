@@ -983,7 +983,17 @@ func TestBuildLineChart_NoBuiltinXAxis(t *testing.T) {
 	}
 }
 
+// TestOverlayYTicks pins the post-#250 line-chart label set: 100% at
+// the top and " 50%" at the geometric midpoint. The "  0%" baseline
+// tick is dropped — the chart's bottom edge conveys the zero level
+// implicitly.
+//
+// The previous test's positive assertion strings.Contains(result,"0%")
+// was a false positive — "100%" contains "0%" as a substring — so the
+// negative assertion below uses the exact dropped label "  0%" (two
+// leading spaces) to ensure it doesn't match the surviving "100%".
 func TestOverlayYTicks(t *testing.T) {
+	t.Parallel()
 	chartH := 12
 	lines := make([]string, chartH)
 	for i := range lines {
@@ -992,14 +1002,16 @@ func TestOverlayYTicks(t *testing.T) {
 	body := strings.Join(lines, "\n")
 
 	result := overlayYTicks(body, chartH, 1.0)
-	if !strings.Contains(result, "100%") {
+	stripped := stripANSIForTest(result)
+
+	if !strings.Contains(stripped, "100%") {
 		t.Error("expected 100% label in output")
 	}
-	if !strings.Contains(result, "50%") {
-		t.Error("expected 50% label in output")
+	if !strings.Contains(stripped, " 50%") {
+		t.Error("expected ' 50%' label in output")
 	}
-	if !strings.Contains(result, "0%") {
-		t.Error("expected 0% label in output")
+	if strings.Contains(stripped, "  0%") {
+		t.Error("did not expect '  0%' label after #250 — issue dropped the baseline tick")
 	}
 }
 

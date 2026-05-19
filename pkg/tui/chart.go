@@ -762,11 +762,13 @@ func buildLineChart(pts5h, pts7d []cache.UtilizationPoint,
 	return body
 }
 
-// overlayYTicks splices fixed "100%", "50%", "0%" labels and a colored
-// legend ("5h", "7d") into the left edge of an already-rendered line
-// chart string. Operates ANSI-aware on the post-scroll viewport output
-// so labels stay pinned to the viewport's left edge regardless of
-// horizontal scroll position.
+// overlayYTicks splices fixed "100%" and " 50%" Y-axis labels and a
+// colored legend ("5h", "7d") into the left edge of an already-rendered
+// line chart string. The 0% baseline label was dropped in #250 — the
+// chart's bottom edge conveys the zero level visually, so the explicit
+// label was redundant chrome. Operates ANSI-aware on the post-scroll
+// viewport output so labels stay pinned to the viewport's left edge
+// regardless of horizontal scroll position.
 //
 // fade ∈ [0, 1] controls label visibility via labelFadeStyle. fade <= 0
 // returns body unchanged.
@@ -789,7 +791,6 @@ func overlayYTicks(body string, chartH int, fade float64) string {
 	ticks := []tick{
 		{0, "100%"},
 		{barsH / 2, " 50%"},
-		{barsH - 1, "  0%"},
 	}
 	for _, tk := range ticks {
 		if tk.row >= len(lines) {
