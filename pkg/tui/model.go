@@ -1505,9 +1505,6 @@ func (m *Model) refreshChart() {
 		for i, b := range buckets {
 			values[i] = b.Cost
 			starts[i] = b.BucketStart
-			if values[i] > peak {
-				peak = values[i]
-			}
 		}
 		unit = chartUnitCost
 	case int(chartUnitRemaining): // remaining quota line chart
@@ -1566,14 +1563,10 @@ func (m *Model) refreshChart() {
 		for i, b := range buckets {
 			values[i] = float64(b.Tokens)
 			starts[i] = b.BucketStart
-			if values[i] > peak {
-				peak = values[i]
-			}
 		}
 		unit = chartUnitTokens
 	}
 
-	m.peak = peak
 	m.lastValues = values
 	m.lastStarts = starts
 
@@ -1589,17 +1582,16 @@ func (m *Model) refreshChart() {
 		if canvasW < m.chartWidth() {
 			canvasW = m.chartWidth()
 		}
-		m.viewport.SetContent(buildLineChart(m.lastPts5h, m.lastPts7d, from, to, canvasW, chartH, time.Now(), zoom, m.dateOrder, "refresh"))
 	} else {
 		canvasW = zoom.CanvasWidth(len(values))
-		m.viewport.SetContent(buildChart(values, starts, peak, canvasW, chartH, time.Now(), zoom, unit, m.dateOrder))
 	}
 	m.lastChartFrom = from
 	m.lastChartTo = to
 	m.lastCanvasW = canvasW
 	m.lastZoomStride = zoom.stride()
 
-	// Restore the user's anchor. Three cases:
+	// Restore the user's anchor BEFORE computing peak so the post-anchor
+	// viewportXOffset can drive the visible-slice peak (#230). Three cases:
 	//   - !hadAnchor (first load, or coming back from an empty-cache
 	//     placeholder): pin to the new right edge.
 	//   - wasPinned: user was at "now", keep them at "now" against the
@@ -1629,6 +1621,20 @@ func (m *Model) refreshChart() {
 			targetCol = rightEdgeCol
 		}
 		m.setX(targetCol / stride)
+	}
+
+	// Compute peak from the visible slice (#230 unified policy).
+	// Remaining-mode line chart keeps peak = 1.0 (set in the switch above).
+	if unit != chartUnitRemaining {
+		peak = peakOfVisibleSlice(values, m.viewportXOffset, m.visibleBuckets())
+	}
+	m.peak = peak
+
+	// Build chart against the post-anchor peak.
+	if unit == chartUnitRemaining {
+		m.viewport.SetContent(buildLineChart(m.lastPts5h, m.lastPts7d, from, to, canvasW, chartH, time.Now(), zoom, m.dateOrder, "refresh"))
+	} else {
+		m.viewport.SetContent(buildChart(values, starts, peak, canvasW, chartH, time.Now(), zoom, unit, m.dateOrder))
 	}
 }
 

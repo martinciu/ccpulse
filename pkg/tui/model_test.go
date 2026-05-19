@@ -4643,3 +4643,157 @@ func TestIntro_QuotaBars_QuotaLoadedAtArm_ClearsPending(t *testing.T) {
 		t.Errorf("quotaTarget5h = 0 at arm with quota loaded; expected non-zero target")
 	}
 }
+
+// TestInitialPaint_PeakFromRightEdgeVisible pins the unified visible-
+// slice peak policy on initial paint (#230). The chart pins to the
+// right edge on first paint (refreshChart's !hadAnchor branch), so
+// the initial visible slice is the most-recent ~visibleBuckets()
+// worth of buckets — and m.peak must reflect that slice, not the
+// max across all buckets including off-screen outliers.
+//
+// Seeds 100 old buckets at 9999 input tokens (the outlier — far off
+// the right edge once 100 more recent buckets are added) and 100 new
+// buckets at 1000 input tokens (the visible slice). After refreshChart,
+// m.peak must reflect ~1000, not 9999.
+func TestInitialPaint_PeakFromRightEdgeVisible(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	defer c.Close()
+
+	tab, err := pricing.Load()
+	if err != nil {
+		t.Fatalf("pricing.Load: %v", err)
+	}
+	now := time.Now().UTC().Truncate(15 * time.Minute)
+
+	var msgs []parse.Message
+	// 100 OLDER buckets (offset 100..199 in chronological order) with
+	// outlier value 9999 — these will land at the LEFT of the canvas.
+	for i := range 100 {
+		msgs = append(msgs, parse.Message{
+			SessionID:   "old",
+			ProjectSlug: "p",
+			Model:       "claude-opus-4-7",
+			Timestamp:   now.Add(time.Duration(-(200+i)*15) * time.Minute),
+			InputTokens: 9999,
+		})
+	}
+	// 200 RECENT buckets at 1000 — these land at the RIGHT of the canvas
+	// (where the initial !hadAnchor branch pins viewportXOffset). Sized
+	// so the right-edge visible slice (visibleBuckets() ~ 118 at the
+	// test's m.w=120, 15m zoom) fits entirely within the recent run.
+	for i := range 200 {
+		msgs = append(msgs, parse.Message{
+			SessionID:   "new",
+			ProjectSlug: "p",
+			Model:       "claude-opus-4-7",
+			Timestamp:   now.Add(time.Duration(-i*15) * time.Minute),
+			InputTokens: 1000,
+		})
+	}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	m := New(Deps{Cache: c})
+	m.unitIdx = int(chartUnitTokens)
+	m.w, m.h = 120, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	m.refreshChart()
+
+	// Right-edge visible slice contains only 1000-token buckets; outliers
+	// at the canvas's left edge are NOT visible. Peak must reflect that.
+	if m.peak > 8000 {
+		t.Errorf("m.peak = %v, want ~1000 (right-edge visible slice). "+
+			"Outlier (9999) at canvas left edge leaked into peak — the "+
+			"unified visible-slice policy is broken.", m.peak)
+	}
+	if m.peak < 999 {
+		t.Errorf("m.peak = %v, want ~1000 (right-edge visible slice). "+
+			"Peak appears not to track visible bars at all.", m.peak)
+	}
+}
+
+// TestRefresh_PeakFromVisibleSlice pins that watcher-triggered refresh
+// also computes peak from the current visible slice — not the full
+// history — when the user has scrolled back to an older window (#230).
+//
+// Setup mirrors TestInitialPaint_PeakFromRightEdgeVisible but the
+// model is then scrolled LEFT to land the viewport over the outlier
+// region. After refreshChart, m.peak must reflect the (now-visible)
+// outliers, ~9999, not the all-time peak (also 9999, so we additionally
+// check the inverse — scroll RIGHT off the outliers and confirm peak
+// drops to ~1000).
+func TestRefresh_PeakFromVisibleSlice(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	defer c.Close()
+
+	tab, err := pricing.Load()
+	if err != nil {
+		t.Fatalf("pricing.Load: %v", err)
+	}
+	now := time.Now().UTC().Truncate(15 * time.Minute)
+
+	var msgs []parse.Message
+	// 100 OLDER buckets with outlier 9999.
+	for i := range 100 {
+		msgs = append(msgs, parse.Message{
+			SessionID:   "old",
+			ProjectSlug: "p",
+			Model:       "claude-opus-4-7",
+			Timestamp:   now.Add(time.Duration(-(200+i)*15) * time.Minute),
+			InputTokens: 9999,
+		})
+	}
+	// 100 RECENT buckets at 1000.
+	for i := range 100 {
+		msgs = append(msgs, parse.Message{
+			SessionID:   "new",
+			ProjectSlug: "p",
+			Model:       "claude-opus-4-7",
+			Timestamp:   now.Add(time.Duration(-i*15) * time.Minute),
+			InputTokens: 1000,
+		})
+	}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	m := New(Deps{Cache: c})
+	m.unitIdx = int(chartUnitTokens)
+	m.w, m.h = 120, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	m.refreshChart()
+
+	// After first refresh: peak reflects right-edge slice (~1000).
+	if m.peak > 8000 {
+		t.Fatalf("baseline: m.peak = %v after initial refresh, want ~1000", m.peak)
+	}
+
+	// Scroll LEFT past the recent slice and into the outlier slice.
+	// 100 recent buckets at zoom-stride=1 → scroll left by ~150 columns
+	// lands the viewport firmly over the outlier region (offsets 50–150).
+	for range 150 {
+		m.scrollLeft(horizontalScrollStep)
+	}
+
+	// Fire a synthetic refresh — exactly what the watcher's RefreshMsg
+	// triggers. Peak must now reflect the outliers under the viewport.
+	m.refreshChart()
+	if m.peak < 9000 {
+		t.Errorf("after scroll-left + refresh: m.peak = %v, want ~9999. "+
+			"Refresh did not recompute peak from current visible slice — "+
+			"the unified visible-slice policy is broken on the refresh path.", m.peak)
+	}
+}
