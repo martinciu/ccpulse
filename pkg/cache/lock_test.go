@@ -87,3 +87,51 @@ func TestAcquireCacheLock_ReleaseOnClose(t *testing.T) {
 	}
 	t.Cleanup(func() { b.Close() })
 }
+
+func TestOpen_TwoSharedOpensCoexist(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.db")
+
+	a, err := Open(path)
+	if err != nil {
+		t.Fatalf("first Open: %v", err)
+	}
+	t.Cleanup(func() { a.Close() })
+
+	b, err := Open(path)
+	if err != nil {
+		t.Fatalf("second Open: %v", err)
+	}
+	t.Cleanup(func() { b.Close() })
+}
+
+func TestOpen_RecordsLockFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.db")
+	c, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { c.Close() })
+	if c.lockFile == nil {
+		t.Fatal("Cache.lockFile is nil after Open")
+	}
+}
+
+func TestClose_ReleasesLock(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.db")
+	c, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := c.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	// EX should succeed because Close released SH.
+	f, err := acquireCacheLock(path+".lock", syscall.LOCK_EX)
+	if err != nil {
+		t.Fatalf("EX after Close: %v", err)
+	}
+	t.Cleanup(func() { f.Close() })
+}

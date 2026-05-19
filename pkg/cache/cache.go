@@ -10,6 +10,7 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/martinciu/ccpulse/pkg/anthro"
@@ -102,16 +103,23 @@ const cachePragmas = "_pragma=busy_timeout(5000)" +
 	"&_pragma=temp_store(memory)"
 
 type Cache struct {
-	db *sql.DB
+	db       *sql.DB
+	lockFile *os.File
 }
 
 func Open(path string) (*Cache, error) {
+	lockFile, err := acquireCacheLock(path+".lock", syscall.LOCK_SH)
+	if err != nil {
+		return nil, err
+	}
 	db, err := sql.Open("sqlite", path+"?"+cachePragmas)
 	if err != nil {
+		lockFile.Close()
 		return nil, err
 	}
 	if _, err := db.Exec(schemaSQL); err != nil {
 		db.Close()
+		lockFile.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
 
@@ -119,10 +127,12 @@ func Open(path string) (*Cache, error) {
 	err = db.QueryRow(`SELECT value FROM meta WHERE key = 'schema_version'`).Scan(&version)
 	if err != nil && err != sql.ErrNoRows {
 		db.Close()
+		lockFile.Close()
 		return nil, err
 	}
 	if err == nil && version != SchemaVersion {
 		db.Close()
+		lockFile.Close()
 		if rmErr := RemoveWithSiblings(path); rmErr != nil {
 			return nil, fmt.Errorf("wipe stale schema: %w", rmErr)
 		}
@@ -131,13 +141,15 @@ func Open(path string) (*Cache, error) {
 
 	if _, err := db.Exec(`INSERT OR IGNORE INTO meta(key,value) VALUES('schema_version',?)`, SchemaVersion); err != nil {
 		db.Close()
+		lockFile.Close()
 		return nil, err
 	}
 	if _, err := db.Exec(normalizeResetsAtSQL); err != nil {
 		db.Close()
+		lockFile.Close()
 		return nil, fmt.Errorf("normalize legacy resets_at sentinels: %w", err)
 	}
-	return &Cache{db: db}, nil
+	return &Cache{db: db, lockFile: lockFile}, nil
 }
 
 // NewFromDB wraps an already-open *sql.DB in a *Cache without re-running
@@ -150,7 +162,23 @@ func NewFromDB(db *sql.DB) *Cache {
 
 func (c *Cache) DB() *sql.DB { return c.db }
 
-func (c *Cache) Close() error { return c.db.Close() }
+// Close closes the underlying DB and releases the cache lock fd.
+// Both operations run unconditionally; the DB close error is
+// returned in preference to the lock release error (DB close is
+// the more interesting failure mode in practice).
+func (c *Cache) Close() error {
+	dbErr := c.db.Close()
+	var lockErr error
+	if c.lockFile != nil {
+		// flock release is implicit on close — no separate LOCK_UN needed.
+		lockErr = c.lockFile.Close()
+		c.lockFile = nil
+	}
+	if dbErr != nil {
+		return dbErr
+	}
+	return lockErr
+}
 
 // RemoveWithSiblings deletes path plus its SQLite sidecar files
 // (-wal, -shm, -journal). path must be the SQLite DB file path (not a
