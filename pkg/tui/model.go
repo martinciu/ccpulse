@@ -951,7 +951,7 @@ func (m *Model) beginUnitAnimation() {
 		if m.newIsLine {
 			targets[i] = 1.0
 		} else if newPeak > 0 && i < len(newValues) {
-			targets[i] = newValues[i] / newPeak
+			targets[i] = newValues[i] / niceCeilingFloat(newPeak)
 		}
 	}
 	m.seedPhase2Springs(targets)
@@ -966,7 +966,7 @@ func (m *Model) beginUnitAnimation() {
 		if m.oldIsLine {
 			m.springRatios[i] = 1.0
 		} else if m.oldPeak > 0 && i < len(m.oldValues) {
-			m.springRatios[i] = m.oldValues[i] / m.oldPeak
+			m.springRatios[i] = m.oldValues[i] / niceCeilingFloat(m.oldPeak)
 		}
 
 		g := 2 * m.springRatios[i] / (t1 * t1)
@@ -1006,7 +1006,7 @@ func (m *Model) beginIntroAnimation() {
 
 	targets := make([]float64, len(m.lastValues))
 	for i, v := range m.lastValues {
-		targets[i] = v / m.peak
+		targets[i] = v / niceCeilingFloat(m.peak)
 	}
 
 	m.seedPhase2Springs(targets)

@@ -1477,3 +1477,38 @@ func TestYLabelMidFloor(t *testing.T) {
 		})
 	}
 }
+
+// TestBuildChart_NiceCeilingYRange confirms buildChart bumps its Y
+// range up to niceCeilingFloat(peak) so the tallest bar sits BELOW the
+// canvas top whenever peak < ceiling. The peak column should therefore
+// have at least one fully-blank top row.
+//
+// Before #250: maxValue = peak directly → tallest bar fills 100%, no
+// top headroom. After: maxValue = niceCeilingFloat(peak) → headroom
+// proportional to peak/ceiling.
+func TestBuildChart_NiceCeilingYRange(t *testing.T) {
+	t.Parallel()
+	// peak = 87000 → niceCeiling = 100000 → fill ratio 0.87.
+	// chartH = 12 → barsH = 11 → tallest bar ≈ round(0.87 × 11) = 10 rows
+	// → row 0 of the bars area should be blank in the peak column.
+	now := time.Now().UTC().Truncate(15 * time.Minute)
+	values := []float64{87_000}
+	starts := []time.Time{now}
+	zoom := ZoomLevels[0] // BarWidth=1, BarGap=0
+	chartW := zoom.CanvasWidth(len(values)) // = 1
+	chartH := 12
+	out := buildChart(values, starts, 87_000, chartW, chartH, now, zoom, chartUnitTokens, dateOrderMonthFirst)
+	rows := strings.Split(out, "\n")
+	// The trailing row is the X-axis label row (chartH >= 6 turns it
+	// on); the first chartH-1 rows are the bars area.
+	barsH := chartH - 1
+	if len(rows) < barsH {
+		t.Fatalf("expected at least %d bar rows, got %d", barsH, len(rows))
+	}
+	// Strip ANSI on row 0 of the bars area. With niceCeiling=100k and
+	// peak=87k, the bar leaves the top row empty in the peak column.
+	top := stripANSIForTest(rows[0])
+	if strings.TrimSpace(top) != "" {
+		t.Errorf("expected row 0 of bars area to be blank above peak (niceCeiling headroom); got %q", top)
+	}
+}

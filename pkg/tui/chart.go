@@ -552,7 +552,9 @@ func formatUnitValue(v float64, unit chartUnit) string {
 // is plotted at column i, with starts[i] feeding the X-axis label.
 // peak is the normalisation reference; pass max(values) for steady
 // state, or 1.0 during ratio-space animation (when values are
-// already normalised to [0, 1]).
+// already normalised to [0, 1]). The chart's Y range tops out at
+// niceCeilingFloat(peak) so overlayYLabel's max/mid labels land on
+// exact rows (row 0 and row barsH/2 respectively) — see #250.
 //
 // unit selects the bar color (Blue for chartUnitTokens — tokens
 // (input+output, see issue #232), Amber for chartUnitCost). It is also read by the
@@ -591,7 +593,7 @@ func buildChart(values []float64, starts []time.Time, peak float64,
 		}
 	}
 
-	maxValue := peak
+	maxValue := niceCeilingFloat(peak)
 	if maxValue == 0 {
 		maxValue = 1 // ntcharts requires non-zero max; bars will all be empty anyway
 	}

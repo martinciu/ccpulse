@@ -1173,11 +1173,13 @@ func TestBeginUnitAnimation(t *testing.T) {
 		t.Errorf("len(springFinalTargets) = %d, want %d", got, want)
 	}
 
-	// Initial spring state must equal old cost ratios.
+	// Initial spring state must equal old cost ratios scaled to niceCeiling(oldPeak).
+	// After #250 buildChart uses niceCeilingFloat(peak) as maxValue, so spring
+	// ratios use the same denominator to keep bar heights consistent.
 	for i, v := range oldValues {
-		want := v / oldPeak
+		want := v / niceCeilingFloat(oldPeak)
 		if diff := m.springRatios[i] - want; diff < -1e-9 || diff > 1e-9 {
-			t.Errorf("springRatios[%d] = %v, want %v (old cost ratio)", i, m.springRatios[i], want)
+			t.Errorf("springRatios[%d] = %v, want %v (old cost ratio / niceCeiling)", i, m.springRatios[i], want)
 		}
 	}
 
@@ -3072,13 +3074,16 @@ func TestRenderSpringFrame_MatchesPreSpringBoundary(t *testing.T) {
 				t.Fatalf("pre-spring viewport unexpectedly blank (setup error?)")
 			}
 
-			// ── Spring setup: identity ratios (old values / peak) ─────────────
+			// ── Spring setup: identity ratios (old values / niceCeiling(peak)) ──
+			// After #250, buildChart's maxValue = niceCeilingFloat(peak), so
+			// spring ratios must use the same denominator to match pre-spring
+			// bar heights.
 			// springActive must be true so renderSpringFrame doesn't early-return.
 			// springXOffset is the viewportXOffset (the pinned-right bucket index).
 			n := len(m.lastValues)
 			m.springRatios = make([]float64, n)
 			for i := range n {
-				m.springRatios[i] = m.lastValues[i] / peak
+				m.springRatios[i] = m.lastValues[i] / niceCeilingFloat(peak)
 			}
 			m.springActive = true
 			m.springXOffset = m.viewportXOffset // shadow set by setX
