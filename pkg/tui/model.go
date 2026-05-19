@@ -504,6 +504,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.gen != m.scrollGen {
 			return m, nil
 		}
+		// Spring owns peak during a unit-toggle animation — its frame
+		// renderer normalizes bar heights against niceCeilingFloat(m.peak),
+		// and the spring's target ratios were computed against the
+		// peak at spring-start. Changing peak mid-spring would shift the
+		// rendered heights under the spring (#230). After the spring
+		// completes, the next scroll will arm a fresh rescale.
+		if m.springActive {
+			return m, nil
+		}
 		m.rebuildAtVisiblePeak()
 		return m, nil
 	case QuotaMsg:

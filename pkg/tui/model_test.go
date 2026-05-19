@@ -5062,3 +5062,90 @@ func TestRescale_WindowPeakMatchesVisibleSlice(t *testing.T) {
 			"Scroll-stop rescale did not recompute from the visible slice.", m.peak)
 	}
 }
+
+// TestRescale_DroppedDuringSpring pins the spring-active gate on the
+// rescaleMsg handler (#230). Setup: chart is at a known peak. We set
+// m.springActive = true to simulate a unit-toggle spring in flight,
+// then deliver a fresh rescaleMsg. m.peak must NOT change — the
+// handler must drop and let the spring complete against the peak it
+// started with.
+//
+// Without this gate, mid-spring rescale would shift m.peak under the
+// spring's frame renderer, which reads m.peak as the normalization
+// base for the bar heights (renderSpringFrame uses
+// niceCeilingFloat(m.peak)).
+func TestRescale_DroppedDuringSpring(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	defer c.Close()
+
+	tab, err := pricing.Load()
+	if err != nil {
+		t.Fatalf("pricing.Load: %v", err)
+	}
+	now := time.Now().UTC().Truncate(15 * time.Minute)
+
+	var msgs []parse.Message
+	for i := range 100 {
+		msgs = append(msgs, parse.Message{
+			SessionID:   "old",
+			ProjectSlug: "p",
+			Model:       "claude-opus-4-7",
+			Timestamp:   now.Add(time.Duration(-(200+i)*15) * time.Minute),
+			InputTokens: 9999,
+		})
+	}
+	for i := range 200 {
+		msgs = append(msgs, parse.Message{
+			SessionID:   "new",
+			ProjectSlug: "p",
+			Model:       "claude-opus-4-7",
+			Timestamp:   now.Add(time.Duration(-i*15) * time.Minute),
+			InputTokens: 1000,
+		})
+	}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	m := New(Deps{Cache: c})
+	m.unitIdx = int(chartUnitTokens)
+	m.w, m.h = 120, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	m.refreshChart()
+
+	// Scroll into the outlier region — viewportXOffset now lands on
+	// offsets where a rescale WOULD jump peak to ~9999.
+	for range 150 {
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyLeft})
+		m = updated.(Model)
+	}
+
+	// Snapshot peak BEFORE setting springActive.
+	peakBeforeSpring := m.peak
+
+	// Simulate a unit-toggle spring in flight. We don't actually run
+	// the spring (that would also reset things); we just set the gate.
+	m.springActive = true
+
+	// Deliver a fresh rescaleMsg — handler must drop because spring is
+	// active.
+	fresh := rescaleMsg{gen: m.scrollGen}
+	updated, retCmd := m.Update(fresh)
+	m = updated.(Model)
+
+	if m.peak != peakBeforeSpring {
+		t.Errorf("rescaleMsg mutated m.peak during spring (%v → %v); "+
+			"handler must drop while springActive to avoid corrupting "+
+			"the spring's normalization base", peakBeforeSpring, m.peak)
+	}
+	if retCmd != nil {
+		t.Errorf("rescaleMsg returned non-nil Cmd while spring active; "+
+			"drop must be silent — no follow-up work")
+	}
+}
