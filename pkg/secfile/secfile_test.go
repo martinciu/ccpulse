@@ -109,6 +109,36 @@ func TestOpenFile_TightensExisting(t *testing.T) {
 	}
 }
 
+func TestOpenFile_RefusesSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target")
+	link := filepath.Join(dir, "link")
+
+	// Seed target at 0644 so we can verify it was not tightened.
+	if err := os.WriteFile(target, []byte("seed"), 0o644); err != nil {
+		t.Fatalf("seed WriteFile: %v", err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	f, err := secfile.OpenFile(link, os.O_RDWR|os.O_CREATE)
+	t.Logf("OpenFile via symlink error: %v", err)
+	if err == nil {
+		f.Close()
+		t.Fatal("OpenFile via symlink: expected error, got nil")
+	}
+
+	// The load-bearing check: target must still be at 0644, not 0600.
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatalf("Stat target: %v", err)
+	}
+	if got, want := info.Mode().Perm(), os.FileMode(0o644); got != want {
+		t.Fatalf("target mode after failed symlink open: got %o want %o (symlink was followed)", got, want)
+	}
+}
+
 func TestWriteFileAtomic_Fresh(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "f")
 	if err := secfile.WriteFileAtomic(path, []byte("hello")); err != nil {
