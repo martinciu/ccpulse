@@ -1638,6 +1638,38 @@ func (m *Model) refreshChart() {
 	}
 }
 
+// rebuildAtVisiblePeak recomputes m.peak from the current visible slice
+// of m.lastValues and re-renders the bar chart against the cached
+// lastStarts / lastCanvasW — no DB query (#230). Used by the debounced
+// scroll-stop rescaleMsg handler to fire a cheap rebuild after the
+// user stops scrolling.
+//
+// Callers must guard against m.springActive — the unit-toggle spring
+// reads m.peak as the normalization base for its target ratios, so
+// changing peak mid-spring would corrupt the animation. The rescaleMsg
+// handler does this gate; if you call this helper from a new site,
+// add the same gate.
+//
+// No-op when:
+//   - lastValues is empty (empty-cache state — buildChart would render
+//     all-zero bars against the cached canvas, which is fine but pointless)
+//   - the active unit is chartUnitRemaining (line chart keeps fixed
+//     peak=1.0; no rescale path)
+//   - lastCanvasW is 0 (canvas was never built — pre-init state)
+func (m *Model) rebuildAtVisiblePeak() {
+	if len(m.lastValues) == 0 || m.lastCanvasW == 0 {
+		return
+	}
+	unit := chartUnit(m.unitIdx)
+	if unit == chartUnitRemaining {
+		return
+	}
+	zoom := ZoomLevels[m.zoomIdx]
+	m.peak = peakOfVisibleSlice(m.lastValues, m.viewportXOffset, m.visibleBuckets())
+	m.viewport.SetContent(buildChart(m.lastValues, m.lastStarts, m.peak,
+		m.lastCanvasW, m.chartHeight(), time.Now(), zoom, unit, m.dateOrder))
+}
+
 // emptyPlaceholder returns a w×h block with "no Claude sessions yet"
 // centered in colorMuted — the empty-cache state of the chart viewport.
 func emptyPlaceholder(w, h int) string {

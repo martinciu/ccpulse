@@ -4797,3 +4797,81 @@ func TestRefresh_PeakFromVisibleSlice(t *testing.T) {
 			"the unified visible-slice policy is broken on the refresh path.", m.peak)
 	}
 }
+
+// TestRebuildAtVisiblePeak_ComputesFromVisibleSlice unit-tests the
+// DB-free rescale helper used by the debounced scroll-stop path (#230).
+//
+// Seeds the chart via refreshChart (so lastValues/lastStarts/lastCanvasW
+// are populated), then manually shifts viewportXOffset and asserts
+// rebuildAtVisiblePeak picks up the new visible slice — without going
+// back to the DB. Verifies m.peak reflects the new visible slice and
+// is distinct from the right-edge baseline.
+func TestRebuildAtVisiblePeak_ComputesFromVisibleSlice(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	defer c.Close()
+
+	tab, err := pricing.Load()
+	if err != nil {
+		t.Fatalf("pricing.Load: %v", err)
+	}
+	now := time.Now().UTC().Truncate(15 * time.Minute)
+
+	var msgs []parse.Message
+	for i := range 100 {
+		msgs = append(msgs, parse.Message{
+			SessionID:   "old",
+			ProjectSlug: "p",
+			Model:       "claude-opus-4-7",
+			Timestamp:   now.Add(time.Duration(-(200+i)*15) * time.Minute),
+			InputTokens: 9999,
+		})
+	}
+	for i := range 200 {
+		msgs = append(msgs, parse.Message{
+			SessionID:   "new",
+			ProjectSlug: "p",
+			Model:       "claude-opus-4-7",
+			Timestamp:   now.Add(time.Duration(-i*15) * time.Minute),
+			InputTokens: 1000,
+		})
+	}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	m := New(Deps{Cache: c})
+	m.unitIdx = int(chartUnitTokens)
+	m.w, m.h = 120, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	m.refreshChart()
+
+	rightEdgePeak := m.peak
+
+	// Move the viewport over the outlier region WITHOUT going through
+	// refreshChart (which would do its own peak recompute). We simulate
+	// "scroll happened, debounce just fired, no DB activity in between"
+	// by directly mutating viewportXOffset to land on offsets where the
+	// outliers are now visible. Buckets 0..99 are the 9999 outliers in
+	// chronological order; offset 0 with visibleBuckets ~118 covers
+	// them all.
+	m.viewport.SetXOffset(0)
+	m.viewportXOffset = 0
+
+	m.rebuildAtVisiblePeak()
+
+	if m.peak < 9000 {
+		t.Errorf("rebuildAtVisiblePeak: m.peak = %v, want ~9999 "+
+			"(visible slice now covers outliers at offsets 0-99). "+
+			"Helper did not recompute peak from the new visible slice.", m.peak)
+	}
+	if m.peak == rightEdgePeak {
+		t.Errorf("rebuildAtVisiblePeak: m.peak = %v unchanged from right-edge baseline %v — "+
+			"helper appears to be a no-op", m.peak, rightEdgePeak)
+	}
+}
