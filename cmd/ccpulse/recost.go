@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -31,6 +32,10 @@ func newRecostCmd() *cobra.Command {
 			}
 			ca, err := cache.Open(filepath.Join(cacheDir, "state.db"))
 			if err != nil {
+				if errors.Is(err, cache.ErrLockHeld) {
+					fmt.Fprintln(cmd.ErrOrStderr(),
+						"ccpulse recost: cache locked by another ccpulse process. Close the TUI and retry.")
+				}
 				return fmt.Errorf("open cache: %w", err)
 			}
 			defer ca.Close()
