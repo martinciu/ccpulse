@@ -104,7 +104,9 @@ const cachePragmas = "_pragma=busy_timeout(5000)" +
 
 type Cache struct {
 	db       *sql.DB
-	lockFile *os.File // lockFile holds the cache flock. Must not be dup'd or passed to a subprocess (would defeat OS-on-close release).
+	// lockFile is the fd holding the cache flock. Must not be dup'd or passed
+	// to a subprocess (would defeat OS-on-close release).
+	lockFile *os.File
 }
 
 // errSchemaMismatch is the internal signal openDB returns when the
