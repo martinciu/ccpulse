@@ -1602,3 +1602,115 @@ func TestBuildChart_NiceCeilingYRange(t *testing.T) {
 		t.Errorf("expected row 0 of bars area to be blank above peak (niceCeiling headroom); got %q", top)
 	}
 }
+
+// TestFormatXLabel_LocalZone pins issue #253: 15m/1h zoom labels render in
+// now.Location(), not UTC. Buckets are UTC-aligned (Approach A); the labels
+// convert to local. now is in America/New_York (whole-hour offset, EDT =
+// UTC-4 on this July date), passed in via the now arg so no global
+// time.Local mutation is needed and the test stays parallel-safe.
+func TestFormatXLabel_LocalZone(t *testing.T) {
+	t.Parallel()
+	ny, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatalf("load tz: %v", err)
+	}
+	now := time.Date(2026, 7, 14, 14, 30, 0, 0, ny) // Tue 2026-07-14 14:30 EDT
+	// utc builds a UTC-aligned bucket instant (what pkg/cache produces on
+	// 15m/1h) at the given UTC wall-clock on 2026-07-14.
+	utc := func(h, m int) time.Time {
+		return time.Date(2026, 7, 14, h, m, 0, 0, time.UTC)
+	}
+	zm15 := ZoomLevels[0] // "15m"
+	z1h := ZoomLevels[1]  // "1h"
+	z24 := ZoomLevels[2]  // "24h"
+
+	tests := []struct {
+		name  string
+		t     time.Time
+		zoom  ZoomLevel
+		order dateOrder
+		want  string
+	}{
+		// 15m: hour ticks on local 3-hour cadence. local 09:00 EDT = 13:00 UTC.
+		{"15m local 09:00 (=13:00 UTC)", utc(13, 0), zm15, dateOrderMonthFirst, "09:00"},
+		// local 12:00 EDT = 16:00 UTC.
+		{"15m local 12:00 (=16:00 UTC)", utc(16, 0), zm15, dateOrderMonthFirst, "12:00"},
+		// local midnight 00:00 EDT = 04:00 UTC → day stamp (Tue, within 7d).
+		{"15m local midnight (=04:00 UTC) → Tue", utc(4, 0), zm15, dateOrderMonthFirst, "Tue"},
+		// local 13:00 EDT = 17:00 UTC, off the 3-hour cadence → "".
+		{"15m local 13:00 off-cadence (=17:00 UTC)", utc(17, 0), zm15, dateOrderMonthFirst, ""},
+
+		// 1h: midnight-only day stamp. local midnight = 04:00 UTC → Tue.
+		{"1h local midnight (=04:00 UTC) → Tue", utc(4, 0), z1h, dateOrderMonthFirst, "Tue"},
+		// UTC midnight = local 20:00 prev day → NOT a local midnight → "".
+		{"1h UTC midnight is local 20:00 → empty", utc(0, 0), z1h, dateOrderMonthFirst, ""},
+		// non-midnight, non-zero minute → "".
+		{"1h non-midnight → empty", utc(13, 30), z1h, dateOrderMonthFirst, ""},
+
+		// 24h: bucket is already time.Local; conversion is a no-op. Confirm unaffected.
+		{"24h local-zone bucket → Tue", time.Date(2026, 7, 14, 0, 0, 0, 0, ny), z24, dateOrderMonthFirst, "Tue"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := formatXLabel(tt.t, tt.zoom, now, tt.order)
+			if got != tt.want {
+				t.Errorf("formatXLabel(%s, %s, %v) = %q, want %q",
+					tt.t.Format(time.RFC3339), tt.zoom.Label, tt.order, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestDateLabel_LocalZone pins that dateLabel renders the bucket time in
+// now.Location(). The instants below are UTC; their NY-local calendar day
+// is what the label must reflect.
+func TestDateLabel_LocalZone(t *testing.T) {
+	t.Parallel()
+	ny, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatalf("load tz: %v", err)
+	}
+	now := time.Date(2026, 7, 14, 14, 30, 0, 0, ny) // Tue EDT
+	// 2026-07-13 00:00 EDT = 04:00 UTC (Mon, within past 7 days).
+	monUTC := time.Date(2026, 7, 13, 4, 0, 0, 0, time.UTC)
+	if got := dateLabel(monUTC, now, dateOrderMonthFirst); got != "Mon" {
+		t.Errorf("dateLabel recent = %q, want Mon", got)
+	}
+	// 2026-07-01 00:00 EDT = 04:00 UTC (older than 7 days → date).
+	oldUTC := time.Date(2026, 7, 1, 4, 0, 0, 0, time.UTC)
+	if got := dateLabel(oldUTC, now, dateOrderMonthFirst); got != "07/01" {
+		t.Errorf("dateLabel old MonthFirst = %q, want 07/01", got)
+	}
+	if got := dateLabel(oldUTC, now, dateOrderDayFirst); got != "01/07" {
+		t.Errorf("dateLabel old DayFirst = %q, want 01/07", got)
+	}
+}
+
+// TestChartXLabel_CrossZoomDayStampAgreement pins the issue #253 contract:
+// for the same instant at local midnight, the 1h-zoom day stamp (emitted on
+// the UTC instant of local midnight) equals the 24h-zoom day boundary stamp
+// (emitted on the time.Local bucket). Pre-fix the 1h zoom stamped UTC
+// midnight instead, so the two disagreed.
+func TestChartXLabel_CrossZoomDayStampAgreement(t *testing.T) {
+	t.Parallel()
+	ny, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatalf("load tz: %v", err)
+	}
+	now := time.Date(2026, 7, 14, 14, 30, 0, 0, ny) // Tue EDT
+	z1h := ZoomLevels[1]
+	z24 := ZoomLevels[2]
+
+	// Local midnight of Fri 2026-07-10 (within the past 7 days → weekday).
+	localMidnight := time.Date(2026, 7, 10, 0, 0, 0, 0, ny)
+
+	hourStamp := formatXLabel(localMidnight.UTC(), z1h, now, dateOrderMonthFirst)
+	dayStamp := formatXLabel(localMidnight, z24, now, dateOrderMonthFirst)
+	if hourStamp != dayStamp {
+		t.Errorf("cross-zoom day stamp mismatch: 1h=%q 24h=%q", hourStamp, dayStamp)
+	}
+	if hourStamp != "Fri" {
+		t.Errorf("day stamp = %q, want Fri", hourStamp)
+	}
+}
