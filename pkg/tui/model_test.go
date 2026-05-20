@@ -5145,21 +5145,17 @@ func TestScroll_RebuildUsesWindowedWidth(t *testing.T) {
 	}
 }
 
-// TestRefresh_RestoresRightEdgeAfterNarrowContent reproduces the #230
-// spring-settle regression: the unit-toggle / intro spring renders only
-// the visible window each frame (content ~= chartWidth cols, see
-// renderSpringFrame at model.go:1336-1338). When the spring settles and
-// calls refreshChart, the anchor-restore setX runs while that NARROW
-// frame is still the viewport's content — and viewport.SetXOffset clamps
-// the requested column to longestLineWidth-Width. Against the narrow
-// content the right-edge offset collapses to ~0, so the chart jumps to
-// the earliest bucket. The shadow m.viewportXOffset stays correct (it
-// clamps against lastStarts, the full data), which is why a later scroll
-// snaps the chart back to "now".
-//
-// Probes the REAL viewport offset via HorizontalScrollPercent (== 1.0 at
-// the right edge). The earlier #230 tests only checked m.peak, which is
-// derived from the (correct) shadow offset, so they never caught this.
+// TestRefresh_RestoresRightEdgeAfterNarrowContent guards that after
+// refreshChart, the chart stays pinned to the right edge
+// (HorizontalScrollPercent == 1.0 / current time) when the viewport
+// holds narrow spring-animation content. Under #255, refreshChart calls
+// renderWindow (for bar modes), which rebuilds windowed content and sets
+// the viewport offset in a single operation via SetXOffset — no separate
+// re-apply setX step against stale narrow content. The test verifies the
+// right-edge observable is preserved through this windowed renderWindow
+// path. The earlier #230 tests only checked m.peak, which is derived from
+// the shadow offset; this probes the REAL viewport offset via
+// HorizontalScrollPercent.
 func TestRefresh_RestoresRightEdgeAfterNarrowContent(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
