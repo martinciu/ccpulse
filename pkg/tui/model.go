@@ -1663,6 +1663,11 @@ func (m *Model) refreshChart() {
 // No-op when lastValues is empty, lastCanvasW is 0 (pre-init), or the active
 // unit is chartUnitRemaining (the line chart keeps a fixed peak=1.0 and a
 // full-canvas pure-offset scroll — bar-only per #255 scope).
+//
+// Runs live per scroll keypress now that #255 dropped the #252 scroll-stop
+// debounce — each call allocates ~2.4 MB / ~10k allocs (mostly inside
+// ntcharts), a deliberate GC-pressure-for-responsiveness trade that the
+// windowing keeps well under the per-frame budget.
 func (m *Model) renderWindow() {
 	if len(m.lastValues) == 0 || m.lastCanvasW == 0 {
 		return
