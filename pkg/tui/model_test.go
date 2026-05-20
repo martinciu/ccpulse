@@ -4719,6 +4719,116 @@ func TestInitialPaint_PeakFromRightEdgeVisible(t *testing.T) {
 	}
 }
 
+// seedOffscreenOutlier seeds 100 old buckets at 9999 input tokens (which
+// land OFF-SCREEN to the left at the test's m.w) plus 200 recent buckets
+// at 1000 (on-screen at the right edge). Returns a refreshed token-mode
+// model whose visible-slice peak is ~1000 while the global max is 9999 —
+// the exact shape that makes the spring's per-bar targets blow past 1.0
+// if they are normalised by the visible peak instead of being clamped.
+func seedOffscreenOutlier(t *testing.T) *Model {
+	t.Helper()
+	dir := t.TempDir()
+	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	t.Cleanup(func() { c.Close() })
+
+	tab, err := pricing.Load()
+	if err != nil {
+		t.Fatalf("pricing.Load: %v", err)
+	}
+	now := time.Now().UTC().Truncate(15 * time.Minute)
+
+	var msgs []parse.Message
+	for i := range 100 {
+		msgs = append(msgs, parse.Message{
+			SessionID: "old", ProjectSlug: "p", Model: "claude-opus-4-7",
+			Timestamp:   now.Add(time.Duration(-(200+i)*15) * time.Minute),
+			InputTokens: 9999,
+		})
+	}
+	for i := range 200 {
+		msgs = append(msgs, parse.Message{
+			SessionID: "new", ProjectSlug: "p", Model: "claude-opus-4-7",
+			Timestamp:   now.Add(time.Duration(-i*15) * time.Minute),
+			InputTokens: 1000,
+		})
+	}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	m := New(Deps{Cache: c})
+	m.unitIdx = int(chartUnitTokens)
+	m.w, m.h = 120, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	m.refreshChart()
+	return &m
+}
+
+func maxOf(xs []float64) float64 {
+	var mx float64
+	for _, x := range xs {
+		mx = max(mx, x)
+	}
+	return mx
+}
+
+// TestIntroAnimation_OffscreenOutlierTargetsClamped pins that the open-path
+// intro spring never produces a per-bar target above 1.0, even when an
+// off-screen bucket is far taller than the visible-slice peak (#230). The
+// spring renders ratios against a fixed max of 1.0, so any target > 1.0 is
+// visually clipped — but it still gates the maxGap settle check, dragging
+// the animation out (~550ms → ~2s) until the inflated off-screen springs
+// converge to within 0.01 of e.g. 9.99. That long window is what lets a
+// startup resize or watcher refresh land mid-animation and rebuild the
+// chart at a different peak, producing the "animate then shrink" jump.
+func TestIntroAnimation_OffscreenOutlierTargetsClamped(t *testing.T) {
+	t.Parallel()
+	m := seedOffscreenOutlier(t)
+
+	if m.peak > 8000 {
+		t.Fatalf("baseline: m.peak = %v, want ~1000 (visible-slice peak)", m.peak)
+	}
+
+	m.beginIntroAnimation()
+	if !m.springActive {
+		t.Fatalf("intro did not arm (springActive=false)")
+	}
+	if mx := maxOf(m.springFinalTargets); mx > 1.0+1e-9 {
+		t.Errorf("max(springFinalTargets) = %v, want <= 1.0. Off-screen "+
+			"bucket (9999) normalised by the visible-slice ceiling produced "+
+			"a target far above 1.0, which clips visually but stretches the "+
+			"spring settle window (#230 spring-settle jump).", mx)
+	}
+}
+
+// TestUnitAnimation_OffscreenOutlierTargetsClamped is the unit-toggle
+// sibling of the intro test above: switching INTO a bar chart while an
+// off-screen bucket dwarfs the visible peak must not yield targets > 1.0.
+func TestUnitAnimation_OffscreenOutlierTargetsClamped(t *testing.T) {
+	t.Parallel()
+	m := seedOffscreenOutlier(t)
+
+	// Re-render in cost mode (the OLD unit) so beginUnitAnimation snapshots
+	// cost as old state, then toggle forward into tokens (a bar chart).
+	m.unitIdx = int(chartUnitCost)
+	m.refreshChart()
+	m.unitIdx = int(chartUnitTokens)
+	m.beginUnitAnimation()
+
+	if !m.springActive {
+		t.Fatalf("unit toggle did not arm (springActive=false)")
+	}
+	if mx := maxOf(m.springFinalTargets); mx > 1.0+1e-9 {
+		t.Errorf("max(springFinalTargets) = %v, want <= 1.0 after toggle into "+
+			"tokens. Off-screen outlier normalised by the visible peak "+
+			"inflated the target past 1.0 (#230 spring-settle jump).", mx)
+	}
+}
+
 // TestRefresh_PeakFromVisibleSlice pins that watcher-triggered refresh
 // also computes peak from the current visible slice — not the full
 // history — when the user has scrolled back to an older window (#230).

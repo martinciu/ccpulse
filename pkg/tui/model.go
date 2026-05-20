@@ -1002,7 +1002,10 @@ func (m *Model) beginUnitAnimation() {
 		if m.newIsLine {
 			targets[i] = 1.0
 		} else if newPeak > 0 && i < len(newValues) {
-			targets[i] = newValues[i] / niceCeilingFloat(newPeak)
+			// Clamp to 1.0 so an off-screen bucket taller than the visible
+			// peak can't inflate the target past 1.0 and drag out the spring
+			// settle window — see beginIntroAnimation for the full rationale.
+			targets[i] = min(1.0, newValues[i]/niceCeilingFloat(newPeak))
 		}
 	}
 	m.seedPhase2Springs(targets)
@@ -1055,9 +1058,19 @@ func (m *Model) beginIntroAnimation() {
 		return
 	}
 
+	// Clamp to 1.0: m.peak is the VISIBLE-slice peak (#230), so a bucket
+	// taller than the visible peak — i.e. an off-screen outlier — would
+	// otherwise yield a target far above 1.0. Such a bar renders identically
+	// either way (the spring frame's fixed max is 1.0, so ntcharts clips it),
+	// but an un-clamped target still gates the maxGap settle check: the
+	// animation can't end until the inflated off-screen spring converges to
+	// within 0.01 of e.g. 9.99, so the settle window scales with the outlier
+	// magnitude (measured ~2s for a 3× outlier, worse for larger ones).
+	// Clamping bounds it to the normal full-height settle regardless of how
+	// tall the off-screen bars are.
 	targets := make([]float64, len(m.lastValues))
 	for i, v := range m.lastValues {
-		targets[i] = v / niceCeilingFloat(m.peak)
+		targets[i] = min(1.0, v/niceCeilingFloat(m.peak))
 	}
 
 	m.seedPhase2Springs(targets)

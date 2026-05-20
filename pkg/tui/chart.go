@@ -628,10 +628,19 @@ func buildChart(values []float64, starts []time.Time, peak float64,
 	if maxValue == 0 {
 		maxValue = 1 // ntcharts requires non-zero max; bars will all be empty anyway
 	}
+	// WithNoAutoMaxValue is load-bearing for the #230 dynamic-y axis: ntcharts
+	// defaults to AutoMaxValue=true, which raises the scale to the tallest bar
+	// in the data the moment one exceeds maxValue. We pass the FULL bucket
+	// array with peak = the visible-slice peak, so an off-screen bucket taller
+	// than the visible peak would otherwise hijack the scale and squash every
+	// on-screen bar to the global maximum (defeating dynamic-y entirely).
+	// Disabling it pins the ceiling at niceCeilingFloat(peak); ntcharts clips
+	// taller (off-screen) bars to full height via math.Min in drawBars.
 	bc := barchart.New(chartW, barsH,
 		barchart.WithBarGap(zoom.BarGap),
 		barchart.WithNoAxis(),
 		barchart.WithMaxValue(maxValue),
+		barchart.WithNoAutoMaxValue(),
 		barchart.WithNoAutoBarWidth(),
 		barchart.WithBarWidth(zoom.BarWidth),
 	)
