@@ -1664,6 +1664,19 @@ func (m *Model) refreshChart() {
 	} else {
 		m.viewport.SetContent(buildChart(values, starts, peak, canvasW, chartH, time.Now(), zoom, unit, m.dateOrder))
 	}
+
+	// Re-apply the scroll offset now that the full-width chart is the
+	// viewport's content. viewport.SetXOffset clamps the requested column
+	// to longestLineWidth-Width of whatever is CURRENTLY set, and the
+	// anchor-restore setX above ran while the viewport still held the
+	// previous content. After a unit-toggle / intro spring that prior
+	// content is a single-frame render of just the visible window
+	// (~chartWidth cols, see renderSpringFrame), so a right-edge offset
+	// would clamp to ~0 and the chart would jump to the earliest bucket.
+	// The shadow m.viewportXOffset is already correct (it clamps against
+	// lastStarts, the full data); this re-sync applies it against the
+	// freshly-built wide canvas (#230 spring-settle regression).
+	m.setX(m.viewportXOffset)
 }
 
 // rebuildAtVisiblePeak recomputes m.peak from the current visible slice

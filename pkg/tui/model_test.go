@@ -5149,3 +5149,79 @@ func TestRescale_DroppedDuringSpring(t *testing.T) {
 			"drop must be silent — no follow-up work")
 	}
 }
+
+// TestRefresh_RestoresRightEdgeAfterNarrowContent reproduces the #230
+// spring-settle regression: the unit-toggle / intro spring renders only
+// the visible window each frame (content ~= chartWidth cols, see
+// renderSpringFrame at model.go:1336-1338). When the spring settles and
+// calls refreshChart, the anchor-restore setX runs while that NARROW
+// frame is still the viewport's content — and viewport.SetXOffset clamps
+// the requested column to longestLineWidth-Width. Against the narrow
+// content the right-edge offset collapses to ~0, so the chart jumps to
+// the earliest bucket. The shadow m.viewportXOffset stays correct (it
+// clamps against lastStarts, the full data), which is why a later scroll
+// snaps the chart back to "now".
+//
+// Probes the REAL viewport offset via HorizontalScrollPercent (== 1.0 at
+// the right edge). The earlier #230 tests only checked m.peak, which is
+// derived from the (correct) shadow offset, so they never caught this.
+func TestRefresh_RestoresRightEdgeAfterNarrowContent(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	defer c.Close()
+
+	tab, err := pricing.Load()
+	if err != nil {
+		t.Fatalf("pricing.Load: %v", err)
+	}
+	now := time.Now().UTC().Truncate(15 * time.Minute)
+
+	var msgs []parse.Message
+	for i := range 300 {
+		msgs = append(msgs, parse.Message{
+			SessionID:   "s",
+			ProjectSlug: "p",
+			Model:       "claude-opus-4-7",
+			Timestamp:   now.Add(time.Duration(-i*15) * time.Minute),
+			InputTokens: int64(1000 + i),
+		})
+	}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	m := New(Deps{Cache: c})
+	m.unitIdx = int(chartUnitTokens)
+	m.w, m.h = 120, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	m.refreshChart()
+
+	// Simulate the spring's last frame: it leaves NARROW content (only the
+	// visible window) in the viewport with a small xOffset, while the
+	// shadow m.viewportXOffset stays pinned to the right edge. This bypass
+	// of setX mirrors renderSpringFrame, which legitimately drives the real
+	// viewport offset for animation frames without touching the shadow.
+	narrowLine := strings.Repeat("x", m.viewport.Width)
+	narrow := make([]string, m.viewport.Height)
+	for i := range narrow {
+		narrow[i] = narrowLine
+	}
+	m.viewport.SetContent(strings.Join(narrow, "\n"))
+	m.viewport.SetXOffset(0)
+
+	// Spring settles → refreshChart fires with the shadow still pinned right.
+	m.refreshChart()
+
+	if got := m.viewport.HorizontalScrollPercent(); got < 0.999 {
+		t.Errorf("HorizontalScrollPercent = %v after refresh following "+
+			"narrow spring content; want 1.0 (right edge / current time). "+
+			"The real viewport offset was clamped against stale narrow "+
+			"content, so the chart jumped to the earliest bucket "+
+			"(#230 spring-settle regression).", got)
+	}
+}
