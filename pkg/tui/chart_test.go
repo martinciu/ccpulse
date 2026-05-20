@@ -173,6 +173,55 @@ func TestBuildChart_ChartHTooShortDropsXLabels(t *testing.T) {
 	}
 }
 
+// barHeightAtCol returns how many bar rows (top-to-bottom, excluding the
+// trailing x-axis label row) contain a bar block rune at the given visual
+// column. ANSI styling is stripped first so the column index is visual.
+func barHeightAtCol(body string, col int) int {
+	rows := strings.Split(body, "\n")
+	if len(rows) > 1 {
+		rows = rows[:len(rows)-1] // drop the x-axis labels row
+	}
+	h := 0
+	for _, row := range rows {
+		r := []rune(ansi.Strip(row))
+		if col < len(r) && strings.ContainsRune("█▇▆▅▄▃▂▁", r[col]) {
+			h++
+		}
+	}
+	return h
+}
+
+// TestBuildChart_OffscreenTallerBarDoesNotSquashVisible pins the #230
+// dynamic-y contract at the render layer: a bar equal to the peak must fill
+// (almost) the full chart height even when the data array also contains a
+// much taller bucket — an off-screen outlier beyond the visible-slice peak.
+//
+// ntcharts barchart defaults to AutoMaxValue=true, which silently raises the
+// scale to the largest bar in the data (barchart.go SetMax on push),
+// overriding WithMaxValue. buildChart passes the FULL bucket array (visible +
+// off-screen) with peak = the visible-slice peak, so without
+// WithNoAutoMaxValue every on-peak bar collapses to the off-screen outlier's
+// scale — the "squashed like before #252" symptom. The earlier #230 tests
+// only asserted m.peak (the value), not the rendered height, so they missed
+// this.
+func TestBuildChart_OffscreenTallerBarDoesNotSquashVisible(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC().Truncate(15 * time.Minute)
+	starts := []time.Time{now.Add(-15 * time.Minute), now}
+	const chartH = 12
+	// Bar 0 == peak (100); bar 1 is 10× taller (an off-screen outlier the
+	// viewport would scroll past). peak = the visible-slice peak (100), so
+	// niceCeilingFloat(100) = 100 and bar 0 should fill the whole bar area.
+	body := buildChart([]float64{100, 1000}, starts, 100, 2, chartH, now, ZoomLevels[0], chartUnitCost, dateOrderMonthFirst)
+
+	barRows := chartH - 1 // one row reserved for x-axis labels (chartH>=6)
+	if got := barHeightAtCol(body, 0); got < barRows-1 {
+		t.Errorf("bar 0 (value==peak) rendered %d/%d rows — squashed by the "+
+			"off-screen 10× bucket. ntcharts AutoMaxValue overrode WithMaxValue; "+
+			"buildChart needs WithNoAutoMaxValue (#230).", got, barRows)
+	}
+}
+
 func TestRenderXLabels_OverflowingLabelDropped(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 5, 12, 14, 0, 0, 0, time.UTC)
