@@ -1700,6 +1700,8 @@ func (m *Model) renderWindow() {
 	// left edge matches. prevLongest is the full-canvas width the offset was
 	// clamped against (same math renderSpringFrame is tuned for).
 	stride := zoom.stride()
+	// prevLongest matches renderSpringFrame's zoom.CanvasWidth(len(m.lastValues)):
+	// refreshChart sets m.lastCanvasW = zoom.CanvasWidth(len(values)) for bar modes.
 	prevLongest := m.lastCanvasW
 	sliceStart, xOff := computeSpringSlice(start, prevLongest, m.viewport.Width, stride)
 
