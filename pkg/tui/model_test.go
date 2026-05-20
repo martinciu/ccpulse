@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"log/slog"
 	"math"
 	"path/filepath"
 	"runtime"
@@ -5056,6 +5057,79 @@ func TestScrollDuringSpring_PeakUnchanged(t *testing.T) {
 		t.Errorf("scroll during spring did not advance the viewportXOffset shadow "+
 			"(%d → %d); setX must still run so the post-settle refresh picks up "+
 			"the new scroll position", offsetBefore, m.viewportXOffset)
+	}
+}
+
+// TestScroll_RebuildUsesWindowedWidth is the #255 perf-regression guard:
+// after a bar-mode scroll the buildChart rebuild must run at ~viewport
+// width, NOT the full canvas (m.lastCanvasW). Captures the tui.buildChart
+// slog chartW attribute — the same attribute the real-binary debug.log
+// check reads. Not parallel: captureLogs swaps the process-global slog
+// default.
+func TestScroll_RebuildUsesWindowedWidth(t *testing.T) {
+	dir := t.TempDir()
+	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	defer c.Close()
+
+	tab, err := pricing.Load()
+	if err != nil {
+		t.Fatalf("pricing.Load: %v", err)
+	}
+	now := time.Now().UTC().Truncate(15 * time.Minute)
+
+	var msgs []parse.Message
+	for i := range 400 {
+		msgs = append(msgs, parse.Message{
+			SessionID:   "s",
+			ProjectSlug: "p",
+			Model:       "claude-opus-4-7",
+			Timestamp:   now.Add(time.Duration(-i*15) * time.Minute),
+			InputTokens: int64(1000 + i),
+		})
+	}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	m := New(Deps{Cache: c})
+	m.unitIdx = int(chartUnitTokens)
+	m.w, m.h = 120, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	m.refreshChart()
+
+	if m.lastCanvasW <= m.viewport.Width {
+		t.Fatalf("setup: lastCanvasW=%d must exceed viewport.Width=%d for the "+
+			"windowing assertion to be meaningful", m.lastCanvasW, m.viewport.Width)
+	}
+
+	recs := captureLogs(t, slog.LevelDebug)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	m = updated.(Model)
+
+	var chartW int64 = -1
+	for _, r := range recs() {
+		if r.Message != "tui.buildChart" {
+			continue
+		}
+		if v, ok := attrMap(r)["chartW"].(int64); ok {
+			chartW = v
+		}
+	}
+	if chartW < 0 {
+		t.Fatalf("no tui.buildChart record captured after scroll; the windowed "+
+			"rebuild did not run")
+	}
+	if chartW >= int64(m.lastCanvasW) {
+		t.Errorf("scroll rebuild chartW=%d, want < lastCanvasW=%d — the windowed "+
+			"render must not rebuild the full canvas (#255)", chartW, m.lastCanvasW)
+	}
+	if maxWant := int64(m.viewport.Width + ZoomLevels[m.zoomIdx].stride()); chartW > maxWant {
+		t.Errorf("scroll rebuild chartW=%d exceeds viewport width + one bucket (%d); "+
+			"the window is wider than expected", chartW, maxWant)
 	}
 }
 
