@@ -77,10 +77,11 @@ type springTickMsg struct{ gen int }
 
 // rescaleMsg signals that the debounced scroll-stop window has expired
 // and the chart should recompute peak from the current visible slice.
-// Scheduled by Update on each scrollLeft / scrollRight; the handler
-// drops messages whose gen != m.scrollGen (key-repeat coalescing) and
-// drops while m.springActive (let the unit-toggle spring own peak).
-// Same generation-counter shape as springTickMsg (#218 / commit 1ee982c).
+// At most one is in flight (armRescale gates on m.rescalePending). When
+// it fires with a stale gen (scrolled since arm) the handler re-arms one
+// fresh tick instead of rebuilding; a matching gen rebuilds, unless
+// m.springActive (let the unit-toggle spring own peak). Same generation-
+// counter shape as springTickMsg (#218 / commit 1ee982c).
 type rescaleMsg struct{ gen int }
 
 // springPhase tracks which leg of the two-phase unit-toggle animation
@@ -214,12 +215,20 @@ type Model struct {
 	// top of the new animation's tick and accelerating it (#218).
 	springGen int
 	// scrollGen is bumped each time scrollLeft / scrollRight mutates
-	// viewportXOffset. Every tea.Tick that schedules a rescaleMsg
-	// captures the current gen; the handler drops messages whose gen
-	// no longer matches, so key-repeat scrolls coalesce into a single
-	// rescale fired after the user stops (#230). Same generation-
-	// counter pattern as springGen.
+	// viewportXOffset. The single in-flight rescale tick captures the
+	// gen at arm time; when it fires with a stale gen it re-arms once,
+	// and only a gen that still matches scrollGen rebuilds — so key-repeat
+	// scrolls coalesce into one rescale fired after the user stops (#230).
+	// Same generation-counter pattern as springGen.
 	scrollGen int
+	// rescalePending is true while exactly one debounced rescale tick is
+	// alive. armRescale sets it on the first scroll and skips scheduling
+	// further ticks until the chain ends, so a held-key scroll does NOT
+	// spawn one tea.Tick per keypress. Each dropped per-keypress tick
+	// would otherwise drive an extra View() pass — bubbletea renders after
+	// every message (tea.go eventLoop) — doubling render cost mid-scroll.
+	// Cleared when a tick fires with a matching gen (debounce satisfied).
+	rescalePending bool
 	// springXOffset is the leftmost bucket index visible in the viewport
 	// when animation started. The spring runs over all bucket ratios but
 	// only the visible window is re-rendered each tick — full-canvas
@@ -498,12 +507,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case rescaleMsg:
-		// Stale: a newer scroll superseded this debounce window.
-		// Drop without rescheduling — the newer scroll's own tick
-		// is already in flight (#230).
+		// Stale: the user scrolled after this timer was armed, so the
+		// debounce window restarts. Re-arm exactly ONE fresh tick (the
+		// single in-flight invariant holds — rescalePending stays true)
+		// rather than rebuilding now. This is what lets a held-key scroll
+		// keep just one tick alive instead of a per-keypress flood (#230).
 		if msg.gen != m.scrollGen {
-			return m, nil
+			return m, scheduleRescale(m.scrollGen)
 		}
+		// Debounce satisfied: no scroll since this tick armed. The chain
+		// ends here — clear the flag so the next scroll arms anew.
+		m.rescalePending = false
 		// Spring owns peak during a unit-toggle animation — its frame
 		// renderer normalizes bar heights against niceCeilingFloat(m.peak),
 		// and the spring's target ratios were computed against the
@@ -642,18 +656,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case key.Matches(msg, m.keys.ScrollLeft):
 			m.scrollLeft(horizontalScrollStep)
-			m.scrollGen++
-			gen := m.scrollGen
-			return m, tea.Tick(rescaleDebounce, func(time.Time) tea.Msg {
-				return rescaleMsg{gen: gen}
-			})
+			// Bind before return: armRescale mutates m, but a bare
+			// `return m, m.armRescale()` would copy m for the first result
+			// before the call runs, dropping the mutation.
+			cmd := m.armRescale()
+			return m, cmd
 		case key.Matches(msg, m.keys.ScrollRight):
 			m.scrollRight(horizontalScrollStep)
-			m.scrollGen++
-			gen := m.scrollGen
-			return m, tea.Tick(rescaleDebounce, func(time.Time) tea.Msg {
-				return rescaleMsg{gen: gen}
-			})
+			cmd := m.armRescale()
+			return m, cmd
 		}
 	}
 	return m, nil
@@ -1435,6 +1446,33 @@ func (m *Model) setX(n int) {
 
 func (m *Model) scrollLeft(n int)  { m.setX(m.viewportXOffset - n) }
 func (m *Model) scrollRight(n int) { m.setX(m.viewportXOffset + n) }
+
+// armRescale records that a scroll happened (bump scrollGen) and arms the
+// debounced scroll-stop rescale — but only if no tick is already in
+// flight. Returning nil for the common "already pending" case is the
+// flood fix: a held-key scroll bumps scrollGen on every keypress yet
+// schedules just one tea.Tick, so the dropped-stale ticks that would
+// otherwise drive an extra View() per keypress never get created (#230).
+// The in-flight tick re-arms itself while scrollGen keeps moving (see the
+// rescaleMsg handler), so the debounce still fires only after the user
+// stops. Pointer receiver: mutates scrollGen / rescalePending.
+func (m *Model) armRescale() tea.Cmd {
+	m.scrollGen++
+	if m.rescalePending {
+		return nil
+	}
+	m.rescalePending = true
+	return scheduleRescale(m.scrollGen)
+}
+
+// scheduleRescale returns a command that delivers rescaleMsg{gen} after
+// the debounce window. Shared by armRescale (initial arm) and the
+// rescaleMsg handler (re-arm on a stale gen).
+func scheduleRescale(gen int) tea.Cmd {
+	return tea.Tick(rescaleDebounce, func(time.Time) tea.Msg {
+		return rescaleMsg{gen: gen}
+	})
+}
 
 // refreshChart queries the cache and updates the viewport content.
 // Safe to call when deps.Cache is nil (no-op). Loads the full history

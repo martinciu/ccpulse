@@ -4986,13 +4986,18 @@ func TestRebuildAtVisiblePeak_ComputesFromVisibleSlice(t *testing.T) {
 	}
 }
 
-// TestScroll_StaleRescaleDropped pins the generation-counter gate on
-// rescaleMsg (#230). Production sequence: ScrollRight, ScrollRight,
-// stale rescaleMsg{gen:1} arrives, fresh rescaleMsg{gen:2} arrives.
-// Only the fresh message should rebuild; the stale one is dropped.
+// TestScroll_StaleRescaleDropped pins the single-in-flight debounce on
+// the rescale path (#230). Only ONE rescale tick is ever alive at a
+// time: the first scroll arms it, subsequent scrolls bump scrollGen but
+// return no new tick (so a held-key scroll doesn't spawn a per-keypress
+// tick flood — every dropped tick would otherwise drive an extra View()
+// pass via bubbletea's post-message render). When the in-flight tick
+// fires stale (scrolled since arm) it re-arms ONCE rather than rebuilding;
+// only a tick whose gen still matches scrollGen rebuilds.
 //
-// Verifies the same generation pattern that prevents #218's stacked
-// springTickMsg loops — applied to the new rescaleMsg path.
+// Production sequence modelled here: ScrollLeft (arms gen:1), ScrollLeft
+// (bumps to gen:2, no new tick), stale rescaleMsg{gen:1} arrives
+// (re-arms gen:2, no rebuild), fresh rescaleMsg{gen:2} arrives (rebuilds).
 func TestScroll_StaleRescaleDropped(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -5038,11 +5043,14 @@ func TestScroll_StaleRescaleDropped(t *testing.T) {
 	m.viewport.Height = m.chartHeight()
 	m.refreshChart()
 
-	// First scroll-left: bumps scrollGen to 1, returns a tea.Tick cmd.
+	// First scroll-left: bumps scrollGen to 1, arms the single timer.
 	updated, cmd1 := m.Update(tea.KeyMsg{Type: tea.KeyLeft})
 	m = updated.(Model)
 	if m.scrollGen != 1 {
 		t.Fatalf("after first ScrollLeft: scrollGen = %d, want 1", m.scrollGen)
+	}
+	if !m.rescalePending {
+		t.Fatalf("after first ScrollLeft: rescalePending = false, want true (timer armed)")
 	}
 	if cmd1 == nil {
 		t.Fatalf("after first ScrollLeft: cmd = nil, want tea.Tick → rescaleMsg")
@@ -5058,45 +5066,60 @@ func TestScroll_StaleRescaleDropped(t *testing.T) {
 	}
 
 	// Second scroll-left BEFORE delivering the stale tick: scrollGen
-	// advances to 2; the in-flight rescaleMsg{gen:1} is now stale.
+	// advances to 2, but NO new timer is armed — the in-flight one is
+	// reused. This is the flood-prevention contract: a held-key scroll
+	// must not spawn one tea.Tick per keypress.
 	updated, cmd2 := m.Update(tea.KeyMsg{Type: tea.KeyLeft})
 	m = updated.(Model)
 	if m.scrollGen != 2 {
 		t.Fatalf("after second ScrollLeft: scrollGen = %d, want 2", m.scrollGen)
 	}
-	fresh, ok := cmd2().(rescaleMsg)
-	if !ok {
-		t.Fatalf("cmd2 produced %T, want rescaleMsg", cmd2())
+	if !m.rescalePending {
+		t.Fatalf("after second ScrollLeft: rescalePending = false, want true (timer still in flight)")
 	}
-	if fresh.gen != 2 {
-		t.Fatalf("cmd2's rescaleMsg.gen = %d, want 2", fresh.gen)
+	if cmd2 != nil {
+		t.Errorf("after second ScrollLeft: cmd = non-nil, want nil; a timer is " +
+			"already in flight so no second tick must be scheduled (flood fix)")
 	}
 
 	// Snapshot peak before delivering messages.
 	peakBeforeStale := m.peak
 
-	// Deliver the stale message — handler must drop (no peak change,
-	// nil return cmd).
+	// Deliver the stale tick (gen:1) — scrollGen is now 2, so the handler
+	// must NOT rebuild (peak unchanged) but must re-arm ONE fresh tick for
+	// gen:2 so the debounce restarts from the last scroll.
 	updated, retCmd := m.Update(stale)
 	m = updated.(Model)
 	if m.peak != peakBeforeStale {
 		t.Errorf("stale rescaleMsg{gen:1} mutated m.peak (%v → %v); "+
-			"stale messages must be dropped", peakBeforeStale, m.peak)
+			"a tick whose gen != scrollGen must not rebuild", peakBeforeStale, m.peak)
 	}
-	if retCmd != nil {
-		t.Errorf("stale rescaleMsg{gen:1} returned non-nil Cmd; "+
-			"stale messages must drop silently with no follow-up work")
+	if !m.rescalePending {
+		t.Errorf("stale rescaleMsg{gen:1} cleared rescalePending; the re-armed " +
+			"timer is still in flight")
+	}
+	if retCmd == nil {
+		t.Fatalf("stale rescaleMsg{gen:1} returned nil Cmd; want a re-armed tick → rescaleMsg{gen:2}")
+	}
+	fresh, ok := retCmd().(rescaleMsg)
+	if !ok {
+		t.Fatalf("re-arm cmd produced %T, want rescaleMsg", retCmd())
+	}
+	if fresh.gen != 2 {
+		t.Fatalf("re-armed rescaleMsg.gen = %d, want 2 (current scrollGen)", fresh.gen)
 	}
 
-	// Deliver the fresh message — handler must rebuild (peak may change
-	// because the second scroll-left has shifted the visible slice).
-	updated, _ = m.Update(fresh)
-	m = updated.(Model)
-	// We don't assert a specific peak value here (depends on exact
-	// scroll cadence); we just assert the handler RAN by checking that
-	// scrollGen and msg.gen matched and no panic occurred. The
+	// Deliver the fresh message — gen matches scrollGen, so the handler
+	// rebuilds and clears the in-flight flag. We don't assert a specific
+	// peak value here (depends on exact scroll cadence); the
 	// peak-correctness assertion lives in
 	// TestRescale_WindowPeakMatchesVisibleSlice.
+	updated, _ = m.Update(fresh)
+	m = updated.(Model)
+	if m.rescalePending {
+		t.Errorf("after fresh rescaleMsg{gen:2}: rescalePending = true, want false " +
+			"(debounce satisfied, timer chain ended)")
+	}
 }
 
 // TestRescale_WindowPeakMatchesVisibleSlice is the integration test for
@@ -5153,10 +5176,10 @@ func TestRescale_WindowPeakMatchesVisibleSlice(t *testing.T) {
 	m.refreshChart()
 
 	// Scroll left 150 times → viewport sits over the outlier region.
-	// Each KeyLeft bumps scrollGen and schedules its own rescaleMsg,
-	// but we ignore the returned commands and instead deliver a single
-	// synthetic rescaleMsg{gen: m.scrollGen} at the end — modeling the
-	// user holding ← and then stopping.
+	// Each KeyLeft bumps scrollGen; only the first arms a tick (single
+	// in-flight debounce). We ignore the returned commands and instead
+	// deliver a single synthetic rescaleMsg{gen: m.scrollGen} at the end —
+	// modeling the user holding ← and then stopping.
 	for range 150 {
 		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyLeft})
 		m = updated.(Model)
