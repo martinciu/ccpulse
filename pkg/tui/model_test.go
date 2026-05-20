@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"log/slog"
 	"math"
 	"path/filepath"
 	"runtime"
@@ -193,10 +194,27 @@ func TestView_YLabelFixedAcrossScroll(t *testing.T) {
 		t.Errorf("View output missing Y label %q at default scroll position:\n%s", expected, m.View())
 	}
 
-	// Scroll a few steps left and right; the label must still be present.
+	// Capture the default-position peak before scrolling. The windowed
+	// rescale (#255) must update m.peak as the user scrolls into older,
+	// higher-token buckets — so the post-scroll peak must differ from this
+	// captured value, proving live rescale rather than a stale snapshot.
+	peakAtDefault := m.peak
+
+	// Scroll a few steps left and right; a Y label must still be overlaid on
+	// the viewport's left edge (#132). Windowing rescales the peak live
+	// (#255), so recompute the expected label from the post-scroll peak —
+	// the test's point is that the label is present and pinned to the
+	// viewport, not that the peak is constant.
 	for range 5 {
 		m.scrollLeft(horizontalScrollStep)
 	}
+	// Value-correctness: scrolling left into older (higher-input) buckets must
+	// change m.peak, proving live windowed rescale. This assertion does NOT
+	// derive its expectation from m.peak, so it is non-tautological.
+	if m.peak == peakAtDefault {
+		t.Errorf("expected m.peak to change after ScrollLeft (windowed rescale #255); still %v", m.peak)
+	}
+	expected = formatUnitValue(niceCeilingFloat(m.peak), chartUnit(m.unitIdx))
 	if !strings.Contains(m.View(), expected) {
 		t.Errorf("View output missing Y label %q after ScrollLeft (label should be fixed to viewport):\n%s",
 			expected, m.View())
@@ -204,6 +222,7 @@ func TestView_YLabelFixedAcrossScroll(t *testing.T) {
 	for range 3 {
 		m.scrollRight(horizontalScrollStep)
 	}
+	expected = formatUnitValue(niceCeilingFloat(m.peak), chartUnit(m.unitIdx))
 	if !strings.Contains(m.View(), expected) {
 		t.Errorf("View output missing Y label %q after ScrollRight:\n%s", expected, m.View())
 	}
@@ -2155,9 +2174,14 @@ func TestRefreshChart_PreservesScroll_Issue134(t *testing.T) {
 
 	m.scrollLeft(30)
 	anchorTime := m.lastStarts[m.viewportXOffset]
-	beforePct := m.viewport.HorizontalScrollPercent()
-	if beforePct >= 1.0 {
-		t.Fatalf("setup: scroll should not be at right edge, got HorizontalScrollPercent=%v", beforePct)
+	// Windowing (#255) makes viewport.HorizontalScrollPercent degenerate —
+	// the content is now ~viewport width, so it sits at ~1.0 regardless of
+	// position. The shadow viewportXOffset is the position-in-full-history
+	// metric; assert the scroll moved off the right edge there instead.
+	rightEdge := len(m.lastStarts) - m.visibleBuckets()
+	if m.viewportXOffset >= rightEdge {
+		t.Fatalf("setup: scroll should not be at right edge, got viewportXOffset=%d (rightEdge=%d)",
+			m.viewportXOffset, rightEdge)
 	}
 
 	m.refreshChart()
@@ -4908,15 +4932,12 @@ func TestRefresh_PeakFromVisibleSlice(t *testing.T) {
 	}
 }
 
-// TestRebuildAtVisiblePeak_ComputesFromVisibleSlice unit-tests the
-// DB-free rescale helper used by the debounced scroll-stop path (#230).
-//
-// Seeds the chart via refreshChart (so lastValues/lastStarts/lastCanvasW
-// are populated), then manually shifts viewportXOffset and asserts
-// rebuildAtVisiblePeak picks up the new visible slice — without going
-// back to the DB. Verifies m.peak reflects the new visible slice and
-// is distinct from the right-edge baseline.
-func TestRebuildAtVisiblePeak_ComputesFromVisibleSlice(t *testing.T) {
+// TestRenderWindow_ComputesFromVisibleSlice unit-tests the windowed
+// steady-state bar render (#255). Seeds the chart via refreshChart, shifts
+// viewportXOffset over the outlier region, and asserts renderWindow
+// recomputes m.peak from the new visible slice (DB-free) — the same
+// contract the deleted rebuildAtVisiblePeak held, now at ~viewport width.
+func TestRenderWindow_ComputesFromVisibleSlice(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c, err := cache.Open(filepath.Join(dir, "state.db"))
@@ -4963,42 +4984,29 @@ func TestRebuildAtVisiblePeak_ComputesFromVisibleSlice(t *testing.T) {
 
 	rightEdgePeak := m.peak
 
-	// Move the viewport over the outlier region WITHOUT going through
-	// refreshChart (which would do its own peak recompute). We simulate
-	// "scroll happened, debounce just fired, no DB activity in between"
-	// by directly mutating viewportXOffset to land on offsets where the
-	// outliers are now visible. Buckets 0..99 are the 9999 outliers in
-	// chronological order; offset 0 with visibleBuckets ~118 covers
-	// them all.
+	// Move the viewport over the outlier region (offsets 0-99 are the 9999
+	// buckets) without a DB round-trip, then re-render the window.
 	m.viewport.SetXOffset(0)
 	m.viewportXOffset = 0
-
-	m.rebuildAtVisiblePeak()
+	m.renderWindow()
 
 	if m.peak < 9000 {
-		t.Errorf("rebuildAtVisiblePeak: m.peak = %v, want ~9999 "+
-			"(visible slice now covers outliers at offsets 0-99). "+
-			"Helper did not recompute peak from the new visible slice.", m.peak)
+		t.Errorf("renderWindow: m.peak = %v, want ~9999 "+
+			"(visible slice now covers outliers at offsets 0-99)", m.peak)
 	}
 	if m.peak == rightEdgePeak {
-		t.Errorf("rebuildAtVisiblePeak: m.peak = %v unchanged from right-edge baseline %v — "+
-			"helper appears to be a no-op", m.peak, rightEdgePeak)
+		t.Errorf("renderWindow: m.peak = %v unchanged from right-edge baseline %v — "+
+			"windowed render appears to be a no-op", m.peak, rightEdgePeak)
 	}
 }
 
-// TestScroll_StaleRescaleDropped pins the single-in-flight debounce on
-// the rescale path (#230). Only ONE rescale tick is ever alive at a
-// time: the first scroll arms it, subsequent scrolls bump scrollGen but
-// return no new tick (so a held-key scroll doesn't spawn a per-keypress
-// tick flood — every dropped tick would otherwise drive an extra View()
-// pass via bubbletea's post-message render). When the in-flight tick
-// fires stale (scrolled since arm) it re-arms ONCE rather than rebuilding;
-// only a tick whose gen still matches scrollGen rebuilds.
-//
-// Production sequence modelled here: ScrollLeft (arms gen:1), ScrollLeft
-// (bumps to gen:2, no new tick), stale rescaleMsg{gen:1} arrives
-// (re-arms gen:2, no rebuild), fresh rescaleMsg{gen:2} arrives (rebuilds).
-func TestScroll_StaleRescaleDropped(t *testing.T) {
+// TestScrollDuringSpring_PeakUnchanged pins that scrolling while a spring is
+// in flight does NOT recompute m.peak (#255 — ports the old #230 rescaleMsg
+// spring gate). The spring owns m.peak as its bar-height normalization base
+// (renderSpringFrame uses niceCeilingFloat(m.peak)); a live rescale mid-spring
+// would shift bar heights under the animation. The viewportXOffset shadow
+// still advances so the post-settle refreshChart picks up the new position.
+func TestScrollDuringSpring_PeakUnchanged(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c, err := cache.Open(filepath.Join(dir, "state.db"))
@@ -5043,261 +5051,111 @@ func TestScroll_StaleRescaleDropped(t *testing.T) {
 	m.viewport.Height = m.chartHeight()
 	m.refreshChart()
 
-	// First scroll-left: bumps scrollGen to 1, arms the single timer.
-	updated, cmd1 := m.Update(tea.KeyMsg{Type: tea.KeyLeft})
-	m = updated.(Model)
-	if m.scrollGen != 1 {
-		t.Fatalf("after first ScrollLeft: scrollGen = %d, want 1", m.scrollGen)
-	}
-	if !m.rescalePending {
-		t.Fatalf("after first ScrollLeft: rescalePending = false, want true (timer armed)")
-	}
-	if cmd1 == nil {
-		t.Fatalf("after first ScrollLeft: cmd = nil, want tea.Tick → rescaleMsg")
-	}
-	// Resolve cmd1 to its rescaleMsg payload. tea.Tick blocks for the
-	// full debounce duration (~300ms); acceptable for a one-shot test.
-	stale, ok := cmd1().(rescaleMsg)
-	if !ok {
-		t.Fatalf("cmd1 produced %T, want rescaleMsg", cmd1())
-	}
-	if stale.gen != 1 {
-		t.Fatalf("cmd1's rescaleMsg.gen = %d, want 1", stale.gen)
-	}
+	peakBeforeSpring := m.peak // right-edge slice (~1000)
+	offsetBefore := m.viewportXOffset
 
-	// Second scroll-left BEFORE delivering the stale tick: scrollGen
-	// advances to 2, but NO new timer is armed — the in-flight one is
-	// reused. This is the flood-prevention contract: a held-key scroll
-	// must not spawn one tea.Tick per keypress.
-	updated, cmd2 := m.Update(tea.KeyMsg{Type: tea.KeyLeft})
-	m = updated.(Model)
-	if m.scrollGen != 2 {
-		t.Fatalf("after second ScrollLeft: scrollGen = %d, want 2", m.scrollGen)
-	}
-	if !m.rescalePending {
-		t.Fatalf("after second ScrollLeft: rescalePending = false, want true (timer still in flight)")
-	}
-	if cmd2 != nil {
-		t.Errorf("after second ScrollLeft: cmd = non-nil, want nil; a timer is " +
-			"already in flight so no second tick must be scheduled (flood fix)")
-	}
-
-	// Snapshot peak before delivering messages.
-	peakBeforeStale := m.peak
-
-	// Deliver the stale tick (gen:1) — scrollGen is now 2, so the handler
-	// must NOT rebuild (peak unchanged) but must re-arm ONE fresh tick for
-	// gen:2 so the debounce restarts from the last scroll.
-	updated, retCmd := m.Update(stale)
-	m = updated.(Model)
-	if m.peak != peakBeforeStale {
-		t.Errorf("stale rescaleMsg{gen:1} mutated m.peak (%v → %v); "+
-			"a tick whose gen != scrollGen must not rebuild", peakBeforeStale, m.peak)
-	}
-	if !m.rescalePending {
-		t.Errorf("stale rescaleMsg{gen:1} cleared rescalePending; the re-armed " +
-			"timer is still in flight")
-	}
-	if retCmd == nil {
-		t.Fatalf("stale rescaleMsg{gen:1} returned nil Cmd; want a re-armed tick → rescaleMsg{gen:2}")
-	}
-	fresh, ok := retCmd().(rescaleMsg)
-	if !ok {
-		t.Fatalf("re-arm cmd produced %T, want rescaleMsg", retCmd())
-	}
-	if fresh.gen != 2 {
-		t.Fatalf("re-armed rescaleMsg.gen = %d, want 2 (current scrollGen)", fresh.gen)
-	}
-
-	// Deliver the fresh message — gen matches scrollGen, so the handler
-	// rebuilds and clears the in-flight flag. We don't assert a specific
-	// peak value here (depends on exact scroll cadence); the
-	// peak-correctness assertion lives in
-	// TestRescale_WindowPeakMatchesVisibleSlice.
-	updated, _ = m.Update(fresh)
-	m = updated.(Model)
-	if m.rescalePending {
-		t.Errorf("after fresh rescaleMsg{gen:2}: rescalePending = true, want false " +
-			"(debounce satisfied, timer chain ended)")
-	}
-}
-
-// TestRescale_WindowPeakMatchesVisibleSlice is the integration test for
-// the scroll-stop rescale path (#230). Scrolls deep into an outlier
-// region, fires a fresh rescaleMsg, asserts m.peak reflects the visible
-// slice covering the outliers.
-//
-// Pairs with TestRefresh_PeakFromVisibleSlice (which covers the refresh
-// path) — together they confirm both paths converge on the unified
-// visible-slice policy.
-func TestRescale_WindowPeakMatchesVisibleSlice(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	c, err := cache.Open(filepath.Join(dir, "state.db"))
-	if err != nil {
-		t.Fatalf("cache.Open: %v", err)
-	}
-	defer c.Close()
-
-	tab, err := pricing.Load()
-	if err != nil {
-		t.Fatalf("pricing.Load: %v", err)
-	}
-	now := time.Now().UTC().Truncate(15 * time.Minute)
-
-	var msgs []parse.Message
-	for i := range 100 {
-		msgs = append(msgs, parse.Message{
-			SessionID:   "old",
-			ProjectSlug: "p",
-			Model:       "claude-opus-4-7",
-			Timestamp:   now.Add(time.Duration(-(200+i)*15) * time.Minute),
-			InputTokens: 9999,
-		})
-	}
-	for i := range 200 {
-		msgs = append(msgs, parse.Message{
-			SessionID:   "new",
-			ProjectSlug: "p",
-			Model:       "claude-opus-4-7",
-			Timestamp:   now.Add(time.Duration(-i*15) * time.Minute),
-			InputTokens: 1000,
-		})
-	}
-	if err := c.InsertMessages(msgs, tab); err != nil {
-		t.Fatalf("InsertMessages: %v", err)
-	}
-
-	m := New(Deps{Cache: c})
-	m.unitIdx = int(chartUnitTokens)
-	m.w, m.h = 120, 40
-	m.viewport.Width = m.chartWidth()
-	m.viewport.Height = m.chartHeight()
-	m.refreshChart()
-
-	// Scroll left 150 times → viewport sits over the outlier region.
-	// Each KeyLeft bumps scrollGen; only the first arms a tick (single
-	// in-flight debounce). We ignore the returned commands and instead
-	// deliver a single synthetic rescaleMsg{gen: m.scrollGen} at the end —
-	// modeling the user holding ← and then stopping.
-	for range 150 {
-		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyLeft})
-		m = updated.(Model)
-	}
-
-	fresh := rescaleMsg{gen: m.scrollGen}
-	updated, _ := m.Update(fresh)
-	m = updated.(Model)
-
-	if m.peak < 9000 {
-		t.Errorf("after 150× ScrollLeft + fresh rescaleMsg: m.peak = %v, "+
-			"want ~9999 (visible slice now covers outliers). "+
-			"Scroll-stop rescale did not recompute from the visible slice.", m.peak)
-	}
-}
-
-// TestRescale_DroppedDuringSpring pins the spring-active gate on the
-// rescaleMsg handler (#230). Setup: chart is at a known peak. We set
-// m.springActive = true to simulate a unit-toggle spring in flight,
-// then deliver a fresh rescaleMsg. m.peak must NOT change — the
-// handler must drop and let the spring complete against the peak it
-// started with.
-//
-// Without this gate, mid-spring rescale would shift m.peak under the
-// spring's frame renderer, which reads m.peak as the normalization
-// base for the bar heights (renderSpringFrame uses
-// niceCeilingFloat(m.peak)).
-func TestRescale_DroppedDuringSpring(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	c, err := cache.Open(filepath.Join(dir, "state.db"))
-	if err != nil {
-		t.Fatalf("cache.Open: %v", err)
-	}
-	defer c.Close()
-
-	tab, err := pricing.Load()
-	if err != nil {
-		t.Fatalf("pricing.Load: %v", err)
-	}
-	now := time.Now().UTC().Truncate(15 * time.Minute)
-
-	var msgs []parse.Message
-	for i := range 100 {
-		msgs = append(msgs, parse.Message{
-			SessionID:   "old",
-			ProjectSlug: "p",
-			Model:       "claude-opus-4-7",
-			Timestamp:   now.Add(time.Duration(-(200+i)*15) * time.Minute),
-			InputTokens: 9999,
-		})
-	}
-	for i := range 200 {
-		msgs = append(msgs, parse.Message{
-			SessionID:   "new",
-			ProjectSlug: "p",
-			Model:       "claude-opus-4-7",
-			Timestamp:   now.Add(time.Duration(-i*15) * time.Minute),
-			InputTokens: 1000,
-		})
-	}
-	if err := c.InsertMessages(msgs, tab); err != nil {
-		t.Fatalf("InsertMessages: %v", err)
-	}
-
-	m := New(Deps{Cache: c})
-	m.unitIdx = int(chartUnitTokens)
-	m.w, m.h = 120, 40
-	m.viewport.Width = m.chartWidth()
-	m.viewport.Height = m.chartHeight()
-	m.refreshChart()
-
-	// Scroll into the outlier region — viewportXOffset now lands on
-	// offsets where a rescale WOULD jump peak to ~9999.
-	for range 150 {
-		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyLeft})
-		m = updated.(Model)
-	}
-
-	// Snapshot peak BEFORE setting springActive.
-	peakBeforeSpring := m.peak
-
-	// Simulate a unit-toggle spring in flight. We don't actually run
-	// the spring (that would also reset things); we just set the gate.
+	// Spring in flight: scrolling into the outlier region must NOT move peak.
 	m.springActive = true
-
-	// Deliver a fresh rescaleMsg — handler must drop because spring is
-	// active.
-	fresh := rescaleMsg{gen: m.scrollGen}
-	updated, retCmd := m.Update(fresh)
-	m = updated.(Model)
+	for range 150 {
+		m.scrollLeft(horizontalScrollStep)
+	}
 
 	if m.peak != peakBeforeSpring {
-		t.Errorf("rescaleMsg mutated m.peak during spring (%v → %v); "+
-			"handler must drop while springActive to avoid corrupting "+
-			"the spring's normalization base", peakBeforeSpring, m.peak)
+		t.Errorf("scroll during spring mutated m.peak (%v → %v); the spring "+
+			"must own peak — renderWindow must be gated on !springActive",
+			peakBeforeSpring, m.peak)
 	}
-	if retCmd != nil {
-		t.Errorf("rescaleMsg returned non-nil Cmd while spring active; "+
-			"drop must be silent — no follow-up work")
+	if m.viewportXOffset >= offsetBefore {
+		t.Errorf("scroll during spring did not advance the viewportXOffset shadow "+
+			"(%d → %d); setX must still run so the post-settle refresh picks up "+
+			"the new scroll position", offsetBefore, m.viewportXOffset)
 	}
 }
 
-// TestRefresh_RestoresRightEdgeAfterNarrowContent reproduces the #230
-// spring-settle regression: the unit-toggle / intro spring renders only
-// the visible window each frame (content ~= chartWidth cols, see
-// renderSpringFrame at model.go:1336-1338). When the spring settles and
-// calls refreshChart, the anchor-restore setX runs while that NARROW
-// frame is still the viewport's content — and viewport.SetXOffset clamps
-// the requested column to longestLineWidth-Width. Against the narrow
-// content the right-edge offset collapses to ~0, so the chart jumps to
-// the earliest bucket. The shadow m.viewportXOffset stays correct (it
-// clamps against lastStarts, the full data), which is why a later scroll
-// snaps the chart back to "now".
-//
-// Probes the REAL viewport offset via HorizontalScrollPercent (== 1.0 at
-// the right edge). The earlier #230 tests only checked m.peak, which is
-// derived from the (correct) shadow offset, so they never caught this.
+// TestScroll_RebuildUsesWindowedWidth is the #255 perf-regression guard:
+// after a bar-mode scroll the buildChart rebuild must run at ~viewport
+// width, NOT the full canvas (m.lastCanvasW). Captures the tui.buildChart
+// slog chartW attribute — the same attribute the real-binary debug.log
+// check reads. Not parallel: captureLogs swaps the process-global slog
+// default.
+func TestScroll_RebuildUsesWindowedWidth(t *testing.T) {
+	dir := t.TempDir()
+	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	defer c.Close()
+
+	tab, err := pricing.Load()
+	if err != nil {
+		t.Fatalf("pricing.Load: %v", err)
+	}
+	now := time.Now().UTC().Truncate(15 * time.Minute)
+
+	var msgs []parse.Message
+	for i := range 400 {
+		msgs = append(msgs, parse.Message{
+			SessionID:   "s",
+			ProjectSlug: "p",
+			Model:       "claude-opus-4-7",
+			Timestamp:   now.Add(time.Duration(-i*15) * time.Minute),
+			InputTokens: int64(1000 + i),
+		})
+	}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	m := New(Deps{Cache: c})
+	m.unitIdx = int(chartUnitTokens)
+	m.w, m.h = 120, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	m.refreshChart()
+
+	if m.lastCanvasW <= m.viewport.Width {
+		t.Fatalf("setup: lastCanvasW=%d must exceed viewport.Width=%d for the "+
+			"windowing assertion to be meaningful", m.lastCanvasW, m.viewport.Width)
+	}
+
+	recs := captureLogs(t, slog.LevelDebug)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	m = updated.(Model)
+
+	var chartW int64 = -1
+	for _, r := range recs() {
+		if r.Message != "tui.buildChart" {
+			continue
+		}
+		if v, ok := attrMap(r)["chartW"].(int64); ok {
+			chartW = v
+		}
+	}
+	if chartW < 0 {
+		t.Fatalf("no tui.buildChart record captured after scroll; the windowed "+
+			"rebuild did not run")
+	}
+	if chartW >= int64(m.lastCanvasW) {
+		t.Errorf("scroll rebuild chartW=%d, want < lastCanvasW=%d — the windowed "+
+			"render must not rebuild the full canvas (#255)", chartW, m.lastCanvasW)
+	}
+	if maxWant := int64(m.viewport.Width + ZoomLevels[m.zoomIdx].stride()); chartW > maxWant {
+		t.Errorf("scroll rebuild chartW=%d exceeds viewport width + one bucket (%d); "+
+			"the window is wider than expected", chartW, maxWant)
+	}
+}
+
+// TestRefresh_RestoresRightEdgeAfterNarrowContent guards that after
+// refreshChart, the chart stays pinned to the right edge
+// (HorizontalScrollPercent == 1.0 / current time) when the viewport
+// holds narrow spring-animation content. Under #255, refreshChart calls
+// renderWindow (for bar modes), which rebuilds windowed content and sets
+// the viewport offset in a single operation via SetXOffset — no separate
+// re-apply setX step against stale narrow content. The test verifies the
+// right-edge observable is preserved through this windowed renderWindow
+// path. The earlier #230 tests only checked m.peak, which is derived from
+// the shadow offset; this probes the REAL viewport offset via
+// HorizontalScrollPercent.
 func TestRefresh_RestoresRightEdgeAfterNarrowContent(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
