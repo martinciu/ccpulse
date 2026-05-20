@@ -1709,6 +1709,8 @@ func (m *Model) renderWindow() {
 	peak := peakOfVisibleSlice(m.lastValues, start, nv)
 	m.peak = peak
 
+	// sliceStart is start or start-1, so sliceStart <= start < end; the end
+	// clamps above therefore keep [sliceStart:end] in bounds.
 	m.viewport.SetContent(buildChart(m.lastValues[sliceStart:end], m.lastStarts[sliceStart:end],
 		peak, zoom.CanvasWidth(end-sliceStart), m.chartHeight(), time.Now(), zoom, unit, m.dateOrder))
 	m.viewport.SetXOffset(xOff)
