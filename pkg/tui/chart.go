@@ -410,18 +410,22 @@ func renderXLabels(starts []time.Time, chartW int, zoom ZoomLevel, now time.Time
 }
 
 // dateLabel renders the day-boundary stamp shown at midnight slots
-// across all three zooms: weekday short ("Mon") for buckets within
-// the past 7 days, locale-aware short date ("05/09" or "09/05") for
-// older buckets. Both forms fit the 5-col label slot.
+// across all three zooms: weekday short ("Mon") for buckets within the
+// past 7 days, locale-aware short date ("05/09" or "09/05") for older
+// buckets. Both forms fit the 5-col label slot.
 //
 // Cheap path per issue #145: weekday/month names stay ASCII English;
-// only date order is locale-aware. Native-language names depend on
-// the wide-rune-aware renderXLabels writer tracked in #130.
+// only date order is locale-aware. Native-language names depend on the
+// wide-rune-aware renderXLabels writer tracked in #130.
 //
-// t.Format reads t's zone fields. Buckets are persisted as UTC in
-// pkg/cache, so the chart renders UTC weekdays/dates — a user in a
-// non-UTC zone may see a label off-by-one near local midnight.
+// The bucket time is rendered in now.Location() — time.Local in
+// production, since every caller passes time.Now() — so weekday/date
+// stamps match the user's wall clock on all three zooms (issue #253).
+// dateLabel is reached only via formatXLabel, which already passes a
+// localized time; re-applying .In here is a no-op for that path and
+// keeps dateLabel correct when called directly.
 func dateLabel(t, now time.Time, order dateOrder) string {
+	t = t.In(now.Location())
 	if t.After(now.AddDate(0, 0, -7)) {
 		return t.Format("Mon")
 	}
@@ -435,23 +439,34 @@ func dateLabel(t, now time.Time, order dateOrder) string {
 // given zoom; "" if t is not on a label boundary. Cadence is clock-
 // aligned (anchored to hour / 3-hour / day marks) so positions are
 // stable across refreshes. At midnight, the 15m/1h zooms route through
-// dateLabel(t, now, order) for a unified day-boundary stamp. At 24h,
-// every bucket is a midnight so dateLabel runs unconditionally.
+// dateLabel for a unified day-boundary stamp. At 24h, every bucket is a
+// midnight so dateLabel runs unconditionally.
+//
+// t is converted to now.Location() (= time.Local in production) before
+// the cadence tests and formatting, so all three zooms agree on the
+// user's timezone (issue #253). 15m/1h buckets stay UTC-aligned in
+// pkg/cache (Approach A, display-only): for whole-hour-offset zones the
+// UTC boundaries coincide with local hour marks, so bars sit correctly
+// and labels read local. Sub-hour-offset zones (e.g. India +5:30) keep
+// UTC-aligned bars, so 1h-zoom hour ticks may not land on a local hour
+// mark — a documented limitation; local-aligned bucketing (Approach B)
+// would be needed to fix it.
 func formatXLabel(t time.Time, zoom ZoomLevel, now time.Time, order dateOrder) string {
+	tl := t.In(now.Location())
 	switch zoom.Label {
 	case "15m":
-		if t.Hour()%3 == 0 && t.Minute() == 0 {
-			if t.Hour() == 0 {
-				return dateLabel(t, now, order)
+		if tl.Hour()%3 == 0 && tl.Minute() == 0 {
+			if tl.Hour() == 0 {
+				return dateLabel(tl, now, order)
 			}
-			return t.Format("15:04")
+			return tl.Format("15:04")
 		}
 	case "1h":
-		if t.Hour() == 0 && t.Minute() == 0 {
-			return dateLabel(t, now, order)
+		if tl.Hour() == 0 && tl.Minute() == 0 {
+			return dateLabel(tl, now, order)
 		}
 	case "24h":
-		return dateLabel(t, now, order)
+		return dateLabel(tl, now, order)
 	}
 	return ""
 }
