@@ -194,6 +194,12 @@ func TestView_YLabelFixedAcrossScroll(t *testing.T) {
 		t.Errorf("View output missing Y label %q at default scroll position:\n%s", expected, m.View())
 	}
 
+	// Capture the default-position peak before scrolling. The windowed
+	// rescale (#255) must update m.peak as the user scrolls into older,
+	// higher-token buckets — so the post-scroll peak must differ from this
+	// captured value, proving live rescale rather than a stale snapshot.
+	peakAtDefault := m.peak
+
 	// Scroll a few steps left and right; a Y label must still be overlaid on
 	// the viewport's left edge (#132). Windowing rescales the peak live
 	// (#255), so recompute the expected label from the post-scroll peak —
@@ -201,6 +207,12 @@ func TestView_YLabelFixedAcrossScroll(t *testing.T) {
 	// viewport, not that the peak is constant.
 	for range 5 {
 		m.scrollLeft(horizontalScrollStep)
+	}
+	// Value-correctness: scrolling left into older (higher-input) buckets must
+	// change m.peak, proving live windowed rescale. This assertion does NOT
+	// derive its expectation from m.peak, so it is non-tautological.
+	if m.peak == peakAtDefault {
+		t.Errorf("expected m.peak to change after ScrollLeft (windowed rescale #255); still %v", m.peak)
 	}
 	expected = formatUnitValue(niceCeilingFloat(m.peak), chartUnit(m.unitIdx))
 	if !strings.Contains(m.View(), expected) {
