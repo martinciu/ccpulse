@@ -1,0 +1,85 @@
+name: Claude Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: Claude Review
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    if: >-
+      github.event.pull_request.draft == false &&
+      !endsWith(github.event.pull_request.user.login, '[bot]')
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          fetch-depth: 1
+
+      - name: Install Go skills
+        run: npx skills add https://github.com/samber/cc-skills-golang -a claude-code --skill '*' -y --copy
+
+      - uses: anthropics/claude-code-action@1dc994ee7a008f0ecc866d9ac23ef036b7229f84  # v1.0.127
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          use_sticky_comment: true
+          track_progress: true
+          sticky_comment_header: "<!-- claude-review -->"
+          claude_args: >-
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            You are a senior Go engineer reviewing a pull request for ccpulse,
+            a terminal dashboard for Claude Code usage.
+
+            Read the change first:
+            - `gh pr diff` for the diff, `gh pr view` for description/metadata.
+            - The PR branch is already checked out in the working directory.
+
+            ## ccpulse-specific lenses (highest priority)
+
+            - PRIVACY / slog: never log bearer/OAuth tokens, credential JSON,
+              or raw HTTP bodies. Every new slog call site is a privacy surface
+              — flag leaks of tokens, project paths, or response payloads.
+            - TUI rendering: prefer lipgloss/bubbles/ntcharts primitives over
+              hand-rolled width/padding math; lipgloss.Width over len().
+            - Library line: ccpulse stays on the v1 majors of bubbletea/
+              lipgloss/bubbles/ntcharts — flag any v2 import. Do NOT suggest
+              new third-party libs (samber/*, testify, viper, DI frameworks).
+            - Idiomatic Go: apply Skill("golang-security"),
+              Skill("golang-error-handling"), Skill("golang-concurrency"),
+              Skill("golang-database") for pkg/cache, Skill("golang-cli") +
+              Skill("golang-spf13-cobra") for cmd/ccpulse, Skill("golang-testing"),
+              Skill("golang-performance") for hot paths.
+
+            Check project guidelines: @./CLAUDE.md
+
+            ## How to report
+
+            - mcp__github_inline_comment__create_inline_comment (confirmed: true)
+              for each line-specific issue; include a ```suggestion block for
+              direct 1:1 fixes.
+            - `gh pr comment` only for a single top-level summary.
+            - Name the problem, say when it bites, give a concrete fix.
+            - Short comments. Only real issues — no praise, no nits gofmt
+              handles. Verify the point wasn't already raised in a prior
+              comment. Post nothing else; no chat output.
+
+            Label severity:
+            - 🔴 BLOCKING — definite bug, data race, privacy leak, security hole.
+            - 🟠 IMPORTANT — significant risk under specific conditions.
+            - 🟡 SUGGESTION — defensive or readability improvement.
