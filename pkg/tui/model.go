@@ -23,14 +23,6 @@ import (
 // horizontalScrollStep is the per-keypress shift in columns.
 const horizontalScrollStep = 3
 
-// rescaleDebounce is the hold time after the last scroll keypress
-// before the dynamic-peak rescale fires. 300ms is long enough to
-// coalesce typical key-repeat (~30ms intervals) and short enough that
-// a deliberate scroll-stop feels responsive. Hard-snap rescale on
-// fire (no harmonica) per the project's continuous-input animation
-// guidance in CLAUDE.md (#230).
-const rescaleDebounce = 300 * time.Millisecond
-
 // viewLogThreshold gates the slog.Debug emitted from View(); frames
 // faster than this aren't logged so idle/animation renders stay quiet
 // on the dev channel. 5 ms is below the perception floor.
@@ -74,15 +66,6 @@ type indexBannerClearMsg struct{}
 // (then tripling, etc.) the effective frame rate until the animation
 // visibly skips.
 type springTickMsg struct{ gen int }
-
-// rescaleMsg signals that the debounced scroll-stop window has expired
-// and the chart should recompute peak from the current visible slice.
-// At most one is in flight (armRescale gates on m.rescalePending). When
-// it fires with a stale gen (scrolled since arm) the handler re-arms one
-// fresh tick instead of rebuilding; a matching gen rebuilds, unless
-// m.springActive (let the unit-toggle spring own peak). Same generation-
-// counter shape as springTickMsg (#218 / commit 1ee982c).
-type rescaleMsg struct{ gen int }
 
 // springPhase tracks which leg of the two-phase unit-toggle animation
 // is currently running. Idle is the steady state; springActive=false
@@ -214,21 +197,6 @@ type Model struct {
 	// presses from stacking the previous animation's still-pending tick on
 	// top of the new animation's tick and accelerating it (#218).
 	springGen int
-	// scrollGen is bumped each time scrollLeft / scrollRight mutates
-	// viewportXOffset. The single in-flight rescale tick captures the
-	// gen at arm time; when it fires with a stale gen it re-arms once,
-	// and only a gen that still matches scrollGen rebuilds — so key-repeat
-	// scrolls coalesce into one rescale fired after the user stops (#230).
-	// Same generation-counter pattern as springGen.
-	scrollGen int
-	// rescalePending is true while exactly one debounced rescale tick is
-	// alive. armRescale sets it on the first scroll and skips scheduling
-	// further ticks until the chain ends, so a held-key scroll does NOT
-	// spawn one tea.Tick per keypress. Each dropped per-keypress tick
-	// would otherwise drive an extra View() pass — bubbletea renders after
-	// every message (tea.go eventLoop) — doubling render cost mid-scroll.
-	// Cleared when a tick fires with a matching gen (debounce satisfied).
-	rescalePending bool
 	// springXOffset is the leftmost bucket index visible in the viewport
 	// when animation started. The spring runs over all bucket ratios but
 	// only the visible window is re-rendered each tick — full-canvas
@@ -506,29 +474,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			})
 		}
 		return m, nil
-	case rescaleMsg:
-		// Stale: the user scrolled after this timer was armed, so the
-		// debounce window restarts. Re-arm exactly ONE fresh tick (the
-		// single in-flight invariant holds — rescalePending stays true)
-		// rather than rebuilding now. This is what lets a held-key scroll
-		// keep just one tick alive instead of a per-keypress flood (#230).
-		if msg.gen != m.scrollGen {
-			return m, scheduleRescale(m.scrollGen)
-		}
-		// Debounce satisfied: no scroll since this tick armed. The chain
-		// ends here — clear the flag so the next scroll arms anew.
-		m.rescalePending = false
-		// Spring owns peak during a unit-toggle animation — its frame
-		// renderer normalizes bar heights against niceCeilingFloat(m.peak),
-		// and the spring's target ratios were computed against the
-		// peak at spring-start. Changing peak mid-spring would shift the
-		// rendered heights under the spring (#230). After the spring
-		// completes, the next scroll will arm a fresh rescale.
-		if m.springActive {
-			return m, nil
-		}
-		m.rebuildAtVisiblePeak()
-		return m, nil
 	case QuotaMsg:
 		m.quota = msg.Usage
 		m.quotaSource = msg.Source
@@ -656,15 +601,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case key.Matches(msg, m.keys.ScrollLeft):
 			m.scrollLeft(horizontalScrollStep)
-			// Bind before return: armRescale mutates m, but a bare
-			// `return m, m.armRescale()` would copy m for the first result
-			// before the call runs, dropping the mutation.
-			cmd := m.armRescale()
-			return m, cmd
+			return m, nil
 		case key.Matches(msg, m.keys.ScrollRight):
 			m.scrollRight(horizontalScrollStep)
-			cmd := m.armRescale()
-			return m, cmd
+			return m, nil
 		}
 	}
 	return m, nil
@@ -1444,34 +1384,26 @@ func (m *Model) setX(n int) {
 	m.viewportXOffset = n
 }
 
-func (m *Model) scrollLeft(n int)  { m.setX(m.viewportXOffset - n) }
-func (m *Model) scrollRight(n int) { m.setX(m.viewportXOffset + n) }
-
-// armRescale records that a scroll happened (bump scrollGen) and arms the
-// debounced scroll-stop rescale — but only if no tick is already in
-// flight. Returning nil for the common "already pending" case is the
-// flood fix: a held-key scroll bumps scrollGen on every keypress yet
-// schedules just one tea.Tick, so the dropped-stale ticks that would
-// otherwise drive an extra View() per keypress never get created (#230).
-// The in-flight tick re-arms itself while scrollGen keeps moving (see the
-// rescaleMsg handler), so the debounce still fires only after the user
-// stops. Pointer receiver: mutates scrollGen / rescalePending.
-func (m *Model) armRescale() tea.Cmd {
-	m.scrollGen++
-	if m.rescalePending {
-		return nil
+// scrollLeft / scrollRight shift the bucket-indexed viewport offset and, in
+// bar mode, re-render the visible window live (#255 — no debounce; the
+// rebuild is now ~viewport width). renderWindow no-ops in remaining mode, so
+// line-mode scroll stays a pure offset over the full canvas. The
+// !springActive guard ports the old rescaleMsg gate: a scroll mid-animation
+// still advances the viewportXOffset shadow (so the post-settle refreshChart
+// picks up the new position) but must not recompute m.peak — the spring owns
+// it as the bar-height normalization base.
+func (m *Model) scrollLeft(n int) {
+	m.setX(m.viewportXOffset - n)
+	if !m.springActive {
+		m.renderWindow()
 	}
-	m.rescalePending = true
-	return scheduleRescale(m.scrollGen)
 }
 
-// scheduleRescale returns a command that delivers rescaleMsg{gen} after
-// the debounce window. Shared by armRescale (initial arm) and the
-// rescaleMsg handler (re-arm on a stale gen).
-func scheduleRescale(gen int) tea.Cmd {
-	return tea.Tick(rescaleDebounce, func(time.Time) tea.Msg {
-		return rescaleMsg{gen: gen}
-	})
+func (m *Model) scrollRight(n int) {
+	m.setX(m.viewportXOffset + n)
+	if !m.springActive {
+		m.renderWindow()
+	}
 }
 
 // refreshChart queries the cache and updates the viewport content.
@@ -1702,64 +1634,21 @@ func (m *Model) refreshChart() {
 		m.setX(targetCol / stride)
 	}
 
-	// Compute peak from the visible slice (#230 unified policy).
-	// Remaining-mode line chart keeps peak = 1.0 (set in the switch above).
-	if unit != chartUnitRemaining {
-		peak = peakOfVisibleSlice(values, m.viewportXOffset, m.visibleBuckets())
-	}
-	m.peak = peak
-
-	// Build chart against the post-anchor peak.
+	// Paint (#255). Bar modes window the render to the visible slice via
+	// renderWindow, which computes the visible-slice peak and sets the
+	// viewport content + slack offset itself — so no separate peak calc and
+	// no re-apply setX are needed (renderWindow's SetXOffset against its own
+	// windowed canvas is what restores the right edge; the old full-canvas
+	// re-apply dance is gone). Remaining mode keeps the full-canvas line
+	// chart plus the re-apply setX to restore the offset against the new
+	// wide canvas after a bar→line spring left narrow content behind.
 	if unit == chartUnitRemaining {
+		m.peak = peak // 1.0, set in the switch above
 		m.viewport.SetContent(buildLineChart(m.lastPts5h, m.lastPts7d, from, to, canvasW, chartH, time.Now(), zoom, m.dateOrder, "refresh"))
+		m.setX(m.viewportXOffset)
 	} else {
-		m.viewport.SetContent(buildChart(values, starts, peak, canvasW, chartH, time.Now(), zoom, unit, m.dateOrder))
+		m.renderWindow()
 	}
-
-	// Re-apply the scroll offset now that the full-width chart is the
-	// viewport's content. viewport.SetXOffset clamps the requested column
-	// to longestLineWidth-Width of whatever is CURRENTLY set, and the
-	// anchor-restore setX above ran while the viewport still held the
-	// previous content. After a unit-toggle / intro spring that prior
-	// content is a single-frame render of just the visible window
-	// (~chartWidth cols, see renderSpringFrame), so a right-edge offset
-	// would clamp to ~0 and the chart would jump to the earliest bucket.
-	// The shadow m.viewportXOffset is already correct (it clamps against
-	// lastStarts, the full data); this re-sync applies it against the
-	// freshly-built wide canvas (#230 spring-settle regression).
-	m.setX(m.viewportXOffset)
-}
-
-// rebuildAtVisiblePeak recomputes m.peak from the current visible slice
-// of m.lastValues and re-renders the bar chart against the cached
-// lastStarts / lastCanvasW — no DB query (#230). Used by the debounced
-// scroll-stop rescaleMsg handler to fire a cheap rebuild after the
-// user stops scrolling.
-//
-// Callers must guard against m.springActive — the unit-toggle spring
-// reads m.peak as the normalization base for its target ratios, so
-// changing peak mid-spring would corrupt the animation. The rescaleMsg
-// handler does this gate; if you call this helper from a new site,
-// add the same gate.
-//
-// No-op when:
-//   - lastValues is empty (empty-cache state — buildChart would render
-//     all-zero bars against the cached canvas, which is fine but pointless)
-//   - the active unit is chartUnitRemaining (line chart keeps fixed
-//     peak=1.0; no rescale path)
-//   - lastCanvasW is 0 (canvas was never built — pre-init state)
-func (m *Model) rebuildAtVisiblePeak() {
-	if len(m.lastValues) == 0 || m.lastCanvasW == 0 {
-		return
-	}
-	unit := chartUnit(m.unitIdx)
-	if unit == chartUnitRemaining {
-		return
-	}
-	zoom := ZoomLevels[m.zoomIdx]
-	m.peak = peakOfVisibleSlice(m.lastValues, m.viewportXOffset, m.visibleBuckets())
-	m.viewport.SetContent(buildChart(m.lastValues, m.lastStarts, m.peak,
-		m.lastCanvasW, m.chartHeight(), time.Now(), zoom, unit, m.dateOrder))
 }
 
 // renderWindow renders the bar-chart viewport from the visible window of
@@ -1888,9 +1777,9 @@ func (m Model) visibleBuckets() int {
 // width — niceCeilingFloat handles peak=0 by returning 0 and buildChart
 // guards WithMaxValue against zero (chart.go:613-614).
 //
-// Used by both refreshChart's post-anchor peak computation and the
-// rescaleMsg handler's rebuildAtVisiblePeak() to compute the dynamic
-// y-axis peak from the currently-visible bucket window (#230).
+// Used by both refreshChart's post-anchor peak computation and
+// renderWindow's windowed steady-state scroll render to compute the
+// dynamic y-axis peak from the currently-visible bucket window (#230, #255).
 func peakOfVisibleSlice(values []float64, xOff, visibleN int) float64 {
 	if len(values) == 0 || visibleN <= 0 {
 		return 0
