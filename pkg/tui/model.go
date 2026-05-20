@@ -1762,6 +1762,64 @@ func (m *Model) rebuildAtVisiblePeak() {
 		m.lastCanvasW, m.chartHeight(), time.Now(), zoom, unit, m.dateOrder))
 }
 
+// renderWindow renders the bar-chart viewport from the visible window of
+// m.lastValues / m.lastStarts (#255). It is the steady-state twin of
+// renderSpringFrame's bar branch: slice to the visible buckets plus one
+// leading-slack bucket via computeSpringSlice, compute the dynamic-y peak
+// from the on-screen window (peakOfVisibleSlice), buildChart at ~viewport
+// width, and apply the small slack SetXOffset. Where rebuildAtVisiblePeak
+// rebuilt the full canvas (m.lastCanvasW ≈ 3090 cols), this builds ~viewport
+// width — dropping the per-scroll rebuild from ~80-130ms to ~5ms.
+//
+// No-op when lastValues is empty, lastCanvasW is 0 (pre-init), or the active
+// unit is chartUnitRemaining (the line chart keeps a fixed peak=1.0 and a
+// full-canvas pure-offset scroll — bar-only per #255 scope).
+func (m *Model) renderWindow() {
+	if len(m.lastValues) == 0 || m.lastCanvasW == 0 {
+		return
+	}
+	unit := chartUnit(m.unitIdx)
+	if unit == chartUnitRemaining {
+		return
+	}
+	zoom := ZoomLevels[m.zoomIdx]
+	nv := m.visibleBuckets()
+
+	start := m.viewportXOffset
+	if start < 0 {
+		start = 0
+	}
+	end := start + nv
+	if end > len(m.lastValues) {
+		end = len(m.lastValues)
+	}
+	if end > len(m.lastStarts) {
+		end = len(m.lastStarts)
+	}
+	if start >= end {
+		return
+	}
+
+	// computeSpringSlice reproduces the pre-scroll leading slack: when the
+	// full-canvas offset doesn't land on a stride boundary, include bucket
+	// [start-1] and offset into it so the partial-bar / gap content at the
+	// left edge matches. prevLongest is the full-canvas width the offset was
+	// clamped against (same math renderSpringFrame is tuned for).
+	stride := zoom.stride()
+	prevLongest := m.lastCanvasW
+	sliceStart, xOff := computeSpringSlice(start, prevLongest, m.viewport.Width, stride)
+
+	// Peak is the on-screen window only; the leading-slack bucket is excluded
+	// and clips to full height via buildChart's WithNoAutoMaxValue — exactly
+	// as the full-canvas path did.
+	peak := peakOfVisibleSlice(m.lastValues, start, nv)
+	m.peak = peak
+
+	m.viewport.SetContent(buildChart(m.lastValues[sliceStart:end], m.lastStarts[sliceStart:end],
+		peak, zoom.CanvasWidth(end-sliceStart), m.chartHeight(), time.Now(), zoom, unit, m.dateOrder))
+	m.viewport.SetXOffset(xOff)
+}
+
 // emptyPlaceholder returns a w×h block with "no Claude sessions yet"
 // centered in colorMuted — the empty-cache state of the chart viewport.
 func emptyPlaceholder(w, h int) string {

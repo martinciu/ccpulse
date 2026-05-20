@@ -4986,6 +4986,74 @@ func TestRebuildAtVisiblePeak_ComputesFromVisibleSlice(t *testing.T) {
 	}
 }
 
+// TestRenderWindow_ComputesFromVisibleSlice unit-tests the windowed
+// steady-state bar render (#255). Seeds the chart via refreshChart, shifts
+// viewportXOffset over the outlier region, and asserts renderWindow
+// recomputes m.peak from the new visible slice (DB-free) — the same
+// contract the deleted rebuildAtVisiblePeak held, now at ~viewport width.
+func TestRenderWindow_ComputesFromVisibleSlice(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	defer c.Close()
+
+	tab, err := pricing.Load()
+	if err != nil {
+		t.Fatalf("pricing.Load: %v", err)
+	}
+	now := time.Now().UTC().Truncate(15 * time.Minute)
+
+	var msgs []parse.Message
+	for i := range 100 {
+		msgs = append(msgs, parse.Message{
+			SessionID:   "old",
+			ProjectSlug: "p",
+			Model:       "claude-opus-4-7",
+			Timestamp:   now.Add(time.Duration(-(200+i)*15) * time.Minute),
+			InputTokens: 9999,
+		})
+	}
+	for i := range 200 {
+		msgs = append(msgs, parse.Message{
+			SessionID:   "new",
+			ProjectSlug: "p",
+			Model:       "claude-opus-4-7",
+			Timestamp:   now.Add(time.Duration(-i*15) * time.Minute),
+			InputTokens: 1000,
+		})
+	}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	m := New(Deps{Cache: c})
+	m.unitIdx = int(chartUnitTokens)
+	m.w, m.h = 120, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	m.refreshChart()
+
+	rightEdgePeak := m.peak
+
+	// Move the viewport over the outlier region (offsets 0-99 are the 9999
+	// buckets) without a DB round-trip, then re-render the window.
+	m.viewport.SetXOffset(0)
+	m.viewportXOffset = 0
+	m.renderWindow()
+
+	if m.peak < 9000 {
+		t.Errorf("renderWindow: m.peak = %v, want ~9999 "+
+			"(visible slice now covers outliers at offsets 0-99)", m.peak)
+	}
+	if m.peak == rightEdgePeak {
+		t.Errorf("renderWindow: m.peak = %v unchanged from right-edge baseline %v — "+
+			"windowed render appears to be a no-op", m.peak, rightEdgePeak)
+	}
+}
+
 // TestScroll_StaleRescaleDropped pins the single-in-flight debounce on
 // the rescale path (#230). Only ONE rescale tick is ever alive at a
 // time: the first scroll arms it, subsequent scrolls bump scrollGen but
