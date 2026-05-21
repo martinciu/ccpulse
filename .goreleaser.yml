@@ -62,3 +62,28 @@ checksum:
   name_template: "checksums.txt"
 release:
   draft: false
+changelog:
+  use: git
+  sort: asc
+  groups:
+    - title: Features
+      regexp: '^(✨|💰|💲|🎬|🔥|⚙|🍺|📈|📊|feat)'
+      order: 0
+    - title: Fixes
+      regexp: '^(🐛|fix)'
+      order: 1
+    - title: Performance
+      regexp: '^(⚡|🏎|perf)'
+      order: 2
+    - title: Security
+      regexp: '^(🔒|🛡|sec)'
+      order: 3
+    - title: Other
+      order: 99
+  filters:
+    exclude:
+      - '^chore'
+      - '^docs'
+      - '^test'
+      - '^(🧹|🧪|📝|🙈)'
+      - 'Merge pull request'
