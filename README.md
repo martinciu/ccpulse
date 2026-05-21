@@ -5,13 +5,15 @@ A native Go TUI dashboard for Claude Code usage. Reads
 5-hour-window breakdowns. Local-only — no network calls during normal
 operation.
 
+![ccpulse TUI demo](demo/ccpulse.gif)
+
 ## Features
 
 - **5h + 7d quota bars** — rolling-window gauges in the header, fed by
   the Anthropic usage API where available with a JSONL fallback.
 - **Token histogram** — horizontally-scrollable bar chart of usage per
   time bucket, heat-coloured relative to the peak bucket. Zoom cycles
-  between 5m / 15m / 1h granularity.
+  between 15m / 1h / 24h granularity.
 - **fsnotify live updates** — file watcher (not polling) keeps the
   cache in sync as Claude writes new turns; the TUI redraws on each
   refresh.
@@ -97,7 +99,7 @@ The binary lives in `~/.local/bin/ccpulse`.
 
 Opens the interactive TUI: 5h + 7d quota bars and a horizontally-scrollable
 token-usage histogram. `←` / `→` scroll the chart, `z` cycles bucket zoom
-(5m / 15m / 1h), `?` toggles full help, `q` quits.
+(15m / 1h / 24h), `?` toggles full help, `q` quits.
 
 ### `ccpulse index`
 
