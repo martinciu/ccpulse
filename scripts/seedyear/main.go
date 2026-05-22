@@ -85,40 +85,46 @@ type seedOpts struct {
 	days     int
 }
 
+// seedResult reports what a runSeed call wrote: rows newly inserted this run
+// (pre/post count diff) and the post-run totals, for both tables.
+type seedResult struct {
+	msgsInserted, msgsTotal       int64
+	samplesInserted, samplesTotal int64
+}
+
 // runSeed validates inputs, opens the dev cache, generates synthetic
-// messages, inserts them in batches, and returns (newly inserted rows this
-// run, total seed-year rows in the DB after the run, error). Idempotent
-// re-runs with the same opts return inserted=0 and an unchanged total.
-func runSeed(opts seedOpts) (inserted int64, total int64, err error) {
+// messages, inserts them in batches, and returns a seedResult. Idempotent
+// re-runs with the same opts return zero inserted counts and unchanged totals.
+func runSeed(opts seedOpts) (seedResult, error) {
 	if err := validateCacheDir(opts.cacheDir); err != nil {
-		return 0, 0, err
+		return seedResult{}, err
 	}
 	params, ok := profiles[opts.profile]
 	if !ok {
-		return 0, 0, fmt.Errorf("unknown profile %q: want one of light, heavy", opts.profile)
+		return seedResult{}, fmt.Errorf("unknown profile %q: want one of light, heavy", opts.profile)
 	}
 	if opts.days <= 0 {
-		return 0, 0, fmt.Errorf("days must be > 0 (got %d)", opts.days)
+		return seedResult{}, fmt.Errorf("days must be > 0 (got %d)", opts.days)
 	}
 
 	if err := os.MkdirAll(opts.cacheDir, 0o755); err != nil {
-		return 0, 0, fmt.Errorf("create cache dir: %w", err)
+		return seedResult{}, fmt.Errorf("create cache dir: %w", err)
 	}
 	dbPath := filepath.Join(opts.cacheDir, "state.db")
 	c, err := cache.Open(dbPath)
 	if err != nil {
-		return 0, 0, fmt.Errorf("open cache %s: %w", dbPath, err)
+		return seedResult{}, fmt.Errorf("open cache %s: %w", dbPath, err)
 	}
 	defer c.Close()
 
 	hist, err := pricing.Load()
 	if err != nil {
-		return 0, 0, fmt.Errorf("load pricing: %w", err)
+		return seedResult{}, fmt.Errorf("load pricing: %w", err)
 	}
 
 	pre, err := countSeedRows(c)
 	if err != nil {
-		return 0, 0, fmt.Errorf("count rows (pre): %w", err)
+		return seedResult{}, fmt.Errorf("count rows (pre): %w", err)
 	}
 
 	rng := rand.New(rand.NewPCG(uint64(opts.seed), 0xCCCCCCCCCCCCCCCC))
@@ -127,15 +133,15 @@ func runSeed(opts seedOpts) (inserted int64, total int64, err error) {
 	for start := 0; start < len(msgs); start += batchSize {
 		end := min(start+batchSize, len(msgs))
 		if err := c.InsertMessages(msgs[start:end], hist); err != nil {
-			return 0, 0, fmt.Errorf("insert batch [%d:%d]: %w", start, end, err)
+			return seedResult{}, fmt.Errorf("insert batch [%d:%d]: %w", start, end, err)
 		}
 	}
 
 	post, err := countSeedRows(c)
 	if err != nil {
-		return 0, 0, fmt.Errorf("count rows (post): %w", err)
+		return seedResult{}, fmt.Errorf("count rows (post): %w", err)
 	}
-	return post - pre, post, nil
+	return seedResult{msgsInserted: post - pre, msgsTotal: post}, nil
 }
 
 // countSeedRows returns the total rows in messages whose session_id
@@ -278,7 +284,7 @@ func main() {
 		resolved = expandPath(resolved)
 	}
 
-	inserted, total, err := runSeed(seedOpts{
+	res, err := runSeed(seedOpts{
 		profile:  *profile,
 		cacheDir: resolved,
 		seed:     *seed,
@@ -287,6 +293,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("seedyear: %v", err)
 	}
-	fmt.Printf("seeded %s/state.db: %d new rows this run, %d total seed-year rows\n",
-		resolved, inserted, total)
+	fmt.Printf("seeded %s/state.db: %d new messages (%d total), %d new usage samples (%d total)\n",
+		resolved, res.msgsInserted, res.msgsTotal, res.samplesInserted, res.samplesTotal)
 }
