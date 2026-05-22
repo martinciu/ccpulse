@@ -136,6 +136,96 @@ func (d densityIndex) sum(lo, hi time.Time) int64 {
 	return d.prefix[j] - d.prefix[i]
 }
 
+const (
+	// usageSampleTarget bounds synthetic usage_samples rows so the seeded
+	// table stays near its real size (cache.go assumes <2000 rows) and
+	// per-row RecordUsageSample inserts stay sub-second.
+	usageSampleTarget = 2000
+	// minSampleInterval floors the synthetic poll cadence so the 5h sawtooth
+	// stays crisp at the TUI's finest (15m) zoom.
+	minSampleInterval = 15 * time.Minute
+	// usagePeakTarget scales utilization so the busiest window reads ~85%,
+	// keeping the curve varied and never pinned at 100.
+	usagePeakTarget = 0.85
+)
+
+// usageSample is one synthetic usage_samples row.
+type usageSample struct {
+	at         time.Time
+	fiveHour   float64
+	sevenDay   float64
+	fiveReset  time.Time
+	sevenReset time.Time
+}
+
+// normalizePeak scales raw window sums so the busiest reads ~usagePeakTarget
+// (×100), clamped to [0,100]. All-zero input yields all-zero output.
+func normalizePeak(raw []float64) []float64 {
+	var maxv float64
+	for _, v := range raw {
+		if v > maxv {
+			maxv = v
+		}
+	}
+	out := make([]float64, len(raw))
+	if maxv == 0 {
+		return out
+	}
+	ceiling := maxv / usagePeakTarget
+	for i, v := range raw {
+		p := 100 * v / ceiling
+		if p > 100 {
+			p = 100
+		}
+		out[i] = p
+	}
+	return out
+}
+
+// buildUsageSamples derives deterministic 5h/7d utilization samples from the
+// generated messages. The grid spans [earliest msg, latest msg] with an
+// interval derived from that span (not wall-clock now), so same-day re-runs
+// produce identical sample timestamps → idempotent under INSERT OR IGNORE.
+func buildUsageSamples(msgs []parse.Message) []usageSample {
+	if len(msgs) == 0 {
+		return nil
+	}
+	idx := newDensityIndex(msgs)
+	start := idx.pts[0].at
+	end := idx.pts[len(idx.pts)-1].at
+
+	interval := minSampleInterval
+	if span := end.Sub(start); span/usageSampleTarget > interval {
+		interval = span / usageSampleTarget
+	}
+
+	var ats []time.Time
+	for t := start; !t.After(end); t = t.Add(interval) {
+		ats = append(ats, t)
+	}
+
+	raw5 := make([]float64, len(ats))
+	raw7 := make([]float64, len(ats))
+	for i, t := range ats {
+		raw5[i] = float64(idx.sum(windowFloor(t, usageFiveHourWindow), t))
+		raw7[i] = float64(idx.sum(windowFloor(t, usageSevenDayWindow), t))
+	}
+	util5 := normalizePeak(raw5)
+	util7 := normalizePeak(raw7)
+
+	out := make([]usageSample, len(ats))
+	for i, t := range ats {
+		out[i] = usageSample{
+			at:         t,
+			fiveHour:   util5[i],
+			sevenDay:   util7[i],
+			fiveReset:  windowFloor(t, usageFiveHourWindow).Add(usageFiveHourWindow),
+			sevenReset: windowFloor(t, usageSevenDayWindow).Add(usageSevenDayWindow),
+		}
+	}
+	return out
+}
+
 // seedResult reports what a runSeed call wrote: rows newly inserted this run
 // (pre/post count diff) and the post-run totals, for both tables.
 type seedResult struct {
