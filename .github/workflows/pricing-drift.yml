@@ -1,0 +1,46 @@
+name: Pricing Drift
+
+on:
+  schedule:
+    - cron: "0 16 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    name: Pricing Drift
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_args: |
+            --model claude-sonnet-4-6
+            --allowedTools Bash,Read,WebFetch
+          prompt: |
+            Check whether the Anthropic pricing table at https://platform.claude.com/docs/en/about-claude/pricing has drifted from `pkg/pricing/pricing.json` in this repo.
+
+            Steps:
+            1. Read `pkg/pricing/pricing.json` from the checked-out repo (note the top-level "version" date and every entry in "models").
+            2. Fetch the pricing page above (follow redirects).
+            3. Extract the "Model pricing" table -- for every Claude model row, capture: Base Input Tokens, 5m Cache Writes, 1h Cache Writes, Cache Hits & Refreshes, Output Tokens. All values are USD per million tokens.
+            4. For every model key in pricing.json's "models" object that maps to a Claude model on the page, compare the five rates (input_per_mtok, output_per_mtok, cache_read_per_mtok, cache_write_5m_per_mtok, cache_write_1h_per_mtok). Treat the bare aliases (opus, sonnet, haiku) as informational only -- do not compare them.
+            5. Note any model on the page missing from pricing.json, or vice versa.
+
+            If there are NO differences, exit successfully with a one-line confirmation. Do not open anything.
+
+            If there ARE differences, open a GitHub issue on martinciu/ccpulse (via `gh issue create`) titled `pricing: drift detected vs anthropic docs (<YYYY-MM-DD>)` with:
+            - A bulleted list of every model with a changed rate, showing local vs page value per affected field
+            - Any new models on the page not in pricing.json
+            - Any models in pricing.json not on the page (likely retired -- flag only, no removal recommendation)
+            - A link to the pricing page
+
+            Do NOT modify pricing.json and do NOT open a PR. The fix is a manual call (alias rates may need adjustment; retired models stay for historical cost lookups).
+
+            If the page layout has changed enough that you cannot reliably parse the model table, open an issue titled `pricing: docs page layout changed, scraper needs review` with what you saw, and stop.
