@@ -40,5 +40,5 @@ demo: ## Record the README demo GIF (synthetic fixtures, no real data, no networ
 	@rm -rf demo/.cache-dev demo/.projects
 	@mkdir -p demo/.cache-dev demo/.projects
 	go build $(RELEASE_LDFLAGS) -o $(BIN) ./cmd/ccpulse
-	go run ./scripts/seedyear --cache-dir demo/.cache-dev --profile light --seed 1 --days 7
+	go run ./scripts/seedyear --cache-dir demo/.cache-dev --profile heavy --seed 1 --days 7
 	vhs demo/ccpulse.tape
