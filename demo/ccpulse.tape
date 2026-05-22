@@ -4,11 +4,13 @@
 # (builds a release binary, seeds a synthetic *-dev cache via
 # scripts/seedyear, then runs this tape). Records ONLY synthetic, leak-free
 # fixtures — never real ~/.claude data and no network calls. See issue #265.
+#
+# VHS command reference: https://github.com/charmbracelet/vhs#vhs-command-reference
 
 Output demo/ccpulse.gif
 
 Set Shell bash
-Set Theme "Builtin Solarized Dark"
+Set Theme "rose-pine-moon"
 Set FontSize 16
 Set Width 1200
 Set Height 800
@@ -25,31 +27,29 @@ Type "./ccpulse"
 Enter
 Sleep 2.5s
 
-# Cycle zoom: 15m -> 1h -> 24h -> back to 15m
+# Switch to output view, zoom to 1h, switch to usage view
+Type "u"
+Sleep 2s
 Type "z"
 Sleep 2s
+Type "u"
+Sleep 2s
+
+# Scroll left
+Left@50ms 20
+Sleep 400ms
+
+# Switch back to cost view
+Type "u"
+Sleep 2s
+
+# Return to starting state: scroll right, zoom back to 15m (1h -> 24h -> 15m)
+Right@50ms 20
+Sleep 400ms
 Type "z"
 Sleep 2s
 Type "z"
 Sleep 1.5s
-
-# Scroll the chart left, then back right
-Left
-Sleep 400ms
-Left
-Sleep 400ms
-Left
-Sleep 1s
-Right
-Sleep 400ms
-Right
-Sleep 1s
-
-# Full-help overlay, then close it
-Type "?"
-Sleep 2.5s
-Type "?"
-Sleep 800ms
 
 # Quit
 Type "q"
