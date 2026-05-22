@@ -2,8 +2,10 @@
 
 A native Go TUI dashboard for Claude Code usage. Reads
 `~/.claude/projects/*/*.jsonl` transcripts, computes token / cost /
-5-hour-window breakdowns. Local-only — no network calls during normal
-operation.
+5-hour-window breakdowns. No third-party telemetry — the only network
+call is to Anthropic's own usage API for your account (to refine the quota
+gauges), and it falls back to transcript-only data when no credential is
+present.
 
 ![ccpulse TUI demo](demo/ccpulse.gif)
 
@@ -11,22 +13,25 @@ operation.
 
 - **5h + 7d quota bars** — rolling-window gauges in the header, fed by
   the Anthropic usage API where available with a JSONL fallback.
-- **Token histogram** — horizontally-scrollable bar chart of usage per
-  time bucket, heat-coloured relative to the peak bucket. Zoom cycles
-  between 15m / 1h / 24h granularity.
+- **Usage histogram** — horizontally-scrollable bar chart per time
+  bucket, heat-coloured relative to the peak. Defaults to a cost view;
+  `u` toggles cost / output / usage units and `z` cycles 15m / 1h / 24h
+  granularity.
 - **fsnotify live updates** — file watcher (not polling) keeps the
   cache in sync as Claude writes new turns; the TUI redraws on each
   refresh.
 
 ## Installation
 
-### Homebrew (macOS, Linuxbrew)
+### Homebrew (macOS)
 
 ```sh
 brew install martinciu/tap/ccpulse
 ```
 
-Shell completions are installed automatically.
+Shell completions are installed automatically. This is a macOS **cask**,
+which Homebrew only supports on macOS — on Linux, use the `.deb`/`.rpm`
+packages or the tarball below.
 
 ### Debian / Ubuntu (.deb)
 
@@ -35,8 +40,11 @@ curl -LO https://github.com/martinciu/ccpulse/releases/latest/download/ccpulse_<
 sudo dpkg -i ccpulse_*.deb
 ```
 
-Replace `amd64` with `arm64` on ARM. Find the latest version on the
-[releases page](https://github.com/martinciu/ccpulse/releases).
+Replace `<version>` with the actual release number (e.g. `0.1.0`) — it is
+part of the asset filename, so the URL 404s if left literal. Swap `amd64`
+for `arm64` on ARM. The
+[releases page](https://github.com/martinciu/ccpulse/releases) lists the
+current version.
 
 ### Fedora / RHEL / openSUSE (.rpm)
 
@@ -45,7 +53,25 @@ curl -LO https://github.com/martinciu/ccpulse/releases/latest/download/ccpulse_<
 sudo rpm -i ccpulse_*.rpm
 ```
 
-Replace `amd64` with `arm64` on ARM.
+Same `<version>` and `amd64`→`arm64` substitutions as above.
+
+### Manual / no-root (tarball)
+
+For hosts where a package manager isn't an option — e.g. a sandbox with
+`no-new-privileges` where `sudo`/`dpkg` is blocked — install the static
+binary from the tarball into a directory you own:
+
+```sh
+# Debian/Ubuntu: dpkg --print-architecture → amd64 or arm64
+ARCH=$(dpkg --print-architecture)
+curl -fsSL "https://github.com/martinciu/ccpulse/releases/latest/download/ccpulse_<version>_linux_${ARCH}.tar.gz" | tar xz
+install -Dm755 ccpulse ~/.local/bin/ccpulse   # ensure ~/.local/bin is on PATH
+```
+
+ccpulse is a single static binary with no runtime dependencies. On
+non-Debian systems substitute the arch by hand (artifacts use Go's
+`amd64`/`arm64`, not `uname -m`'s `x86_64`/`aarch64`). macOS users without
+Homebrew can install the matching `darwin_{amd64,arm64}.tar.gz` the same way.
 
 ### Verifying the download (optional)
 
@@ -59,7 +85,7 @@ sha256sum --ignore-missing -c checksums.txt
 
 Run this from the directory where you downloaded the `.deb` / `.rpm` /
 tarball. The Homebrew install path is already integrity-checked by
-`brew` against the formula's `sha256`.
+`brew` against the cask's `sha256`.
 
 ### `go install`
 
@@ -98,8 +124,9 @@ The binary lives in `~/.local/bin/ccpulse`.
 ### `ccpulse`
 
 Opens the interactive TUI: 5h + 7d quota bars and a horizontally-scrollable
-token-usage histogram. `←` / `→` scroll the chart, `z` cycles bucket zoom
-(15m / 1h / 24h), `?` toggles full help, `q` quits.
+usage histogram. `←`/`→` (or `h`/`l`) scroll the chart, `z` cycles bucket
+zoom (15m / 1h / 24h), `u` toggles units (cost / output / usage), `?`
+toggles full help, `q` quits.
 
 ### `ccpulse index`
 
@@ -168,8 +195,10 @@ Runs a health-check checklist and prints a pass/fail report:
 
 - Config file loads and `projects_root` is readable
 - SQLite cache opens and `PRAGMA integrity_check` passes
-- Pricing table version
-- `git` is on `PATH`
+- Pricing table version (and the versions present in the cache)
+- Anthropic OAuth credential — present, plan tier, and not expired
+- Usage-API cache freshness and `parse-errors.log` size
+- Whether the Claude Code `Stop` hook is configured
 
 Run this first when something looks wrong.
 
@@ -188,23 +217,30 @@ retention_days = 0           # 0 = keep usage history forever; positive int prun
 [paths]
 projects_root = "~/.claude/projects"
 cache_dir = "~/.cache/ccpulse"
+
+[ui]
+reduce_motion = false        # true disables the TUI slide-in animations
 ```
 
 - `[history] retention_days` — drop usage history rows older than N days on each insert. Default `0` keeps history forever. Usage history is recorded once per ~3 minutes whenever ccpulse is running and successfully reaches the Anthropic usage API.
+- `[ui] reduce_motion` — set `true` to disable the chart and quota-bar slide-in animations.
+
+Two environment variables override the `[paths]` block at runtime (handy for pointing at a fixture without editing the config):
+
+- `CCPULSE_PROJECTS_ROOT` — overrides `projects_root`
+- `CCPULSE_CACHE_DIR` — overrides `cache_dir`
 
 The plan tier (used to compute the 5h / 7d quota ceilings) is read from your Claude Code OAuth credential — there is no config knob for it.
 
 ## Troubleshooting
 
-`ccpulse doctor` runs a checklist:
+Run `ccpulse doctor` first — it reports on config, the cache and its
+`integrity_check`, pricing, the Anthropic OAuth credential, usage-API
+cache freshness, and the Claude Code `Stop` hook (see the [doctor
+command](#ccpulse-doctor)).
 
-- Config loads / projects_root readable
-- SQLite cache opens, integrity_check passes
-- Pricing version
-- `git` on PATH
-
-If the TUI launches with empty tabs, run `ccpulse index` to do a cold
-scan of `~/.claude/projects/`.
+If the TUI launches empty, run `ccpulse index --rebuild` to do a cold
+scan of `~/.claude/projects/` and rebuild the cache.
 
 If the cache is corrupt (rare; usually after a kill-during-write), the
 TUI auto-rebuilds on launch. Manual: `ccpulse index --rebuild`.
