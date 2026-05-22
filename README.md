@@ -20,13 +20,15 @@ operation.
 
 ## Installation
 
-### Homebrew (macOS, Linuxbrew)
+### Homebrew (macOS)
 
 ```sh
 brew install martinciu/tap/ccpulse
 ```
 
-Shell completions are installed automatically.
+Shell completions are installed automatically. This is a macOS **cask**,
+which Homebrew only supports on macOS — on Linux, use the `.deb`/`.rpm`
+packages or the tarball below.
 
 ### Debian / Ubuntu (.deb)
 
@@ -35,8 +37,11 @@ curl -LO https://github.com/martinciu/ccpulse/releases/latest/download/ccpulse_<
 sudo dpkg -i ccpulse_*.deb
 ```
 
-Replace `amd64` with `arm64` on ARM. Find the latest version on the
-[releases page](https://github.com/martinciu/ccpulse/releases).
+Replace `<version>` with the actual release number (e.g. `0.1.0`) — it is
+part of the asset filename, so the URL 404s if left literal. Swap `amd64`
+for `arm64` on ARM. The
+[releases page](https://github.com/martinciu/ccpulse/releases) lists the
+current version.
 
 ### Fedora / RHEL / openSUSE (.rpm)
 
@@ -45,7 +50,25 @@ curl -LO https://github.com/martinciu/ccpulse/releases/latest/download/ccpulse_<
 sudo rpm -i ccpulse_*.rpm
 ```
 
-Replace `amd64` with `arm64` on ARM.
+Same `<version>` and `amd64`→`arm64` substitutions as above.
+
+### Manual / no-root (tarball)
+
+For hosts where a package manager isn't an option — e.g. a sandbox with
+`no-new-privileges` where `sudo`/`dpkg` is blocked — install the static
+binary from the tarball into a directory you own:
+
+```sh
+# Debian/Ubuntu: dpkg --print-architecture → amd64 or arm64
+ARCH=$(dpkg --print-architecture)
+curl -fsSL "https://github.com/martinciu/ccpulse/releases/latest/download/ccpulse_<version>_linux_${ARCH}.tar.gz" | tar xz
+install -Dm755 ccpulse ~/.local/bin/ccpulse   # ensure ~/.local/bin is on PATH
+```
+
+ccpulse is a single static binary with no runtime dependencies. On
+non-Debian systems substitute the arch by hand (artifacts use Go's
+`amd64`/`arm64`, not `uname -m`'s `x86_64`/`aarch64`). macOS users without
+Homebrew can install the matching `darwin_{amd64,arm64}.tar.gz` the same way.
 
 ### Verifying the download (optional)
 
@@ -59,7 +82,7 @@ sha256sum --ignore-missing -c checksums.txt
 
 Run this from the directory where you downloaded the `.deb` / `.rpm` /
 tarball. The Homebrew install path is already integrity-checked by
-`brew` against the formula's `sha256`.
+`brew` against the cask's `sha256`.
 
 ### `go install`
 
