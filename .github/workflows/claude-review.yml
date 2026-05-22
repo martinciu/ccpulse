@@ -7,9 +7,14 @@ on:
 permissions:
   contents: read
 
+# cancel-in-progress is gated to human comments: claude-code-action posts a
+# progress comment (track_progress + sticky), which fires its own
+# issue_comment event. Without this guard that event joins the group and
+# cancels the very review that posted it. Bot comments never cancel; a fresh
+# human @claude review still supersedes a stale in-progress one.
 concurrency:
   group: claude-review-${{ github.event.issue.number }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ !endsWith(github.event.comment.user.login, '[bot]') }}
 
 jobs:
   # Token-free producer. Fetches and materializes the Go review skills on a
