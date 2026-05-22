@@ -4,6 +4,10 @@
 /dist/
 /completions/
 
+# demo recording fixtures (throwaway; demo/ccpulse.tape + demo/ccpulse.gif are committed)
+demo/.cache-dev/
+demo/.projects/
+
 # editor + os
 .DS_Store
 *.swp

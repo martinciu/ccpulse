@@ -270,6 +270,16 @@ func runTUI(ctx context.Context, errOut io.Writer) error {
 	}
 	hasOAuth := credErr == nil
 
+	// Demo/test seam: CCPULSE_FAKE_QUOTA injects synthetic quota and
+	// disables the network poller, so the TUI renders populated quota bars
+	// from a credential-less synthetic fixture (used by `make demo`, #265).
+	fakeUsage, fakeTier, fakeQuota := parseFakeQuota(
+		os.Getenv("CCPULSE_FAKE_QUOTA"), os.Getenv("CCPULSE_FAKE_TIER"), time.Now())
+	if fakeQuota {
+		cred = anthro.Credential{RateLimitTier: fakeTier}
+		hasOAuth = true
+	}
+
 	m := tui.New(tui.Deps{
 		Cache:        c,
 		ProjectsRoot: projectsRoot,
@@ -303,7 +313,18 @@ func runTUI(ctx context.Context, errOut io.Writer) error {
 
 	pollerCtx, cancel := context.WithCancel(ctx)
 
-	if hasOAuth {
+	switch {
+	case fakeQuota:
+		// Push the synthetic quota once; no poller, no network, no
+		// usage.json / usage_samples writes.
+		bg.Go(func() {
+			p.Send(tui.QuotaMsg{
+				Usage:     fakeUsage,
+				Source:    "cache_fresh",
+				UpdatedAt: time.Now().UTC(),
+			})
+		})
+	case hasOAuth:
 		retention := time.Duration(cfg.History.RetentionDays) * 24 * time.Hour
 		bg.Go(func() {
 			runQuotaPoller(pollerCtx, p, cred, cacheDir, c, retention)

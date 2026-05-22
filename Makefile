@@ -1,4 +1,4 @@
-.PHONY: build install seed-dev seed-dev-config seed-dev-cache seed-front-loaded reset-dev test lint vulncheck snapshot
+.PHONY: build install seed-dev seed-dev-config seed-dev-cache seed-front-loaded reset-dev test lint vulncheck snapshot demo
 
 BIN := ccpulse
 INSTALL_DIR := $(HOME)/.local/bin
@@ -35,3 +35,10 @@ snapshot:
 
 seed-front-loaded: ## Populate usage_samples with a front-loaded shape (issue #170 probe)
 	@scripts/seed-front-loaded.sh
+
+demo: ## Record the README demo GIF (synthetic fixtures, no real data, no network)
+	@rm -rf demo/.cache-dev demo/.projects
+	@mkdir -p demo/.cache-dev demo/.projects
+	go build $(RELEASE_LDFLAGS) -o $(BIN) ./cmd/ccpulse
+	go run ./scripts/seedyear --cache-dir demo/.cache-dev --profile heavy --seed 1 --days 7
+	vhs demo/ccpulse.tape
