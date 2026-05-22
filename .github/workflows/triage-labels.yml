@@ -75,6 +75,6 @@ jobs:
             - Be idempotent and deterministic: same input → same output. The next day's run should be a no-op if nothing new opened.
             - Skip PRs entirely (the gh issue list above already excludes them).
             - No comments on issues. No PRs. Labels only.
-          claude_args: |
+          claude_args: >-
             --model claude-sonnet-4-6
             --allowedTools "Bash(gh issue list:*),Bash(gh issue edit:*),Bash(gh issue view:*)"
