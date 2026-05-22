@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -204,6 +205,17 @@ func initDevlog(isDev bool, cacheDir string, level slog.Level, w io.Writer) io.C
 	return closer
 }
 
+// watcherStartupError translates a watcher.New failure into a user-facing
+// message at the CLI boundary. A missing projects root (fs.ErrNotExist) gets
+// an actionable hint; every other error passes through unchanged — it has
+// already been wrapped with the path by watcher.New.
+func watcherStartupError(projectsRoot string, err error) error {
+	if errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("ccpulse: %s: no such file or directory — run Claude Code at least once, or set CCPULSE_PROJECTS_ROOT", projectsRoot)
+	}
+	return err
+}
+
 // runTUI launches the Bubble Tea program with the TUI model. The
 // passed ctx is the signal-aware root context — used as the parent
 // for the quota poller's context and for the startup backfill, so
@@ -261,7 +273,7 @@ func runTUI(ctx context.Context, errOut io.Writer) error {
 
 	w, err := watcher.New(projectsRoot)
 	if err != nil {
-		return err
+		return watcherStartupError(projectsRoot, err)
 	}
 
 	cred, credErr := anthro.LoadCredential()
