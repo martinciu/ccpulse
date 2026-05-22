@@ -1,12 +1,33 @@
 package watcher
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+func TestNew_MissingRoot(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+
+	w, err := New(missing)
+	if w != nil {
+		t.Fatalf("New returned a non-nil watcher for a missing root: %v", w)
+	}
+	if err == nil {
+		t.Fatal("New returned nil error for a missing root; want fs.ErrNotExist")
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("errors.Is(err, fs.ErrNotExist) = false; err = %v", err)
+	}
+	if !strings.Contains(err.Error(), missing) {
+		t.Errorf("error %q does not name the missing path %q", err, missing)
+	}
+}
 
 func TestWatcherEmitsOnWrite(t *testing.T) {
 	dir := t.TempDir()

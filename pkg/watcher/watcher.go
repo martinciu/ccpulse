@@ -3,6 +3,7 @@
 package watcher
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,13 +18,16 @@ type Watcher struct {
 }
 
 func New(root string) (*Watcher, error) {
+	if _, err := os.Stat(root); err != nil {
+		return nil, fmt.Errorf("watch root %s: %w", root, err)
+	}
 	fw, err := fsnotify.NewWatcher()
 	if err != nil {
 		return nil, err
 	}
 	if err := fw.Add(root); err != nil {
 		fw.Close()
-		return nil, err
+		return nil, fmt.Errorf("watch root %s: %w", root, err)
 	}
 	// Walk the existing tree and add every subdirectory.
 	if err := filepath.WalkDir(root, func(p string, d os.DirEntry, _ error) error {
