@@ -17,6 +17,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -83,6 +84,56 @@ type seedOpts struct {
 	cacheDir string
 	seed     int64
 	days     int
+}
+
+// Window grids are anchored at the Unix epoch (UTC) so a boundary is a pure
+// function of the timestamp — deterministic across runs.
+const (
+	usageFiveHourWindow = 5 * time.Hour
+	usageSevenDayWindow = 7 * 24 * time.Hour
+)
+
+// windowFloor returns the most recent window boundary <= ts, on a grid
+// anchored at the Unix epoch (UTC).
+func windowFloor(ts time.Time, window time.Duration) time.Time {
+	epoch := time.Unix(0, 0).UTC()
+	n := ts.Sub(epoch) / window
+	return epoch.Add(n * window)
+}
+
+type tsTokens struct {
+	at     time.Time
+	tokens int64
+}
+
+// densityIndex is a time-ascending view of per-message token volume with a
+// prefix-sum, giving O(log n) range-sum queries over [lo, hi].
+type densityIndex struct {
+	pts    []tsTokens
+	prefix []int64 // prefix[i] = sum of pts[0..i-1].tokens; len = len(pts)+1
+}
+
+func newDensityIndex(msgs []parse.Message) densityIndex {
+	pts := make([]tsTokens, len(msgs))
+	for i, m := range msgs {
+		pts[i] = tsTokens{at: m.Timestamp, tokens: m.InputTokens + m.OutputTokens}
+	}
+	sort.Slice(pts, func(i, j int) bool { return pts[i].at.Before(pts[j].at) })
+	prefix := make([]int64, len(pts)+1)
+	for i, p := range pts {
+		prefix[i+1] = prefix[i] + p.tokens
+	}
+	return densityIndex{pts: pts, prefix: prefix}
+}
+
+// sum returns total tokens for messages with lo <= at <= hi.
+func (d densityIndex) sum(lo, hi time.Time) int64 {
+	i := sort.Search(len(d.pts), func(k int) bool { return !d.pts[k].at.Before(lo) }) // first at >= lo
+	j := sort.Search(len(d.pts), func(k int) bool { return d.pts[k].at.After(hi) })   // first at > hi
+	if j < i {
+		return 0
+	}
+	return d.prefix[j] - d.prefix[i]
 }
 
 // seedResult reports what a runSeed call wrote: rows newly inserted this run
