@@ -1,0 +1,116 @@
+name: Pricing Drift
+
+on:
+  schedule:
+    - cron: '0 16 * * *'   # daily, UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read     # checkout
+  issues: write      # open/comment the drift issue + ensure label
+  id-token: write    # required by claude-code-action
+
+concurrency:
+  group: pricing-drift
+  cancel-in-progress: false
+
+jobs:
+  drift:
+    name: Pricing drift check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: anthropics/claude-code-action@1dc994ee7a008f0ecc866d9ac23ef036b7229f84  # v1.0.127
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: |
+            --model claude-sonnet-4-6
+            --allowedTools "Read,WebFetch,Glob,Bash(gh issue list:*),Bash(gh issue comment:*),Bash(gh issue create:*),Bash(gh label create:*)"
+          prompt: |
+            REPO: ${{ github.repository }}
+
+            You are checking whether the public Anthropic pricing table has
+            drifted from the pricing snapshot embedded in this repository. The
+            repo is already checked out in the working directory. Do NOT modify
+            any files and do NOT open a pull request.
+
+            ## 1. Read the current pricing snapshot
+
+            Pricing lives as dated snapshots under `pkg/pricing/history/`, one
+            JSON file per effective date named `<YYYY-MM-DD>.json`. Glob
+            `pkg/pricing/history/*.json` and pick the lexically-greatest
+            filename — that is the current authoritative table. There is no
+            single top-level pricing file — only the dated history
+            snapshots. Read the chosen file. Note its
+            top-level `version` and every entry under `models`. Each model has
+            five USD-per-million-token rates: `input_per_mtok`,
+            `output_per_mtok`, `cache_read_per_mtok`, `cache_write_5m_per_mtok`,
+            `cache_write_1h_per_mtok`.
+
+            ## 2. Fetch the pricing page
+
+            WebFetch https://platform.claude.com/docs/en/about-claude/pricing
+            (follow redirects). Extract the "Model pricing" table. For every
+            Claude model row capture: Base Input Tokens, 5m Cache Writes,
+            1h Cache Writes, Cache Hits & Refreshes, Output Tokens (all USD per
+            million tokens).
+
+            ## 3. Compare
+
+            For every model key in the snapshot's `models` that maps to a
+            Claude model on the page, compare the five rates using this mapping:
+              - Base Input Tokens      -> input_per_mtok
+              - Output Tokens          -> output_per_mtok
+              - Cache Hits & Refreshes -> cache_read_per_mtok
+              - 5m Cache Writes        -> cache_write_5m_per_mtok
+              - 1h Cache Writes        -> cache_write_1h_per_mtok
+            Treat the bare aliases `opus`, `sonnet`, and `haiku` as
+            informational only — do NOT compare them. Also note any model on
+            the page missing from the snapshot, and any snapshot model missing
+            from the page.
+
+            ## 4. No differences
+
+            If every compared rate matches and no models are missing on either
+            side, print a one-line confirmation (e.g. "pricing matches snapshot
+            <version>") and exit successfully. Open nothing.
+
+            ## 5. Differences — dedupe, then write ONE issue
+
+            If there are any rate differences or missing models:
+
+            a. Ensure the dedupe label exists (idempotent):
+                 gh label create pricing-drift --force --color FBCA04 \
+                   --description "Anthropic pricing drift detected by the scheduled check"
+            b. Check for an already-open drift issue:
+                 gh issue list --label pricing-drift --state open
+               - If one is already open, add the new findings as a comment via
+                 `gh issue comment <number>` — do NOT open another.
+               - Otherwise open a new issue via `gh issue create --label pricing-drift`.
+            c. Title: pricing: drift detected vs anthropic docs (<YYYY-MM-DD>)
+               using today's UTC date.
+            d. Body:
+               - A bulleted list of every model with a changed rate, showing
+                 local vs page value for each affected field.
+               - Any new models on the page not in the snapshot.
+               - Any snapshot models not on the page (flag as likely retired —
+                 do NOT recommend removal; retired models stay for historical
+                 cost lookups).
+               - A link to https://platform.claude.com/docs/en/about-claude/pricing
+               - The fix, stated explicitly: add a new snapshot file
+                 `pkg/pricing/history/<today>.json` with corrected rates — never
+                 edit an existing frozen snapshot. Do not modify pricing data
+                 here and do not open a PR.
+
+            ## 6. Page layout changed
+
+            If the page layout has changed enough that you cannot reliably parse
+            the model table, do the same dedupe (steps 5a–5b, same
+            `pricing-drift` label) but title the issue:
+                 pricing: docs page layout changed, scraper needs review
+            and describe what you saw. Then stop.
