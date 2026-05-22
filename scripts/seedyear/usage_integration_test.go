@@ -111,3 +111,30 @@ FROM usage_samples ORDER BY ts LIMIT 1`).Scan(&ts, &fivePct, &sevenPct, &sonnetP
 		}
 	}
 }
+
+func TestSeedYear_UsageSamples_Idempotent(t *testing.T) {
+	cacheDir := filepath.Join(t.TempDir(), "ccpulse-dev")
+	opts := seedOpts{profile: "light", cacheDir: cacheDir, seed: 1, days: 30}
+
+	res1, err := runSeed(opts)
+	if err != nil {
+		t.Fatalf("first runSeed: %v", err)
+	}
+	if res1.samplesInserted == 0 {
+		t.Fatal("first run inserted 0 samples; nothing to test idempotency against")
+	}
+
+	res2, err := runSeed(opts)
+	if err != nil {
+		t.Fatalf("second runSeed: %v", err)
+	}
+	if res2.samplesInserted != 0 {
+		t.Errorf("idempotent: second run samplesInserted=%d, want 0", res2.samplesInserted)
+	}
+	if res2.msgsInserted != 0 {
+		t.Errorf("idempotent: second run msgsInserted=%d, want 0", res2.msgsInserted)
+	}
+	if res1.samplesTotal != res2.samplesTotal {
+		t.Errorf("idempotent: samplesTotal changed %d -> %d", res1.samplesTotal, res2.samplesTotal)
+	}
+}
