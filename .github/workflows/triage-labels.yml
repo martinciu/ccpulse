@@ -1,0 +1,80 @@
+name: Triage Labels
+
+on:
+  schedule:
+    - cron: '0 4 * * *'   # daily, 04:00 UTC
+  workflow_dispatch:
+
+concurrency:
+  group: triage-labels
+  cancel-in-progress: false
+
+jobs:
+  triage:
+    name: Triage issue labels
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: anthropics/claude-code-action@1dc994ee7a008f0ecc866d9ac23ef036b7229f84  # v1.0.127
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            You are the daily ccpulse issue triage bot. Run once and exit.
+
+            GOAL: every OPEN issue in martinciu/ccpulse must carry at least one label in EACH of these three dimensions. Find issues missing any dimension and add the missing label(s). Do NOT touch issues that already have all three covered. Do NOT remove or rename existing labels. Do NOT create new labels.
+
+            LABEL DIMENSIONS (use these exact strings — they already exist in the repo):
+
+            1. size (effort to implement)
+               - `size: xs` — tiny, under 30 min
+               - `size: s`  — about an hour
+               - `size: m`  — 1–3 hours
+               - `size: l`  — half a day or more
+
+            2. importance
+               - `importance: low`    — polish, refactor, or nice-to-have
+               - `importance: medium` — meaningful improvement; not blocking
+               - `importance: high`   — security, correctness, or release-blocking
+
+            3. category (at least one of these counts; multiple is fine when applicable)
+               - `bug`, `enhancement`, `documentation`, `tui`, `dependencies`, `github_actions`, `pre-release`, `quick-fix`, `question`
+               - NOTE: `good first issue`, `help wanted`, `duplicate`, `invalid`, `wontfix` are META labels and do NOT satisfy the category dimension.
+
+            STEPS:
+
+            1. Fetch all open issues with bodies and labels:
+               `gh issue list --repo martinciu/ccpulse --state open --limit 200 --json number,title,body,labels`
+
+            2. For each issue, determine which of {size, importance, category} dimensions are missing.
+
+            3. For each missing dimension, infer the right label from the title + body. Heuristics:
+               - SIZE: look at scope language and test plan length. Single-line config edit / wording change → `size: xs`. One file, well-bounded patch → `size: s`. Multi-file change with tests → `size: m`. Cross-cutting refactor, schema migration, or new subsystem → `size: l`. If genuinely unclear, default to `size: m`.
+               - IMPORTANCE: only mark `importance: high` if the body explicitly mentions security, data loss, corruption, a release blocker, or a regression in a primary code path. Pure polish, animation, refactor, or copy changes → `importance: low`. Otherwise default to `importance: medium`.
+               - CATEGORY: pick the most specific applicable label(s). A TUI rendering bug → `bug` + `tui`. A docs-only issue → `documentation`. A dependency bump → `dependencies`. A mechanical fix with the patch sketched in the body → `quick-fix`. New feature → `enhancement`.
+
+            4. Apply only the missing labels. Use one gh call per issue, with comma-separated labels:
+               `gh issue edit <number> --repo martinciu/ccpulse --add-label "<label1>,<label2>"`
+               Never use --remove-label. Never edit title/body/assignees.
+
+            5. Print a one-line summary per issue touched in the form:
+               `#<num> +<comma-separated labels added>`
+               followed by a final tail line:
+               `triaged: <N touched> / <M total open>`
+
+            RULES:
+            - If you cannot confidently pick a label for a dimension after reading the issue, skip that dimension for that issue and note `#<num> SKIPPED <dimension>: <reason>` in the summary. Do NOT guess wildly.
+            - Be idempotent and deterministic: same input → same output. The next day's run should be a no-op if nothing new opened.
+            - Skip PRs entirely (the gh issue list above already excludes them).
+            - No comments on issues. No PRs. Labels only.
+          claude_args: >-
+            --model claude-sonnet-4-6
+            --allowedTools "Bash(gh issue list:*),Bash(gh issue edit:*),Bash(gh issue view:*)"
