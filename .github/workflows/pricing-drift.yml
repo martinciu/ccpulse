@@ -30,7 +30,7 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           claude_args: |
             --model claude-sonnet-4-6
-            --allowedTools "Read,WebFetch,Glob,Bash(gh issue:*),Bash(gh label:*)"
+            --allowedTools "Read,WebFetch,Glob,Bash(gh issue list:*),Bash(gh issue comment:*),Bash(gh issue create:*),Bash(gh label create:*)"
           prompt: |
             REPO: ${{ github.repository }}
 
@@ -44,8 +44,9 @@ jobs:
             Pricing lives as dated snapshots under `pkg/pricing/history/`, one
             JSON file per effective date named `<YYYY-MM-DD>.json`. Glob
             `pkg/pricing/history/*.json` and pick the lexically-greatest
-            filename — that is the current authoritative table. There is NO
-            `pkg/pricing/pricing.json`. Read the chosen file. Note its
+            filename — that is the current authoritative table. There is no
+            single top-level pricing file — only the dated history
+            snapshots. Read the chosen file. Note its
             top-level `version` and every entry under `models`. Each model has
             five USD-per-million-token rates: `input_per_mtok`,
             `output_per_mtok`, `cache_read_per_mtok`, `cache_write_5m_per_mtok`,
