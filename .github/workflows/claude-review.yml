@@ -25,14 +25,22 @@ jobs:
       contains(github.event.comment.body, '@claude review') &&
       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 1
 
       - name: Install Go skills
-        run: npx skills add https://github.com/samber/cc-skills-golang -a claude-code --skill '*' -y --copy
+        # Pin both the installer and skill source before this job receives the
+        # Claude OAuth token below.
+        run: >-
+          npx skills@1.5.7 add
+          samber/cc-skills-golang#v1.5.0
+          -a claude-code
+          --skill '*'
+          -y
+          --copy
 
-      - uses: anthropics/claude-code-action@1dc994ee7a008f0ecc866d9ac23ef036b7229f84  # v1.0.127
+      - uses: anthropics/claude-code-action@1dc994ee7a008f0ecc866d9ac23ef036b7229f84 # v1.0.127
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           use_sticky_comment: true
