@@ -2,8 +2,10 @@
 
 A native Go TUI dashboard for Claude Code usage. Reads
 `~/.claude/projects/*/*.jsonl` transcripts, computes token / cost /
-5-hour-window breakdowns. Local-only — no network calls during normal
-operation.
+5-hour-window breakdowns. No third-party telemetry — the only network
+call is to Anthropic's own usage API for your account (to refine the quota
+gauges), and it falls back to transcript-only data when no credential is
+present.
 
 ![ccpulse TUI demo](demo/ccpulse.gif)
 
@@ -11,9 +13,10 @@ operation.
 
 - **5h + 7d quota bars** — rolling-window gauges in the header, fed by
   the Anthropic usage API where available with a JSONL fallback.
-- **Token histogram** — horizontally-scrollable bar chart of usage per
-  time bucket, heat-coloured relative to the peak bucket. Zoom cycles
-  between 15m / 1h / 24h granularity.
+- **Usage histogram** — horizontally-scrollable bar chart per time
+  bucket, heat-coloured relative to the peak. Defaults to a cost view;
+  `u` toggles cost / output / usage units and `z` cycles 15m / 1h / 24h
+  granularity.
 - **fsnotify live updates** — file watcher (not polling) keeps the
   cache in sync as Claude writes new turns; the TUI redraws on each
   refresh.
@@ -121,8 +124,9 @@ The binary lives in `~/.local/bin/ccpulse`.
 ### `ccpulse`
 
 Opens the interactive TUI: 5h + 7d quota bars and a horizontally-scrollable
-token-usage histogram. `←` / `→` scroll the chart, `z` cycles bucket zoom
-(15m / 1h / 24h), `?` toggles full help, `q` quits.
+usage histogram. `←`/`→` (or `h`/`l`) scroll the chart, `z` cycles bucket
+zoom (15m / 1h / 24h), `u` toggles units (cost / output / usage), `?`
+toggles full help, `q` quits.
 
 ### `ccpulse index`
 
@@ -191,8 +195,10 @@ Runs a health-check checklist and prints a pass/fail report:
 
 - Config file loads and `projects_root` is readable
 - SQLite cache opens and `PRAGMA integrity_check` passes
-- Pricing table version
-- `git` is on `PATH`
+- Pricing table version (and the versions present in the cache)
+- Anthropic OAuth credential — present, plan tier, and not expired
+- Usage-API cache freshness and `parse-errors.log` size
+- Whether the Claude Code `Stop` hook is configured
 
 Run this first when something looks wrong.
 
@@ -211,23 +217,30 @@ retention_days = 0           # 0 = keep usage history forever; positive int prun
 [paths]
 projects_root = "~/.claude/projects"
 cache_dir = "~/.cache/ccpulse"
+
+[ui]
+reduce_motion = false        # true disables the TUI slide-in animations
 ```
 
 - `[history] retention_days` — drop usage history rows older than N days on each insert. Default `0` keeps history forever. Usage history is recorded once per ~3 minutes whenever ccpulse is running and successfully reaches the Anthropic usage API.
+- `[ui] reduce_motion` — set `true` to disable the chart and quota-bar slide-in animations.
+
+Two environment variables override the `[paths]` block at runtime (handy for pointing at a fixture without editing the config):
+
+- `CCPULSE_PROJECTS_ROOT` — overrides `projects_root`
+- `CCPULSE_CACHE_DIR` — overrides `cache_dir`
 
 The plan tier (used to compute the 5h / 7d quota ceilings) is read from your Claude Code OAuth credential — there is no config knob for it.
 
 ## Troubleshooting
 
-`ccpulse doctor` runs a checklist:
+Run `ccpulse doctor` first — it reports on config, the cache and its
+`integrity_check`, pricing, the Anthropic OAuth credential, usage-API
+cache freshness, and the Claude Code `Stop` hook (see the [doctor
+command](#ccpulse-doctor)).
 
-- Config loads / projects_root readable
-- SQLite cache opens, integrity_check passes
-- Pricing version
-- `git` on PATH
-
-If the TUI launches with empty tabs, run `ccpulse index` to do a cold
-scan of `~/.claude/projects/`.
+If the TUI launches empty, run `ccpulse index --rebuild` to do a cold
+scan of `~/.claude/projects/` and rebuild the cache.
 
 If the cache is corrupt (rare; usually after a kill-during-write), the
 TUI auto-rebuilds on launch. Manual: `ccpulse index --rebuild`.
