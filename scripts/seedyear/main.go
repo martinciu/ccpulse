@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/martinciu/ccpulse/pkg/anthro"
 	"github.com/martinciu/ccpulse/pkg/cache"
 	"github.com/martinciu/ccpulse/pkg/config"
 	"github.com/martinciu/ccpulse/pkg/parse"
@@ -282,7 +283,49 @@ func runSeed(opts seedOpts) (seedResult, error) {
 	if err != nil {
 		return seedResult{}, fmt.Errorf("count rows (post): %w", err)
 	}
-	return seedResult{msgsInserted: post - pre, msgsTotal: post}, nil
+
+	samples := buildUsageSamples(msgs)
+	sInserted, sTotal, err := writeUsageSamples(c, samples)
+	if err != nil {
+		return seedResult{}, fmt.Errorf("write usage samples: %w", err)
+	}
+	return seedResult{
+		msgsInserted:    post - pre,
+		msgsTotal:       post,
+		samplesInserted: sInserted,
+		samplesTotal:    sTotal,
+	}, nil
+}
+
+// writeUsageSamples persists synthetic samples via the production
+// RecordUsageSample path (INSERT OR IGNORE on the ts PK → idempotent).
+// Returns rows newly inserted this run (pre/post diff) and the post total.
+func writeUsageSamples(c *cache.Cache, samples []usageSample) (inserted, total int64, err error) {
+	pre, err := countUsageSampleRows(c)
+	if err != nil {
+		return 0, 0, fmt.Errorf("count usage samples (pre): %w", err)
+	}
+	for _, s := range samples {
+		five := anthro.Bucket{Utilization: s.fiveHour, ResetsAt: &s.fiveReset}
+		seven := anthro.Bucket{Utilization: s.sevenDay, ResetsAt: &s.sevenReset}
+		u := anthro.Usage{FiveHour: &five, SevenDay: &seven}
+		if err := c.RecordUsageSample(u, s.at); err != nil {
+			return 0, 0, fmt.Errorf("record usage sample at %s: %w", s.at, err)
+		}
+	}
+	post, err := countUsageSampleRows(c)
+	if err != nil {
+		return 0, 0, fmt.Errorf("count usage samples (post): %w", err)
+	}
+	return post - pre, post, nil
+}
+
+func countUsageSampleRows(c *cache.Cache) (int64, error) {
+	var n int64
+	if err := c.DB().QueryRow(`SELECT COUNT(*) FROM usage_samples`).Scan(&n); err != nil {
+		return 0, fmt.Errorf("query usage sample count: %w", err)
+	}
+	return n, nil
 }
 
 // countSeedRows returns the total rows in messages whose session_id
