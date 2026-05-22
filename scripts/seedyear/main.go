@@ -17,9 +17,12 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/martinciu/ccpulse/pkg/anthro"
 	"github.com/martinciu/ccpulse/pkg/cache"
 	"github.com/martinciu/ccpulse/pkg/config"
 	"github.com/martinciu/ccpulse/pkg/parse"
@@ -85,40 +88,186 @@ type seedOpts struct {
 	days     int
 }
 
+// Window grids are anchored at the Unix epoch (UTC) so a boundary is a pure
+// function of the timestamp — deterministic across runs.
+const (
+	usageFiveHourWindow = 5 * time.Hour
+	usageSevenDayWindow = 7 * 24 * time.Hour
+)
+
+// windowFloor returns the most recent window boundary <= ts, on a grid
+// anchored at the Unix epoch (UTC).
+func windowFloor(ts time.Time, window time.Duration) time.Time {
+	epoch := time.Unix(0, 0).UTC()
+	n := ts.Sub(epoch) / window
+	return epoch.Add(n * window)
+}
+
+type tsTokens struct {
+	at     time.Time
+	tokens int64
+}
+
+// densityIndex is a time-ascending view of per-message token volume with a
+// prefix-sum, giving O(log n) range-sum queries over [lo, hi].
+type densityIndex struct {
+	pts    []tsTokens
+	prefix []int64 // prefix[i] = sum of pts[0..i-1].tokens; len = len(pts)+1
+}
+
+func newDensityIndex(msgs []parse.Message) densityIndex {
+	pts := make([]tsTokens, len(msgs))
+	for i, m := range msgs {
+		pts[i] = tsTokens{at: m.Timestamp, tokens: m.InputTokens + m.OutputTokens}
+	}
+	slices.SortFunc(pts, func(a, b tsTokens) int { return a.at.Compare(b.at) })
+	prefix := make([]int64, len(pts)+1)
+	for i, p := range pts {
+		prefix[i+1] = prefix[i] + p.tokens
+	}
+	return densityIndex{pts: pts, prefix: prefix}
+}
+
+// sum returns total tokens for messages with lo <= at <= hi.
+func (d densityIndex) sum(lo, hi time.Time) int64 {
+	i := sort.Search(len(d.pts), func(k int) bool { return !d.pts[k].at.Before(lo) }) // first at >= lo
+	j := sort.Search(len(d.pts), func(k int) bool { return d.pts[k].at.After(hi) })   // first at > hi
+	if j < i {
+		return 0
+	}
+	return d.prefix[j] - d.prefix[i]
+}
+
+const (
+	// usageSampleTarget bounds synthetic usage_samples rows so the seeded
+	// table stays near its real size (cache.go assumes <2000 rows) and
+	// per-row RecordUsageSample inserts stay sub-second.
+	usageSampleTarget = 2000
+	// minSampleInterval floors the synthetic poll cadence so the 5h sawtooth
+	// stays crisp at the TUI's finest (15m) zoom.
+	minSampleInterval = 15 * time.Minute
+	// usagePeakTarget scales utilization so the busiest window reads ~85%,
+	// keeping the curve varied and never pinned at 100.
+	usagePeakTarget = 0.85
+)
+
+// usageSample is one synthetic usage_samples row.
+type usageSample struct {
+	at         time.Time
+	fiveHour   float64
+	sevenDay   float64
+	fiveReset  time.Time
+	sevenReset time.Time
+}
+
+// normalizePeak scales raw window sums so the busiest reads ~usagePeakTarget
+// (×100), clamped to [0,100]. All-zero input yields all-zero output.
+func normalizePeak(raw []float64) []float64 {
+	var maxv float64
+	for _, v := range raw {
+		if v > maxv {
+			maxv = v
+		}
+	}
+	out := make([]float64, len(raw))
+	if maxv == 0 {
+		return out
+	}
+	ceiling := maxv / usagePeakTarget
+	for i, v := range raw {
+		p := 100 * v / ceiling
+		if p > 100 {
+			p = 100
+		}
+		out[i] = p
+	}
+	return out
+}
+
+// buildUsageSamples derives deterministic 5h/7d utilization samples from the
+// generated messages. The grid spans [earliest msg, latest msg] with an
+// interval derived from that span (not wall-clock now), so same-day re-runs
+// produce identical sample timestamps → idempotent under INSERT OR IGNORE.
+func buildUsageSamples(msgs []parse.Message) []usageSample {
+	if len(msgs) == 0 {
+		return nil
+	}
+	idx := newDensityIndex(msgs)
+	start := idx.pts[0].at
+	end := idx.pts[len(idx.pts)-1].at
+
+	interval := minSampleInterval
+	if span := end.Sub(start); span/usageSampleTarget > interval {
+		interval = span / usageSampleTarget
+	}
+
+	ats := make([]time.Time, 0, int(end.Sub(start)/interval)+1)
+	for t := start; !t.After(end); t = t.Add(interval) {
+		ats = append(ats, t)
+	}
+
+	raw5 := make([]float64, len(ats))
+	raw7 := make([]float64, len(ats))
+	for i, t := range ats {
+		raw5[i] = float64(idx.sum(windowFloor(t, usageFiveHourWindow), t))
+		raw7[i] = float64(idx.sum(windowFloor(t, usageSevenDayWindow), t))
+	}
+	util5 := normalizePeak(raw5)
+	util7 := normalizePeak(raw7)
+
+	out := make([]usageSample, len(ats))
+	for i, t := range ats {
+		out[i] = usageSample{
+			at:         t,
+			fiveHour:   util5[i],
+			sevenDay:   util7[i],
+			fiveReset:  windowFloor(t, usageFiveHourWindow).Add(usageFiveHourWindow),
+			sevenReset: windowFloor(t, usageSevenDayWindow).Add(usageSevenDayWindow),
+		}
+	}
+	return out
+}
+
+// seedResult reports what a runSeed call wrote: rows newly inserted this run
+// (pre/post count diff) and the post-run totals, for both tables.
+type seedResult struct {
+	msgsInserted, msgsTotal       int64
+	samplesInserted, samplesTotal int64
+}
+
 // runSeed validates inputs, opens the dev cache, generates synthetic
-// messages, inserts them in batches, and returns (newly inserted rows this
-// run, total seed-year rows in the DB after the run, error). Idempotent
-// re-runs with the same opts return inserted=0 and an unchanged total.
-func runSeed(opts seedOpts) (inserted int64, total int64, err error) {
+// messages, inserts them in batches, and returns a seedResult. Idempotent
+// re-runs with the same opts return zero inserted counts and unchanged totals.
+func runSeed(opts seedOpts) (seedResult, error) {
 	if err := validateCacheDir(opts.cacheDir); err != nil {
-		return 0, 0, err
+		return seedResult{}, err
 	}
 	params, ok := profiles[opts.profile]
 	if !ok {
-		return 0, 0, fmt.Errorf("unknown profile %q: want one of light, heavy", opts.profile)
+		return seedResult{}, fmt.Errorf("unknown profile %q: want one of light, heavy", opts.profile)
 	}
 	if opts.days <= 0 {
-		return 0, 0, fmt.Errorf("days must be > 0 (got %d)", opts.days)
+		return seedResult{}, fmt.Errorf("days must be > 0 (got %d)", opts.days)
 	}
 
 	if err := os.MkdirAll(opts.cacheDir, 0o755); err != nil {
-		return 0, 0, fmt.Errorf("create cache dir: %w", err)
+		return seedResult{}, fmt.Errorf("create cache dir: %w", err)
 	}
 	dbPath := filepath.Join(opts.cacheDir, "state.db")
 	c, err := cache.Open(dbPath)
 	if err != nil {
-		return 0, 0, fmt.Errorf("open cache %s: %w", dbPath, err)
+		return seedResult{}, fmt.Errorf("open cache %s: %w", dbPath, err)
 	}
 	defer c.Close()
 
 	hist, err := pricing.Load()
 	if err != nil {
-		return 0, 0, fmt.Errorf("load pricing: %w", err)
+		return seedResult{}, fmt.Errorf("load pricing: %w", err)
 	}
 
 	pre, err := countSeedRows(c)
 	if err != nil {
-		return 0, 0, fmt.Errorf("count rows (pre): %w", err)
+		return seedResult{}, fmt.Errorf("count rows (pre): %w", err)
 	}
 
 	rng := rand.New(rand.NewPCG(uint64(opts.seed), 0xCCCCCCCCCCCCCCCC))
@@ -127,15 +276,57 @@ func runSeed(opts seedOpts) (inserted int64, total int64, err error) {
 	for start := 0; start < len(msgs); start += batchSize {
 		end := min(start+batchSize, len(msgs))
 		if err := c.InsertMessages(msgs[start:end], hist); err != nil {
-			return 0, 0, fmt.Errorf("insert batch [%d:%d]: %w", start, end, err)
+			return seedResult{}, fmt.Errorf("insert batch [%d:%d]: %w", start, end, err)
 		}
 	}
 
 	post, err := countSeedRows(c)
 	if err != nil {
-		return 0, 0, fmt.Errorf("count rows (post): %w", err)
+		return seedResult{}, fmt.Errorf("count rows (post): %w", err)
+	}
+
+	samples := buildUsageSamples(msgs)
+	sInserted, sTotal, err := writeUsageSamples(c, samples)
+	if err != nil {
+		return seedResult{}, fmt.Errorf("write usage samples: %w", err)
+	}
+	return seedResult{
+		msgsInserted:    post - pre,
+		msgsTotal:       post,
+		samplesInserted: sInserted,
+		samplesTotal:    sTotal,
+	}, nil
+}
+
+// writeUsageSamples persists synthetic samples via the production
+// RecordUsageSample path (INSERT OR IGNORE on the ts PK → idempotent).
+// Returns rows newly inserted this run (pre/post diff) and the post total.
+func writeUsageSamples(c *cache.Cache, samples []usageSample) (inserted, total int64, err error) {
+	pre, err := countUsageSampleRows(c)
+	if err != nil {
+		return 0, 0, fmt.Errorf("count usage samples (pre): %w", err)
+	}
+	for _, s := range samples {
+		five := anthro.Bucket{Utilization: s.fiveHour, ResetsAt: &s.fiveReset}
+		seven := anthro.Bucket{Utilization: s.sevenDay, ResetsAt: &s.sevenReset}
+		u := anthro.Usage{FiveHour: &five, SevenDay: &seven}
+		if err := c.RecordUsageSample(u, s.at); err != nil {
+			return 0, 0, fmt.Errorf("record usage sample at %s: %w", s.at, err)
+		}
+	}
+	post, err := countUsageSampleRows(c)
+	if err != nil {
+		return 0, 0, fmt.Errorf("count usage samples (post): %w", err)
 	}
 	return post - pre, post, nil
+}
+
+func countUsageSampleRows(c *cache.Cache) (int64, error) {
+	var n int64
+	if err := c.DB().QueryRow(`SELECT COUNT(*) FROM usage_samples`).Scan(&n); err != nil {
+		return 0, fmt.Errorf("query usage sample count: %w", err)
+	}
+	return n, nil
 }
 
 // countSeedRows returns the total rows in messages whose session_id
@@ -278,7 +469,7 @@ func main() {
 		resolved = expandPath(resolved)
 	}
 
-	inserted, total, err := runSeed(seedOpts{
+	res, err := runSeed(seedOpts{
 		profile:  *profile,
 		cacheDir: resolved,
 		seed:     *seed,
@@ -287,6 +478,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("seedyear: %v", err)
 	}
-	fmt.Printf("seeded %s/state.db: %d new rows this run, %d total seed-year rows\n",
-		resolved, inserted, total)
+	fmt.Printf("seeded %s/state.db: %d new messages (%d total), %d new usage samples (%d total)\n",
+		resolved, res.msgsInserted, res.msgsTotal, res.samplesInserted, res.samplesTotal)
 }
