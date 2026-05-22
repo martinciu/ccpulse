@@ -17,6 +17,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -119,7 +120,7 @@ func newDensityIndex(msgs []parse.Message) densityIndex {
 	for i, m := range msgs {
 		pts[i] = tsTokens{at: m.Timestamp, tokens: m.InputTokens + m.OutputTokens}
 	}
-	sort.Slice(pts, func(i, j int) bool { return pts[i].at.Before(pts[j].at) })
+	slices.SortFunc(pts, func(a, b tsTokens) int { return a.at.Compare(b.at) })
 	prefix := make([]int64, len(pts)+1)
 	for i, p := range pts {
 		prefix[i+1] = prefix[i] + p.tokens
@@ -200,7 +201,7 @@ func buildUsageSamples(msgs []parse.Message) []usageSample {
 		interval = span / usageSampleTarget
 	}
 
-	var ats []time.Time
+	ats := make([]time.Time, 0, int(end.Sub(start)/interval)+1)
 	for t := start; !t.After(end); t = t.Add(interval) {
 		ats = append(ats, t)
 	}
