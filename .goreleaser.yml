@@ -43,6 +43,8 @@ nfpms:
         dst: /usr/share/fish/vendor_completions.d/ccpulse.fish
 homebrew_casks:
   - name: ccpulse
+    # auto: don't push a cask to the public tap for prerelease tags (e.g. -rc1)
+    skip_upload: auto
     repository:
       owner: martinciu
       name: homebrew-tap
@@ -63,6 +65,8 @@ checksum:
   name_template: "checksums.txt"
 release:
   draft: false
+  # auto: mark prerelease tags (e.g. -rc1) as Pre-release so they don't show as "Latest"
+  prerelease: auto
 changelog:
   use: git
   sort: asc
