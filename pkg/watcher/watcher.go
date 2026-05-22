@@ -17,6 +17,9 @@ type Watcher struct {
 }
 
 func New(root string) (*Watcher, error) {
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return nil, err
+	}
 	fw, err := fsnotify.NewWatcher()
 	if err != nil {
 		return nil, err

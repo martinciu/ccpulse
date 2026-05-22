@@ -41,6 +41,21 @@ func TestWatcherEmitsOnWrite(t *testing.T) {
 	}
 }
 
+func TestWatcherCreatesMissingRoot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "missing", "projects")
+	w, err := New(root)
+	if err != nil {
+		t.Fatalf("New(%q) returned error: %v", root, err)
+	}
+	defer w.Close()
+
+	if info, err := os.Stat(root); err != nil {
+		t.Fatalf("projects root was not created: %v", err)
+	} else if !info.IsDir() {
+		t.Fatalf("projects root exists but is not a directory")
+	}
+}
+
 func TestWatcherNoCallbackAfterClose(t *testing.T) {
 	dir := t.TempDir()
 	w, err := New(dir)
