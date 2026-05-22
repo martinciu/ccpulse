@@ -4,6 +4,8 @@ on:
   schedule:
     - cron: '0 4,16 * * *'
   workflow_dispatch:
+  issue_comment:
+    types: [created]
 
 permissions:
   contents: write
@@ -11,16 +13,41 @@ permissions:
   issues: write
   id-token: write
 
+# Comment runs get a per-issue lane so an on-demand fix does not queue
+# behind a scheduled whole-queue drain. cancel-in-progress stays false on
+# every path: a fresh @claude quick-fix must NOT kill an in-flight fix
+# that may be mid-push or mid-pr-create (would leave a half-pushed
+# branch). Keeping it false also makes the #289-class self-cancel bug
+# structurally impossible. Do NOT copy claude-review's
+# !endsWith(...[bot]) expression — that exists to make cancel true for
+# humans; here we want it false for everyone.
 concurrency:
-  group: quick-fix-router
+  group: ${{ github.event_name == 'issue_comment' && format('quick-fix-router-{0}', github.event.issue.number) || 'quick-fix-router' }}
   cancel-in-progress: false
 
 jobs:
   route:
     name: Quick-Fix Router
+    if: >-
+      github.event_name != 'issue_comment' ||
+      (
+        !github.event.issue.pull_request &&
+        contains(github.event.comment.body, '@claude quick-fix') &&
+        github.event.comment.author_association == 'OWNER' &&
+        contains(github.event.issue.labels.*.name, 'quick-fix')
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
+      - name: Acknowledge trigger comment
+        if: github.event_name == 'issue_comment'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh api --method POST
+          repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions
+          -f content=eyes
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           fetch-depth: 0
@@ -37,8 +64,9 @@ jobs:
             --allowedTools Bash,Read,Write,Edit,Glob,Grep
           prompt: |
             REPO: ${{ github.repository }}
+            TARGET ISSUE: ${{ github.event.issue.number }}
 
-            You run as a scheduled GitHub Actions workflow in the ccpulse repo (github.com/martinciu/ccpulse). Goal: for EVERY open `quick-fix`-labeled issue that has no open PR, apply the fix on its own feature branch and open a separate PR (one PR per issue). Issues are independent — a failure or skip on one MUST NOT stop processing of the others.
+            You run as a scheduled or on-demand GitHub Actions workflow in the ccpulse repo (github.com/martinciu/ccpulse). Goal: for EVERY open `quick-fix`-labeled issue that has no open PR, apply the fix on its own feature branch and open a separate PR (one PR per issue). Issues are independent — a failure or skip on one MUST NOT stop processing of the others. When invoked on a single TARGET ISSUE (see §1), the queue is just that one issue.
 
             This is a remote, headless run. You start with a fresh clone and no local state — no shell history, no extra config. Make all decisions from each issue's body and the repo contents (read `CLAUDE.md` early; it carries project conventions).
 
@@ -60,6 +88,22 @@ jobs:
             If any pre-flight step fails, print the failure and exit. Do NOT attempt any fix from a dirty or wrong-branch state.
 
             ## 1. Build the work queue
+
+            Two modes, decided by the `TARGET ISSUE` line in the header above.
+
+            ### Single-issue mode — `TARGET ISSUE` names an issue number N
+
+            A maintainer ran `@claude quick-fix` on issue N. The queue is exactly that one issue. Fetch it:
+
+                gh issue view <N> --json number,title,body,labels
+
+            Check whether an open PR already closes it:
+
+                gh pr list --state open --search "closes #<N>" --json number,headRefName
+
+            If a PR already closes it, run `gh issue comment <N> --body 'Routine skipped — an open PR already addresses this issue.'` and exit cleanly (do NOT open a duplicate). Otherwise the queue is the single entry {N, title, body}; proceed to §2. The `quick-fix` label is already guaranteed by the workflow trigger gate — do not re-check it.
+
+            ### Whole-queue mode — `TARGET ISSUE` is blank (scheduled / workflow_dispatch run)
 
             Run:
 
