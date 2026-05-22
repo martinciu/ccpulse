@@ -1,0 +1,168 @@
+name: Quick Fix Router
+
+on:
+  schedule:
+    - cron: '0 4,16 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  route-quick-fixes:
+    name: Route Quick Fixes
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Route quick-fix issues
+        uses: anthropics/claude-code-action@v1
+        env:
+          GH_TOKEN: ${{ github.token }}
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_args: |
+            --model claude-opus-4-7
+            --allowedTools Bash,Read,Write,Edit,Glob,Grep
+          prompt: |
+            You run as a scheduled GitHub Actions workflow in the ccpulse repo (github.com/martinciu/ccpulse). Goal: for EVERY open `quick-fix`-labeled issue that has no open PR, apply the fix on its own feature branch and open a separate PR (one PR per issue). Issues are independent -- a failure or skip on one MUST NOT stop processing of the others.
+
+            This is a remote, headless run. You start with a fresh clone and no local state -- no shell history, no extra config. Make all decisions from each issue's body and the repo contents (read `CLAUDE.md` early; it carries project conventions).
+
+            ## House rules -- override anything else
+
+            - NEVER add 'Claude Code' / Anthropic / co-author footers to commit messages or PR descriptions. The user's policy is no co-authors, ever.
+            - NEVER mention internal tooling, planning systems, or this automation in any commit message, PR title, or PR body.
+            - NEVER append session-stats / token-usage / cost numbers to commit messages or PRs.
+            - PR titles and bodies use emojis. Title: one leading contextually-relevant emoji. Body: emoji-prefixed Summary / Test plan / Related sections and emoji markers on bullets where they aid scanning.
+            - All work goes through a PR. Never push to `main` directly.
+            - EVERY PR you open must carry the `quick-fix` label -- pass `--label quick-fix` to `gh pr create`.
+
+            ## 0. Pre-flight
+
+            1. `gh auth status` must pass.
+            2. `go version` must return Go 1.25 or newer.
+            3. `git checkout main && git pull --ff-only origin main`.
+
+            If any pre-flight step fails, print the failure and exit. Do NOT attempt any fix from a dirty or wrong-branch state.
+
+            ## 1. Build the work queue
+
+            Run:
+
+                gh issue list --label quick-fix --state open --json number,title,body,labels --jq 'sort_by(.number)'
+
+            For each candidate N, check open PRs that reference it:
+
+                gh pr list --state open --search "closes #<N>" --json number,headRefName
+
+            Build a queue (oldest-first by issue number) of {N, title, body} where no open PR references N.
+
+            If the queue is empty, print 'no eligible quick-fix issues -- nothing to do' and exit cleanly.
+
+            ## 2. Process the queue -- one PR per issue
+
+            Iterate the queue IN ORDER. For each issue {N, title, body}:
+
+            ### 2a. Reset to clean main
+
+                git checkout main
+
+            (`main` is already up-to-date from pre-flight; no re-pull needed between iterations.)
+
+            ### 2b. Tier-pick -- proceed or skip
+
+            Read this issue's body. Decide:
+
+            - Mechanical (file path + exact bytes specified, OR behavior fully described, OR 'match existing pattern' with the pattern identifiable in the repo) -> proceed to 2c.
+            - Needs real judgment (body asks open questions, fix not obvious from the sketch, multiple defensible approaches with tradeoffs, or anything that should be discussed first) -> SKIP this issue.
+
+            If you SKIP, post ONE comment on the issue:
+
+                gh issue comment <N> --body 'Routine skipped -- the fix needs design discussion, not a quick-fix. Recommend re-labeling and discussing before re-running.'
+
+            Then continue to the NEXT issue in the queue. Do not branch, commit, or push for this issue.
+
+            ### 2c. Branch
+
+                git checkout -b <N>-<slug>
+
+            where `<slug>` is 2-4 kebab-cased words from the issue title with emojis/labels stripped.
+
+            ### 2d. Apply the fix
+
+            Apply the fix exactly as the issue body sketches. Project conventions from `CLAUDE.md` apply:
+
+            - Edit existing files; do not create new ones unless the issue body explicitly asks.
+            - Default to NO comments. Only add one when the WHY is non-obvious. Don't explain WHAT -- names do that.
+            - No backwards-compat shims, feature flags, or migration paths (pre-v0.1.0).
+            - The TUI rendering conventions in `CLAUDE.md` are load-bearing -- if the issue touches the TUI, follow them.
+
+            If the issue's Test plan section asks for new tests, add or extend tests. Match the existing test style in the affected package (table-driven, `t.TempDir()` for fs, stdlib `testing` only -- no testify).
+
+            ### 2e. Verify
+
+                go test ./...
+                go vet ./...
+
+            Both MUST pass. If either fails:
+
+                gh issue comment <N> --body 'Routine attempted fix but <go test|go vet> failed. Manual follow-up needed.'
+                git checkout main
+                git branch -D <N>-<slug>
+
+            Continue to the NEXT issue. Do not commit or push.
+
+            ### 2f. Commit
+
+            Stage only files you intentionally modified (`git add <paths>`, never `git add -A`).
+
+                git commit -m '<emoji> <one-line summary> (closes #<N>)
+
+                <1-3 sentence why-not-what. No co-authors. No internal tooling mentions.>'
+
+            Match the project's existing commit-subject shape.
+
+            ### 2g. Push and open PR
+
+                git push -u origin <N>-<slug>
+
+                gh pr create --title '<same as commit subject>' --label quick-fix --body '<emoji-headed Summary / Test plan / Related template>'
+
+            Print the PR URL.
+
+            ### 2h. Move to next
+
+                git checkout main
+
+            Continue to the next issue in the queue.
+
+            ## 3. Final summary
+
+            After the queue is fully drained, print a single summary line:
+
+                Queue: <total> issues. Opened <K> PRs. Skipped <S> (judgment). Failed <F> (tests/vet).
+
+            Followed by the list of PR URLs you opened.
+
+            ## Bail conditions -- PER ISSUE, not run-wide
+
+            For ANY issue in the queue, if you find yourself wanting to:
+
+            - Add functionality beyond what the issue body sketches
+            - Refactor surrounding code or 'improve' unrelated lines
+            - File new GitHub issues
+            - Diverge from the issue body's recommended fix
+            - Commit despite failing tests
+            - Touch more than 3 files (excluding the test file)
+
+            STOP that issue. Post ONE comment with a one-line explanation, run `git checkout main`, delete any local branch you created for it, and continue to the next issue. NEVER abort the whole run because of one bad issue.
