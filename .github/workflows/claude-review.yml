@@ -12,25 +12,74 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Token-free producer. Fetches and materializes the Go review skills on a
+  # runner that never receives CLAUDE_CODE_OAUTH_TOKEN, so a compromised
+  # skills CLI or npm transitive dep cannot reach the credential or PR write
+  # access. Source repo and CLI are both pinned. Dependabot cannot track a
+  # cross-repo / run:-step ref, so bump these two values manually:
+  #   source: samber/cc-skills-golang @ v1.5.0
+  #   cli:    skills@1.5.7
+  prepare-skills:
+    name: Prepare Go skills
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    if: >-
+      github.event.issue.pull_request &&
+      contains(github.event.comment.body, '@claude review') &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
+    steps:
+      - name: Checkout pinned skills source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          repository: samber/cc-skills-golang
+          ref: 26e1d996a738d64ed112d1575079882ee8f39389  # v1.5.0
+          path: cc-skills-golang
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Materialize Go skills with pinned CLI
+        run: >-
+          npx skills@1.5.7 add ./cc-skills-golang
+          -a claude-code
+          --skill golang-security
+          --skill golang-error-handling
+          --skill golang-concurrency
+          --skill golang-database
+          --skill golang-cli
+          --skill golang-spf13-cobra
+          --skill golang-testing
+          --skill golang-performance
+          -y --copy
+
+      - name: Upload skills artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: claude-skills
+          path: .claude/skills/
+          retention-days: 1
+          if-no-files-found: error
+
   review:
     name: Claude Review
+    needs: prepare-skills
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
       contents: read
       pull-requests: write
       id-token: write
-    if: >-
-      github.event.issue.pull_request &&
-      contains(github.event.comment.body, '@claude review') &&
-      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           fetch-depth: 1
 
-      - name: Install Go skills
-        run: npx skills add https://github.com/samber/cc-skills-golang -a claude-code --skill '*' -y --copy
+      - name: Download Go skills artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: claude-skills
+          path: .claude/skills/
 
       - uses: anthropics/claude-code-action@1dc994ee7a008f0ecc866d9ac23ef036b7229f84  # v1.0.127
         with:
