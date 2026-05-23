@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/martinciu/ccpulse/pkg/cache"
 	"github.com/martinciu/ccpulse/pkg/parse"
 	"github.com/martinciu/ccpulse/pkg/pricing"
@@ -104,5 +106,113 @@ func TestInit_ArmsNowTick(t *testing.T) {
 	m := New(Deps{}) // nil cache is fine — refreshChart no-ops, the tick still arms
 	if m.Init() == nil {
 		t.Fatal("Init() = nil, want a scheduled now-tick command (#311)")
+	}
+}
+
+func TestNowTick_StaleGenDropped(t *testing.T) {
+	t.Parallel()
+	base := time.Date(2026, 5, 23, 14, 7, 0, 0, time.UTC)
+	m, c := seedTokenModelAt(t, 0, 8, 15*time.Minute, base)
+	defer c.Close()
+	to1 := m.lastChartTo
+	updated, cmd := m.Update(nowTickMsg{gen: m.nowGen + 1}) // stale
+	m = updated.(Model)
+	if cmd != nil {
+		t.Error("stale nowTickMsg should not reschedule (got cmd != nil)")
+	}
+	if !m.lastChartTo.Equal(to1) {
+		t.Errorf("stale nowTickMsg advanced the window: %v → %v", to1, m.lastChartTo)
+	}
+}
+
+func TestNowTick_AdvancesWindowWhenPinned(t *testing.T) {
+	t.Parallel()
+	base := time.Date(2026, 5, 23, 14, 7, 0, 0, time.UTC)
+	// Few buckets → underfilled → locked flush-right (always pinned, scroll inert).
+	m, c := seedTokenModelAt(t, 0, 4, 15*time.Minute, base)
+	defer c.Close()
+	if !m.underfilled {
+		t.Fatalf("precondition: expected underfilled (locked-pinned) model")
+	}
+	to1 := m.lastChartTo
+	xoff1 := m.viewportXOffset
+	// Cross the next 15m boundary.
+	next := nextBoundary(base, ZoomLevels[0]) // 14:15
+	m.now = func() time.Time { return next.Add(time.Minute) }
+	updated, cmd := m.Update(nowTickMsg{gen: m.nowGen})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Error("live nowTickMsg should reschedule (got cmd == nil)")
+	}
+	if want := nextBoundary(next.Add(time.Minute), ZoomLevels[0]); !m.lastChartTo.Equal(want) {
+		t.Errorf("window did not advance: lastChartTo = %v, want %v", m.lastChartTo, want)
+	}
+	if got := m.lastChartTo.Sub(to1); got != 15*time.Minute {
+		t.Errorf("window advanced by %v, want one 15m bucket", got)
+	}
+	if m.viewportXOffset != xoff1 {
+		t.Errorf("pinned offset moved: %d → %d (should stay locked flush-right)", xoff1, m.viewportXOffset)
+	}
+}
+
+func TestNowTick_FreezesWhenScrolled(t *testing.T) {
+	t.Parallel()
+	base := time.Date(2026, 5, 23, 14, 7, 0, 0, time.UTC)
+	// Wide dataset → scrollable (not underfilled).
+	m, c := seedTokenModelAt(t, 0, 300, 15*time.Minute, base)
+	defer c.Close()
+	if m.underfilled {
+		t.Fatalf("precondition: expected a wide (scrollable) model, got underfilled")
+	}
+	to1 := m.lastChartTo
+	// Scroll left, off the right edge.
+	for range 5 {
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyLeft})
+		m = updated.(Model)
+	}
+	maxBefore := max(0, len(m.lastStarts)-m.visibleBuckets())
+	if m.viewportXOffset >= maxBefore {
+		t.Fatalf("precondition: expected scrolled off the right edge, off=%d max=%d", m.viewportXOffset, maxBefore)
+	}
+	// Cross a boundary.
+	next := nextBoundary(base, ZoomLevels[0])
+	m.now = func() time.Time { return next.Add(time.Minute) }
+	updated, _ := m.Update(nowTickMsg{gen: m.nowGen})
+	m = updated.(Model)
+	if !m.lastChartTo.After(to1) {
+		t.Errorf("window did not advance while scrolled: to1=%v to2=%v", to1, m.lastChartTo)
+	}
+	maxAfter := max(0, len(m.lastStarts)-m.visibleBuckets())
+	if m.viewportXOffset >= maxAfter {
+		t.Errorf("scrolled user yanked to the right edge: off=%d max=%d (should stay in the past)", m.viewportXOffset, maxAfter)
+	}
+}
+
+func TestNowTick_AdvancesRemainingUnit(t *testing.T) {
+	t.Parallel()
+	base := time.Date(2026, 5, 23, 14, 7, 0, 0, time.UTC)
+	c, err := cache.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	defer c.Close()
+	m := New(Deps{Cache: c})
+	m.unitIdx = int(chartUnitRemaining)
+	m.zoomIdx = 0 // 15m
+	m.w, m.h = 122, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	m.now = func() time.Time { return base }
+	m.refreshChart()
+	to1 := m.lastChartTo
+	next := nextBoundary(base, ZoomLevels[0])
+	m.now = func() time.Time { return next.Add(time.Minute) }
+	updated, cmd := m.Update(nowTickMsg{gen: m.nowGen})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Error("remaining-unit nowTickMsg should reschedule (got cmd == nil)")
+	}
+	if !m.lastChartTo.After(to1) {
+		t.Errorf("remaining window did not advance: to1=%v to2=%v", to1, m.lastChartTo)
 	}
 }

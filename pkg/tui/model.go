@@ -592,6 +592,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			"dur_ms", time.Since(start).Milliseconds(),
 			"zoom", ZoomLevels[m.zoomIdx].Label)
 		return m, m.maybeArmIntro()
+	case nowTickMsg:
+		if msg.gen != m.nowGen {
+			// Stale chain from a previous zoom cadence — drop without
+			// rescheduling so duplicate chains can't accumulate (#311).
+			return m, nil
+		}
+		// Mirror RefreshMsg's intro guard: don't hard-cut the startup intro;
+		// its terminal refreshChart picks up the advance. refreshChart's
+		// wasPinned/anchorTime block does the rest — pinned advances to the
+		// new right edge, scrolled stays anchored — for all three units.
+		if !m.springIntro {
+			m.refreshChart()
+		}
+		return m, m.scheduleNowTick()
 	case tea.KeyMsg:
 		switch {
 		case msg.String() == "ctrl+c":
