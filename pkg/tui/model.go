@@ -1698,8 +1698,28 @@ func (m *Model) renderWindow() {
 
 	// sliceStart is start or start-1, so sliceStart <= start < end; the end
 	// clamps above therefore keep [sliceStart:end] in bounds.
-	m.viewport.SetContent(buildChart(m.lastValues[sliceStart:end], m.lastStarts[sliceStart:end],
-		peak, zoom.CanvasWidth(end-sliceStart), m.chartHeight(), time.Now(), zoom, unit, m.dateOrder))
+	chartH := m.chartHeight()
+	barsH := chartH
+	if chartH >= 6 {
+		barsH = chartH - 1
+	}
+	canvasW := zoom.CanvasWidth(end - sliceStart)
+	vals := m.lastValues[sliceStart:end]
+	body := buildChart(vals, m.lastStarts[sliceStart:end],
+		peak, canvasW, chartH, time.Now(), zoom, unit, m.dateOrder)
+
+	// In-bar numbers, 24h steady state only (#308). renderSpringFrame does not
+	// call this, so the labels are absent during animation.
+	style := barLabelStyle(unit)
+	texts := make([]string, len(vals))
+	for i, v := range vals {
+		if v > 0 {
+			texts[i] = style.Render(formatBarValue(v, unit))
+		}
+	}
+	body = overlayBarLabels(body, texts, barsH, canvasW, zoom)
+
+	m.viewport.SetContent(body)
 	m.viewport.SetXOffset(xOff)
 }
 

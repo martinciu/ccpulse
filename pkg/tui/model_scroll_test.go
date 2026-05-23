@@ -368,3 +368,14 @@ func TestScroll24h_OldestEdgeClampsToZero(t *testing.T) {
 		t.Errorf("viewportXOffset after over-scroll-left = %d, want 0 (oldest edge)", got)
 	}
 }
+
+func TestRenderWindow_24hInBarLabels(t *testing.T) {
+	t.Parallel()
+	// seedBarModel sets unit=tokens, 5000 input tokens/bucket -> "5k" per bar.
+	m, c := seedBarModel(t, 2 /* 24h */, 10, 24*time.Hour)
+	defer c.Close()
+	got := ansi.Strip(m.viewport.View())
+	if !strings.Contains(got, "5k") {
+		t.Errorf("24h viewport missing in-bar token label %q:\n%s", "5k", got)
+	}
+}
