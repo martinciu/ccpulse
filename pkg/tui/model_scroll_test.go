@@ -1,10 +1,15 @@
 package tui
 
 import (
+	"path/filepath"
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/martinciu/ccpulse/pkg/cache"
+	"github.com/martinciu/ccpulse/pkg/parse"
+	"github.com/martinciu/ccpulse/pkg/pricing"
 )
 
 func TestEarliestRemainingSampleAt(t *testing.T) {
@@ -226,5 +231,77 @@ func TestSetX_RemainingMode_ZeroChartFromSkipsLowerBound(t *testing.T) {
 
 	if got, want := m.viewportXOffset, 0; got != want {
 		t.Errorf("viewportXOffset after setX(0) with zero lastChartFrom = %d, want %d (lower-bound clamp skipped)", got, want)
+	}
+}
+
+func TestZoomLevels_ScrollStep(t *testing.T) {
+	t.Parallel()
+	want := map[string]int{"15m": 3, "1h": 3, "24h": 1}
+	for _, z := range ZoomLevels {
+		if got := z.ScrollStep; got != want[z.Label] {
+			t.Errorf("ZoomLevels[%q].ScrollStep = %d, want %d", z.Label, got, want[z.Label])
+		}
+	}
+}
+
+// seedBarModel opens a temp cache, inserts one message per bucket at the
+// given spacing with a flat InputTokens value, and returns a tokens-mode
+// Model at the requested zoom, refreshed and pinned to the right edge.
+func seedBarModel(t *testing.T, zoomIdx, nBuckets int, spacing time.Duration) (Model, *cache.Cache) {
+	t.Helper()
+	dir := t.TempDir()
+	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	tab, err := pricing.Load()
+	if err != nil {
+		t.Fatalf("pricing.Load: %v", err)
+	}
+	now := time.Now().UTC().Truncate(spacing)
+	var msgs []parse.Message
+	for i := range nBuckets {
+		msgs = append(msgs, parse.Message{
+			SessionID:   "s",
+			ProjectSlug: "p",
+			Model:       "claude-opus-4-7",
+			Timestamp:   now.Add(-time.Duration(i) * spacing),
+			InputTokens: 5000,
+		})
+	}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+	m := New(Deps{Cache: c})
+	m.unitIdx = int(chartUnitTokens)
+	m.zoomIdx = zoomIdx
+	m.w, m.h = 120, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	m.refreshChart()
+	return m, c
+}
+
+func TestScrollStep_OneBucketAt24h(t *testing.T) {
+	t.Parallel()
+	m, c := seedBarModel(t, 2 /* 24h */, 40, 24*time.Hour)
+	defer c.Close()
+	before := m.viewportXOffset
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	m = updated.(Model)
+	if got := before - m.viewportXOffset; got != 1 {
+		t.Errorf("24h: one ScrollLeft moved viewportXOffset by %d, want 1 (one day per press, #306)", got)
+	}
+}
+
+func TestScrollStep_ThreeBucketsAt15m(t *testing.T) {
+	t.Parallel()
+	m, c := seedBarModel(t, 0 /* 15m */, 300, 15*time.Minute)
+	defer c.Close()
+	before := m.viewportXOffset
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	m = updated.(Model)
+	if got := before - m.viewportXOffset; got != 3 {
+		t.Errorf("15m: one ScrollLeft moved viewportXOffset by %d, want 3 (unchanged finer-zoom step)", got)
 	}
 }

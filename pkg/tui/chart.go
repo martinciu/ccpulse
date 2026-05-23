@@ -31,6 +31,9 @@ type ZoomLevel struct {
 	Duration time.Duration
 	BarWidth int
 	BarGap   int
+	// ScrollStep is the per-keypress scroll distance in BUCKETS for ←/→.
+	// 1 at 24h (one day per press); 3 at the finer zooms.
+	ScrollStep int
 }
 
 // CanvasWidth returns the total column count to render n bars at this
@@ -158,9 +161,9 @@ func bucketCountInRange(from, to time.Time, dur time.Duration) int {
 // ZoomLevels are the available zoom steps, cycled with the z key.
 // Order matters: pkg/tui/model.go indexes by position (zoomIdx).
 var ZoomLevels = []ZoomLevel{
-	{"15m", 15 * time.Minute, 1, 0},
-	{"1h", time.Hour, 1, 0},
-	{"24h", 24 * time.Hour, 10, 2},
+	{"15m", 15 * time.Minute, 1, 0, horizontalScrollStep},
+	{"1h", time.Hour, 1, 0, horizontalScrollStep},
+	{"24h", 24 * time.Hour, 10, 2, 1},
 }
 
 // computeSpringSlice returns the slice start (bucket-index) and viewport

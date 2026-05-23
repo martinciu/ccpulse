@@ -712,9 +712,9 @@ func TestZoomLevels_Shape(t *testing.T) {
 		t.Fatalf("expected 3 zoom levels, got %d", len(ZoomLevels))
 	}
 	want := []ZoomLevel{
-		{"15m", 15 * time.Minute, 1, 0},
-		{"1h", time.Hour, 1, 0},
-		{"24h", 24 * time.Hour, 10, 2},
+		{"15m", 15 * time.Minute, 1, 0, horizontalScrollStep},
+		{"1h", time.Hour, 1, 0, horizontalScrollStep},
+		{"24h", 24 * time.Hour, 10, 2, 1},
 	}
 	for i, w := range want {
 		got := ZoomLevels[i]

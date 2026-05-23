@@ -20,7 +20,10 @@ import (
 	"github.com/martinciu/ccpulse/pkg/status"
 )
 
-// horizontalScrollStep is the per-keypress shift in columns.
+// horizontalScrollStep is the default per-keypress shift in BUCKETS for the
+// finer zooms (15m/1h). 24h overrides it to 1 (one day per press) via
+// ZoomLevel.ScrollStep. setX multiplies the bucket count by the per-zoom
+// stride, so this is bucket-indexed — not columns.
 const horizontalScrollStep = 3
 
 // viewLogThreshold gates the slog.Debug emitted from View(); frames
@@ -600,10 +603,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		case key.Matches(msg, m.keys.ScrollLeft):
-			m.scrollLeft(horizontalScrollStep)
+			m.scrollLeft(ZoomLevels[m.zoomIdx].ScrollStep)
 			return m, nil
 		case key.Matches(msg, m.keys.ScrollRight):
-			m.scrollRight(horizontalScrollStep)
+			m.scrollRight(ZoomLevels[m.zoomIdx].ScrollStep)
 			return m, nil
 		}
 	}
