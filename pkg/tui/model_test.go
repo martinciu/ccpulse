@@ -421,6 +421,66 @@ func TestRefreshChart_ZeroRows_RendersAxis(t *testing.T) {
 	}
 }
 
+// TestRefreshChart_Underfill_RemainingMode verifies the line (remaining) chart
+// also pads the window to span the full width, with a full-width axis and a
+// locked scroll, when usage history is sparse (#300).
+func TestRefreshChart_Underfill_RemainingMode(t *testing.T) {
+	t.Parallel()
+	c, err := cache.Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	tab, err := pricing.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	// Two messages (so EarliestMessageTime is set) + two recent usage samples.
+	msgs := []parse.Message{
+		{SessionID: "s", ProjectSlug: "p", Model: "claude-opus-4-7", Timestamp: now, InputTokens: 1000},
+		{SessionID: "s", ProjectSlug: "p", Model: "claude-opus-4-7", Timestamp: now.Add(-24 * time.Hour), InputTokens: 2000},
+	}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		u := anthro.Usage{
+			FiveHour: &anthro.Bucket{Utilization: float64(20 + i*10), ResetsAt: timePtr(now.Add(time.Hour))},
+			SevenDay: &anthro.Bucket{Utilization: float64(10 + i*5), ResetsAt: timePtr(now.Add(24 * time.Hour))},
+		}
+		if err := c.RecordUsageSample(u, now.Add(time.Duration(-i)*time.Hour)); err != nil {
+			t.Fatalf("RecordUsageSample: %v", err)
+		}
+	}
+
+	m := New(Deps{Cache: c})
+	m.unitIdx = int(chartUnitRemaining)
+	m.zoomIdx = 2 // 24h
+	m.w, m.h = 122, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	m.refreshChart()
+
+	if !m.underfilled {
+		t.Fatalf("remaining mode with 2-day data should be underfilled")
+	}
+	if got, want := bucketCountInRange(m.lastChartFrom, m.lastChartTo, 24*time.Hour),
+		m.visibleBuckets()+1; got < want {
+		t.Errorf("remaining window spans %d days, want >= %d (padded)", got, want)
+	}
+	view := stripANSIForTest(m.viewport.View())
+	lines := strings.Split(view, "\n")
+	if labelRow := lines[len(lines)-1]; !rowHasContentBothEnds(labelRow, m.viewport.Width) {
+		t.Errorf("remaining-mode axis labels do not span full width:\n%q", labelRow)
+	}
+	before := m.viewportXOffset
+	m.scrollLeft(ZoomLevels[2].ScrollStep)
+	if m.viewportXOffset != before {
+		t.Errorf("remaining-mode scrollLeft moved %d->%d; want locked", before, m.viewportXOffset)
+	}
+}
+
 func TestBuildChartEmitsBars(t *testing.T) {
 	// Regression: when chartW == len(buckets), the default ntcharts BarGap
 	// of 1 forces bar width to (graphSize - gaps) / numBars = 0, so no bars
