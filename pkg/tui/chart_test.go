@@ -663,6 +663,45 @@ func TestFormatUnitValue(t *testing.T) {
 	}
 }
 
+func TestFormatBarValue(t *testing.T) {
+	tests := []struct {
+		name string
+		v    float64
+		unit chartUnit
+		want string
+	}{
+		// cost — integer dollars, no cents, magnitude carry
+		{"cost zero", 0, chartUnitCost, "$0"},
+		{"cost negative", -5, chartUnitCost, "$0"},
+		{"cost sub-dollar rounds down", 0.4, chartUnitCost, "$0"},
+		{"cost sub-dollar rounds up", 0.6, chartUnitCost, "$1"},
+		{"cost whole", 45, chartUnitCost, "$45"},
+		{"cost 999", 999, chartUnitCost, "$999"},
+		{"cost 999.5 carries to k", 999.5, chartUnitCost, "$1k"},
+		{"cost 1200 -> 1k", 1200, chartUnitCost, "$1k"},
+		{"cost 1600 -> 2k", 1600, chartUnitCost, "$2k"},
+		{"cost million", 1_000_000, chartUnitCost, "$1M"},
+		// tokens — integer at k, one decimal at M/G, magnitude carry
+		{"tok zero", 0, chartUnitTokens, "0"},
+		{"tok raw", 42, chartUnitTokens, "42"},
+		{"tok 750", 750, chartUnitTokens, "750"},
+		{"tok 5k", 5000, chartUnitTokens, "5k"},
+		{"tok 750k", 750_000, chartUnitTokens, "750k"},
+		{"tok 999500 carries to 1M", 999_500, chartUnitTokens, "1M"},
+		{"tok 1.2M", 1_200_000, chartUnitTokens, "1.2M"},
+		{"tok exact 1M trims .0", 1_000_000, chartUnitTokens, "1M"},
+		{"tok 2.1M", 2_100_000, chartUnitTokens, "2.1M"},
+		{"tok 1.2G", 1_200_000_000, chartUnitTokens, "1.2G"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := formatBarValue(tt.v, tt.unit); got != tt.want {
+				t.Errorf("formatBarValue(%v, %v) = %q, want %q", tt.v, tt.unit, got, tt.want)
+			}
+		})
+	}
+}
+
 // stripANSIForTest removes lipgloss/ANSI escape sequences. Tests assert
 // against visible content only — coloring is verified elsewhere.
 func stripANSIForTest(s string) string {

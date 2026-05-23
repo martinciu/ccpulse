@@ -586,6 +586,68 @@ func formatUnitValue(v float64, unit chartUnit) string {
 	}
 }
 
+// compactSuffix indexes magnitude suffixes for in-bar numbers (#308).
+var compactSuffix = [...]string{"", "k", "M", "G"}
+
+// scaleCompact reduces v (>= 0) to a mantissa and a compactSuffix index by
+// repeatedly dividing by 1000. The mantissa is in [0, 1000) before the
+// caller's rounding.
+func scaleCompact(v float64) (float64, int) {
+	exp := 0
+	for v >= 1000 && exp < len(compactSuffix)-1 {
+		v /= 1000
+		exp++
+	}
+	return v, exp
+}
+
+// roundCompact rounds mantissa to dec decimals at the given exp, carrying to
+// the next magnitude when rounding reaches 1000 (e.g. 999.6 with dec=0 -> "1"
+// at exp+1). Returns the formatted mantissa (trailing ".0" trimmed) and the
+// final exp.
+func roundCompact(mantissa float64, exp, dec int) (string, int) {
+	for {
+		p := math.Pow10(dec)
+		r := math.Round(mantissa*p) / p
+		if r >= 1000 && exp < len(compactSuffix)-1 {
+			mantissa, exp = r/1000, exp+1
+			continue
+		}
+		s := strconv.FormatFloat(r, 'f', dec, 64)
+		if dec > 0 {
+			s = strings.TrimSuffix(strings.TrimRight(s, "0"), ".")
+		}
+		return s, exp
+	}
+}
+
+// formatBarValue renders v as the compact in-bar label for the active unit
+// (#308). Cost: whole dollars, no cents ("$0", "$45", "$1k", "$1M"). Tokens:
+// integer at k and below ("42", "750k"), one decimal at M/G ("1.2M", whole
+// millions trim to "1M"). Distinct from formatUnitValue (Y-axis labels), which
+// keeps sub-dollar cents — the in-bar number is a coarse exact-ish readout.
+func formatBarValue(v float64, unit chartUnit) string {
+	if unit == chartUnitCost {
+		if v <= 0 {
+			return "$0"
+		}
+		mant, exp := scaleCompact(v)
+		s, exp := roundCompact(mant, exp, 0)
+		return "$" + s + compactSuffix[exp]
+	}
+	// tokens
+	if v <= 0 {
+		return "0"
+	}
+	mant, exp := scaleCompact(v)
+	dec := 0
+	if exp >= 2 { // M and above get one decimal
+		dec = 1
+	}
+	s, exp := roundCompact(mant, exp, dec)
+	return s + compactSuffix[exp]
+}
+
 // buildChart renders the viewport content from a parallel
 // (values, starts) pair at the given zoom: bars in the top chartH-1
 // rows (or all chartH if chartH < 6), plus an X-axis tick label row
