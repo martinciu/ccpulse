@@ -71,18 +71,23 @@ jobs:
               - 1h Cache Writes        -> cache_write_1h_per_mtok
             Treat the bare aliases `opus`, `sonnet`, and `haiku` as
             informational only — do NOT compare them. Also note any model on
-            the page missing from the snapshot, and any snapshot model missing
-            from the page.
+            the page that is missing from the snapshot (a new model we should
+            add). A snapshot model that is missing from the page is a RETIRED
+            model — ignore it: retired models stay in the snapshot for
+            historical cost lookups and never require action.
 
             ## 4. No differences
 
-            If every compared rate matches and no models are missing on either
-            side, print a one-line confirmation (e.g. "pricing matches snapshot
-            <version>") and exit successfully. Open nothing.
+            If every compared rate matches and there are no new models on the
+            page, print a one-line confirmation (e.g. "pricing matches snapshot
+            <version>") and exit successfully. Open nothing. A snapshot model
+            missing from the page (retired) is expected and never counts as
+            drift.
 
             ## 5. Differences — dedupe, then write ONE issue
 
-            If there are any rate differences or missing models:
+            If there are any rate differences or any new model on the page (a
+            model on the page missing from the snapshot):
 
             a. Ensure the dedupe label exists (idempotent):
                  gh label create pricing-drift --force --color FBCA04 \
@@ -98,9 +103,6 @@ jobs:
                - A bulleted list of every model with a changed rate, showing
                  local vs page value for each affected field.
                - Any new models on the page not in the snapshot.
-               - Any snapshot models not on the page (flag as likely retired —
-                 do NOT recommend removal; retired models stay for historical
-                 cost lookups).
                - A link to https://platform.claude.com/docs/en/about-claude/pricing
                - The fix, stated explicitly: add a new snapshot file
                  `pkg/pricing/history/<today>.json` with corrected rates — never
