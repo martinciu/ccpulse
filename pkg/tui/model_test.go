@@ -380,10 +380,44 @@ func TestRefreshChart_AllEmptyShowsBaseline(t *testing.T) {
 	if strings.Contains(got, "STALE CHART CONTENT") {
 		t.Errorf("refreshChart left stale content in viewport:\n%s", got)
 	}
-	// New behaviour (issue #53): an empty cache renders the placeholder
-	// text rather than a fake baseline.
-	if !strings.Contains(got, "no Claude sessions yet") {
-		t.Errorf("expected placeholder text 'no Claude sessions yet' in:\n%s", got)
+	// #300 supersedes #53's placeholder for the no-data case: an empty cache
+	// now renders the full-width empty axis (warming-up state), not the
+	// "no Claude sessions yet" placeholder. (The placeholder remains for
+	// genuine DB read errors, which this test does not exercise.)
+	if strings.Contains(got, "no Claude sessions yet") {
+		t.Errorf("empty cache should render the axis, not the placeholder:\n%s", got)
+	}
+}
+
+// TestRefreshChart_ZeroRows_RendersAxis verifies that an empty cache (no message
+// rows, DB healthy) renders a full-width empty axis filling in from the right,
+// not the "no Claude sessions yet" placeholder (#300).
+func TestRefreshChart_ZeroRows_RendersAxis(t *testing.T) {
+	t.Parallel()
+	c, err := cache.Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	m := New(Deps{Cache: c})
+	m.unitIdx = int(chartUnitTokens)
+	m.zoomIdx = 2 // 24h
+	m.w, m.h = 122, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	m.refreshChart()
+
+	view := stripANSIForTest(m.viewport.View())
+	if strings.Contains(view, "no Claude sessions yet") {
+		t.Errorf("zero-row state still shows placeholder; want full-width axis:\n%s", view)
+	}
+	if !m.underfilled {
+		t.Errorf("zero-row state should be underfilled")
+	}
+	lines := strings.Split(view, "\n")
+	if labelRow := lines[len(lines)-1]; !rowHasContentBothEnds(labelRow, m.viewport.Width) {
+		t.Errorf("zero-row axis labels do not span full width:\n%q", labelRow)
 	}
 }
 
@@ -1680,11 +1714,14 @@ func TestRefreshDuringAnimationSnapsAndContinues(t *testing.T) {
 		t.Fatalf("animation didn't start")
 	}
 
-	// Insert a new message far back in time so earliest-bucket moves and the
-	// bucket count grows substantially.
+	// Insert a new message far back in time so the earliest bucket moves and
+	// the bucket count grows substantially. It must land OUTSIDE the #300
+	// padded window (15m zoom pads to visibleBuckets()+1 ≈ 119 buckets ≈
+	// 29.75h), otherwise the count stays pinned at the padded width and the
+	// "refreshed" proxy below can't observe the growth. -48h ≈ 192 buckets.
 	newMsgs := []parse.Message{
 		{SessionID: "s2", ProjectSlug: "p", Model: "claude-opus-4-7",
-			Timestamp: now.Add(-12 * time.Hour), InputTokens: 50000, OutputTokens: 25000},
+			Timestamp: now.Add(-48 * time.Hour), InputTokens: 50000, OutputTokens: 25000},
 	}
 	if err := c.InsertMessages(newMsgs, tab); err != nil {
 		t.Fatalf("InsertMessages (new): %v", err)
@@ -2914,8 +2951,11 @@ func TestUnitKey_ReduceMotion_EmptyCache(t *testing.T) {
 	if m.unitIdx != 1 {
 		t.Errorf("unitIdx = %d; expected 1 after one toggle", m.unitIdx)
 	}
-	if len(m.lastValues) != 0 {
-		t.Errorf("len(lastValues) = %d; expected 0 on empty cache", len(m.lastValues))
+	// Since #300 an empty cache renders a zero-padded full-width axis, so
+	// lastValues is non-empty; hasData is the warming-up signal that gates
+	// animation (and it must stay false here, otherwise a spring would run).
+	if m.hasData {
+		t.Errorf("hasData = true; expected false on empty cache")
 	}
 }
 
@@ -3541,12 +3581,14 @@ func TestFullUnitCycle_CostTokensRemaining(t *testing.T) {
 }
 
 func TestRefreshChart_EmptyCacheRecoveryPinsRight(t *testing.T) {
-	// Guards the regression from issue #179: an empty-cache early-return in
-	// refreshChart left stale lastCanvasW/lastChartFrom/lastChartTo/lastZoomStride
-	// on the model. When data returned on the next refresh, the anchor logic
-	// saw a non-zero lastCanvasW and treated the offset as a wall-clock anchor
-	// (hadAnchor=true), mapping the stale position to the LEFT of the new
-	// canvas instead of pinning to the right edge.
+	// Guards the regression from issue #179: recovering from an empty cache
+	// must pin the chart to the right edge, not mis-map a stale offset to the
+	// LEFT of the new canvas. Since #300 the empty cache no longer early-returns
+	// with zeroed state — it renders a fresh zero-padded full-width window
+	// (underfilled, warming up), so the stale-state bug class is gone by
+	// construction. This test pins down the new contract: the empty refresh
+	// produces a fresh full-width window (not zeroed), and the follow-up
+	// data refresh stays pinned to the right edge.
 	m, cleanup := seedScrollTestModel(t, 200)
 	defer cleanup()
 	m.unitIdx = int(chartUnitTokens)
@@ -3563,23 +3605,25 @@ func TestRefreshChart_EmptyCacheRecoveryPinsRight(t *testing.T) {
 
 	m.refreshChart()
 
-	// After the empty-cache refresh all canvas-state fields must be zeroed.
-	if m.lastCanvasW != 0 {
-		t.Errorf("lastCanvasW = %d after empty-cache refresh; want 0", m.lastCanvasW)
+	// Empty cache is a warming-up state: real data absent (hasData=false),
+	// padded axis present (underfilled=true), and a fresh full-width window —
+	// NOT the old zeroed early-return that caused the #179 mis-anchor.
+	if m.hasData {
+		t.Errorf("hasData = true on empty cache; want false (warming up)")
 	}
-	if !m.lastChartFrom.IsZero() {
-		t.Errorf("lastChartFrom = %v after empty-cache refresh; want zero", m.lastChartFrom)
+	if !m.underfilled {
+		t.Errorf("underfilled = false on empty cache; want true (padded axis)")
+	}
+	if m.lastCanvasW == 0 || m.lastChartFrom.IsZero() {
+		t.Errorf("empty refresh left a zeroed window (canvasW=%d, from=%v); want a fresh full-width window",
+			m.lastCanvasW, m.lastChartFrom)
 	}
 
-	// Restore the seeded cache and force viewport to left edge so we can
-	// detect whether the next refresh correctly re-pins to the right.
+	// Restore the seeded cache. The recovery refresh must pin to the new
+	// canvas's right edge (the user is watching "now").
 	m.deps.Cache = seeded
-	m.setX(0)
-
 	m.refreshChart()
 
-	// The recovery refresh must treat this as a first-load (hadAnchor=false)
-	// and pin to the right edge.
 	stride := m.lastZoomStride
 	if stride == 0 {
 		stride = 1

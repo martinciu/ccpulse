@@ -347,6 +347,15 @@ func TestZoomCycle_PreservesTimeAnchorInRemaining(t *testing.T) {
 	for i := 1; i < len(ZoomLevels); i++ {
 		m.zoomIdx = i
 		m.refreshChart()
+		if m.underfilled {
+			// #300: at this zoom the data is narrower than the viewport, so
+			// refreshChart pads the window and setX locks it flush-right (←/→
+			// inert). Anchor preservation is a fill-regime concept — when the
+			// chart is pinned right there is no scroll position to preserve, so
+			// the invariant is vacuous here. (e.g. ~7 days of seed data spans
+			// only ~8 day-buckets, which underfills the 24h viewport.)
+			continue
+		}
 		if m.lastCanvasW <= m.viewport.Width {
 			// No scroll room at this zoom — the entire canvas fits in
 			// the viewport, so the "wall-clock under the left edge"

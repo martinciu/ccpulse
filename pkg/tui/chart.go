@@ -626,6 +626,20 @@ const (
 	chartUnitCount // sentinel — cycle modulus
 )
 
+// String returns the unit's short name, used for table-test subtest names.
+func (u chartUnit) String() string {
+	switch u {
+	case chartUnitCost:
+		return "cost"
+	case chartUnitTokens:
+		return "tokens"
+	case chartUnitRemaining:
+		return "remaining"
+	default:
+		return "unknown"
+	}
+}
+
 // niceFloorFloat returns the largest "nice" value <= peak from the
 // sequence {1, 2, 3, 5, 7} × 10ᵏ, where k may be negative to support
 // sub-1 peaks (cost-mode shows e.g. $0.45 buckets). The integer-only

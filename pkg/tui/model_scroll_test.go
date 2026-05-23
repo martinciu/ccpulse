@@ -330,6 +330,74 @@ func rightmostNonSpaceCol(s string) int {
 	return maxCol
 }
 
+// rowHasContentBothEnds reports whether row (ANSI already stripped) has a
+// non-space rune in both its left quarter [0, w/4) and right quarter [3w/4, w).
+// Used to assert the x-axis label row spans the full chart width (#300).
+func rowHasContentBothEnds(row string, w int) bool {
+	r := []rune(row)
+	var left, right bool
+	for i := 0; i < len(r) && i < w; i++ {
+		if r[i] == ' ' {
+			continue
+		}
+		if i < w/4 {
+			left = true
+		}
+		if i >= 3*w/4 {
+			right = true
+		}
+	}
+	return left && right
+}
+
+// TestRefreshChart_Underfill_FlushRight verifies that when indexed data is
+// narrower than the chart (2 buckets), refreshChart pads the window leftward so
+// data hugs the right edge and the x-axis spans the full width — at every zoom
+// and both bar units (#300).
+func TestRefreshChart_Underfill_FlushRight(t *testing.T) {
+	t.Parallel()
+	for _, unit := range []chartUnit{chartUnitTokens, chartUnitCost} {
+		for _, zi := range []int{0, 1, 2} { // 15m, 1h, 24h
+			unit, zi := unit, zi
+			t.Run(unit.String()+"_"+ZoomLevels[zi].Label, func(t *testing.T) {
+				t.Parallel()
+				m, c := seedBarModel(t, zi, 2, ZoomLevels[zi].Duration)
+				defer c.Close()
+				if unit != chartUnitTokens {
+					m.unitIdx = int(unit)
+					m.refreshChart()
+				}
+
+				if !m.underfilled {
+					t.Fatalf("expected underfilled=true with 2 buckets at %s", ZoomLevels[zi].Label)
+				}
+				// Window padded to span at least the viewport.
+				if got, want := bucketCountInRange(m.lastChartFrom, m.lastChartTo, ZoomLevels[zi].Duration),
+					m.visibleBuckets()+1; got < want {
+					t.Errorf("window spans %d buckets, want >= %d (padded to fill width)", got, want)
+				}
+				// Data flush-right: newest bucket (last) holds data, oldest is padding.
+				if n := len(m.lastValues); n == 0 || m.lastValues[n-1] == 0 {
+					t.Errorf("newest bucket should hold data (flush-right); lastValues=%v", m.lastValues)
+				}
+				if m.lastValues[0] != 0 {
+					t.Errorf("oldest bucket should be zero-fill padding, got %v", m.lastValues[0])
+				}
+				// Rendered content reaches the right edge.
+				view := ansi.Strip(m.viewport.View())
+				if got, want := rightmostNonSpaceCol(view), m.viewport.Width-1; got != want {
+					t.Errorf("content reaches col %d, want %d (data flush-right)", got, want)
+				}
+				// X-axis label row spans the full width (left + right populated).
+				lines := strings.Split(view, "\n")
+				if labelRow := lines[len(lines)-1]; !rowHasContentBothEnds(labelRow, m.viewport.Width) {
+					t.Errorf("x-axis labels do not span full width at %s:\n%q", ZoomLevels[zi].Label, labelRow)
+				}
+			})
+		}
+	}
+}
+
 func TestScroll24h_NoRightEdgeGap(t *testing.T) {
 	t.Parallel()
 	m, c := seedBarModel(t, 2 /* 24h */, 40, 24*time.Hour)
