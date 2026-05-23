@@ -41,7 +41,18 @@ func TestRunTUIQuitsCleanly(t *testing.T) {
 
 	// Snapshot baseline goroutines (testing framework, sqlite
 	// background workers, etc.) so we only assert no NEW leaks.
-	leakOpts := []goleak.Option{goleak.IgnoreCurrent()}
+	//
+	// bubbletea.Tick.func1 is the live chart-window advance tick (#311),
+	// armed in Init and scheduled to fire at the next bucket boundary (up
+	// to 15 min out). bubbletea v1's Tick blocks on its timer channel with
+	// no context cancellation, so quitting via `q` leaves the pending
+	// boundary timer goroutine alive past runTUI's return. Harmless in
+	// production (the process exits and the goroutine dies with it); ignore
+	// it by top function so this real-loop shutdown test stays green.
+	leakOpts := []goleak.Option{
+		goleak.IgnoreCurrent(),
+		goleak.IgnoreTopFunction("github.com/charmbracelet/bubbletea.Tick.func1"),
+	}
 
 	// Isolate filesystem state so the test doesn't read the user's
 	// real ~/.claude/projects or ~/.cache/ccpulse.

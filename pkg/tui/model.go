@@ -605,6 +605,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.springIntro {
 			m.refreshChart()
 		}
+		// One log line per boundary crossing — the live-advance cadence is
+		// one wakeup per bucket, so this is not a per-frame hot path. Logs
+		// only the zoom label (no paths, tokens, or credentials).
+		slog.Debug("tui.nowTick", "zoom", ZoomLevels[m.zoomIdx].Label)
 		return m, m.scheduleNowTick()
 	case tea.KeyMsg:
 		switch {
