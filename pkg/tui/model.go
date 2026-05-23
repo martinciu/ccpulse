@@ -126,6 +126,12 @@ type Model struct {
 	zoomIdx int // index into ZoomLevels
 	unitIdx int // 0 = cost, 1 = tokens, 2 = remaining. Cycled by 'u'. Resets to cost on launch.
 
+	// now returns the current wall-clock time. Defaults to time.Now in New;
+	// tests override it to drive deterministic bucket-boundary crossings
+	// (#311). Every wall-clock read in the chart render/advance path goes
+	// through this seam.
+	now func() time.Time
+
 	// lastValues / lastStarts are the per-bucket inputs fed to the
 	// most recent buildChart, in the active unit. Refreshed by
 	// refreshChart; lastValues is snapshotted by beginUnitAnimation
@@ -319,6 +325,7 @@ func New(d Deps) Model {
 		help:      help.New(),
 		zoomIdx:   0, // default: 15m
 		dateOrder: detectDateOrder(),
+		now:       time.Now,
 	}
 	m.progress = newProgressBar(40)
 	m.progress7d = newProgressBar(40)
@@ -1495,7 +1502,7 @@ func (m *Model) refreshChart() {
 	zoom := ZoomLevels[m.zoomIdx]
 	// Right edge = the END of the bucket containing now (#311: same instant
 	// the live-advance tick is scheduled to fire at).
-	to := nextBoundary(time.Now(), zoom)
+	to := nextBoundary(m.now(), zoom)
 
 	earliest, ok, err := m.deps.Cache.EarliestMessageTime()
 	if err != nil {
@@ -1712,7 +1719,7 @@ func (m *Model) refreshChart() {
 	// wide canvas after a bar→line spring left narrow content behind.
 	if unit == chartUnitRemaining {
 		m.peak = peak // 1.0, set in the switch above
-		m.viewport.SetContent(buildLineChart(m.lastPts5h, m.lastPts7d, from, to, canvasW, chartH, time.Now(), zoom, m.dateOrder, "refresh"))
+		m.viewport.SetContent(buildLineChart(m.lastPts5h, m.lastPts7d, from, to, canvasW, chartH, m.now(), zoom, m.dateOrder, "refresh"))
 		m.setX(m.viewportXOffset)
 	} else {
 		m.renderWindow()

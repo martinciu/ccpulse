@@ -1,10 +1,13 @@
 package tui
 
 import (
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/martinciu/ccpulse/pkg/cache"
+	"github.com/martinciu/ccpulse/pkg/parse"
+	"github.com/martinciu/ccpulse/pkg/pricing"
 )
 
 func TestNextBoundary_SubDay(t *testing.T) {
@@ -44,5 +47,54 @@ func TestNextBoundary_24hLocalMidnight(t *testing.T) {
 	}
 	if !got.After(cache.DayStartLocal(base)) {
 		t.Errorf("24h nextBoundary should be after today's local midnight")
+	}
+}
+
+// seedTokenModelAt builds a tokens-unit Model backed by a temp-DB cache with
+// nBuckets messages spaced `spacing` apart ending at `now`, with the chart
+// clock pinned to `now`. Mirrors seedBarModel but injects the #311 clock seam.
+func seedTokenModelAt(t *testing.T, zoomIdx, nBuckets int, spacing time.Duration, now time.Time) (Model, *cache.Cache) {
+	t.Helper()
+	c, err := cache.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	tab, err := pricing.Load()
+	if err != nil {
+		t.Fatalf("pricing.Load: %v", err)
+	}
+	var msgs []parse.Message
+	for i := range nBuckets {
+		msgs = append(msgs, parse.Message{
+			SessionID:   "s",
+			ProjectSlug: "p",
+			Model:       "claude-opus-4-7",
+			Timestamp:   now.Add(-time.Duration(i) * spacing),
+			InputTokens: 5000,
+		})
+	}
+	if err := c.InsertMessages(msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+	m := New(Deps{Cache: c})
+	m.unitIdx = int(chartUnitTokens)
+	m.zoomIdx = zoomIdx
+	m.w, m.h = 122, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	m.now = func() time.Time { return now }
+	m.refreshChart()
+	return m, c
+}
+
+func TestRefreshChart_UsesInjectedClock(t *testing.T) {
+	t.Parallel()
+	// A clock far from real wall-time: if the seam is unwired, refreshChart
+	// uses time.Now() and lastChartTo lands ~2026, failing this assertion.
+	fixed := time.Date(2020, 1, 15, 9, 23, 0, 0, time.UTC)
+	m, c := seedTokenModelAt(t, 0 /* 15m */, 8, 15*time.Minute, fixed)
+	defer c.Close()
+	if want := nextBoundary(fixed, ZoomLevels[0]); !m.lastChartTo.Equal(want) {
+		t.Errorf("lastChartTo = %v, want %v (driven by injected clock)", m.lastChartTo, want)
 	}
 }
