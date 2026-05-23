@@ -421,6 +421,49 @@ func TestRefreshChart_ZeroRows_RendersAxis(t *testing.T) {
 	}
 }
 
+// TestRefreshChart_ZeroRows_RemainingMode verifies that an empty cache (no
+// messages, no usage samples) in remaining-unit / 24h-zoom renders as an
+// underfilled, warming-up state: full-width axis, hasData=false, and scroll
+// locked (#300).
+func TestRefreshChart_ZeroRows_RemainingMode(t *testing.T) {
+	t.Parallel()
+	c, err := cache.Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	m := New(Deps{Cache: c})
+	m.unitIdx = int(chartUnitRemaining)
+	m.zoomIdx = 2 // 24h
+	m.w, m.h = 122, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	m.refreshChart()
+
+	// 1. Padded axis: zero-row remaining state must be underfilled.
+	if !m.underfilled {
+		t.Errorf("zero-row remaining state should be underfilled")
+	}
+	// 2. Warming-up: no usage samples → hasData must be false.
+	if m.hasData {
+		t.Errorf("hasData = true on empty cache; want false (warming up)")
+	}
+	// 3. Full-width axis: label row must have content at both ends.
+	view := stripANSIForTest(m.viewport.View())
+	lines := strings.Split(view, "\n")
+	if labelRow := lines[len(lines)-1]; !rowHasContentBothEnds(labelRow, m.viewport.Width) {
+		t.Errorf("zero-row remaining-mode axis labels do not span full width:\n%q", labelRow)
+	}
+	// 4. Scroll locked: ← must not move the offset while underfilled.
+	before := m.viewportXOffset
+	m.scrollLeft(ZoomLevels[2].ScrollStep)
+	if m.viewportXOffset != before {
+		t.Errorf("remaining-mode scrollLeft on empty cache moved %d->%d; want locked (underfilled)",
+			before, m.viewportXOffset)
+	}
+}
+
 // TestRefreshChart_Underfill_RemainingMode verifies the line (remaining) chart
 // also pads the window to span the full width, with a full-width axis and a
 // locked scroll, when usage history is sparse (#300).
