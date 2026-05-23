@@ -621,6 +621,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.Zoom):
 			m.zoomIdx = (m.zoomIdx + 1) % len(ZoomLevels)
 			m.refreshChart()
+			// Re-arm the live-advance tick on the new zoom's cadence; the
+			// bumped gen drops the previous cadence's in-flight tick (#311).
+			m.nowGen++
+			return m, m.scheduleNowTick()
 		case key.Matches(msg, m.keys.Unit):
 			m.unitIdx = (m.unitIdx + 1) % int(chartUnitCount)
 			if m.deps.ReduceMotion {

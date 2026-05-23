@@ -216,3 +216,25 @@ func TestNowTick_AdvancesRemainingUnit(t *testing.T) {
 		t.Errorf("remaining window did not advance: to1=%v to2=%v", to1, m.lastChartTo)
 	}
 }
+
+func TestZoom_RearmsNowTick(t *testing.T) {
+	t.Parallel()
+	base := time.Date(2026, 5, 23, 14, 7, 0, 0, time.UTC)
+	m, c := seedTokenModelAt(t, 0, 8, 15*time.Minute, base)
+	defer c.Close()
+	gen0 := m.nowGen
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("z")})
+	m = updated.(Model)
+	if m.nowGen != gen0+1 {
+		t.Errorf("zoom did not bump nowGen: %d → %d, want +1", gen0, m.nowGen)
+	}
+	if cmd == nil {
+		t.Error("zoom should re-arm the now-tick (got cmd == nil)")
+	}
+	// The pre-zoom tick is now stale and must be dropped.
+	updated, cmd2 := m.Update(nowTickMsg{gen: gen0})
+	m = updated.(Model)
+	if cmd2 != nil {
+		t.Error("pre-zoom (stale-gen) nowTickMsg should be dropped after re-arm")
+	}
+}
