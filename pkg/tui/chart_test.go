@@ -712,9 +712,9 @@ func TestZoomLevels_Shape(t *testing.T) {
 		t.Fatalf("expected 3 zoom levels, got %d", len(ZoomLevels))
 	}
 	want := []ZoomLevel{
-		{"15m", 15 * time.Minute, 1, 0},
-		{"1h", time.Hour, 1, 0},
-		{"24h", 24 * time.Hour, 10, 2},
+		{"15m", 15 * time.Minute, 1, 0, horizontalScrollStep},
+		{"1h", time.Hour, 1, 0, horizontalScrollStep},
+		{"24h", 24 * time.Hour, 10, 2, 1},
 	}
 	for i, w := range want {
 		got := ZoomLevels[i]
@@ -842,104 +842,72 @@ func TestComputeSpringSlice(t *testing.T) {
 	tests := []struct {
 		name           string
 		start          int
-		prevLongest    int
 		vpWidth        int
 		stride         int
+		gap            int
 		wantSlice      int
 		wantSpringXOff int
 	}{
 		{
-			name:           "start=0 unclamped",
-			start:          0,
-			prevLongest:    4318,
-			vpWidth:        120,
-			stride:         12,
-			wantSlice:      0,
-			wantSpringXOff: 0,
+			// Oldest edge: no bucket to the left, so left-align and let
+			// the slack fall on the right (#306 chosen boundary).
+			name:  "oldest edge start=0 left-aligned",
+			start: 0, vpWidth: 120, stride: 12, gap: 2,
+			wantSlice: 0, wantSpringXOff: 0,
 		},
 		{
-			name:           "mid-scroll unclamped",
-			start:          200,
-			prevLongest:    4318,
-			vpWidth:        120,
-			stride:         12,
-			wantSlice:      200,
-			wantSpringXOff: 0,
+			// THE #306 FIX: mid-scroll now pulls in the leading bucket and
+			// offsets by stride-slack so the right edge stays flush.
+			// slack = (120+2)%12 = 2 → xOff = 12-2 = 10.
+			name:  "mid-scroll flush-right (24h)",
+			start: 200, vpWidth: 120, stride: 12, gap: 2,
+			wantSlice: 199, wantSpringXOff: 10,
 		},
 		{
-			name:           "pinned-right slack in gap",
-			start:          350,
-			prevLongest:    4318,
-			vpWidth:        120,
-			stride:         12,
-			wantSlice:      349,
-			wantSpringXOff: 10,
+			// Right-pinned: byte-identical to pre-#306 behavior.
+			name:  "pinned-right slack in gap",
+			start: 350, vpWidth: 120, stride: 12, gap: 2,
+			wantSlice: 349, wantSpringXOff: 10,
 		},
 		{
-			name:           "pinned-right slack in bar (terminal 130)",
-			start:          350,
-			prevLongest:    4318,
-			vpWidth:        128,
-			stride:         12,
-			wantSlice:      349,
-			wantSpringXOff: 2,
+			// Right-pinned, terminal width 130: slack = (128+2)%12 = 10 →
+			// xOff = 12-10 = 2. Byte-identical to pre-#306 behavior.
+			name:  "pinned-right slack in bar (terminal 130)",
+			start: 350, vpWidth: 128, stride: 12, gap: 2,
+			wantSlice: 349, wantSpringXOff: 2,
 		},
 		{
-			name:           "canvas fits in viewport, start=0",
-			start:          0,
-			prevLongest:    60,
-			vpWidth:        120,
-			stride:         12,
-			wantSlice:      0,
-			wantSpringXOff: 0,
+			// vpWidth an exact stride multiple: slack = (118+2)%12 = 0 →
+			// no partial bucket, no offset.
+			name:  "exact stride multiple slack=0",
+			start: 200, vpWidth: 118, stride: 12, gap: 2,
+			wantSlice: 200, wantSpringXOff: 0,
 		},
 		{
-			// Critical: exercises the defensive springXOff < 0 clamp.
-			// Without the clamp, springXOff would be:
-			//   desiredXOffset = 5*12 = 60
-			//   actualXOffset = min(60, max(0, 60-120)) = min(60, 0) = 0
-			//   sliceStart = 4, springXOff = 0 - 4*12 = -48
-			name:           "canvas fits in viewport, start=5 (negative-pre-clamp path)",
-			start:          5,
-			prevLongest:    60,
-			vpWidth:        120,
-			stride:         12,
-			wantSlice:      4,
-			wantSpringXOff: 0,
+			// start=1: leading bucket is bucket 0. slack=2 → xOff=10.
+			name:  "start=1 partial leading bucket (24h)",
+			start: 1, vpWidth: 120, stride: 12, gap: 2,
+			wantSlice: 0, wantSpringXOff: 10,
 		},
 		{
-			// start=1, tiny canvas: desiredXOffset = 1*12 = 12,
-			// actualXOffset = min(12, max(0, 14*12-120)) = min(12, max(0,-6)) = min(12,0) = 0.
-			// 0 < 12, so the if-branch fires: sliceStart = 0/12 = 0,
-			// springXOff = 0 - 0*12 = 0. The pre-clamp value is already 0,
-			// so the defensive springXOff < 0 clamp is NOT exercised here.
-			name:           "start=1 sliceStart drops to zero (if-branch arithmetic)",
-			start:          1,
-			prevLongest:    14,
-			vpWidth:        120,
-			stride:         12,
-			wantSlice:      0,
-			wantSpringXOff: 0,
+			// 15m/1h zoom shape (stride=1, gap=0): slack is always 0, so
+			// the gap class never occurs there.
+			name:  "stride=1 never has slack (15m/1h)",
+			start: 50, vpWidth: 80, stride: 1, gap: 0,
+			wantSlice: 50, wantSpringXOff: 0,
 		},
 		{
-			// stride=1 (matches 15m/1h zoom shape: BarWidth=1, BarGap=0).
-			// desiredXOffset = 50*1 = 50,
-			// actualXOffset = min(50, max(0, 200*1-80)) = min(50, 120) = 50.
-			// 50 == 50, so the if-branch does NOT fire: sliceStart = 50,
-			// springXOff = 50 - 50*1 = 0.
-			name:           "stride=1 mid-scroll (15m/1h zoom shape)",
-			start:          50,
-			prevLongest:    200,
-			vpWidth:        80,
-			stride:         1,
-			wantSlice:      50,
-			wantSpringXOff: 0,
+			// Defensive: stride<1 clamps to 1 (guards a degenerate ZoomLevels
+			// literal) → slack=0, no partial bucket, no panic.
+			name:  "defensive stride<1 clamps to 1",
+			start: 5, vpWidth: 80, stride: 0, gap: 0,
+			wantSlice: 5, wantSpringXOff: 0,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			gotSlice, gotXOff := computeSpringSlice(tt.start, tt.prevLongest, tt.vpWidth, tt.stride)
+			gotSlice, gotXOff := computeSpringSlice(tt.start, tt.vpWidth, tt.stride, tt.gap)
 			if gotSlice != tt.wantSlice {
 				t.Errorf("sliceStart = %d, want %d", gotSlice, tt.wantSlice)
 			}

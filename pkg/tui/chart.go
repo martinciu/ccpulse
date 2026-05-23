@@ -31,6 +31,9 @@ type ZoomLevel struct {
 	Duration time.Duration
 	BarWidth int
 	BarGap   int
+	// ScrollStep is the per-keypress scroll distance in BUCKETS for ←/→.
+	// 1 at 24h (one day per press); 3 at the finer zooms.
+	ScrollStep int
 }
 
 // CanvasWidth returns the total column count to render n bars at this
@@ -158,35 +161,46 @@ func bucketCountInRange(from, to time.Time, dur time.Duration) int {
 // ZoomLevels are the available zoom steps, cycled with the z key.
 // Order matters: pkg/tui/model.go indexes by position (zoomIdx).
 var ZoomLevels = []ZoomLevel{
-	{"15m", 15 * time.Minute, 1, 0},
-	{"1h", time.Hour, 1, 0},
-	{"24h", 24 * time.Hour, 10, 2},
+	{"15m", 15 * time.Minute, 1, 0, horizontalScrollStep},
+	{"1h", time.Hour, 1, 0, horizontalScrollStep},
+	{"24h", 24 * time.Hour, 10, 2, 1},
 }
 
 // computeSpringSlice returns the slice start (bucket-index) and viewport
-// xOffset (column-index) used by renderSpringFrame to reproduce the
-// pre-spring viewport position. Pre-spring's viewport.SetXOffset(K*stride)
-// is clamped to longestLineWidth-vpWidth at the right edge; when that
-// clamp doesn't align to a stride boundary, the spring canvas must
-// include bucket [start-1] as a leading bar and offset into it by the
-// slack so the partial-bar / gap content matches.
+// xOffset (column-index) for the windowed bar render, keeping the chart's
+// right edge flush at EVERY scroll position (#306).
 //
-// Defensive: springXOff is clamped to ≥0 so a future degenerate state
-// (e.g. prevLongest < vpWidth mid-animation due to data shrinking)
-// cannot produce a negative offset that downstream callers would have
-// to handle.
-func computeSpringSlice(start, prevLongest, vpWidth, stride int) (sliceStart, springXOff int) {
-	desiredXOffset := start * stride
-	actualXOffset := min(desiredXOffset, max(0, prevLongest-vpWidth))
-	sliceStart = start
-	if start >= 1 && actualXOffset < desiredXOffset {
-		sliceStart = start - 1
-		springXOff = actualXOffset - sliceStart*stride
+// nv whole bars cover nv*stride-gap columns, so when the viewport width is
+// not an exact multiple of the stride there are
+// slack = (vpWidth+gap) mod stride leftover columns. To keep the right edge
+// flush, the slack is pushed onto a partial LEADING bucket: include bucket
+// [start-1] and offset into it by stride-slack. The nv fully-visible buckets
+// [start, start+nv-1] are unchanged — only the framing shifts left by slack.
+//
+// Two boundaries fall out without special-casing:
+//   - start==0 (oldest edge): no bucket to the left, so the window is
+//     left-aligned (xOff==0) and the slack lands on the right — the one
+//     place a right gap is expected, where there is no older data to fill it.
+//   - slack==0 (vpWidth an exact stride multiple, e.g. every 15m/1h zoom
+//     where stride==1): no partial bucket is needed.
+//
+// Callers must pass a start already clamped to [0, len(values)-nv] (setX
+// guarantees this); the helper does not re-clamp against the canvas.
+//
+// stride is clamped to >=1 and gap to >=0 so a degenerate ZoomLevels literal
+// cannot divide by zero or produce a negative offset.
+func computeSpringSlice(start, vpWidth, stride, gap int) (sliceStart, springXOff int) {
+	if stride < 1 {
+		stride = 1
 	}
-	if springXOff < 0 {
-		springXOff = 0
+	if gap < 0 {
+		gap = 0
 	}
-	return sliceStart, springXOff
+	slack := (vpWidth + gap) % stride
+	if start >= 1 && slack > 0 {
+		return start - 1, stride - slack
+	}
+	return start, 0
 }
 
 // slicePointsInRange returns the sub-slice of pts that falls within
