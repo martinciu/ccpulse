@@ -1389,6 +1389,12 @@ func (m *Model) setX(n int) {
 	} else {
 		maxX = max(0, len(m.lastStarts)-m.visibleBuckets())
 	}
+	if m.underfilled {
+		// #300: sparse data is locked to the flush-right offset so ←/→ are
+		// inert and the right edge stays "now". maxX is the pinned offset in
+		// both modes; collapsing minX onto it makes the clamp a single point.
+		minX = maxX
+	}
 	n = min(max(n, minX), maxX)
 	m.viewport.SetXOffset(n * stride)
 	m.viewportXOffset = n

@@ -398,6 +398,49 @@ func TestRefreshChart_Underfill_FlushRight(t *testing.T) {
 	}
 }
 
+// TestRefreshChart_Underfill_ScrollLocked verifies ←/→ are inert when data
+// underfills the chart — the right edge stays "now" (#300).
+func TestRefreshChart_Underfill_ScrollLocked(t *testing.T) {
+	t.Parallel()
+	for _, zi := range []int{0, 1, 2} { // 15m, 1h, 24h
+		zi := zi
+		t.Run(ZoomLevels[zi].Label, func(t *testing.T) {
+			t.Parallel()
+			m, c := seedBarModel(t, zi, 2, ZoomLevels[zi].Duration)
+			defer c.Close()
+			if !m.underfilled {
+				t.Fatalf("setup: expected underfilled at %s", ZoomLevels[zi].Label)
+			}
+			before := m.viewportXOffset
+			m.scrollLeft(ZoomLevels[zi].ScrollStep)
+			if m.viewportXOffset != before {
+				t.Errorf("scrollLeft moved offset %d->%d; want locked (underfilled)", before, m.viewportXOffset)
+			}
+			m.scrollRight(ZoomLevels[zi].ScrollStep)
+			if m.viewportXOffset != before {
+				t.Errorf("scrollRight moved offset %d->%d; want locked (underfilled)", before, m.viewportXOffset)
+			}
+		})
+	}
+}
+
+// TestRefreshChart_FillRegime_NotLocked verifies that once data fills the width,
+// underfilled is false and ←/→ scroll normally (the #300 lock must not regress
+// the fill-regime scroll).
+func TestRefreshChart_FillRegime_NotLocked(t *testing.T) {
+	t.Parallel()
+	m, c := seedBarModel(t, 2 /* 24h */, 40, 24*time.Hour) // 40 days >> width
+	defer c.Close()
+	if m.underfilled {
+		t.Fatalf("40 buckets at 24h should not be underfilled")
+	}
+	before := m.viewportXOffset
+	m.scrollLeft(ZoomLevels[2].ScrollStep)
+	if m.viewportXOffset >= before {
+		t.Errorf("scrollLeft did not move in fill regime: %d -> %d", before, m.viewportXOffset)
+	}
+}
+
 func TestScroll24h_NoRightEdgeGap(t *testing.T) {
 	t.Parallel()
 	m, c := seedBarModel(t, 2 /* 24h */, 40, 24*time.Hour)
