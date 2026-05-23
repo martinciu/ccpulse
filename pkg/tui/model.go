@@ -1245,13 +1245,10 @@ func (m *Model) renderSpringFrame() {
 	// (lastStarts has been overwritten with sparse line points by
 	// refreshChart); every other case uses the post-refresh lastStarts.
 	var rangeStarts []time.Time
-	var prevBarCount int
 	if m.springPhase == springShrinking && !m.oldIsLine {
 		rangeStarts = m.oldStarts
-		prevBarCount = len(m.oldValues)
 	} else {
 		rangeStarts = m.lastStarts
-		prevBarCount = len(m.lastValues)
 	}
 
 	// Clamp the window to the smaller of springRatios and rangeStarts so
@@ -1273,22 +1270,13 @@ func (m *Model) renderSpringFrame() {
 		return
 	}
 
-	// Pre-spring viewport.SetXOffset(K*stride) gets clamped to
-	// longestLineWidth-Width at the right edge whenever K*stride exceeds
-	// the canvas right edge. When the canvas right edge doesn't sit on a
-	// stride boundary (24h has BarGap=2 and viewport width is rarely a
-	// multiple of 12), the leading slack lands either in the gap before
-	// bucket K (visible as 1–2 blank cols) or mid-way through bucket K-1
-	// (visible as a partial bar at the left). Either way, the windowed
-	// spring canvas must reproduce that leading content so the user
-	// doesn't see a "jump left" or a vanishing partial bar on the
-	// steady-state ↔ spring transition. Include bucket [start-1] as a
-	// leading bar and offset into it by the same slack the viewport
-	// would have shown pre-spring. Uses the phase-correct bar count so
-	// Phase 1 of bar→line uses the OLD bar canvas for slack math.
+	// Flush-right (#306): the steady-state render (renderWindow) uses the
+	// same helper with the same (start, vpWidth, stride, gap), so the
+	// spring frame reproduces the identical viewport framing — no jump on
+	// the steady-state ↔ spring transition. Include a partial leading
+	// bucket and offset by stride-slack so the right edge stays flush.
 	stride := zoom.stride()
-	prevLongest := zoom.CanvasWidth(prevBarCount)
-	sliceStart, springXOff := computeSpringSlice(start, prevLongest, m.viewport.Width, stride)
+	sliceStart, springXOff := computeSpringSlice(start, m.viewport.Width, stride, max(zoom.BarGap, 0))
 
 	visibleRatios := m.springRatios[sliceStart:end]
 	visibleStarts := rangeStarts[sliceStart:end]
@@ -1697,16 +1685,10 @@ func (m *Model) renderWindow() {
 		return
 	}
 
-	// computeSpringSlice reproduces the pre-scroll leading slack: when the
-	// full-canvas offset doesn't land on a stride boundary, include bucket
-	// [start-1] and offset into it so the partial-bar / gap content at the
-	// left edge matches. prevLongest is the full-canvas width the offset was
-	// clamped against (same math renderSpringFrame is tuned for).
 	stride := zoom.stride()
-	// prevLongest matches renderSpringFrame's zoom.CanvasWidth(len(m.lastValues)):
-	// refreshChart sets m.lastCanvasW = zoom.CanvasWidth(len(values)) for bar modes.
-	prevLongest := m.lastCanvasW
-	sliceStart, xOff := computeSpringSlice(start, prevLongest, m.viewport.Width, stride)
+	// Flush-right (#306): include a partial leading bucket and offset by
+	// stride-slack so the right edge stays flush at every scroll position.
+	sliceStart, xOff := computeSpringSlice(start, m.viewport.Width, stride, max(zoom.BarGap, 0))
 
 	// Peak is the on-screen window only; the leading-slack bucket is excluded
 	// and clips to full height via buildChart's WithNoAutoMaxValue — exactly
