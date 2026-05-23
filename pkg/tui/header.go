@@ -45,27 +45,24 @@ func durString(mins int) string {
 	return fmt.Sprintf("%dm", mins)
 }
 
-// formatReset7d renders the 7d quota reset time in variable-width form.
-// For >= 24h remaining, it returns whole days ("1d", "7d") — the
-// rounding loss is harmless for a multi-day horizon. For < 24h it
-// switches to zero-padded HH:MM ("23:59", "00:30") so the eventual
-// reset reads at a glance. Alignment is the caller's responsibility:
-// renderQuotaSide right-aligns the time inside a fixed slot so short
-// values like "5d" sit flush against the divider.
+// formatReset7d renders the 7d quota reset time in variable-width form,
+// delegating to durString so the 7d side reads the same as the 5h side:
+// "5d 12h" while >= 24h remain, then "18h 34m" / "34m" below that.
+// Alignment is the caller's responsibility: renderQuotaSide right-aligns
+// the time inside a fixed slot so short values like "34m" sit flush
+// against the divider.
 func formatReset7d(mins int) string {
-	if mins >= 1440 {
-		return fmt.Sprintf("%dd", mins/1440)
-	}
-	return fmt.Sprintf("%02d:%02d", mins/60, mins%60)
+	return durString(mins)
 }
 
 // statusBlockMaxW is the worst-case visible width of the time-to-reset
-// status block, used by renderQuotaSide. Worst case is "4h 59m"
-// (5h side; 6 cols). The 7d side's worst case is "23:59" (5 cols), so
-// it gets 1 col of leading pad — keeping both sides' status slots
-// symmetric is what lets the │ divider centre exactly. The current %
-// is conveyed by the bar fill itself and is no longer text-rendered.
-const statusBlockMaxW = 6
+// status block, used by renderQuotaSide. The 7d side's sub-24h worst
+// case is "23h 59m" (7 cols); the 5h side's worst case "4h 59m" is
+// 6 cols, so the 5h side gets 1 col of leading pad — keeping both
+// sides' status slots symmetric is what lets the │ divider centre
+// exactly. The current % is conveyed by the bar fill itself and is no
+// longer text-rendered.
+const statusBlockMaxW = 7
 
 // barTimeGap is the explicit 1-col margin between the bar and the
 // right-aligned time slot, so the worst-case time ("4h 59m") doesn't
@@ -82,7 +79,7 @@ const burnPad = "   "
 //
 //	[dim label] [bar] [1-col gap] [right-aligned time slot]
 //
-// The reset time ("5d", "23:59", "4h 59m", etc.) is right-aligned
+// The reset time ("5d 12h", "18h 34m", "4h 59m", etc.) is right-aligned
 // within a fixed statusBlockMaxW slot so short values sit flush
 // against the divider. A 1-col barTimeGap between the bar and the
 // slot guarantees a visible margin even when the time string fills

@@ -13,23 +13,25 @@ import (
 )
 
 func TestFormatReset7d_Content(t *testing.T) {
-	// formatReset7d is a pure variable-width formatter — no padding.
-	// Layout (right-align inside a fixed slot) is the renderQuotaSide
-	// helper's job. Asserts raw equality so accidental padding regressions
-	// fail loudly. Boundary cases: 0, 60 (hour rollover), 1439 (just before
-	// day mode), 1440 (just at), 10080 (7 days).
+	// formatReset7d is a pure variable-width formatter — no padding —
+	// that delegates to durString so the 7d side reads like the 5h side
+	// ("5d 12h", "18h 34m", "34m"). Layout (right-align inside a fixed
+	// slot) is the renderQuotaSide helper's job. Asserts raw equality so
+	// accidental padding regressions fail loudly. Boundary cases: 0, 60
+	// (hour rollover), 1439 (just before day mode), 1440 (just at), 10080
+	// (7 days).
 	tests := []struct {
 		mins int
 		want string
 	}{
-		{0, "00:00"},
-		{30, "00:30"},
-		{60, "01:00"},
-		{90, "01:30"},
-		{1439, "23:59"},
-		{1440, "1d"},
-		{1500, "1d"}, // truncates, does not round
-		{10080, "7d"},
+		{0, "0m"},
+		{30, "30m"},
+		{60, "1h 0m"},
+		{90, "1h 30m"},
+		{1439, "23h 59m"},
+		{1440, "1d 0h"},
+		{1500, "1d 1h"},
+		{10080, "7d 0h"},
 	}
 	for _, tt := range tests {
 		t.Run(fmt.Sprintf("%dmins", tt.mins), func(t *testing.T) {
