@@ -2,10 +2,12 @@ package tui
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/martinciu/ccpulse/pkg/cache"
 	"github.com/martinciu/ccpulse/pkg/parse"
@@ -275,7 +277,11 @@ func seedBarModel(t *testing.T, zoomIdx, nBuckets int, spacing time.Duration) (M
 	m := New(Deps{Cache: c})
 	m.unitIdx = int(chartUnitTokens)
 	m.zoomIdx = zoomIdx
-	m.w, m.h = 120, 40
+	// w=122 → chartWidth()=120 → slack=(120+2)%12=2 at 24h, so the
+	// flush-right leading-bucket path (#306) is actually exercised. A width
+	// that is an exact stride multiple (e.g. w=120 → chartWidth=118,
+	// slack=0) makes TestScroll24h_NoRightEdgeGap vacuous.
+	m.w, m.h = 122, 40
 	m.viewport.Width = m.chartWidth()
 	m.viewport.Height = m.chartHeight()
 	m.refreshChart()
@@ -303,5 +309,62 @@ func TestScrollStep_ThreeBucketsAt15m(t *testing.T) {
 	m = updated.(Model)
 	if got := before - m.viewportXOffset; got != 3 {
 		t.Errorf("15m: one ScrollLeft moved viewportXOffset by %d, want 3 (unchanged finer-zoom step)", got)
+	}
+}
+
+// rightmostNonSpaceCol returns the largest column index holding a non-space
+// rune across all rows of s (ANSI already stripped). -1 if s is all spaces.
+func rightmostNonSpaceCol(s string) int {
+	maxCol := -1
+	for _, line := range strings.Split(s, "\n") {
+		last := -1
+		for i, r := range []rune(line) {
+			if r != ' ' {
+				last = i
+			}
+		}
+		if last > maxCol {
+			maxCol = last
+		}
+	}
+	return maxCol
+}
+
+func TestScroll24h_NoRightEdgeGap(t *testing.T) {
+	t.Parallel()
+	m, c := seedBarModel(t, 2 /* 24h */, 40, 24*time.Hour)
+	defer c.Close()
+
+	// Baseline: pinned-right already fills the viewport.
+	if got, want := rightmostNonSpaceCol(ansi.Strip(m.viewport.View())), m.viewport.Width-1; got != want {
+		t.Fatalf("baseline (pinned): content reaches col %d, want %d", got, want)
+	}
+
+	// Scroll left a few days (24h step = 1 bucket). Flat tall bars mean the
+	// rightmost visible bar column must still be a glyph — if the #306 gap
+	// regressed, the right `slack` columns would be blank.
+	for range 3 {
+		m.scrollLeft(ZoomLevels[m.zoomIdx].ScrollStep)
+	}
+	if m.viewportXOffset < 1 {
+		t.Fatalf("test setup: viewportXOffset=%d after 3 left presses; need >=1 to exercise the leading-bucket path", m.viewportXOffset)
+	}
+	if got, want := rightmostNonSpaceCol(ansi.Strip(m.viewport.View())), m.viewport.Width-1; got != want {
+		t.Errorf("after scroll-left at 24h: content reaches col %d, want %d (right-edge gap, #306)", got, want)
+	}
+}
+
+func TestScroll24h_OldestEdgeClampsToZero(t *testing.T) {
+	t.Parallel()
+	m, c := seedBarModel(t, 2 /* 24h */, 40, 24*time.Hour)
+	defer c.Close()
+
+	// Over-scroll left; setX clamps the bucket index at 0 (oldest bar
+	// flush-left, slack on the right — the chosen #306 boundary).
+	for range 100 {
+		m.scrollLeft(ZoomLevels[m.zoomIdx].ScrollStep)
+	}
+	if got := m.viewportXOffset; got != 0 {
+		t.Errorf("viewportXOffset after over-scroll-left = %d, want 0 (oldest edge)", got)
 	}
 }
