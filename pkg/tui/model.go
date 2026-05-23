@@ -70,6 +70,12 @@ type indexBannerClearMsg struct{}
 // visibly skips.
 type springTickMsg struct{ gen int }
 
+// nowTickMsg fires when wall-clock time reaches the next bucket boundary,
+// driving the live chart-window advance (#311). gen is matched against
+// m.nowGen so a stale tick from a previous zoom's cadence is dropped
+// (mirrors springTickMsg / springGen).
+type nowTickMsg struct{ gen int }
+
 // springPhase tracks which leg of the two-phase unit-toggle animation
 // is currently running. Idle is the steady state; springActive=false
 // implies springPhase=springIdle. See issue #136.
@@ -125,6 +131,12 @@ type Model struct {
 
 	zoomIdx int // index into ZoomLevels
 	unitIdx int // 0 = cost, 1 = tokens, 2 = remaining. Cycled by 'u'. Resets to cost on launch.
+
+	// now returns the current wall-clock time. Defaults to time.Now in New;
+	// tests override it to drive deterministic bucket-boundary crossings
+	// (#311). Every wall-clock read in the chart render/advance path goes
+	// through this seam.
+	now func() time.Time
 
 	// lastValues / lastStarts are the per-bucket inputs fed to the
 	// most recent buildChart, in the active unit. Refreshed by
@@ -215,6 +227,11 @@ type Model struct {
 	// presses from stacking the previous animation's still-pending tick on
 	// top of the new animation's tick and accelerating it (#218).
 	springGen int
+	// nowGen is bumped each time the live-advance tick is re-armed (zoom
+	// change). scheduleNowTick captures the current value into the scheduled
+	// nowTickMsg; the handler drops ticks whose gen doesn't match, so a zoom
+	// switch can't leave a previous cadence's tick chain running (#311).
+	nowGen int
 	// springXOffset is the leftmost bucket index visible in the viewport
 	// when animation started. The spring runs over all bucket ratios but
 	// only the visible window is re-rendered each tick — full-canvas
@@ -319,6 +336,7 @@ func New(d Deps) Model {
 		help:      help.New(),
 		zoomIdx:   0, // default: 15m
 		dateOrder: detectDateOrder(),
+		now:       time.Now,
 	}
 	m.progress = newProgressBar(40)
 	m.progress7d = newProgressBar(40)
@@ -329,7 +347,7 @@ func New(d Deps) Model {
 	return m
 }
 
-func (m Model) Init() tea.Cmd { return nil }
+func (m Model) Init() tea.Cmd { return m.scheduleNowTick() }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -574,6 +592,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			"dur_ms", time.Since(start).Milliseconds(),
 			"zoom", ZoomLevels[m.zoomIdx].Label)
 		return m, m.maybeArmIntro()
+	case nowTickMsg:
+		if msg.gen != m.nowGen {
+			// Stale chain from a previous zoom cadence — drop without
+			// rescheduling so duplicate chains can't accumulate (#311).
+			return m, nil
+		}
+		// Mirror RefreshMsg's intro guard: don't hard-cut the startup intro;
+		// its terminal refreshChart picks up the advance. refreshChart's
+		// wasPinned/anchorTime block does the rest — pinned advances to the
+		// new right edge, scrolled stays anchored — for all three units.
+		if !m.springIntro {
+			m.refreshChart()
+		}
+		// One log line per boundary crossing — the live-advance cadence is
+		// one wakeup per bucket, so this is not a per-frame hot path. Logs
+		// only the zoom label (no paths, tokens, or credentials).
+		slog.Debug("tui.nowTick", "zoom", ZoomLevels[m.zoomIdx].Label)
+		return m, m.scheduleNowTick()
 	case tea.KeyMsg:
 		switch {
 		case msg.String() == "ctrl+c":
@@ -589,6 +625,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.Zoom):
 			m.zoomIdx = (m.zoomIdx + 1) % len(ZoomLevels)
 			m.refreshChart()
+			// Re-arm the live-advance tick on the new zoom's cadence; the
+			// bumped gen drops the previous cadence's in-flight tick (#311).
+			m.nowGen++
+			return m, m.scheduleNowTick()
 		case key.Matches(msg, m.keys.Unit):
 			m.unitIdx = (m.unitIdx + 1) % int(chartUnitCount)
 			if m.deps.ReduceMotion {
@@ -1422,6 +1462,38 @@ func (m *Model) scrollRight(n int) {
 	}
 }
 
+// nextBoundary returns the wall-clock instant of the END of the bucket
+// containing now for the given zoom — i.e. the right-edge "to" the chart
+// pins to. Single source of truth for both refreshChart's window edge and
+// the live-advance tick's schedule (#311): the chart's right edge IS the
+// next bucket boundary, so a tick scheduled to fire at nextBoundary(now)
+// lands exactly when a new empty bucket should appear.
+//
+// 24h uses local-midnight boundaries (DST-correct via AddDate); sub-day
+// zooms use UTC-aligned BucketAlign. Always returns an instant strictly
+// after now (the current bucket's end), so a derived tick duration is
+// never zero or negative.
+func nextBoundary(now time.Time, zoom ZoomLevel) time.Time {
+	if zoom.Duration == 24*time.Hour {
+		return cache.DayStartLocal(now).AddDate(0, 0, 1)
+	}
+	return cache.BucketAlign(now, zoom.Duration).Add(zoom.Duration)
+}
+
+// scheduleNowTick returns a command that fires nowTickMsg at the next bucket
+// boundary for the active zoom (#311). Self-rescheduled by the nowTickMsg
+// handler and re-armed (with a bumped nowGen) on zoom change, so the cadence
+// follows the current zoom and stale chains are dropped. nextBoundary is
+// always strictly after now, so the duration is always positive.
+func (m Model) scheduleNowTick() tea.Cmd {
+	gen := m.nowGen
+	now := m.now()
+	d := nextBoundary(now, ZoomLevels[m.zoomIdx]).Sub(now)
+	return tea.Tick(d, func(time.Time) tea.Msg {
+		return nowTickMsg{gen: gen}
+	})
+}
+
 // refreshChart queries the cache and updates the viewport content.
 // Safe to call when deps.Cache is nil (no-op). Loads the full history
 // present in the cache, from the earliest message up to "now". On an
@@ -1475,15 +1547,9 @@ func (m *Model) refreshChart() {
 	}
 
 	zoom := ZoomLevels[m.zoomIdx]
-	// Right edge = the END of the bucket containing now, so the bucket
-	// itself is included in the half-open [from, to) window.
-	// 24h zoom uses local-midnight boundaries (DST-correct via AddDate).
-	var to time.Time
-	if zoom.Duration == 24*time.Hour {
-		to = cache.DayStartLocal(time.Now()).AddDate(0, 0, 1)
-	} else {
-		to = cache.BucketAlign(time.Now(), zoom.Duration).Add(zoom.Duration)
-	}
+	// Right edge = the END of the bucket containing now (#311: same instant
+	// the live-advance tick is scheduled to fire at).
+	to := nextBoundary(m.now(), zoom)
 
 	earliest, ok, err := m.deps.Cache.EarliestMessageTime()
 	if err != nil {
@@ -1700,7 +1766,7 @@ func (m *Model) refreshChart() {
 	// wide canvas after a bar→line spring left narrow content behind.
 	if unit == chartUnitRemaining {
 		m.peak = peak // 1.0, set in the switch above
-		m.viewport.SetContent(buildLineChart(m.lastPts5h, m.lastPts7d, from, to, canvasW, chartH, time.Now(), zoom, m.dateOrder, "refresh"))
+		m.viewport.SetContent(buildLineChart(m.lastPts5h, m.lastPts7d, from, to, canvasW, chartH, m.now(), zoom, m.dateOrder, "refresh"))
 		m.setX(m.viewportXOffset)
 	} else {
 		m.renderWindow()

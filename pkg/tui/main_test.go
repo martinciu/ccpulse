@@ -19,9 +19,20 @@ import (
 // The func2 suffix is Go's closure-numbering for teatest's NewTestModel
 // internals. If goleak starts firing after a teatest upgrade, re-verify
 // which closure now owns the SIGINT receive and update the symbol name.
+//
+// bubbletea.Tick.func1 is the live chart-window advance tick (#311), armed
+// in Init and scheduled to fire at the next bucket boundary (up to 15 min
+// out at 15m zoom). bubbletea v1's Tick blocks on its timer channel with no
+// context cancellation (commands.go), so on tm.Quit() the still-pending
+// boundary timer goroutine outlives the program loop. Harmless in
+// production (the process exits on quit and the goroutine dies with it),
+// but goleak sees it as a leak in teatest programs. Exclude it by top
+// function — every bubbletea Tick is non-cancellable, so this masks no
+// real bug a shorter-lived tick wouldn't have already let fire.
 func TestMain(m *testing.M) {
 	goleak.VerifyTestMain(m,
 		goleak.IgnoreTopFunction("github.com/charmbracelet/x/exp/teatest.NewTestModel.func2"),
+		goleak.IgnoreTopFunction("github.com/charmbracelet/bubbletea.Tick.func1"),
 	)
 }
 
