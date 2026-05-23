@@ -1422,6 +1422,24 @@ func (m *Model) scrollRight(n int) {
 	}
 }
 
+// nextBoundary returns the wall-clock instant of the END of the bucket
+// containing now for the given zoom — i.e. the right-edge "to" the chart
+// pins to. Single source of truth for both refreshChart's window edge and
+// the live-advance tick's schedule (#311): the chart's right edge IS the
+// next bucket boundary, so a tick scheduled to fire at nextBoundary(now)
+// lands exactly when a new empty bucket should appear.
+//
+// 24h uses local-midnight boundaries (DST-correct via AddDate); sub-day
+// zooms use UTC-aligned BucketAlign. Always returns an instant strictly
+// after now (the current bucket's end), so a derived tick duration is
+// never zero or negative.
+func nextBoundary(now time.Time, zoom ZoomLevel) time.Time {
+	if zoom.Duration == 24*time.Hour {
+		return cache.DayStartLocal(now).AddDate(0, 0, 1)
+	}
+	return cache.BucketAlign(now, zoom.Duration).Add(zoom.Duration)
+}
+
 // refreshChart queries the cache and updates the viewport content.
 // Safe to call when deps.Cache is nil (no-op). Loads the full history
 // present in the cache, from the earliest message up to "now". On an
@@ -1475,15 +1493,9 @@ func (m *Model) refreshChart() {
 	}
 
 	zoom := ZoomLevels[m.zoomIdx]
-	// Right edge = the END of the bucket containing now, so the bucket
-	// itself is included in the half-open [from, to) window.
-	// 24h zoom uses local-midnight boundaries (DST-correct via AddDate).
-	var to time.Time
-	if zoom.Duration == 24*time.Hour {
-		to = cache.DayStartLocal(time.Now()).AddDate(0, 0, 1)
-	} else {
-		to = cache.BucketAlign(time.Now(), zoom.Duration).Add(zoom.Duration)
-	}
+	// Right edge = the END of the bucket containing now (#311: same instant
+	// the live-advance tick is scheduled to fire at).
+	to := nextBoundary(time.Now(), zoom)
 
 	earliest, ok, err := m.deps.Cache.EarliestMessageTime()
 	if err != nil {
