@@ -52,10 +52,11 @@ func TestNextBoundary_24hLocalMidnight(t *testing.T) {
 	}
 }
 
-// seedTokenModelAt builds a tokens-unit Model backed by a temp-DB cache with
-// nBuckets messages spaced `spacing` apart ending at `now`, with the chart
-// clock pinned to `now`. Mirrors seedBarModel but injects the #311 clock seam.
-func seedTokenModelAt(t *testing.T, zoomIdx, nBuckets int, spacing time.Duration, now time.Time) (Model, *cache.Cache) {
+// seedModelAt builds a Model backed by a temp-DB cache with nBuckets messages
+// spaced `spacing` apart ending at `now`, with the chart clock pinned to `now`.
+// unitIdx selects the chart unit (e.g. int(chartUnitTokens), int(chartUnitRemaining)).
+// Mirrors seedBarModel but injects the #311 clock seam.
+func seedModelAt(t *testing.T, unitIdx, zoomIdx, nBuckets int, spacing time.Duration, now time.Time) (Model, *cache.Cache) {
 	t.Helper()
 	c, err := cache.Open(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
@@ -65,21 +66,23 @@ func seedTokenModelAt(t *testing.T, zoomIdx, nBuckets int, spacing time.Duration
 	if err != nil {
 		t.Fatalf("pricing.Load: %v", err)
 	}
-	var msgs []parse.Message
-	for i := range nBuckets {
-		msgs = append(msgs, parse.Message{
-			SessionID:   "s",
-			ProjectSlug: "p",
-			Model:       "claude-opus-4-7",
-			Timestamp:   now.Add(-time.Duration(i) * spacing),
-			InputTokens: 5000,
-		})
-	}
-	if err := c.InsertMessages(msgs, tab); err != nil {
-		t.Fatalf("InsertMessages: %v", err)
+	if nBuckets > 0 {
+		var msgs []parse.Message
+		for i := range nBuckets {
+			msgs = append(msgs, parse.Message{
+				SessionID:   "s",
+				ProjectSlug: "p",
+				Model:       "claude-opus-4-7",
+				Timestamp:   now.Add(-time.Duration(i) * spacing),
+				InputTokens: 5000,
+			})
+		}
+		if err := c.InsertMessages(msgs, tab); err != nil {
+			t.Fatalf("InsertMessages: %v", err)
+		}
 	}
 	m := New(Deps{Cache: c})
-	m.unitIdx = int(chartUnitTokens)
+	m.unitIdx = unitIdx
 	m.zoomIdx = zoomIdx
 	m.w, m.h = 122, 40
 	m.viewport.Width = m.chartWidth()
@@ -94,7 +97,7 @@ func TestRefreshChart_UsesInjectedClock(t *testing.T) {
 	// A clock far from real wall-time: if the seam is unwired, refreshChart
 	// uses time.Now() and lastChartTo lands ~2026, failing this assertion.
 	fixed := time.Date(2020, 1, 15, 9, 23, 0, 0, time.UTC)
-	m, c := seedTokenModelAt(t, 0 /* 15m */, 8, 15*time.Minute, fixed)
+	m, c := seedModelAt(t, int(chartUnitTokens), 0 /* 15m */, 8, 15*time.Minute, fixed)
 	defer c.Close()
 	if want := nextBoundary(fixed, ZoomLevels[0]); !m.lastChartTo.Equal(want) {
 		t.Errorf("lastChartTo = %v, want %v (driven by injected clock)", m.lastChartTo, want)
@@ -112,7 +115,7 @@ func TestInit_ArmsNowTick(t *testing.T) {
 func TestNowTick_StaleGenDropped(t *testing.T) {
 	t.Parallel()
 	base := time.Date(2026, 5, 23, 14, 7, 0, 0, time.UTC)
-	m, c := seedTokenModelAt(t, 0, 8, 15*time.Minute, base)
+	m, c := seedModelAt(t, int(chartUnitTokens), 0, 8, 15*time.Minute, base)
 	defer c.Close()
 	to1 := m.lastChartTo
 	updated, cmd := m.Update(nowTickMsg{gen: m.nowGen + 1}) // stale
@@ -129,7 +132,7 @@ func TestNowTick_AdvancesWindowWhenPinned(t *testing.T) {
 	t.Parallel()
 	base := time.Date(2026, 5, 23, 14, 7, 0, 0, time.UTC)
 	// Few buckets → underfilled → locked flush-right (always pinned, scroll inert).
-	m, c := seedTokenModelAt(t, 0, 4, 15*time.Minute, base)
+	m, c := seedModelAt(t, int(chartUnitTokens), 0, 4, 15*time.Minute, base)
 	defer c.Close()
 	if !m.underfilled {
 		t.Fatalf("precondition: expected underfilled (locked-pinned) model")
@@ -159,7 +162,7 @@ func TestNowTick_FreezesWhenScrolled(t *testing.T) {
 	t.Parallel()
 	base := time.Date(2026, 5, 23, 14, 7, 0, 0, time.UTC)
 	// Wide dataset → scrollable (not underfilled).
-	m, c := seedTokenModelAt(t, 0, 300, 15*time.Minute, base)
+	m, c := seedModelAt(t, int(chartUnitTokens), 0, 300, 15*time.Minute, base)
 	defer c.Close()
 	if m.underfilled {
 		t.Fatalf("precondition: expected a wide (scrollable) model, got underfilled")
@@ -188,22 +191,35 @@ func TestNowTick_FreezesWhenScrolled(t *testing.T) {
 	}
 }
 
+func TestNowTick_FreezesDuringIntro(t *testing.T) {
+	t.Parallel()
+	base := time.Date(2026, 5, 23, 14, 7, 0, 0, time.UTC)
+	// 8 buckets → underfilled, spring intro active.
+	m, c := seedModelAt(t, int(chartUnitTokens), 0, 8, 15*time.Minute, base)
+	defer c.Close()
+	// Simulate the startup intro animation being in-flight.
+	m.springIntro = true
+	to1 := m.lastChartTo
+	// Cross the next 15m boundary.
+	next := nextBoundary(base, ZoomLevels[0])
+	m.now = func() time.Time { return next.Add(time.Minute) }
+	updated, cmd := m.Update(nowTickMsg{gen: m.nowGen})
+	m = updated.(Model)
+	// refreshChart must be skipped — the window must not advance during intro.
+	if !m.lastChartTo.Equal(to1) {
+		t.Errorf("intro nowTickMsg advanced the window: %v → %v (should be frozen)", to1, m.lastChartTo)
+	}
+	// The tick chain must still reschedule so the next boundary fires after intro.
+	if cmd == nil {
+		t.Error("intro nowTickMsg should still reschedule (got cmd == nil)")
+	}
+}
+
 func TestNowTick_AdvancesRemainingUnit(t *testing.T) {
 	t.Parallel()
 	base := time.Date(2026, 5, 23, 14, 7, 0, 0, time.UTC)
-	c, err := cache.Open(filepath.Join(t.TempDir(), "state.db"))
-	if err != nil {
-		t.Fatalf("cache.Open: %v", err)
-	}
+	m, c := seedModelAt(t, int(chartUnitRemaining), 0 /*15m*/, 0 /*no messages*/, 15*time.Minute, base)
 	defer c.Close()
-	m := New(Deps{Cache: c})
-	m.unitIdx = int(chartUnitRemaining)
-	m.zoomIdx = 0 // 15m
-	m.w, m.h = 122, 40
-	m.viewport.Width = m.chartWidth()
-	m.viewport.Height = m.chartHeight()
-	m.now = func() time.Time { return base }
-	m.refreshChart()
 	to1 := m.lastChartTo
 	next := nextBoundary(base, ZoomLevels[0])
 	m.now = func() time.Time { return next.Add(time.Minute) }
@@ -220,7 +236,7 @@ func TestNowTick_AdvancesRemainingUnit(t *testing.T) {
 func TestZoom_RearmsNowTick(t *testing.T) {
 	t.Parallel()
 	base := time.Date(2026, 5, 23, 14, 7, 0, 0, time.UTC)
-	m, c := seedTokenModelAt(t, 0, 8, 15*time.Minute, base)
+	m, c := seedModelAt(t, int(chartUnitTokens), 0, 8, 15*time.Minute, base)
 	defer c.Close()
 	gen0 := m.nowGen
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("z")})
