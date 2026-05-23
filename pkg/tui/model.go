@@ -174,6 +174,21 @@ type Model struct {
 	// one the viewport was last drawn against.
 	lastZoomStride int
 
+	// underfilled is true when the indexed data is narrower than the chart
+	// viewport, so refreshChart padded the [from, to) window leftward to span
+	// the full width (#300). setX reads it to lock the viewport at the flush-
+	// right offset (←/→ inert) while sparse; cleared once data fills the width.
+	underfilled bool
+
+	// hasData is true when refreshChart found real rows for the active unit
+	// (messages for cost/tokens, usage samples for remaining). It is distinct
+	// from len(lastValues) > 0: since #300 a truly empty cache produces a
+	// zero-padded full-width axis (lastValues is non-empty), so the
+	// animation/intro/recovery paths key off hasData — not bucket count — to
+	// tell "warming up" (suppress animation, defer the intro) from real but
+	// sparse data (animate and arm normally).
+	hasData bool
+
 	// viewportXOffset shadows m.viewport's unexported xOffset. We need a
 	// readable scroll position to preserve the wall-clock anchor across
 	// refreshes; v1 viewport only exposes a setter. Maintained by
@@ -935,7 +950,9 @@ func (m *Model) beginUnitAnimation() {
 	newValues := m.lastValues
 	newPeak := m.peak
 
-	if len(newValues) == 0 {
+	// No animation while warming up: since #300 an empty cache yields a
+	// zero-padded axis (newValues non-empty), so gate on hasData, not length.
+	if len(newValues) == 0 || !m.hasData {
 		m.springActive = false
 		m.springPhase = springIdle
 		return
@@ -1095,9 +1112,11 @@ func (m *Model) beginIntroAnimation() {
 // is already gated upstream via introPending init in New()). This
 // ensures the intro is strictly one-shot.
 //
-// When the cache starts empty: lastValues stays nil through the early
-// refreshes; introPending stays true; the first non-empty RefreshMsg
-// is what arms the intro. See #188 spec / acceptance criteria.
+// When the cache starts empty: hasData stays false through the early
+// refreshes (since #300 the empty cache renders a zero-padded axis, so
+// lastValues is non-empty — hasData is the warming-up signal); introPending
+// stays true; the first refresh with real data is what arms the intro.
+// See #188 spec / acceptance criteria.
 func (m *Model) maybeArmIntro() tea.Cmd {
 	if !m.introPending {
 		return nil
@@ -1111,7 +1130,7 @@ func (m *Model) maybeArmIntro() tea.Cmd {
 	if m.w == 0 {
 		return nil
 	}
-	if len(m.lastValues) == 0 {
+	if !m.hasData {
 		return nil
 	}
 	m.introPending = false
@@ -1370,6 +1389,12 @@ func (m *Model) setX(n int) {
 	} else {
 		maxX = max(0, len(m.lastStarts)-m.visibleBuckets())
 	}
+	if m.underfilled {
+		// #300: sparse data is locked to the flush-right offset so ←/→ are
+		// inert and the right edge stays "now". maxX is the pinned offset in
+		// both modes; collapsing minX onto it makes the clamp a single point.
+		minX = maxX
+	}
 	n = min(max(n, minX), maxX)
 	m.viewport.SetXOffset(n * stride)
 	m.viewportXOffset = n
@@ -1461,7 +1486,10 @@ func (m *Model) refreshChart() {
 	}
 
 	earliest, ok, err := m.deps.Cache.EarliestMessageTime()
-	if err != nil || !ok {
+	if err != nil {
+		// Genuine DB read failure: keep the placeholder. (An empty cache —
+		// ok == false, err == nil — falls through to the padded-window path
+		// below, so the warming-up state shows a full-width axis instead, #300.)
 		m.viewport.SetContent(emptyPlaceholder(m.chartWidth(), m.chartHeight()))
 		m.lastValues = nil
 		m.lastStarts = nil
@@ -1470,16 +1498,47 @@ func (m *Model) refreshChart() {
 		m.lastZoomStride = 0
 		m.lastChartFrom = time.Time{}
 		m.lastChartTo = time.Time{}
+		m.underfilled = false
+		m.hasData = false
 		m.setX(0)
 		return
 	}
 
+	// #300: the window must always span at least the viewport so sparse data
+	// renders flush-right with a full-width x-axis. minFrom is `to` walked back
+	// visibleBuckets()+1 buckets; the extra bucket guarantees canvasW >
+	// viewport.Width at every zoom, so the pin-right path lands flush via
+	// computeSpringSlice's leading-partial bucket (24h would otherwise leave a
+	// stride-1 right gap at start==0).
+	minFrom := paddedFrom(to, zoom, m.visibleBuckets()+1)
+
 	var from time.Time
-	if zoom.Duration == 24*time.Hour {
-		from = cache.DayStartLocal(earliest)
+	var dataBuckets int
+	if !ok {
+		// Empty cache: synthesize the full window so the chart shows the empty
+		// axis filling in from the right instead of the placeholder (#300).
+		from = minFrom
 	} else {
-		from = cache.BucketAlign(earliest, zoom.Duration)
+		if zoom.Duration == 24*time.Hour {
+			from = cache.DayStartLocal(earliest)
+		} else {
+			from = cache.BucketAlign(earliest, zoom.Duration)
+		}
+		dataBuckets = bucketCountInRange(from, to, zoom.Duration)
+		if minFrom.Before(from) {
+			from = minFrom
+		}
 	}
+	// Underfilled iff the real data does not reach across the viewport. At
+	// exactly visibleBuckets() the canvas is still <= chartWidth(), so we pad
+	// (and lock, Task 3) for a flush right edge at 24h; at visibleBuckets()+1
+	// and above the canvas exceeds the viewport and normal scroll applies.
+	m.underfilled = dataBuckets <= m.visibleBuckets()
+
+	// #300: real data exists for the bar units iff the cache has messages (ok);
+	// the zero-fill that paints the padded axis must not read as data. The
+	// remaining-mode branch overrides this with whether usage samples exist.
+	m.hasData = ok
 
 	var (
 		values []float64
@@ -1499,6 +1558,7 @@ func (m *Model) refreshChart() {
 			m.lastZoomStride = 0
 			m.lastChartFrom = time.Time{}
 			m.lastChartTo = time.Time{}
+			m.hasData = false
 			m.setX(0)
 			return
 		}
@@ -1523,6 +1583,7 @@ func (m *Model) refreshChart() {
 			m.lastZoomStride = 0
 			m.lastChartFrom = time.Time{}
 			m.lastChartTo = time.Time{}
+			m.hasData = false
 			m.setX(0)
 			return
 		}
@@ -1534,6 +1595,9 @@ func (m *Model) refreshChart() {
 		}
 		m.lastPts5h = pts5h
 		m.lastPts7d = pts7d
+		// #300: remaining mode has real data only when usage samples exist; the
+		// padded axis (no samples) is a warming-up state, not data.
+		m.hasData = len(pts5h) > 0 || len(pts7d) > 0
 		peak = 1.0
 		anchor := pts5h
 		if len(anchor) == 0 {
@@ -1557,6 +1621,7 @@ func (m *Model) refreshChart() {
 			m.lastZoomStride = 0
 			m.lastChartFrom = time.Time{}
 			m.lastChartTo = time.Time{}
+			m.hasData = false
 			m.setX(0)
 			return
 		}

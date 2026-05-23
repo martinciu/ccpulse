@@ -158,6 +158,22 @@ func bucketCountInRange(from, to time.Time, dur time.Duration) int {
 	return int(to.Sub(from) / dur)
 }
 
+// paddedFrom returns `to` walked left by n buckets at the given zoom — the
+// bucket-aligned start such that [paddedFrom, to) spans n buckets. refreshChart
+// uses it to guarantee the chart window is at least as wide as the viewport so
+// sparse data renders flush-right with a full-width x-axis (#300). The 24h zoom
+// walks back whole local-tz days (DST-correct via AddDate); sub-day zooms
+// subtract n*Duration. Returns `to` unchanged for n<=0.
+func paddedFrom(to time.Time, zoom ZoomLevel, n int) time.Time {
+	if n <= 0 {
+		return to
+	}
+	if zoom.Duration == 24*time.Hour {
+		return to.AddDate(0, 0, -n)
+	}
+	return to.Add(-time.Duration(n) * zoom.Duration)
+}
+
 // ZoomLevels are the available zoom steps, cycled with the z key.
 // Order matters: pkg/tui/model.go indexes by position (zoomIdx).
 var ZoomLevels = []ZoomLevel{
@@ -609,6 +625,20 @@ const (
 	chartUnitRemaining
 	chartUnitCount // sentinel — cycle modulus
 )
+
+// String returns the unit's short name, used for table-test subtest names.
+func (u chartUnit) String() string {
+	switch u {
+	case chartUnitCost:
+		return "cost"
+	case chartUnitTokens:
+		return "tokens"
+	case chartUnitRemaining:
+		return "remaining"
+	default:
+		return "unknown"
+	}
+}
 
 // niceFloorFloat returns the largest "nice" value <= peak from the
 // sequence {1, 2, 3, 5, 7} × 10ᵏ, where k may be negative to support

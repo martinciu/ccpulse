@@ -1843,3 +1843,24 @@ func TestChartXLabel_CrossZoomDayStampAgreement(t *testing.T) {
 		t.Errorf("day stamp = %q, want Fri", hourStamp)
 	}
 }
+
+func TestPaddedFrom(t *testing.T) {
+	t.Parallel()
+	// 1h zoom (ZoomLevels[1]): walk back 5 buckets == 5h, spanning 5 buckets.
+	to := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	if got, want := paddedFrom(to, ZoomLevels[1], 5), to.Add(-5*time.Hour); !got.Equal(want) {
+		t.Errorf("paddedFrom 1h = %v, want %v", got, want)
+	}
+	if got := bucketCountInRange(paddedFrom(to, ZoomLevels[1], 5), to, time.Hour); got != 5 {
+		t.Errorf("1h span = %d buckets, want 5", got)
+	}
+	// 24h zoom (ZoomLevels[2]): walk back whole local-tz days (DST-correct).
+	toDay := cache.DayStartLocal(time.Now()).AddDate(0, 0, 1)
+	if got := bucketCountInRange(paddedFrom(toDay, ZoomLevels[2], 3), toDay, 24*time.Hour); got != 3 {
+		t.Errorf("24h span = %d days, want 3", got)
+	}
+	// n <= 0 returns `to` unchanged.
+	if got := paddedFrom(to, ZoomLevels[1], 0); !got.Equal(to) {
+		t.Errorf("paddedFrom n=0 = %v, want %v (unchanged)", got, to)
+	}
+}
