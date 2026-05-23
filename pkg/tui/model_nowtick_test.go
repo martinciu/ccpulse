@@ -98,3 +98,11 @@ func TestRefreshChart_UsesInjectedClock(t *testing.T) {
 		t.Errorf("lastChartTo = %v, want %v (driven by injected clock)", m.lastChartTo, want)
 	}
 }
+
+func TestInit_ArmsNowTick(t *testing.T) {
+	t.Parallel()
+	m := New(Deps{}) // nil cache is fine — refreshChart no-ops, the tick still arms
+	if m.Init() == nil {
+		t.Fatal("Init() = nil, want a scheduled now-tick command (#311)")
+	}
+}

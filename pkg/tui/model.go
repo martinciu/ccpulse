@@ -70,6 +70,12 @@ type indexBannerClearMsg struct{}
 // visibly skips.
 type springTickMsg struct{ gen int }
 
+// nowTickMsg fires when wall-clock time reaches the next bucket boundary,
+// driving the live chart-window advance (#311). gen is matched against
+// m.nowGen so a stale tick from a previous zoom's cadence is dropped
+// (mirrors springTickMsg / springGen).
+type nowTickMsg struct{ gen int }
+
 // springPhase tracks which leg of the two-phase unit-toggle animation
 // is currently running. Idle is the steady state; springActive=false
 // implies springPhase=springIdle. See issue #136.
@@ -221,6 +227,11 @@ type Model struct {
 	// presses from stacking the previous animation's still-pending tick on
 	// top of the new animation's tick and accelerating it (#218).
 	springGen int
+	// nowGen is bumped each time the live-advance tick is re-armed (zoom
+	// change). scheduleNowTick captures the current value into the scheduled
+	// nowTickMsg; the handler drops ticks whose gen doesn't match, so a zoom
+	// switch can't leave a previous cadence's tick chain running (#311).
+	nowGen int
 	// springXOffset is the leftmost bucket index visible in the viewport
 	// when animation started. The spring runs over all bucket ratios but
 	// only the visible window is re-rendered each tick — full-canvas
@@ -336,7 +347,7 @@ func New(d Deps) Model {
 	return m
 }
 
-func (m Model) Init() tea.Cmd { return nil }
+func (m Model) Init() tea.Cmd { return m.scheduleNowTick() }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -1445,6 +1456,20 @@ func nextBoundary(now time.Time, zoom ZoomLevel) time.Time {
 		return cache.DayStartLocal(now).AddDate(0, 0, 1)
 	}
 	return cache.BucketAlign(now, zoom.Duration).Add(zoom.Duration)
+}
+
+// scheduleNowTick returns a command that fires nowTickMsg at the next bucket
+// boundary for the active zoom (#311). Self-rescheduled by the nowTickMsg
+// handler and re-armed (with a bumped nowGen) on zoom change, so the cadence
+// follows the current zoom and stale chains are dropped. nextBoundary is
+// always strictly after now, so the duration is always positive.
+func (m Model) scheduleNowTick() tea.Cmd {
+	gen := m.nowGen
+	now := m.now()
+	d := nextBoundary(now, ZoomLevels[m.zoomIdx]).Sub(now)
+	return tea.Tick(d, func(time.Time) tea.Msg {
+		return nowTickMsg{gen: gen}
+	})
 }
 
 // refreshChart queries the cache and updates the viewport content.
