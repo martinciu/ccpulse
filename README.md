@@ -251,3 +251,6 @@ Parse errors are logged to `~/.cache/ccpulse/parse-errors.log`
 ## License
 
 MIT (see `LICENSE`).
+
+Contributions: ccpulse doesn't accept external pull requests, but bug reports
+and feature requests are welcome — see [`CONTRIBUTING.md`](CONTRIBUTING.md).
