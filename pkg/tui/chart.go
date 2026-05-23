@@ -423,6 +423,114 @@ func renderXLabels(starts []time.Time, chartW int, zoom ZoomLevel, now time.Time
 	return dimStyle.Render(string(row))
 }
 
+const (
+	// barLabelMinWidth gates in-bar numbers to wide-enough zooms (#308). 24h
+	// has BarWidth=10; 15m/1h have BarWidth=1 and never qualify. Using the
+	// width (not a "24h" string match) auto-extends to any future wide zoom.
+	barLabelMinWidth = 3
+	// barLabelMinRows is the minimum bar height (in rows) to host a number;
+	// shorter bars stay clean colored stubs (#308).
+	barLabelMinRows = 2
+)
+
+// barLabelStyle returns the knockout style for in-bar numbers over the active
+// unit's bar color (#308): dark/light adaptive foreground on the bar's own
+// background, so the digits read as cut into the bar.
+func barLabelStyle(unit chartUnit) lipgloss.Style {
+	var bg lipgloss.TerminalColor = colorChartTokens
+	if unit == chartUnitCost {
+		bg = colorChartCost
+	}
+	return lipgloss.NewStyle().Foreground(colorBarLabel).Background(bg)
+}
+
+// spliceLabel overwrites the cells [start, start+width) of line with the
+// already-styled label, preserving the cells on either side. ANSI-aware via
+// x/ansi: Truncate keeps the left cells, TruncateLeft keeps the trailing ones.
+func spliceLabel(line string, start, width int, label string) string {
+	left := ansi.Truncate(line, start, "")
+	right := ansi.TruncateLeft(line, start+width, "")
+	return left + label + right
+}
+
+// overlayBarLabels splices each bucket's compact number onto the top fill row
+// of its bar, for the steady-state 24h bar chart (#308). texts is 1:1 with the
+// bars in the rendered slice; texts[i]=="" skips bar i. The labels must already
+// be styled (see barLabelStyle).
+//
+// Placement is read directly off the rendered body: for each bar it scans the
+// bar's center column from the top to find the first fill row, so the label
+// always lands on the bar's visual top and can never drift from ntcharts' own
+// height rounding. This also means the same function works on a future
+// animating body (bar tops mid-grow) — the seam for the deferred animation card.
+//
+// Returns body unchanged when the zoom is too narrow (BarWidth <
+// barLabelMinWidth — i.e. 15m/1h), body is empty, or texts is empty. Per-bar
+// skips: empty text, a bar shorter than barLabelMinRows, a label wider than
+// BarWidth, or a label that would overflow chartW on the right.
+//
+// barsH is the count of bar rows (the X-label row, if any, sits below and is
+// never written). Called from renderWindow only — renderSpringFrame does not
+// call it, so numbers are absent during animation.
+func overlayBarLabels(body string, texts []string, barsH, chartW int, zoom ZoomLevel) string {
+	if zoom.BarWidth < barLabelMinWidth || body == "" || len(texts) == 0 {
+		return body
+	}
+	bw := max(zoom.BarWidth, 1)
+	stride := zoom.stride()
+
+	lines := strings.Split(body, "\n")
+	if barsH > len(lines) {
+		barsH = len(lines)
+	}
+	if barsH < 1 {
+		return body
+	}
+	// Strip the bar rows once for column scanning (ANSI-aware). Chart cells
+	// are width-1 (block runes / spaces), so rune index == visual column.
+	stripped := make([][]rune, barsH)
+	for r := 0; r < barsH; r++ {
+		stripped[r] = []rune(ansi.Strip(lines[r]))
+	}
+
+	for i, text := range texts {
+		if text == "" {
+			continue
+		}
+		col := i * stride
+		if col >= chartW {
+			break
+		}
+		cc := col + bw/2 // bar center column, used to probe height
+		top := -1
+		for r := 0; r < barsH; r++ {
+			if cc < len(stripped[r]) && stripped[r][cc] != ' ' {
+				top = r
+				break
+			}
+		}
+		if top < 0 {
+			continue // zero-height bar — nothing to label
+		}
+		if barsH-top < barLabelMinRows {
+			continue // too short (#308)
+		}
+		labelW := lipgloss.Width(text)
+		if labelW > bw {
+			continue // would exceed the bar
+		}
+		start := col + (bw-labelW)/2
+		if start < 0 {
+			start = col
+		}
+		if start+labelW > chartW {
+			continue // would overflow the right edge
+		}
+		lines[top] = spliceLabel(lines[top], start, labelW, text)
+	}
+	return strings.Join(lines, "\n")
+}
+
 // dateLabel renders the day-boundary stamp shown at midnight slots
 // across all three zooms: weekday short ("Mon") for buckets within the
 // past 7 days, locale-aware short date ("05/09" or "09/05") for older
@@ -584,6 +692,68 @@ func formatUnitValue(v float64, unit chartUnit) string {
 		// Reuse formatTokenCount's exact behaviour by casting to int64.
 		return formatTokenCount(int64(v))
 	}
+}
+
+// compactSuffix indexes magnitude suffixes for in-bar numbers (#308).
+var compactSuffix = [...]string{"", "k", "M", "G"}
+
+// scaleCompact reduces v (>= 0) to a mantissa and a compactSuffix index by
+// repeatedly dividing by 1000. The mantissa is in [0, 1000) before the
+// caller's rounding.
+func scaleCompact(v float64) (float64, int) {
+	exp := 0
+	for v >= 1000 && exp < len(compactSuffix)-1 {
+		v /= 1000
+		exp++
+	}
+	return v, exp
+}
+
+// roundCompact rounds mantissa to dec decimals at the given exp, carrying to
+// the next magnitude when rounding reaches 1000 (e.g. 999.6 with dec=0 -> "1"
+// at exp+1). Returns the formatted mantissa (trailing ".0" trimmed) and the
+// final exp.
+func roundCompact(mantissa float64, exp, dec int) (string, int) {
+	for {
+		p := math.Pow10(dec)
+		r := math.Round(mantissa*p) / p
+		if r >= 1000 && exp < len(compactSuffix)-1 {
+			mantissa, exp = r/1000, exp+1
+			continue
+		}
+		s := strconv.FormatFloat(r, 'f', dec, 64)
+		if dec > 0 {
+			s = strings.TrimSuffix(strings.TrimRight(s, "0"), ".")
+		}
+		return s, exp
+	}
+}
+
+// formatBarValue renders v as the compact in-bar label for the active unit
+// (#308). Cost: whole dollars, no cents ("$0", "$45", "$1k", "$1M"). Tokens:
+// integer at k and below ("42", "750k"), one decimal at M/G ("1.2M", whole
+// millions trim to "1M"). Distinct from formatUnitValue (Y-axis labels), which
+// keeps sub-dollar cents — the in-bar number is a coarse exact-ish readout.
+func formatBarValue(v float64, unit chartUnit) string {
+	if unit == chartUnitCost {
+		if v <= 0 {
+			return "$0"
+		}
+		mant, exp := scaleCompact(v)
+		s, exp := roundCompact(mant, exp, 0)
+		return "$" + s + compactSuffix[exp]
+	}
+	// tokens
+	if v <= 0 {
+		return "0"
+	}
+	mant, exp := scaleCompact(v)
+	dec := 0
+	if exp >= 2 { // M and above get one decimal
+		dec = 1
+	}
+	s, exp := roundCompact(mant, exp, dec)
+	return s + compactSuffix[exp]
 }
 
 // buildChart renders the viewport content from a parallel

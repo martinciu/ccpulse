@@ -26,6 +26,12 @@ var (
 	colorChartCost         = lipgloss.AdaptiveColor{Light: "#ff8f00", Dark: "#ffca28"} // Material Amber 800 / 400
 	colorChartRemaining5h  = lipgloss.AdaptiveColor{Light: "#2e7d32", Dark: "#81c784"} // Material Green 800 / 300
 	colorChartRemaining7d  = lipgloss.AdaptiveColor{Light: "#6a1b9a", Dark: "#ce93d8"} // Material Purple 800 / 300
+
+	// colorBarLabel is the knockout foreground for in-bar 24h numbers (#308).
+	// Dark-theme bars are bright (amber #ffca28 / blue #64b5f6) -> near-black
+	// text; light-theme bars are dark-saturated (#ff8f00 / #1565c0) -> near-
+	// white text. Paired with Background(barColor) at the splice site.
+	colorBarLabel = lipgloss.AdaptiveColor{Light: "#fafafa", Dark: "#0b0b0b"}
 )
 
 // Quota gradient stops. Hex (not ANSI slots) because bubbles/progress.WithGradient

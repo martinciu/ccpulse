@@ -663,6 +663,118 @@ func TestFormatUnitValue(t *testing.T) {
 	}
 }
 
+func TestFormatBarValue(t *testing.T) {
+	tests := []struct {
+		name string
+		v    float64
+		unit chartUnit
+		want string
+	}{
+		// cost — integer dollars, no cents, magnitude carry
+		{"cost zero", 0, chartUnitCost, "$0"},
+		{"cost negative", -5, chartUnitCost, "$0"},
+		{"cost sub-dollar rounds down", 0.4, chartUnitCost, "$0"},
+		{"cost sub-dollar rounds up", 0.6, chartUnitCost, "$1"},
+		{"cost whole", 45, chartUnitCost, "$45"},
+		{"cost 999", 999, chartUnitCost, "$999"},
+		{"cost 999.5 carries to k", 999.5, chartUnitCost, "$1k"},
+		{"cost 1200 -> 1k", 1200, chartUnitCost, "$1k"},
+		{"cost 1600 -> 2k", 1600, chartUnitCost, "$2k"},
+		{"cost million", 1_000_000, chartUnitCost, "$1M"},
+		// tokens — integer at k, one decimal at M/G, magnitude carry
+		{"tok zero", 0, chartUnitTokens, "0"},
+		{"tok raw", 42, chartUnitTokens, "42"},
+		{"tok 750", 750, chartUnitTokens, "750"},
+		{"tok 5k", 5000, chartUnitTokens, "5k"},
+		{"tok 750k", 750_000, chartUnitTokens, "750k"},
+		{"tok 999500 carries to 1M", 999_500, chartUnitTokens, "1M"},
+		{"tok 1.2M", 1_200_000, chartUnitTokens, "1.2M"},
+		{"tok exact 1M trims .0", 1_000_000, chartUnitTokens, "1M"},
+		{"tok 2.1M", 2_100_000, chartUnitTokens, "2.1M"},
+		{"tok 1.2G", 1_200_000_000, chartUnitTokens, "1.2G"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := formatBarValue(tt.v, tt.unit); got != tt.want {
+				t.Errorf("formatBarValue(%v, %v) = %q, want %q", tt.v, tt.unit, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestOverlayBarLabels_PlacesAtBarTops(t *testing.T) {
+	now := time.Now()
+	zoom := ZoomLevels[2] // 24h: BarWidth=10, BarGap=2, stride=12
+	// peak=100 -> niceCeilingFloat=100; barsH=10 (chartH=11). Round geometry:
+	//   100 -> 10 rows, top row 0
+	//    50 ->  5 rows, top row 5
+	//    20 ->  2 rows, top row 8
+	//    10 ->  1 row,  top row 9  (height 1 -> skipped)
+	//     0 ->  0 rows            (no fill   -> skipped)
+	values := []float64{100, 50, 20, 10, 0}
+	starts := make([]time.Time, len(values))
+	for i := range starts {
+		starts[i] = now.Add(time.Duration(-i) * 24 * time.Hour)
+	}
+	canvasW := zoom.CanvasWidth(len(values)) // 5*10 + 4*2 = 58
+	body := buildChart(values, starts, 100, canvasW, 11, now, zoom, chartUnitTokens, dateOrderMonthFirst)
+
+	style := lipgloss.NewStyle()
+	texts := make([]string, len(values))
+	for i, v := range values {
+		if v > 0 {
+			texts[i] = style.Render(formatBarValue(v, chartUnitTokens))
+		}
+	}
+	out := overlayBarLabels(body, texts, 10, canvasW, zoom)
+	lines := strings.Split(out, "\n")
+
+	at := func(line, from, to int) string {
+		r := []rune(ansi.Strip(lines[line]))
+		if to > len(r) {
+			t.Fatalf("line %d shorter than %d (len=%d)", line, to, len(r))
+		}
+		return string(r[from:to])
+	}
+
+	// bar0: "100" centered in [0,10) -> start 3, on top row 0
+	if got := at(0, 3, 6); got != "100" {
+		t.Errorf("bar0 label: got %q, want %q", got, "100")
+	}
+	// bar1: "50" centered in [12,22) -> start 16, on top row 5
+	if got := at(5, 16, 18); got != "50" {
+		t.Errorf("bar1 label: got %q, want %q", got, "50")
+	}
+	// bar2: "20" centered in [24,34) -> start 28, on top row 8
+	if got := at(8, 28, 30); got != "20" {
+		t.Errorf("bar2 label: got %q, want %q", got, "20")
+	}
+	// bar3 height-1: no "10" spliced where its label would land (cols 40-41 row 9)
+	if got := at(9, 40, 42); got == "10" {
+		t.Errorf("bar3 (height 1) should be skipped, got label %q", got)
+	}
+}
+
+func TestOverlayBarLabels_NarrowZoomPassThrough(t *testing.T) {
+	now := time.Now()
+	zoom := ZoomLevels[0] // 15m: BarWidth=1 < barLabelMinWidth
+	body := buildChart([]float64{5}, []time.Time{now}, 5, 10, 11, now, zoom, chartUnitTokens, dateOrderMonthFirst)
+	texts := []string{lipgloss.NewStyle().Render("5")}
+	if got := overlayBarLabels(body, texts, 10, 10, zoom); got != body {
+		t.Errorf("15m (BarWidth=1) should pass through unchanged")
+	}
+}
+
+func TestOverlayBarLabels_EmptyInputs(t *testing.T) {
+	zoom := ZoomLevels[2]
+	if got := overlayBarLabels("", nil, 10, 58, zoom); got != "" {
+		t.Errorf("empty body should pass through")
+	}
+	if got := overlayBarLabels("x", nil, 10, 58, zoom); got != "x" {
+		t.Errorf("nil texts should pass through")
+	}
+}
+
 // stripANSIForTest removes lipgloss/ANSI escape sequences. Tests assert
 // against visible content only — coloring is verified elsewhere.
 func stripANSIForTest(s string) string {
