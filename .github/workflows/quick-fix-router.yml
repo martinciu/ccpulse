@@ -1,9 +1,6 @@
 name: Quick-Fix Router
 
 on:
-  schedule:
-    - cron: '0 4,16 * * *'
-  workflow_dispatch:
   issue_comment:
     types: [created]
 
@@ -13,41 +10,29 @@ permissions:
   issues: write
   id-token: write
 
-# Comment runs get a per-issue lane so an on-demand fix does not queue
-# behind a scheduled whole-queue drain. cancel-in-progress stays false on
-# every path: a fresh @claude quick-fix must NOT kill an in-flight fix
-# that may be mid-push or mid-pr-create (would leave a half-pushed
-# branch). Keeping it false also makes the #289-class self-cancel bug
-# structurally impossible. Do NOT copy claude-review's
-# !endsWith(...[bot]) expression — that exists to make cancel true for
-# humans; here we want it false for everyone.
+# Per-issue lane: two @claude quick-fix comments on different issues run in
+# parallel, while a repeat comment on the SAME issue queues behind the
+# in-flight fix. cancel-in-progress stays false: a fresh quick-fix must NOT
+# kill an in-flight fix that may be mid-push or mid-pr-create (would leave a
+# half-pushed branch). Keeping it false also makes the #289-class self-cancel
+# bug structurally impossible. Do NOT copy claude-review's !endsWith(...[bot])
+# expression — that exists to make cancel true for humans; here we want it
+# false for everyone.
 concurrency:
-  group: ${{ github.event_name == 'issue_comment' && format('quick-fix-router-{0}', github.event.issue.number) || 'quick-fix-router' }}
+  group: quick-fix-router-${{ github.event.issue.number }}
   cancel-in-progress: false
 
 jobs:
   route:
     name: Quick-Fix Router
     if: >-
-      github.event_name != 'issue_comment' ||
-      (
-        !github.event.issue.pull_request &&
-        contains(github.event.comment.body, '@claude quick-fix') &&
-        github.event.comment.author_association == 'OWNER' &&
-        contains(github.event.issue.labels.*.name, 'quick-fix')
-      )
+      !github.event.issue.pull_request &&
+      contains(github.event.comment.body, '@claude quick-fix') &&
+      github.event.comment.author_association == 'OWNER' &&
+      contains(github.event.issue.labels.*.name, 'quick-fix')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - name: Acknowledge trigger comment
-        if: github.event_name == 'issue_comment'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: >-
-          gh api --method POST
-          repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions
-          -f content=eyes
-
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           fetch-depth: 0
@@ -59,6 +44,8 @@ jobs:
       - uses: anthropics/claude-code-action@1dc994ee7a008f0ecc866d9ac23ef036b7229f84  # v1.0.127
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          use_sticky_comment: true
+          track_progress: true
           claude_args: |
             --model claude-opus-4-7
             --allowedTools Bash,Read,Write,Edit,Glob,Grep
@@ -66,9 +53,9 @@ jobs:
             REPO: ${{ github.repository }}
             TARGET ISSUE: ${{ github.event.issue.number }}
 
-            You run as a scheduled or on-demand GitHub Actions workflow in the ccpulse repo (github.com/martinciu/ccpulse). Goal: for EVERY open `quick-fix`-labeled issue that has no open PR, apply the fix on its own feature branch and open a separate PR (one PR per issue). Issues are independent — a failure or skip on one MUST NOT stop processing of the others. When invoked on a single TARGET ISSUE (see §1), the queue is just that one issue.
+            You run as an on-demand GitHub Actions workflow in the ccpulse repo (github.com/martinciu/ccpulse), triggered when a maintainer comments `@claude quick-fix` on an issue. Goal: apply the fix for the single TARGET ISSUE on its own feature branch and open one PR.
 
-            This is a remote, headless run. You start with a fresh clone and no local state — no shell history, no extra config. Make all decisions from each issue's body and the repo contents (read `CLAUDE.md` early; it carries project conventions).
+            This is a remote, headless run. You start with a fresh clone and no local state — no shell history, no extra config. Make all decisions from the issue's body and the repo contents (read `CLAUDE.md` early; it carries project conventions).
 
             ## House rules — override anything else
 
@@ -77,7 +64,7 @@ jobs:
             - NEVER append session-stats / token-usage / cost numbers to commit messages or PRs.
             - PR titles and bodies use emojis. Title: one leading contextually-relevant emoji. Body: emoji-prefixed section headings (## Summary, ## Test plan, ## Related) and emoji markers on bullets where they aid scanning.
             - All work goes through a PR. Never push to `main` directly.
-            - EVERY PR you open must carry the `quick-fix` label — pass `--label quick-fix` to `gh pr create`.
+            - The PR you open must carry the `quick-fix` label — pass `--label quick-fix` to `gh pr create`.
 
             ## 0. Pre-flight
 
@@ -85,15 +72,11 @@ jobs:
             2. `go version` must return Go 1.25 or newer.
             3. `git checkout main && git pull --ff-only origin main`.
 
-            If any pre-flight step fails, print the failure and exit. Do NOT attempt any fix from a dirty or wrong-branch state.
+            If any pre-flight step fails, print the failure and exit. Do NOT attempt the fix from a dirty or wrong-branch state.
 
-            ## 1. Build the work queue
+            ## 1. Fetch the issue and check for a duplicate PR
 
-            Two modes, decided by the `TARGET ISSUE` line in the header above.
-
-            ### Single-issue mode — `TARGET ISSUE` names an issue number N
-
-            A maintainer ran `@claude quick-fix` on issue N. The queue is exactly that one issue. Fetch it:
+            Fetch the target issue:
 
                 gh issue view <N> --json number,title,body,labels
 
@@ -101,52 +84,28 @@ jobs:
 
                 gh pr list --state open --search "closes #<N>" --json number,headRefName
 
-            If a PR already closes it, run `gh issue comment <N> --body 'Routine skipped — an open PR already addresses this issue.'` and exit cleanly (do NOT open a duplicate). Otherwise the queue is the single entry {N, title, body}; proceed to §2. The `quick-fix` label is already guaranteed by the workflow trigger gate — do not re-check it.
+            If a PR already closes it, run `gh issue comment <N> --body 'Skipped — an open PR already addresses this issue.'` and exit cleanly (do NOT open a duplicate). The `quick-fix` label is already guaranteed by the workflow trigger gate — do not re-check it.
 
-            ### Whole-queue mode — `TARGET ISSUE` is blank (scheduled / workflow_dispatch run)
+            ## 2. Apply the fix
 
-            Run:
+            ### 2a. Tier-pick — proceed or skip
 
-                gh issue list --label quick-fix --state open --json number,title,body,labels --jq 'sort_by(.number)'
+            Read the issue body. Decide:
 
-            For each candidate N, check open PRs that reference it:
+            - Mechanical (file path + exact bytes specified, OR behavior fully described, OR 'match existing pattern' with the pattern identifiable in the repo) → proceed to 2b.
+            - Needs real judgment (body asks open questions, fix not obvious from the sketch, multiple defensible approaches with tradeoffs, or anything that should be discussed first) → SKIP.
 
-                gh pr list --state open --search "closes #<N>" --json number,headRefName
+            If you SKIP, post ONE comment and exit cleanly:
 
-            Build a queue (oldest-first by issue number) of {N, title, body} where no open PR references N.
+                gh issue comment <N> --body 'Skipped — the fix needs design discussion, not a quick-fix. Recommend re-labeling and discussing before re-running.'
 
-            If the queue is empty, print 'no eligible quick-fix issues — nothing to do' and exit cleanly.
-
-            ## 2. Process the queue — one PR per issue
-
-            Iterate the queue IN ORDER. For each issue {N, title, body}:
-
-            ### 2a. Reset to clean main
-
-                git checkout main
-
-            (`main` is already up-to-date from pre-flight; no re-pull needed between iterations.)
-
-            ### 2b. Tier-pick — proceed or skip
-
-            Read this issue's body. Decide:
-
-            - Mechanical (file path + exact bytes specified, OR behavior fully described, OR 'match existing pattern' with the pattern identifiable in the repo) → proceed to 2c.
-            - Needs real judgment (body asks open questions, fix not obvious from the sketch, multiple defensible approaches with tradeoffs, or anything that should be discussed first) → SKIP this issue.
-
-            If you SKIP, post ONE comment on the issue:
-
-                gh issue comment <N> --body 'Routine skipped — the fix needs design discussion, not a quick-fix. Recommend re-labeling and discussing before re-running.'
-
-            Then continue to the NEXT issue in the queue. Do not branch, commit, or push for this issue.
-
-            ### 2c. Branch
+            ### 2b. Branch
 
                 git checkout -b <N>-<slug>
 
             where `<slug>` is 2–4 kebab-cased words from the issue title with emojis/labels stripped.
 
-            ### 2d. Apply the fix
+            ### 2c. Apply the fix
 
             Apply the fix exactly as the issue body sketches. Project conventions from `CLAUDE.md` apply:
 
@@ -157,20 +116,16 @@ jobs:
 
             If the issue's 'Test plan' section asks for new tests, add or extend tests. Match the existing test style in the affected package (table-driven, `t.TempDir()` for fs, stdlib `testing` only — no testify).
 
-            ### 2e. Verify
+            ### 2d. Verify
 
                 go test ./...
                 go vet ./...
 
-            Both MUST pass. If either fails:
+            Both MUST pass. If either fails, post ONE comment and exit cleanly — do NOT commit or push:
 
-                gh issue comment <N> --body 'Routine attempted fix but <go test|go vet> failed. Manual follow-up needed.'
-                git checkout main
-                git branch -D <N>-<slug>
+                gh issue comment <N> --body 'Attempted fix but <go test|go vet> failed. Manual follow-up needed.'
 
-            Continue to the NEXT issue. Do not commit or push.
-
-            ### 2f. Commit
+            ### 2e. Commit
 
             Stage only files you intentionally modified (`git add <paths>`, never `git add -A`).
 
@@ -180,7 +135,7 @@ jobs:
 
             Match the project's existing commit-subject shape.
 
-            ### 2g. Push and open PR
+            ### 2f. Push and open the PR
 
                 git push -u origin <N>-<slug>
 
@@ -188,23 +143,9 @@ jobs:
 
             Print the PR URL.
 
-            ### 2h. Move to next
+            ## 3. Bail conditions
 
-                git checkout main
-
-            Continue to the next issue in the queue.
-
-            ## 3. Final summary
-
-            After the queue is fully drained, print a single summary line:
-
-                Queue: <total> issues. Opened <K> PRs. Skipped <S> (judgment). Failed <F> (tests/vet).
-
-            Followed by the list of PR URLs you opened.
-
-            ## Bail conditions — PER ISSUE, not run-wide
-
-            For ANY issue in the queue, if you find yourself wanting to:
+            If at any point you find yourself wanting to:
 
             - Add functionality beyond what the issue body sketches
             - Refactor surrounding code or 'improve' unrelated lines
@@ -213,4 +154,4 @@ jobs:
             - Commit despite failing tests
             - Touch more than 3 files (excluding the test file)
 
-            STOP that issue. Post ONE comment with a one-line explanation, run `git checkout main`, delete any local branch you created for it, and continue to the next issue. NEVER abort the whole run because of one bad issue.
+            STOP. Post ONE comment with a one-line explanation, run `git checkout main`, delete any local branch you created, and exit cleanly. Do NOT force a fix you are not confident in.
