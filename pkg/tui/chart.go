@@ -790,31 +790,55 @@ func groupThousands(n int64) string {
 	return s
 }
 
+// compactSig3 renders v (>= 1e6) as a 3-significant-figure mantissa plus an
+// M/G suffix: 2 decimals in [1,10) ("1.23M"), 1 in [10,100) ("12.3M"), 0 in
+// [100,1000) ("123M"), with trailing zeros trimmed and magnitude carry
+// ("999.6M" -> "1G"). Used only for the 24h bar's M/G safety band (#324).
+func compactSig3(v float64) string {
+	mant, exp := scaleCompact(v)
+	dec := 0
+	switch {
+	case mant < 10:
+		dec = 2
+	case mant < 100:
+		dec = 1
+	}
+	s, exp := roundCompact(mant, exp, dec)
+	return s + compactSuffix[exp]
+}
+
 // formatBarValue renders v as the compact in-bar label for the active unit
-// (#308). Cost: whole dollars, no cents ("$0", "$45", "$1k", "$1M"). Tokens:
-// integer at k and below ("42", "750k"), one decimal at M/G ("1.2M", whole
-// millions trim to "1M"). Distinct from formatUnitValue (Y-axis labels), which
-// keeps sub-dollar cents — the in-bar number is a coarse exact-ish readout.
+// (#308, precision reworked in #324). Below 1,000,000 the full value is shown
+// with thousands separators — cost as whole dollars ("$1,234"), with cents for
+// sub-dollar amounts ("$0.45"), tokens as a full integer ("12,340"). At or
+// above 1,000,000 a 3-significant-figure M/G suffix is used ("1.23M", "1.2G");
+// for cost this is a practically-unreachable safety net. Every label fits the
+// 24h BarWidth (10 cols). Distinct from formatUnitValue (the 5-col Y-axis
+// label), which keeps the k/M compact form because its slot can't fit a full
+// number.
 func formatBarValue(v float64, unit chartUnit) string {
 	if unit == chartUnitCost {
-		if v <= 0 {
+		switch {
+		case v <= 0:
 			return "$0"
+		case v < 1:
+			return "$" + strconv.FormatFloat(v, 'f', 2, 64)
 		}
-		mant, exp := scaleCompact(v)
-		s, exp := roundCompact(mant, exp, 0)
-		return "$" + s + compactSuffix[exp]
+		d := math.Round(v)
+		if d < 1_000_000 {
+			return "$" + groupThousands(int64(d))
+		}
+		return "$" + compactSig3(d)
 	}
 	// tokens
 	if v <= 0 {
 		return "0"
 	}
-	mant, exp := scaleCompact(v)
-	dec := 0
-	if exp >= 2 { // M and above get one decimal
-		dec = 1
+	n := math.Round(v)
+	if n < 1_000_000 {
+		return groupThousands(int64(n))
 	}
-	s, exp := roundCompact(mant, exp, dec)
-	return s + compactSuffix[exp]
+	return compactSig3(n)
 }
 
 // buildChart renders the viewport content from a parallel
