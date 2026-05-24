@@ -50,6 +50,8 @@ type recostUpdate struct {
 //
 // Idempotent: re-running on an already-recosted DB reports Updated=0.
 // On context cancellation the transaction is rolled back.
+//
+//nolint:gocognit,gocyclo,funlen // tracked in #333 — batched recost loop
 func (c *Cache) Recost(ctx context.Context, hist pricing.History, opts RecostOpts) (RecostStats, error) {
 	start := time.Now()
 	stats := RecostStats{ByVersion: make(map[string]int, 4)}

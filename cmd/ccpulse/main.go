@@ -222,6 +222,8 @@ func watcherStartupError(projectsRoot string, err error) error {
 // for the quota poller's context and for the startup backfill, so
 // SIGINT/SIGTERM cancels in-flight work even before the user quits
 // the TUI itself.
+//
+//nolint:gocyclo,funlen // tracked in #333 — TUI startup wiring
 func runTUI(ctx context.Context, errOut io.Writer) error {
 	cfg, err := config.Load(config.DefaultPath())
 	if err != nil && !os.IsNotExist(err) {

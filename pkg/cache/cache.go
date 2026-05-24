@@ -669,6 +669,8 @@ ORDER BY bucket_epoch ASC
 // produce exactly one bucket.
 //
 // BucketStart values are in time.Local — callers must not assume UTC.
+//
+//nolint:dupl // tracked in #333 — near-duplicate of costBucketsDaily
 func (c *Cache) ioTokenBucketsDaily(from, to time.Time) ([]TokenBucket, error) {
 	start := time.Now()
 	from = DayStartLocal(from)
@@ -796,6 +798,8 @@ ORDER BY bucket_epoch ASC
 
 // costBucketsDaily mirrors ioTokenBucketsDaily for SUM(cost_usd_estimate).
 // See ioTokenBucketsDaily docs for the local-tz / DST / iteration rationale.
+//
+//nolint:dupl // tracked in #333 — near-duplicate of ioTokenBucketsDaily
 func (c *Cache) costBucketsDaily(from, to time.Time) ([]CostBucket, error) {
 	start := time.Now()
 	from = DayStartLocal(from)

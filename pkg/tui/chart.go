@@ -488,6 +488,8 @@ func spliceLabel(line string, start, width int, label string) string {
 // barsH is the count of bar rows (the X-label row, if any, sits below and is
 // never written). Called from renderWindow only — renderSpringFrame does not
 // call it, so numbers are absent during animation.
+//
+//nolint:gocyclo // tracked in #333 — per-bar label overlay
 func overlayBarLabels(body string, texts []string, barsH, chartW int, zoom ZoomLevel) string {
 	if zoom.BarWidth < barLabelMinWidth || body == "" || len(texts) == 0 {
 		return body

@@ -51,6 +51,8 @@ func New(root string) (*Watcher, error) {
 // past the fireBufferSize cap are dropped silently — the buffer is
 // sized generously (256) so in practice this never fires; a slow
 // onChange is the more likely first symptom.
+//
+//nolint:gocognit,gocyclo // tracked in #333 — fsnotify event loop
 func (w *Watcher) Run(onChange func(path string)) {
 	const fireBufferSize = 256
 	// pending grows monotonically with the set of distinct files seen

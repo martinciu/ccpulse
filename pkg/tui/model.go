@@ -349,6 +349,7 @@ func New(d Deps) Model {
 
 func (m Model) Init() tea.Cmd { return m.scheduleNowTick() }
 
+//nolint:gocognit,nestif,gocyclo,funlen // tracked in #333 — central TUI message dispatch
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -679,9 +680,6 @@ func (m Model) View() string {
 	if m.showHelp {
 		body = m.help.FullHelpView(m.keys.FullHelp())
 	} else {
-		fade := 1.0
-		labelUnit := chartUnit(m.unitIdx)
-		labelPeak := m.peak
 		rawBody := m.viewport.View()
 		switch {
 		case m.springActive:
@@ -689,7 +687,9 @@ func (m Model) View() string {
 			for _, r := range m.springRatios {
 				maxR = max(maxR, r)
 			}
-			fade = maxR
+			fade := maxR
+			labelUnit := chartUnit(m.unitIdx)
+			labelPeak := m.peak
 			// Determine whether the current rendered frame is a line chart.
 			// Exit phase shows OLD type; hold/enter shows NEW type.
 			renderingLine := false
@@ -1197,6 +1197,8 @@ func (m *Model) maybeArmIntro() tea.Cmd {
 // Sets viewport.XOffset = 0 because the windowed canvas is rendered
 // starting at slice col 0; the leadingPad below shifts content to
 // match the pre-spring viewport position.
+//
+//nolint:gocyclo // tracked in #333 — spring animation frame assembly
 func (m *Model) renderSpringFrame() {
 	if len(m.springRatios) == 0 {
 		return
@@ -1310,10 +1312,7 @@ func (m *Model) renderSpringFrame() {
 	// max(old, new) and rangeStarts chosen to match the active phase, the
 	// two slices line up 1:1 in normal flow; the clamp is a safety net.
 	start := max(m.springXOffset, 0)
-	end := min(start+nv, len(m.springRatios))
-	if end > len(rangeStarts) {
-		end = len(rangeStarts)
-	}
+	end := min(start+nv, len(m.springRatios), len(rangeStarts))
 	if start >= end {
 		return
 	}
@@ -1485,6 +1484,8 @@ func (m Model) scheduleNowTick() tea.Cmd {
 // Safe to call when deps.Cache is nil (no-op). Loads the full history
 // present in the cache, from the earliest message up to "now". On an
 // empty cache or a DB error, renders a placeholder.
+//
+//nolint:gocognit,gocyclo,funlen // tracked in #333 — chart rebuild branching
 func (m *Model) refreshChart() {
 	if m.deps.Cache == nil {
 		return
@@ -1783,10 +1784,7 @@ func (m *Model) renderWindow() {
 	nv := m.visibleBuckets()
 
 	start := max(m.viewportXOffset, 0)
-	end := min(start+nv, len(m.lastValues))
-	if end > len(m.lastStarts) {
-		end = len(m.lastStarts)
-	}
+	end := min(start+nv, len(m.lastValues), len(m.lastStarts))
 	if start >= end {
 		return
 	}

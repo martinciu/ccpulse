@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
+//nolint:gocognit,nestif,gocyclo // tracked in #333 — long doctor-check sequence
 func newDoctorCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "doctor",

@@ -33,6 +33,7 @@ func newStatusCmd() *cobra.Command {
 	return c
 }
 
+//nolint:gocyclo // tracked in #333 — status output assembly
 func runStatus(cmd *cobra.Command, asJSON, quiet bool) error {
 	cfg, err := config.Load(config.DefaultPath())
 	if err != nil && !os.IsNotExist(err) {

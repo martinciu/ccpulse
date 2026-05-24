@@ -81,6 +81,7 @@ const (
 	minSpanForSlope        = 4 * time.Hour // must match sevenDayLowConfidenceCutoff
 )
 
+//nolint:gocyclo // tracked in #333 — 7d projection branches
 func projectSevenDay(
 	samples []cache.SevenDaySample,
 	currentPct float64,
