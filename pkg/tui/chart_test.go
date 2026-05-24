@@ -749,6 +749,27 @@ func TestGroupThousands(t *testing.T) {
 	}
 }
 
+func TestFormatBarValue_FitsBarWidth(t *testing.T) {
+	t.Parallel()
+	budget := ZoomLevels[2].BarWidth // 24h: 10
+	// Sweep representative magnitudes across both units, including the
+	// worst-case widths (6-digit values, the M/G band).
+	values := []float64{
+		0, 0.04, 0.45, 0.99, 1, 45, 999, 1000, 12340, 123400, 999999,
+		1_000_000, 1_230_000, 12_300_000, 123_000_000, 999_600_000,
+		1_230_000_000, 999_000_000_000,
+	}
+	for _, unit := range []chartUnit{chartUnitCost, chartUnitTokens} {
+		for _, v := range values {
+			label := formatBarValue(v, unit)
+			if w := lipgloss.Width(label); w > budget {
+				t.Errorf("formatBarValue(%v, %v) = %q is %d cols, exceeds BarWidth %d",
+					v, unit, label, w, budget)
+			}
+		}
+	}
+}
+
 func TestOverlayBarLabels_PlacesAtBarTops(t *testing.T) {
 	now := time.Now()
 	zoom := ZoomLevels[2] // 24h: BarWidth=10, BarGap=2, stride=12
