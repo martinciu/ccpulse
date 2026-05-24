@@ -228,3 +228,22 @@ func TestViewFitsTerminal_ChartBody(t *testing.T) {
 		}
 	}
 }
+
+// TestViewFitsTerminal_HelpOverlay confirms the full-help overlay body (which
+// is NOT viewport-clipped) fits the terminal across width × height at the
+// smallest supported heights.
+func TestViewFitsTerminal_HelpOverlay(t *testing.T) {
+	t.Parallel()
+	cEmpty := emptyFitCache(t)
+	win := windowFor("safe", true)
+	for _, w := range fitWidths {
+		for _, h := range []int{20, 40, 60} {
+			w, h := w, h
+			name := "w" + itoa(w) + "_h" + itoa(h)
+			t.Run(name, func(t *testing.T) {
+				m := buildFitModel(cEmpty, w, h, win, int(chartUnitCost), true)
+				assertFits(t, m)
+			})
+		}
+	}
+}
