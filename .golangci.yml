@@ -1,0 +1,75 @@
+version: "2"
+
+run:
+  go: "1.25"
+  tests: true
+  concurrency: 4
+  timeout: 5m
+
+linters:
+  default: none
+  enable:
+    # correctness
+    - govet
+    - staticcheck
+    - unused
+    - errcheck
+    - ineffassign
+    # smells / style
+    - gocritic
+    - revive
+    - unparam
+    # complexity / refactor candidates
+    - gocyclo
+    - gocognit
+    - nestif
+    - funlen
+    - dupl
+    # modernization (auto-fixable)
+    - modernize
+    - intrange
+    - usestdlibvars
+    - perfsprint
+
+  settings:
+    errcheck:
+      check-type-assertions: true
+    gocyclo:
+      min-complexity: 13
+    gocognit:
+      min-complexity: 30
+    funlen:
+      lines: 120
+      statements: 80
+    dupl:
+      threshold: 100
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+    revive:
+      rules:
+        - name: unused-parameter
+          disabled: true
+
+  exclusions:
+    presets:
+      - std-error-handling
+      - common-false-positives
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gocyclo
+          - gocognit
+          - dupl
+          - funlen
+          - nestif
+          - revive
+          - gocritic
+
+formatters:
+  enable:
+    - gofumpt
+  settings:
+    gofumpt:
+      extra-rules: true
