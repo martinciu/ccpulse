@@ -17,8 +17,8 @@ const metaKeyRecostFingerprint = "last_recost_history_fingerprint"
 
 // RecostStats summarizes a Recost run.
 type RecostStats struct {
-	Scanned       int
-	Updated       int
+	Scanned int
+	Updated int
 	// Queued is the number of rows that were detected as needing an update and
 	// added to the in-flight batch but not yet flushed when Recost returned
 	// (relevant on the cancellation/timeout path).
@@ -91,14 +91,14 @@ FROM messages`)
 
 	for rows.Next() {
 		var (
-			id                  int64
-			tsStr               string
-			model               string
-			in, out, cr         int64
-			cw5, cw1            int64
-			costStored          float64
-			verStored           string
-			unkStored           int
+			id          int64
+			tsStr       string
+			model       string
+			in, out, cr int64
+			cw5, cw1    int64
+			costStored  float64
+			verStored   string
+			unkStored   int
 		)
 		if err := rows.Scan(&id, &tsStr, &model, &in, &out, &cr, &cw5, &cw1, &costStored, &verStored, &unkStored); err != nil {
 			stats.Queued = len(batch)

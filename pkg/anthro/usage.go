@@ -245,7 +245,7 @@ func acquireFetchLock(cacheDir string) (release func(), err error) {
 func fetchAPI(ctx context.Context, token string) (Usage, error) {
 	ctx, cancel := context.WithTimeout(ctx, httpTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
 	if err != nil {
 		return Usage{}, err
 	}

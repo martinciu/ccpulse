@@ -232,7 +232,7 @@ func renderBurnRateSide(label string, p *status.Projection, slotW int, window ti
 	case burnSeverityDanger:
 		var text string
 		if p.MinutesTo100Pct == nil {
-			text = fmt.Sprintf("%s ·at limit", formatBurnRate(p.SlopePctPerHour, unit))
+			text = formatBurnRate(p.SlopePctPerHour, unit) + " ·at limit"
 		} else {
 			text = fmt.Sprintf("%s →%d%% ·%s",
 				formatBurnRate(p.SlopePctPerHour, unit), p.ProjectedPctAtReset, durString(*p.MinutesTo100Pct))

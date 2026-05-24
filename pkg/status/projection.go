@@ -130,10 +130,7 @@ func projectSevenDay(
 	projectedAtReset := currentPct + slopePerHour*hoursToReset
 
 	windowStart := resetsAt.Add(-sevenDayWindow)
-	elapsed := now.Sub(windowStart)
-	if elapsed < 0 {
-		elapsed = 0
-	}
+	elapsed := max(now.Sub(windowStart), 0)
 
 	proj := Projection{
 		ElapsedMinutes:      int(elapsed.Minutes()),

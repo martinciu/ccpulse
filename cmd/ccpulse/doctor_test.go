@@ -22,10 +22,10 @@ func writeSettings(t *testing.T, contents string) string {
 	if contents == "" {
 		return home
 	}
-	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0700); err != nil {
+	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(home, ".claude", "settings.json"), []byte(contents), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(home, ".claude", "settings.json"), []byte(contents), 0o600); err != nil {
 		t.Fatalf("write settings: %v", err)
 	}
 	return home

@@ -316,7 +316,7 @@ func TestScrollStep_ThreeBucketsAt15m(t *testing.T) {
 // rune across all rows of s (ANSI already stripped). -1 if s is all spaces.
 func rightmostNonSpaceCol(s string) int {
 	maxCol := -1
-	for _, line := range strings.Split(s, "\n") {
+	for line := range strings.SplitSeq(s, "\n") {
 		last := -1
 		for i, r := range []rune(line) {
 			if r != ' ' {
@@ -403,7 +403,6 @@ func TestRefreshChart_Underfill_FlushRight(t *testing.T) {
 func TestRefreshChart_Underfill_ScrollLocked(t *testing.T) {
 	t.Parallel()
 	for _, zi := range []int{0, 1, 2} { // 15m, 1h, 24h
-		zi := zi
 		t.Run(ZoomLevels[zi].Label, func(t *testing.T) {
 			t.Parallel()
 			m, c := seedBarModel(t, zi, 2, ZoomLevels[zi].Duration)

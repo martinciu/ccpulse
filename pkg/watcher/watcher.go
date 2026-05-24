@@ -82,8 +82,8 @@ func (w *Watcher) Run(onChange func(path string)) {
 			if !strings.HasSuffix(e.Name, ".jsonl") {
 				continue
 			}
-			if !(e.Op&fsnotify.Write == fsnotify.Write ||
-				e.Op&fsnotify.Create == fsnotify.Create) {
+			if e.Op&fsnotify.Write != fsnotify.Write &&
+				e.Op&fsnotify.Create != fsnotify.Create {
 				continue
 			}
 			name := e.Name

@@ -94,7 +94,7 @@ func TestLoad_ExplicitCacheDirOverridesChannel(t *testing.T) {
 [paths]
 cache_dir = "/explicit/path"
 `
-	if err := os.WriteFile(p, []byte(body), 0644); err != nil {
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(p)
@@ -141,7 +141,7 @@ reduce_motion = true
 			if tc.body != "" {
 				dir := t.TempDir()
 				path = filepath.Join(dir, "config.toml")
-				if err := os.WriteFile(path, []byte(tc.body), 0644); err != nil {
+				if err := os.WriteFile(path, []byte(tc.body), 0o644); err != nil {
 					t.Fatal(err)
 				}
 			}

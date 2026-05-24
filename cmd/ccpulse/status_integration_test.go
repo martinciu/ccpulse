@@ -38,7 +38,7 @@ const sampleAPIBody = `{
 func writeTempCache(t *testing.T, dir string) {
 	t.Helper()
 	body := `{"v":1,"updated_at":"` + time.Now().UTC().Add(-30*time.Second).Format(time.RFC3339Nano) + `","data":` + sampleAPIBody + `}`
-	if err := os.WriteFile(filepath.Join(dir, "usage.json"), []byte(body), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "usage.json"), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -47,10 +47,10 @@ func writeTempCredential(t *testing.T, dir string) {
 	t.Helper()
 	body := `{"claudeAiOauth":{"accessToken":"tok","subscriptionType":"max","rateLimitTier":"default_claude_max_20x","expiresAt":4070908800000}}`
 	claudeDir := filepath.Join(dir, ".claude")
-	if err := os.MkdirAll(claudeDir, 0700); err != nil {
+	if err := os.MkdirAll(claudeDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(claudeDir, ".credentials.json"), []byte(body), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(claudeDir, ".credentials.json"), []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -247,7 +247,7 @@ func TestStatusPercentDisplayWithOAuthAtZero(t *testing.T) {
 		"omelette_promotional": null,
 		"extra_usage":          {"is_enabled": false, "monthly_limit": 0, "used_credits": 0.0, "utilization": null, "currency": "USD"}
 	}}`
-	if err := os.WriteFile(filepath.Join(cacheDir, "usage.json"), []byte(zeroBody), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(cacheDir, "usage.json"), []byte(zeroBody), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -310,10 +310,10 @@ func TestStatusExpiredCredentialWritesToCmdErr(t *testing.T) {
 	// Write a credential whose expiresAt is epoch+1s (well in the past).
 	body := `{"claudeAiOauth":{"accessToken":"tok","subscriptionType":"max","rateLimitTier":"default_claude_max_20x","expiresAt":1000}}`
 	claudeDir := filepath.Join(credDir, ".claude")
-	if err := os.MkdirAll(claudeDir, 0700); err != nil {
+	if err := os.MkdirAll(claudeDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(claudeDir, ".credentials.json"), []byte(body), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(claudeDir, ".credentials.json"), []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -367,7 +367,7 @@ func writeOverreachCache(t *testing.T, dir string) {
 		"omelette_promotional": null,
 		"extra_usage":          {"is_enabled": false, "monthly_limit": 0, "used_credits": 0.0, "utilization": null, "currency": "USD"}
 	}}`
-	if err := os.WriteFile(filepath.Join(dir, "usage.json"), []byte(body), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "usage.json"), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -497,7 +497,7 @@ func TestStatusQuietHardErrorStillExitsNonZero(t *testing.T) {
 	t.Setenv("HOME", credDir)
 
 	// Make state.db a directory so cache.Open fails.
-	if err := os.MkdirAll(filepath.Join(cacheDir, "state.db"), 0700); err != nil {
+	if err := os.MkdirAll(filepath.Join(cacheDir, "state.db"), 0o700); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
 
@@ -527,10 +527,10 @@ func TestStatusQuietStillEmitsStderrDiagnostics(t *testing.T) {
 	// Write a credential whose expiresAt is epoch+1ms (well in the past).
 	body := `{"claudeAiOauth":{"accessToken":"tok","subscriptionType":"max","rateLimitTier":"default_claude_max_20x","expiresAt":1}}`
 	claudeDir := filepath.Join(credDir, ".claude")
-	if err := os.MkdirAll(claudeDir, 0700); err != nil {
+	if err := os.MkdirAll(claudeDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(claudeDir, ".credentials.json"), []byte(body), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(claudeDir, ".credentials.json"), []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -581,10 +581,10 @@ func TestRunStatus_MalformedConfig(t *testing.T) {
 
 	// channel is "dev" by default in tests; DefaultPath() → $XDG_CONFIG_HOME/ccpulse-dev/config.toml
 	ccpulseDir := filepath.Join(cfgDir, "ccpulse-dev")
-	if err := os.MkdirAll(ccpulseDir, 0700); err != nil {
+	if err := os.MkdirAll(ccpulseDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(ccpulseDir, "config.toml"), []byte("[[broken\n"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(ccpulseDir, "config.toml"), []byte("[[broken\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -644,13 +644,13 @@ func TestStatusPrunesWhenRetentionConfigured(t *testing.T) {
 	writeTempCredential(t, credDir)
 
 	// Write a config that prunes anything older than 1 day.
-	if err := os.MkdirAll(filepath.Join(cfgDir, "ccpulse"), 0700); err != nil {
+	if err := os.MkdirAll(filepath.Join(cfgDir, "ccpulse"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(
 		filepath.Join(cfgDir, "ccpulse", "config.toml"),
 		[]byte("[history]\nretention_days = 1\n"),
-		0600,
+		0o600,
 	); err != nil {
 		t.Fatal(err)
 	}

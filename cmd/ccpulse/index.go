@@ -33,7 +33,7 @@ func newIndexCmd() *cobra.Command {
 func runIndex(cmd *cobra.Command, rebuild bool) error {
 	ctx := cmd.Context()
 	if !rebuild {
-		return fmt.Errorf("`ccpulse index` (no flag) was removed; the TUI now backfills on launch. Use `ccpulse index --rebuild` to drop and rebuild the cache from JSONL")
+		return errors.New("`ccpulse index` (no flag) was removed; the TUI now backfills on launch. Use `ccpulse index --rebuild` to drop and rebuild the cache from JSONL")
 	}
 
 	cfg, err := config.Load(config.DefaultPath())

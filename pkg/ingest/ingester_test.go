@@ -30,10 +30,10 @@ func newIngesterFixture(t *testing.T) (*Ingester, string, string) {
 	dir := t.TempDir()
 	projects := filepath.Join(dir, "projects")
 	cacheDir := filepath.Join(dir, "cache")
-	if err := os.MkdirAll(filepath.Join(projects, "-Users-x-foo"), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(projects, "-Users-x-foo"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(cacheDir, 0755); err != nil {
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -46,7 +46,7 @@ func newIngesterFixture(t *testing.T) (*Ingester, string, string) {
 	tab, _ := pricing.Load()
 
 	jsonlPath := filepath.Join(projects, "-Users-x-foo", "sess.jsonl")
-	if err := os.WriteFile(jsonlPath, jsonl("s1"), 0644); err != nil {
+	if err := os.WriteFile(jsonlPath, jsonl("s1"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -105,7 +105,7 @@ func TestProcessFile_TailFromStoredOffset(t *testing.T) {
 	_, off1, _, _, _ := ing.Cache.GetFile(path)
 
 	// Append a second assistant line to the same file.
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,11 +196,11 @@ func TestProcessFile_TagsSubagentMessages(t *testing.T) {
 	ing, projects, _ := newIngesterFixture(t)
 
 	subDir := filepath.Join(projects, "-Users-x-foo", "sid-abc", "subagents")
-	if err := os.MkdirAll(subDir, 0755); err != nil {
+	if err := os.MkdirAll(subDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	subPath := filepath.Join(subDir, "agent-1.jsonl")
-	if err := os.WriteFile(subPath, jsonl("sub1"), 0644); err != nil {
+	if err := os.WriteFile(subPath, jsonl("sub1"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -286,7 +286,7 @@ func TestProcessFile_MalformedLineLoggedValidLinesInserted(t *testing.T) {
 	mixedPath := filepath.Join(projects, "-Users-x-foo", "mixed.jsonl")
 	contents := append(jsonl("good1"), []byte("{not valid json\n")...)
 	contents = append(contents, jsonl("good2")...)
-	if err := os.WriteFile(mixedPath, contents, 0644); err != nil {
+	if err := os.WriteFile(mixedPath, contents, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -325,4 +325,3 @@ func mustPricing(t *testing.T) pricing.History {
 	}
 	return h
 }
-

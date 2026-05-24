@@ -189,6 +189,7 @@ func ensureConfigFile(path string) error {
 	}
 	return secfile.WriteFile(path, defaultTOMLBytes())
 }
+
 // initDevlog wraps devlog.Init and surfaces failures to w (typically
 // os.Stderr) along with a remediation hint. Devlog is best-effort, so
 // errors are non-fatal — they only mean slog output is now going to

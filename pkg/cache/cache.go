@@ -103,7 +103,7 @@ const cachePragmas = "_pragma=busy_timeout(5000)" +
 	"&_pragma=temp_store(memory)"
 
 type Cache struct {
-	db       *sql.DB
+	db *sql.DB
 	// lockFile is the fd holding the cache flock. Must not be dup'd or passed
 	// to a subprocess (would defeat OS-on-close release).
 	lockFile *os.File

@@ -346,7 +346,7 @@ func TestProjectSevenDay_SlopeCases(t *testing.T) {
 	bucketA := resetsAt.UTC().Format(time.RFC3339Nano)
 	bucketB := now.Add(72*time.Hour + 7*24*time.Hour).UTC().Format(time.RFC3339Nano) // a later bucket
 
-	mkSamples := func(pcts []float64, startBack time.Duration, step time.Duration, bucketID string) []cache.SevenDaySample {
+	mkSamples := func(pcts []float64, startBack, step time.Duration, bucketID string) []cache.SevenDaySample {
 		out := make([]cache.SevenDaySample, len(pcts))
 		for i, p := range pcts {
 			out[i] = cache.SevenDaySample{
@@ -437,7 +437,7 @@ func TestProjectSevenDay_SlopeCases(t *testing.T) {
 			},
 			currentPct:      5.0,
 			wantSlopeApprox: 5.0 / 4.0, // 1.25%/h
-			wantOverreach:   false,      // 5 + 1.25*72 = 95
+			wantOverreach:   false,     // 5 + 1.25*72 = 95
 			wantConfidence:  "ok",
 		},
 		{

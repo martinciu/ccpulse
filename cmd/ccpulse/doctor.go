@@ -121,7 +121,7 @@ func newDoctorCmd() *cobra.Command {
 					check(out, fmt.Sprintf("%s: %d bytes (%s old)",
 						logName, info.Size(), time.Since(info.ModTime()).Truncate(time.Second)), true, nil)
 				} else {
-					check(out, fmt.Sprintf("%s: not present", logName), true, nil)
+					check(out, logName+": not present", true, nil)
 				}
 			}
 

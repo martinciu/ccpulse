@@ -48,7 +48,7 @@ func TestWatcherEmitsOnWrite(t *testing.T) {
 	}()
 
 	target := filepath.Join(dir, "x.jsonl")
-	if err := os.WriteFile(target, []byte("hi"), 0644); err != nil {
+	if err := os.WriteFile(target, []byte("hi"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -73,18 +73,18 @@ func TestWatcherNoCallbackAfterClose(t *testing.T) {
 	// during the debounce window before the timer fires.
 	w.deb = 500 * time.Millisecond
 
-	var called int32
+	var called atomic.Int32
 	done := make(chan struct{})
 	go func() {
 		w.Run(func(path string) {
-			atomic.AddInt32(&called, 1)
+			called.Add(1)
 		})
 		close(done)
 	}()
 
 	// Trigger a WRITE — schedules a debounced callback.
 	target := filepath.Join(dir, "x.jsonl")
-	if err := os.WriteFile(target, []byte("hi"), 0644); err != nil {
+	if err := os.WriteFile(target, []byte("hi"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -99,7 +99,7 @@ func TestWatcherNoCallbackAfterClose(t *testing.T) {
 	// fire channel — no sleep-past-debounce needed.
 	<-done
 
-	if got := atomic.LoadInt32(&called); got != 0 {
+	if got := called.Load(); got != 0 {
 		t.Errorf("onChange fired %d times after Close; want 0", got)
 	}
 }

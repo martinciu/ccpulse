@@ -12,7 +12,7 @@ import (
 func writeCred(t *testing.T, dir, body string) string {
 	t.Helper()
 	p := filepath.Join(dir, ".credentials.json")
-	if err := os.WriteFile(p, []byte(body), 0600); err != nil {
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return p

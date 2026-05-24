@@ -99,8 +99,8 @@ func TestFormatBurnRate(t *testing.T) {
 		// per-day cases — slope is multiplied by 24 before formatting.
 		{"per-day zero", 0, burnRateUnitPerDay, "0%/day"},
 		{"per-day sustainable", 0.5, burnRateUnitPerDay, "12%/day"}, // 0.5 * 24 = 12.0 -> "12"
-		{"per-day on-track", 0.6, burnRateUnitPerDay, "14.4%/day"}, // 0.6 * 24 = 14.4
-		{"per-day overreach", 1.0, burnRateUnitPerDay, "24%/day"},  // 1 * 24
+		{"per-day on-track", 0.6, burnRateUnitPerDay, "14.4%/day"},  // 0.6 * 24 = 14.4
+		{"per-day overreach", 1.0, burnRateUnitPerDay, "24%/day"},   // 1 * 24
 		{"per-day hot", 5.0, burnRateUnitPerDay, "120%/day"},
 		{"per-day rounds to integer", 0.04166667, burnRateUnitPerDay, "1%/day"}, // 0.04166667 * 24 = 1.0
 	}

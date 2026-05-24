@@ -3,6 +3,7 @@ package pricing
 import (
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"sort"
@@ -61,7 +62,7 @@ func Load() (History, error) {
 		entries = append(entries, t)
 	}
 	if len(entries) == 0 {
-		return History{}, fmt.Errorf("pricing: no history entries embedded")
+		return History{}, errors.New("pricing: no history entries embedded")
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Version < entries[j].Version })
 	return History{entries: entries}, nil
@@ -78,7 +79,7 @@ func parseTable(b []byte) (Table, error) {
 		return t, fmt.Errorf("unsupported currency %q (expected USD)", t.Currency)
 	}
 	if t.Version == "" {
-		return t, fmt.Errorf("missing version field")
+		return t, errors.New("missing version field")
 	}
 	return t, nil
 }
@@ -124,7 +125,7 @@ func (h History) CostFor(m parse.Message) (cost float64, version string, unknown
 // code — use Load() instead, which reads the embedded history/*.json.
 func HistoryForTest(entries []Table) (History, error) {
 	if len(entries) == 0 {
-		return History{}, fmt.Errorf("pricing: HistoryForTest: empty entries")
+		return History{}, errors.New("pricing: HistoryForTest: empty entries")
 	}
 	cp := make([]Table, len(entries))
 	copy(cp, entries)

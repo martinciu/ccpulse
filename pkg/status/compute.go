@@ -59,10 +59,7 @@ FROM messages WHERE ts >= ?`, cutoff)
 
 	if q.Usage != nil && q.Usage.FiveHour != nil && q.Usage.FiveHour.ResetsAt != nil {
 		w.Percent = clampPct(int(math.Round(q.Usage.FiveHour.Utilization)))
-		mins := int(q.Usage.FiveHour.ResetsAt.Sub(now).Minutes())
-		if mins < 0 {
-			mins = 0
-		}
+		mins := max(int(q.Usage.FiveHour.ResetsAt.Sub(now).Minutes()), 0)
 		w.MinutesToReset = &mins
 	} else if q.Usage != nil && q.Usage.FiveHour != nil {
 		// 5h bucket present but ResetsAt nil → idle window. Carry the
@@ -71,20 +68,14 @@ FROM messages WHERE ts >= ?`, cutoff)
 		w.Percent = clampPct(int(math.Round(q.Usage.FiveHour.Utilization)))
 	} else if oldest != "" {
 		t, _ := time.Parse("2006-01-02T15:04:05.000Z07:00", oldest)
-		mins := int(t.Add(5 * time.Hour).Sub(now).Minutes())
-		if mins < 0 {
-			mins = 0
-		}
+		mins := max(int(t.Add(5*time.Hour).Sub(now).Minutes()), 0)
 		w.MinutesToReset = &mins
 	}
 
 	if q.Usage != nil && q.Usage.SevenDay != nil && q.Usage.SevenDay.ResetsAt != nil {
 		w.Has7d = true
 		w.Percent7d = clampPct(int(math.Round(q.Usage.SevenDay.Utilization)))
-		mins := int(q.Usage.SevenDay.ResetsAt.Sub(now).Minutes())
-		if mins < 0 {
-			mins = 0
-		}
+		mins := max(int(q.Usage.SevenDay.ResetsAt.Sub(now).Minutes()), 0)
 		w.MinutesToReset7d = &mins
 	}
 

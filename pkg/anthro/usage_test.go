@@ -155,7 +155,7 @@ func TestReadCacheMissing(t *testing.T) {
 func TestReadCacheCorrupt(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "usage.json")
-	if err := os.WriteFile(p, []byte("not json"), 0644); err != nil {
+	if err := os.WriteFile(p, []byte("not json"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	_, err := readCache(p)
@@ -168,7 +168,7 @@ func TestReadCacheWrongVersion(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "usage.json")
 	body := `{"v":99,"updated_at":"2026-05-09T15:00:00Z","data":{}}`
-	if err := os.WriteFile(p, []byte(body), 0644); err != nil {
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	_, err := readCache(p)

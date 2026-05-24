@@ -1001,10 +1001,7 @@ func (m *Model) beginUnitAnimation() {
 	// Size spring arrays to max(old, new) so cross-mode transitions
 	// (bar↔line) don't bail out in renderSpringFrame's bar branch when
 	// the user's scroll position is past the smaller side's length.
-	n := len(newValues)
-	if len(m.oldValues) > n {
-		n = len(m.oldValues)
-	}
+	n := max(len(m.oldValues), len(newValues))
 
 	// Phase 2 targets sized to n; entries past len(newValues) stay 0
 	// (invisible bars on the long side of a bar↔line cross-transition).
@@ -1255,10 +1252,7 @@ func (m *Model) renderSpringFrame() {
 		// time→col linearly — so the settle transition to refreshChart's
 		// full canvas doesn't visibly snap. Parallels the bar branch's
 		// computeSpringSlice windowing.
-		fullCanvasW := zoom.CanvasWidth(bucketCountInRange(fullFrom, fullTo, zoom.Duration))
-		if fullCanvasW < m.viewport.Width {
-			fullCanvasW = m.viewport.Width
-		}
+		fullCanvasW := max(zoom.CanvasWidth(bucketCountInRange(fullFrom, fullTo, zoom.Duration)), m.viewport.Width)
 		vpW := m.viewport.Width
 		chartXOffset := m.viewportXOffset * zoom.stride()
 		// Clamp: after #207's ceil-maxX in remaining mode, chartXOffset+vpW
@@ -1314,14 +1308,8 @@ func (m *Model) renderSpringFrame() {
 	// the slice indices stay valid for both arrays. With springs sized to
 	// max(old, new) and rangeStarts chosen to match the active phase, the
 	// two slices line up 1:1 in normal flow; the clamp is a safety net.
-	start := m.springXOffset
-	if start < 0 {
-		start = 0
-	}
-	end := start + nv
-	if end > len(m.springRatios) {
-		end = len(m.springRatios)
-	}
+	start := max(m.springXOffset, 0)
+	end := min(start+nv, len(m.springRatios))
 	if end > len(rangeStarts) {
 		end = len(rangeStarts)
 	}
@@ -1382,6 +1370,7 @@ func earliestRemainingSampleAt(pts5h, pts7d []cache.UtilizationPoint) time.Time 
 //     renderSpringFrame's slack-handling computeSpringSlice was tuned
 //     against. The bucket-aligned canvas guarantees lastStarts and
 //     visibleBuckets line up.
+//
 //   - Remaining mode: ceil-divide the column gap by stride. lastStarts
 //     in remaining mode is sparse usage_samples (not bucket-aligned),
 //     so the bar-mode clamp would collapse to 0 the moment sample
@@ -1421,10 +1410,7 @@ func (m *Model) setX(n int) {
 		maxX = (gap + stride - 1) / stride
 		if earliest := earliestRemainingSampleAt(m.lastPts5h, m.lastPts7d); !earliest.IsZero() &&
 			!m.lastChartFrom.IsZero() && m.lastChartTo.After(m.lastChartFrom) {
-			minX = timeToColumn(earliest, m.lastCanvasW, m.lastChartFrom, m.lastChartTo) / stride
-			if minX > maxX {
-				minX = maxX
-			}
+			minX = min(timeToColumn(earliest, m.lastCanvasW, m.lastChartFrom, m.lastChartTo)/stride, maxX)
 		}
 	} else {
 		maxX = max(0, len(m.lastStarts)-m.visibleBuckets())
@@ -1711,10 +1697,7 @@ func (m *Model) refreshChart() {
 		// left edge in both modes. Floor at chartWidth() so a short
 		// usage_samples history still spans the visible area instead
 		// of rendering in a narrow slice on the left.
-		canvasW = zoom.CanvasWidth(bucketCountInRange(from, to, zoom.Duration))
-		if canvasW < m.chartWidth() {
-			canvasW = m.chartWidth()
-		}
+		canvasW = max(zoom.CanvasWidth(bucketCountInRange(from, to, zoom.Duration)), m.chartWidth())
 	} else {
 		canvasW = zoom.CanvasWidth(len(values))
 	}
@@ -1749,10 +1732,7 @@ func (m *Model) refreshChart() {
 		bucketCount := (canvasW + max(zoom.BarGap, 0)) / stride
 		m.setX(bucketCount)
 	default:
-		targetCol := timeToColumn(anchorTime, canvasW, from, to)
-		if targetCol > rightEdgeCol {
-			targetCol = rightEdgeCol
-		}
+		targetCol := min(timeToColumn(anchorTime, canvasW, from, to), rightEdgeCol)
 		m.setX(targetCol / stride)
 	}
 
@@ -1801,14 +1781,8 @@ func (m *Model) renderWindow() {
 	zoom := ZoomLevels[m.zoomIdx]
 	nv := m.visibleBuckets()
 
-	start := m.viewportXOffset
-	if start < 0 {
-		start = 0
-	}
-	end := start + nv
-	if end > len(m.lastValues) {
-		end = len(m.lastValues)
-	}
+	start := max(m.viewportXOffset, 0)
+	end := min(start+nv, len(m.lastValues))
 	if end > len(m.lastStarts) {
 		end = len(m.lastStarts)
 	}

@@ -76,7 +76,7 @@ func TestBuildUsageSamples_SpanAndCorrelation(t *testing.T) {
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	var msgs []parse.Message
 	// Busy burst on day 0 (lots of tokens in a tight window)...
-	for i := 0; i < 60; i++ {
+	for i := range 60 {
 		msgs = append(msgs, parse.Message{
 			Timestamp:   base.Add(time.Duration(i) * time.Minute),
 			InputTokens: 1000, OutputTokens: 5000,

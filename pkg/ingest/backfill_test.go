@@ -25,7 +25,7 @@ func TestBackfillRun_WalksFilesNewestFirstWithProgress(t *testing.T) {
 	}
 	for _, e := range files {
 		p := filepath.Join(dir, e.name)
-		if err := os.WriteFile(p, jsonl(e.name), 0644); err != nil {
+		if err := os.WriteFile(p, jsonl(e.name), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		if err := os.Chtimes(p, e.mod, e.mod); err != nil {
@@ -71,10 +71,10 @@ func TestBackfillRun_NewestMtimeFirst(t *testing.T) {
 	dir := t.TempDir()
 	projects := filepath.Join(dir, "projects", "-Users-x-foo")
 	cacheDir := filepath.Join(dir, "cache")
-	if err := os.MkdirAll(projects, 0755); err != nil {
+	if err := os.MkdirAll(projects, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(cacheDir, 0755); err != nil {
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -90,7 +90,7 @@ func TestBackfillRun_NewestMtimeFirst(t *testing.T) {
 	}
 	for _, e := range want {
 		p := filepath.Join(projects, e.name)
-		if err := os.WriteFile(p, jsonl(e.name), 0644); err != nil {
+		if err := os.WriteFile(p, jsonl(e.name), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		if err := os.Chtimes(p, e.mod, e.mod); err != nil {
@@ -142,10 +142,10 @@ func TestBackfillRun_EmptyTree(t *testing.T) {
 	dir := t.TempDir()
 	projects := filepath.Join(dir, "projects")
 	cacheDir := filepath.Join(dir, "cache")
-	if err := os.MkdirAll(projects, 0755); err != nil {
+	if err := os.MkdirAll(projects, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(cacheDir, 0755); err != nil {
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -185,7 +185,7 @@ func TestBackfillRun_NoIndicatorWhenAllFilesCached(t *testing.T) {
 func TestBackfillRun_MissingRoot(t *testing.T) {
 	dir := t.TempDir()
 	cacheDir := filepath.Join(dir, "cache")
-	if err := os.MkdirAll(cacheDir, 0755); err != nil {
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -239,7 +239,7 @@ func TestBackfillRun_HonoursCtxCancellation(t *testing.T) {
 	dir := filepath.Join(projects, "-Users-x-foo")
 	for i := range 5 {
 		p := filepath.Join(dir, "extra-"+string(rune('a'+i))+".jsonl")
-		if err := os.WriteFile(p, jsonl("e"+string(rune('a'+i))), 0644); err != nil {
+		if err := os.WriteFile(p, jsonl("e"+string(rune('a'+i))), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -268,10 +268,10 @@ func TestBackfillRun_BatchLoadsCursorsAndFiltersAllCaughtUp(t *testing.T) {
 	dir := t.TempDir()
 	projects := filepath.Join(dir, "projects", "-Users-x-foo")
 	cacheDir := filepath.Join(dir, "cache")
-	if err := os.MkdirAll(projects, 0755); err != nil {
+	if err := os.MkdirAll(projects, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(cacheDir, 0755); err != nil {
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -279,7 +279,7 @@ func TestBackfillRun_BatchLoadsCursorsAndFiltersAllCaughtUp(t *testing.T) {
 
 	for _, name := range []string{"a.jsonl", "b.jsonl", "c.jsonl"} {
 		p := filepath.Join(projects, name)
-		if err := os.WriteFile(p, jsonl(name), 0644); err != nil {
+		if err := os.WriteFile(p, jsonl(name), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		info, err := os.Stat(p)

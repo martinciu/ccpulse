@@ -34,7 +34,7 @@ func syntheticChartInput(n int) (values []float64, starts []time.Time, peak floa
 			peak = v
 		}
 	}
-	return
+	return values, starts, peak
 }
 
 // projectBuckets converts a fixed test slice of cache.TokenBucket into
@@ -52,7 +52,7 @@ func projectBuckets(bs []cache.TokenBucket) (values []float64, starts []time.Tim
 			peak = values[i]
 		}
 	}
-	return
+	return values, starts, peak
 }
 
 func BenchmarkBuildChart(b *testing.B) {
@@ -1172,7 +1172,7 @@ func TestBuildLineChart_NoBuiltinXAxis(t *testing.T) {
 	// A row consisting almost entirely of small integers separated by
 	// spaces is the smell. Look for the canonical "0 4 6 8" prefix that
 	// ntcharts emits at xStep=2 over a 0..N range.
-	for _, line := range strings.Split(stripped, "\n") {
+	for line := range strings.SplitSeq(stripped, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "0 4 6 8") || strings.HasPrefix(trimmed, "0  4  6  8") {
 			t.Errorf("buildLineChart output still contains built-in x-axis row: %q", trimmed)
@@ -1514,7 +1514,7 @@ func makeUniformPoints(start, end time.Time, n int, pct float64) []cache.Utiliza
 	}
 	out := make([]cache.UtilizationPoint, 0, n)
 	step := end.Sub(start) / time.Duration(n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		out = append(out, cache.UtilizationPoint{
 			At:  start.Add(time.Duration(i) * step),
 			Pct: pct,
@@ -1528,11 +1528,11 @@ func makeUniformPoints(start, end time.Time, n int, pct float64) []cache.Utiliza
 // the opening SGR sequence and the closing SGR sequence. Returns
 // empty strings if the sentinel is not found.
 func splitSGR(rendered, sentinel string) (open, close string) {
-	idx := strings.Index(rendered, sentinel)
-	if idx < 0 {
+	before, after, ok := strings.Cut(rendered, sentinel)
+	if !ok {
 		return "", ""
 	}
-	return rendered[:idx], rendered[idx+len(sentinel):]
+	return before, after
 }
 
 // seriesScan holds the per-series probe results from scanSeries.
@@ -1594,12 +1594,12 @@ func scanSeries(body, sgrOpen5h, sgrClose5h, sgrOpen7d, sgrClose7d string) serie
 				col += width
 			} else {
 				// Escape sequence. Update active tag on SGR open/close.
-				switch {
-				case seq == sgrOpen5h:
+				switch seq {
+				case sgrOpen5h:
 					active = "5h"
-				case seq == sgrOpen7d:
+				case sgrOpen7d:
 					active = "7d"
-				case seq == sgrClose5h || seq == sgrClose7d:
+				case sgrClose5h, sgrClose7d:
 					active = ""
 				}
 			}
@@ -1781,7 +1781,7 @@ func TestBuildChart_NiceCeilingYRange(t *testing.T) {
 	now := time.Now().UTC().Truncate(15 * time.Minute)
 	values := []float64{87_000}
 	starts := []time.Time{now}
-	zoom := ZoomLevels[0] // BarWidth=1, BarGap=0
+	zoom := ZoomLevels[0]                   // BarWidth=1, BarGap=0
 	chartW := zoom.CanvasWidth(len(values)) // = 1
 	chartH := 12
 	out := buildChart(values, starts, 87_000, chartW, chartH, now, zoom, chartUnitTokens, dateOrderMonthFirst)
