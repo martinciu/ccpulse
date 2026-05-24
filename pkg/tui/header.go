@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/martinciu/ccpulse/pkg/status"
 )
@@ -189,17 +190,24 @@ func severityFor(p *status.Projection, window time.Duration) burnSeverity {
 // renderBurnRateSide builds one half of the burn-rate row inside the
 // header box, mirroring the layout contract of renderQuotaSide:
 //
-//	[dim label][padded burn-rate text within slotW]
+//	[dim label][burn-rate text, truncated + padded to the per-side slot]
 //
-// The slotW cap ensures lipgloss truncates rather than overflows at
-// narrow terminals; layout above (model.quotaBars) sizes slotW to match
-// the bars row above it for visual symmetry.
+// The burn text is ansi.Truncate'd to the slot BEFORE styling so a long
+// projection string can never wrap onto a second line and break the
+// header box (#320) — lipgloss .Width() word-wraps overflow rather than
+// truncating, so the slot cap alone is not enough. .Width then pads short
+// text back out so the two sides stay symmetric. quotaBars sizes slotW to
+// match the bars row above for visual symmetry.
 //
-// State dispatch is delegated to severityFor; this function owns only
-// the copy strings and the style mapping. A nil projection or
-// low-confidence projection renders dim; the three projection-driven
-// states share the same "X%/h • projecting Y%[ • limit in Zm]" template,
-// with the trailing limit-in clause appearing only when overreaching.
+// The copy is kept compact ("{rate} →{proj}%[ ·{eta}]") so the danger
+// info survives at ~80-col terminals well before truncation ever kicks in;
+// the symbols stand in for the former "projecting"/"limit in" words.
+//
+// State dispatch is delegated to severityFor; this function owns only the
+// copy strings and the style mapping. A nil or low-confidence projection
+// renders dim; the projection-driven states share the
+// "{rate} →{proj}%[ ·{eta}]" template, with the ·eta clause appearing only
+// when overreaching (or "·at limit" when already over with no eta).
 //
 // window is the bucket's full duration (5h or 7d), forwarded to
 // severityFor so the imminent threshold scales per bucket.
@@ -207,7 +215,7 @@ func renderBurnRateSide(label string, p *status.Projection, slotW int, window ti
 	labelW := lipgloss.Width(label)
 	textSlot := max(slotW-labelW, 1)
 	render := func(text string, style lipgloss.Style) string {
-		return dimStyle.Render(label) + style.Width(textSlot).Render(text)
+		return dimStyle.Render(label) + style.Width(textSlot).Render(ansi.Truncate(text, textSlot, ""))
 	}
 	switch severityFor(p, window) {
 	case burnSeverityNoData:
@@ -215,18 +223,18 @@ func renderBurnRateSide(label string, p *status.Projection, slotW int, window ti
 	case burnSeverityWarmingUp:
 		return render("warming up", dimStyle)
 	case burnSeveritySafe:
-		text := fmt.Sprintf("%s • projecting %d%%", formatBurnRate(p.SlopePctPerHour, unit), p.ProjectedPctAtReset)
+		text := fmt.Sprintf("%s →%d%%", formatBurnRate(p.SlopePctPerHour, unit), p.ProjectedPctAtReset)
 		return render(text, burnSafeStyle)
 	case burnSeverityWatch:
-		text := fmt.Sprintf("%s • projecting %d%% • limit in %s",
+		text := fmt.Sprintf("%s →%d%% ·%s",
 			formatBurnRate(p.SlopePctPerHour, unit), p.ProjectedPctAtReset, durString(*p.MinutesTo100Pct))
 		return render(text, burnWatchStyle)
 	case burnSeverityDanger:
 		var text string
 		if p.MinutesTo100Pct == nil {
-			text = fmt.Sprintf("%s • already at limit", formatBurnRate(p.SlopePctPerHour, unit))
+			text = fmt.Sprintf("%s ·at limit", formatBurnRate(p.SlopePctPerHour, unit))
 		} else {
-			text = fmt.Sprintf("%s • projecting %d%% • limit in %s",
+			text = fmt.Sprintf("%s →%d%% ·%s",
 				formatBurnRate(p.SlopePctPerHour, unit), p.ProjectedPctAtReset, durString(*p.MinutesTo100Pct))
 		}
 		return render(text, burnDangerStyle)
