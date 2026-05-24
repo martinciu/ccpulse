@@ -1,8 +1,8 @@
 package tui
 
 import (
+	"fmt"
 	"path/filepath"
-	"strconv"
 	"testing"
 	"time"
 
@@ -147,6 +147,10 @@ func seedFitCache(t *testing.T, now time.Time) *cache.Cache {
 // is rendered in both help and non-help modes, so showHelp is on this axis.
 func TestViewFitsTerminal_HeaderStates(t *testing.T) {
 	t.Parallel()
+	// Subtests run serially (no t.Parallel inside t.Run): they share a
+	// read-only cache, so they'd be safe to parallelize, but serial
+	// execution keeps the matrix's failure output ordered and avoids
+	// interleaved View() dumps. Same applies to _ChartBody/_HelpOverlay.
 	cEmpty := emptyFitCache(t)
 	severities := []string{"none", "warmingUp", "safe", "watch", "danger"}
 	for _, w := range fitWidths {
@@ -154,7 +158,6 @@ func TestViewFitsTerminal_HeaderStates(t *testing.T) {
 			for _, sev := range severities {
 				for _, has7d := range []bool{true, false} {
 					for _, showHelp := range []bool{false, true} {
-						sev, has7d, showHelp := sev, has7d, showHelp
 						name := fitName(w, h, sev, has7d, showHelp)
 						t.Run(name, func(t *testing.T) {
 							m := buildFitModel(cEmpty, w, h, windowFor(sev, has7d), int(chartUnitCost), showHelp)
@@ -169,19 +172,16 @@ func TestViewFitsTerminal_HeaderStates(t *testing.T) {
 
 // fitName builds a stable, greppable subtest name.
 func fitName(w, h int, sev string, has7d, showHelp bool) string {
-	n := "w" + itoa(w) + "_h" + itoa(h) + "_" + sev
+	d7 := "no7d"
 	if has7d {
-		n += "_7d"
-	} else {
-		n += "_no7d"
+		d7 = "7d"
 	}
+	n := fmt.Sprintf("w%d_h%d_%s_%s", w, h, sev, d7)
 	if showHelp {
 		n += "_help"
 	}
 	return n
 }
-
-func itoa(n int) string { return strconv.Itoa(n) }
 
 // assertFits checks the coarse whole-View height invariant and dumps the
 // rendered view on failure so the over-growing region is eyeballable.
@@ -217,8 +217,7 @@ func TestViewFitsTerminal_ChartBody(t *testing.T) {
 				c    *cache.Cache
 			}{{"empty", cEmpty}, {"populated", cFull}} {
 				for _, u := range units {
-					w, h, cacheState, u := w, h, cacheState, u
-					name := "w" + itoa(w) + "_h" + itoa(h) + "_" + cacheState.name + "_" + u.name
+					name := fmt.Sprintf("w%d_h%d_%s_%s", w, h, cacheState.name, u.name)
 					t.Run(name, func(t *testing.T) {
 						m := buildFitModel(cacheState.c, w, h, win, u.idx, false)
 						assertFits(t, m)
@@ -238,8 +237,7 @@ func TestViewFitsTerminal_HelpOverlay(t *testing.T) {
 	win := windowFor("safe", true)
 	for _, w := range fitWidths {
 		for _, h := range []int{20, 40, 60} {
-			w, h := w, h
-			name := "w" + itoa(w) + "_h" + itoa(h)
+			name := fmt.Sprintf("w%d_h%d", w, h)
 			t.Run(name, func(t *testing.T) {
 				m := buildFitModel(cEmpty, w, h, win, int(chartUnitCost), true)
 				assertFits(t, m)
