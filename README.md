@@ -150,7 +150,9 @@ ccpulse status --json     # JSON: 5h + 7d percent/reset, tokens_5h, cost_5h_usd,
                           #       ceiling, optional projection block
 ```
 
-`--json` is useful for scripting or status bars that consume structured data.
+`--json` is useful for scripting or status bars that consume structured data
+— see [Status-bar integration](#status-bar-integration) for copy-paste tmux
+and starship recipes.
 
 #### Claude Code hook
 
@@ -177,6 +179,57 @@ if you already have one):
 ```
 
 `ccpulse doctor` reports whether this hook is configured.
+
+#### Status-bar integration
+
+`status --json` drives any prompt or status bar. The recipes below render a
+compact `5h X% · 7d Y%` segment. They pipe through
+[`jq`](https://jqlang.github.io/jq/) (`brew install jq` / `apt install jq`).
+Each field read uses a `// 0` fallback, so the segment stays correct at 0% and
+before the 7-day window has any usage (where `percent_7d` is absent from the
+JSON).
+
+**tmux** (`~/.tmux.conf`) — refreshes on its own interval, no per-command timeout:
+
+```tmux
+set -g status-interval 15
+set -ag status-right "#(ccpulse status --json | jq -r '\"5h \" + ((.percent // 0)|tostring) + \"% · 7d \" + ((.percent_7d // 0)|tostring) + \"%\"') "
+```
+
+For a fleshed-out two-chip version — separate 7d weekly and 5h block chips with
+reset timers and overreach markers — see my dotfiles: the
+[render script](https://github.com/martinciu/dotfiles/blob/main/.config/tmux/bin/tmux-claude-usage)
+and how it's
+[wired in `tmux.conf`](https://github.com/martinciu/dotfiles/blob/main/.config/tmux/tmux.conf).
+
+**starship** (`~/.config/starship.toml`):
+
+```toml
+[custom.ccpulse]
+command = "ccpulse status --json | jq -r '\"5h \\((.percent // 0))% · 7d \\((.percent_7d // 0))%\"'"
+when = true
+ignore_timeout = true   # fresh fetch can exceed starship's 500ms default
+format = "[$output]($style) "
+style = "yellow"
+```
+
+**Latency caveat.** A cached call returns in ~40ms (3-minute usage-API TTL); a
+fresh fetch takes ~640ms, capped at 5s when offline. starship's
+`command_timeout` defaults to **500ms**, so a fresh fetch occasionally exceeds
+it (roughly every 3 minutes, when the TTL lapses) and the module silently
+disappears. Two fixes, usable together: keep `ignore_timeout = true` (above),
+and keep the cache warm with the [`status --quiet` Stop hook](#claude-code-hook)
+so almost every prompt hits the 40ms path. tmux is unaffected — it polls on
+`status-interval` with no per-command timeout. (`status` takes a shared lock on
+the cache, so it coexists with a running TUI and the Stop hook.)
+
+**Extend it.** Other `status --json` fields you can fold into the segment:
+`minutes_to_reset` (countdown to the 5h reset — `null` when idle, so branch on
+it) and `cost_5h_usd` (current 5h spend in USD, always present):
+
+```sh
+ccpulse status --json | jq -r '"5h \((.percent // 0))% · $\(.cost_5h_usd) · " + (if .minutes_to_reset then "\(.minutes_to_reset)m left" else "idle" end)'
+```
 
 ### `ccpulse config`
 
