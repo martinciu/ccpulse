@@ -452,8 +452,11 @@ func main() {
 	channel.Set(buildChannel)
 	ctx, stop := signal.NotifyContext(context.Background(),
 		os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	if err := newRootCmd().ExecuteContext(ctx); err != nil {
+	// stop() unconditionally, not via defer: the error path calls os.Exit,
+	// which would skip a deferred stop() (gocritic exitAfterDefer).
+	err := newRootCmd().ExecuteContext(ctx)
+	stop()
+	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(exitCodeFor(err))
 	}

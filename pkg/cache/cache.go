@@ -460,7 +460,7 @@ func (c *Cache) InsertMessages(msgs []parse.Message, hist pricing.History) error
 	if err != nil {
 		return fmt.Errorf("insert messages: begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	stmt, err := tx.Prepare(`
 INSERT OR IGNORE INTO messages
@@ -897,7 +897,8 @@ var nullResetsWarned sync.Map
 // is legitimate) and don't trigger this.
 func warnOnceNullResets(column string) {
 	flag, _ := nullResetsWarned.LoadOrStore(column, &atomic.Bool{})
-	if !flag.(*atomic.Bool).Swap(true) {
+	b, ok := flag.(*atomic.Bool)
+	if ok && !b.Swap(true) {
 		slog.Warn("cache.UtilizationSince: filtered row with null resets_at",
 			"column", column,
 			"advisory", "treating as upstream glitch; see issue #189")

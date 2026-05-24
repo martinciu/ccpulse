@@ -167,7 +167,6 @@ FROM messages`)
 			stats.Updated++
 			stats.ByVersion[u.newVersion]++
 		}
-		batch = batch[:0]
 	}
 	// stats.Queued remains 0: all batches were flushed successfully.
 

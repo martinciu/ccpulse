@@ -29,15 +29,14 @@ func New(root string) (*Watcher, error) {
 		fw.Close()
 		return nil, fmt.Errorf("watch root %s: %w", root, err)
 	}
-	// Walk the existing tree and add every subdirectory.
-	if err := filepath.WalkDir(root, func(p string, d os.DirEntry, _ error) error {
+	// Walk the existing tree and add every subdirectory. Best-effort:
+	// a walk error is non-fatal — the root itself is already watched.
+	_ = filepath.WalkDir(root, func(p string, d os.DirEntry, _ error) error {
 		if d != nil && d.IsDir() && p != root {
 			_ = fw.Add(p)
 		}
 		return nil
-	}); err != nil {
-		// non-fatal: best-effort
-	}
+	})
 	return &Watcher{w: fw, deb: 100 * time.Millisecond}, nil
 }
 

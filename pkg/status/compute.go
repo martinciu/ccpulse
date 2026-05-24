@@ -57,16 +57,17 @@ FROM messages WHERE ts >= ?`, cutoff)
 		CeilingPretty:     q.TierPretty,
 	}
 
-	if q.Usage != nil && q.Usage.FiveHour != nil && q.Usage.FiveHour.ResetsAt != nil {
+	switch {
+	case q.Usage != nil && q.Usage.FiveHour != nil && q.Usage.FiveHour.ResetsAt != nil:
 		w.Percent = clampPct(int(math.Round(q.Usage.FiveHour.Utilization)))
 		mins := max(int(q.Usage.FiveHour.ResetsAt.Sub(now).Minutes()), 0)
 		w.MinutesToReset = &mins
-	} else if q.Usage != nil && q.Usage.FiveHour != nil {
+	case q.Usage != nil && q.Usage.FiveHour != nil:
 		// 5h bucket present but ResetsAt nil → idle window. Carry the
 		// (zero) Percent through but leave MinutesToReset nil so the TUI
 		// and `status --json` can render "idle" rather than a misleading 0.
 		w.Percent = clampPct(int(math.Round(q.Usage.FiveHour.Utilization)))
-	} else if oldest != "" {
+	case oldest != "":
 		t, _ := time.Parse("2006-01-02T15:04:05.000Z07:00", oldest)
 		mins := max(int(t.Add(5*time.Hour).Sub(now).Minutes()), 0)
 		w.MinutesToReset = &mins

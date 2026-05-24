@@ -683,7 +683,8 @@ func (m Model) View() string {
 		labelUnit := chartUnit(m.unitIdx)
 		labelPeak := m.peak
 		rawBody := m.viewport.View()
-		if m.springActive {
+		switch {
+		case m.springActive:
 			var maxR float64
 			for _, r := range m.springRatios {
 				maxR = max(maxR, r)
@@ -707,9 +708,9 @@ func (m Model) View() string {
 			} else {
 				body = overlayYLabel(rawBody, labelPeak, labelUnit, m.chartHeight(), fade)
 			}
-		} else if chartUnit(m.unitIdx) == chartUnitRemaining {
+		case chartUnit(m.unitIdx) == chartUnitRemaining:
 			body = overlayYTicks(rawBody, m.chartHeight(), 1.0)
-		} else {
+		default:
 			body = overlayYLabel(rawBody, m.peak, chartUnit(m.unitIdx), m.chartHeight(), 1.0)
 		}
 	}

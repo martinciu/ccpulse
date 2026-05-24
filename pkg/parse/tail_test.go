@@ -10,13 +10,13 @@ import (
 	"testing"
 )
 
-// withScannerMaxBytes shrinks ScannerMaxBytes for the duration of
-// the test, so we can trigger ErrTooLong with a small synthesised
-// line (rather than 64 MiB).
-func withScannerMaxBytes(t *testing.T, n int) {
+// withScannerMaxBytes shrinks ScannerMaxBytes to a 4 KiB ceiling for
+// the duration of the test, so we can trigger ErrTooLong with a small
+// synthesised line (rather than 64 MiB).
+func withScannerMaxBytes(t *testing.T) {
 	t.Helper()
 	prev := ScannerMaxBytes
-	ScannerMaxBytes = n
+	ScannerMaxBytes = 4096
 	t.Cleanup(func() { ScannerMaxBytes = prev })
 }
 
@@ -101,7 +101,7 @@ func TestSkipPastNewline_StartsFromOffset(t *testing.T) {
 }
 
 func TestParseFromOffsetWithErrors_SkipsOversizedLine(t *testing.T) {
-	withScannerMaxBytes(t, 4096) // 4 KiB ceiling for cheap overflow
+	withScannerMaxBytes(t) // 4 KiB ceiling for cheap overflow
 
 	dir := t.TempDir()
 	p := filepath.Join(dir, "t.jsonl")
@@ -158,7 +158,7 @@ func TestParseFromOffsetWithErrors_SkipsOversizedLine(t *testing.T) {
 }
 
 func TestParseFromOffsetWithErrors_IdempotentReparse(t *testing.T) {
-	withScannerMaxBytes(t, 4096)
+	withScannerMaxBytes(t)
 
 	dir := t.TempDir()
 	p := filepath.Join(dir, "t.jsonl")
@@ -199,7 +199,7 @@ func TestParseFromOffsetWithErrors_IdempotentReparse(t *testing.T) {
 }
 
 func TestParseFromOffsetWithErrors_OversizedTailNoNewline(t *testing.T) {
-	withScannerMaxBytes(t, 4096)
+	withScannerMaxBytes(t)
 
 	dir := t.TempDir()
 	p := filepath.Join(dir, "t.jsonl")
@@ -235,7 +235,7 @@ func TestParseFromOffsetWithErrors_OversizedTailNoNewline(t *testing.T) {
 }
 
 func TestParseFromOffsetWithErrors_FirstLineOversized(t *testing.T) {
-	withScannerMaxBytes(t, 4096)
+	withScannerMaxBytes(t)
 
 	dir := t.TempDir()
 	p := filepath.Join(dir, "t.jsonl")
@@ -277,7 +277,7 @@ func TestParseFromOffsetWithErrors_FirstLineOversized(t *testing.T) {
 }
 
 func TestParseFromOffsetWithErrors_BackToBackOversizedLines(t *testing.T) {
-	withScannerMaxBytes(t, 4096)
+	withScannerMaxBytes(t)
 
 	dir := t.TempDir()
 	p := filepath.Join(dir, "t.jsonl")
