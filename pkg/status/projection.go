@@ -81,6 +81,7 @@ const (
 	minSpanForSlope        = 4 * time.Hour // must match sevenDayLowConfidenceCutoff
 )
 
+//nolint:gocyclo // tracked in #333 — 7d projection branches
 func projectSevenDay(
 	samples []cache.SevenDaySample,
 	currentPct float64,
@@ -130,10 +131,7 @@ func projectSevenDay(
 	projectedAtReset := currentPct + slopePerHour*hoursToReset
 
 	windowStart := resetsAt.Add(-sevenDayWindow)
-	elapsed := now.Sub(windowStart)
-	if elapsed < 0 {
-		elapsed = 0
-	}
+	elapsed := max(now.Sub(windowStart), 0)
 
 	proj := Projection{
 		ElapsedMinutes:      int(elapsed.Minutes()),

@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
+//nolint:gocognit,nestif,gocyclo // tracked in #333 — long doctor-check sequence
 func newDoctorCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "doctor",
@@ -121,7 +122,7 @@ func newDoctorCmd() *cobra.Command {
 					check(out, fmt.Sprintf("%s: %d bytes (%s old)",
 						logName, info.Size(), time.Since(info.ModTime()).Truncate(time.Second)), true, nil)
 				} else {
-					check(out, fmt.Sprintf("%s: not present", logName), true, nil)
+					check(out, logName+": not present", true, nil)
 				}
 			}
 

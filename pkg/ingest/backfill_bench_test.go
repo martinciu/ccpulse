@@ -24,10 +24,10 @@ func BenchmarkBackfillEnumerate1k(b *testing.B) {
 	dir := b.TempDir()
 	projects := filepath.Join(dir, "projects", "-Users-x-foo")
 	cacheDir := filepath.Join(dir, "cache")
-	if err := os.MkdirAll(projects, 0755); err != nil {
+	if err := os.MkdirAll(projects, 0o755); err != nil {
 		b.Fatal(err)
 	}
-	if err := os.MkdirAll(cacheDir, 0755); err != nil {
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		b.Fatal(err)
 	}
 
@@ -40,7 +40,7 @@ func BenchmarkBackfillEnumerate1k(b *testing.B) {
 	for i := range n {
 		name := fmt.Sprintf("f-%04d.jsonl", i)
 		p := filepath.Join(projects, name)
-		if err := os.WriteFile(p, jsonl(name), 0644); err != nil {
+		if err := os.WriteFile(p, jsonl(name), 0o644); err != nil {
 			b.Fatal(err)
 		}
 		info, err := os.Stat(p)

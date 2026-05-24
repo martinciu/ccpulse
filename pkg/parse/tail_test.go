@@ -10,13 +10,13 @@ import (
 	"testing"
 )
 
-// withScannerMaxBytes shrinks ScannerMaxBytes for the duration of
-// the test, so we can trigger ErrTooLong with a small synthesised
-// line (rather than 64 MiB).
-func withScannerMaxBytes(t *testing.T, n int) {
+// withScannerMaxBytes shrinks ScannerMaxBytes to a 4 KiB ceiling for
+// the duration of the test, so we can trigger ErrTooLong with a small
+// synthesised line (rather than 64 MiB).
+func withScannerMaxBytes(t *testing.T) {
 	t.Helper()
 	prev := ScannerMaxBytes
-	ScannerMaxBytes = n
+	ScannerMaxBytes = 4096
 	t.Cleanup(func() { ScannerMaxBytes = prev })
 }
 
@@ -32,7 +32,7 @@ func TestSkipPastNewline_FindsTerminator(t *testing.T) {
 	p := filepath.Join(dir, "t.bin")
 	// "before\nafter" — newline at index 6, so skipping from offset 0
 	// should report 6 bytes scanned and found=true.
-	if err := os.WriteFile(p, []byte("before\nafter"), 0644); err != nil {
+	if err := os.WriteFile(p, []byte("before\nafter"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	f, err := os.Open(p)
@@ -56,7 +56,7 @@ func TestSkipPastNewline_FindsTerminator(t *testing.T) {
 func TestSkipPastNewline_NoTerminatorBeforeEOF(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "t.bin")
-	if err := os.WriteFile(p, []byte("nonewline"), 0644); err != nil {
+	if err := os.WriteFile(p, []byte("nonewline"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	f, err := os.Open(p)
@@ -82,7 +82,7 @@ func TestSkipPastNewline_StartsFromOffset(t *testing.T) {
 	p := filepath.Join(dir, "t.bin")
 	// "skip-me\nstart-here\nrest" — start scanning at offset 8
 	// (just past the first \n). Next \n is at index 18, so skipped == 10.
-	if err := os.WriteFile(p, []byte("skip-me\nstart-here\nrest"), 0644); err != nil {
+	if err := os.WriteFile(p, []byte("skip-me\nstart-here\nrest"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	f, err := os.Open(p)
@@ -101,7 +101,7 @@ func TestSkipPastNewline_StartsFromOffset(t *testing.T) {
 }
 
 func TestParseFromOffsetWithErrors_SkipsOversizedLine(t *testing.T) {
-	withScannerMaxBytes(t, 4096) // 4 KiB ceiling for cheap overflow
+	withScannerMaxBytes(t) // 4 KiB ceiling for cheap overflow
 
 	dir := t.TempDir()
 	p := filepath.Join(dir, "t.jsonl")
@@ -119,7 +119,7 @@ func TestParseFromOffsetWithErrors_SkipsOversizedLine(t *testing.T) {
 	for range 25 {
 		b = append(b, []byte(validAssistantLine(""))...)
 	}
-	if err := os.WriteFile(p, b, 0644); err != nil {
+	if err := os.WriteFile(p, b, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -158,7 +158,7 @@ func TestParseFromOffsetWithErrors_SkipsOversizedLine(t *testing.T) {
 }
 
 func TestParseFromOffsetWithErrors_IdempotentReparse(t *testing.T) {
-	withScannerMaxBytes(t, 4096)
+	withScannerMaxBytes(t)
 
 	dir := t.TempDir()
 	p := filepath.Join(dir, "t.jsonl")
@@ -171,7 +171,7 @@ func TestParseFromOffsetWithErrors_IdempotentReparse(t *testing.T) {
 	for range 5 {
 		b = append(b, []byte(validAssistantLine(""))...)
 	}
-	if err := os.WriteFile(p, b, 0644); err != nil {
+	if err := os.WriteFile(p, b, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -199,7 +199,7 @@ func TestParseFromOffsetWithErrors_IdempotentReparse(t *testing.T) {
 }
 
 func TestParseFromOffsetWithErrors_OversizedTailNoNewline(t *testing.T) {
-	withScannerMaxBytes(t, 4096)
+	withScannerMaxBytes(t)
 
 	dir := t.TempDir()
 	p := filepath.Join(dir, "t.jsonl")
@@ -212,7 +212,7 @@ func TestParseFromOffsetWithErrors_OversizedTailNoNewline(t *testing.T) {
 	// Oversized bytes still being written (no terminating '\n').
 	b = append(b, []byte(`{"type":"assistant","padding":"`)...)
 	b = append(b, []byte(strings.Repeat("x", 5000))...)
-	if err := os.WriteFile(p, b, 0644); err != nil {
+	if err := os.WriteFile(p, b, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -235,7 +235,7 @@ func TestParseFromOffsetWithErrors_OversizedTailNoNewline(t *testing.T) {
 }
 
 func TestParseFromOffsetWithErrors_FirstLineOversized(t *testing.T) {
-	withScannerMaxBytes(t, 4096)
+	withScannerMaxBytes(t)
 
 	dir := t.TempDir()
 	p := filepath.Join(dir, "t.jsonl")
@@ -245,7 +245,7 @@ func TestParseFromOffsetWithErrors_FirstLineOversized(t *testing.T) {
 	for range 3 {
 		b = append(b, []byte(validAssistantLine(""))...)
 	}
-	if err := os.WriteFile(p, b, 0644); err != nil {
+	if err := os.WriteFile(p, b, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -277,7 +277,7 @@ func TestParseFromOffsetWithErrors_FirstLineOversized(t *testing.T) {
 }
 
 func TestParseFromOffsetWithErrors_BackToBackOversizedLines(t *testing.T) {
-	withScannerMaxBytes(t, 4096)
+	withScannerMaxBytes(t)
 
 	dir := t.TempDir()
 	p := filepath.Join(dir, "t.jsonl")
@@ -295,7 +295,7 @@ func TestParseFromOffsetWithErrors_BackToBackOversizedLines(t *testing.T) {
 	for range 2 {
 		b = append(b, []byte(validAssistantLine(""))...)
 	}
-	if err := os.WriteFile(p, b, 0644); err != nil {
+	if err := os.WriteFile(p, b, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -332,7 +332,7 @@ func TestParseFromOffset(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "t.jsonl")
 	one := `{"type":"assistant","message":{"role":"assistant","model":"claude-opus-4-7","usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}},"sessionId":"s","timestamp":"2026-05-09T10:00:00.000Z"}` + "\n"
-	if err := os.WriteFile(p, []byte(one+one), 0644); err != nil {
+	if err := os.WriteFile(p, []byte(one+one), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

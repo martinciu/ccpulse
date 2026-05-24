@@ -155,7 +155,7 @@ func TestReadCacheMissing(t *testing.T) {
 func TestReadCacheCorrupt(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "usage.json")
-	if err := os.WriteFile(p, []byte("not json"), 0644); err != nil {
+	if err := os.WriteFile(p, []byte("not json"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	_, err := readCache(p)
@@ -168,7 +168,7 @@ func TestReadCacheWrongVersion(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "usage.json")
 	body := `{"v":99,"updated_at":"2026-05-09T15:00:00Z","data":{}}`
-	if err := os.WriteFile(p, []byte(body), 0644); err != nil {
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	_, err := readCache(p)
@@ -534,14 +534,14 @@ func TestUsageCache_TightensExisting(t *testing.T) {
 // Caveat: slog.SetDefault is process-global. Tests using captureLogs must
 // NOT call t.Parallel() — concurrent tests would cross-contaminate the
 // captured default. ccpulse's pkg/anthro tests are all serial today.
-func captureLogs(t *testing.T, minLevel slog.Level) func() []slog.Record {
+func captureLogs(t *testing.T) func() []slog.Record {
 	t.Helper()
 	var (
 		mu   sync.Mutex
 		recs []slog.Record
 	)
 	prev := slog.Default()
-	h := &captureHandler{level: minLevel, mu: &mu, recs: &recs}
+	h := &captureHandler{level: slog.LevelDebug, mu: &mu, recs: &recs}
 	slog.SetDefault(slog.New(h))
 	t.Cleanup(func() { slog.SetDefault(prev) })
 	return func() []slog.Record {
@@ -586,7 +586,7 @@ func attrMap(r slog.Record) map[string]any {
 func TestFetchLogs_CacheFresh(t *testing.T) {
 	dir := t.TempDir()
 	writeFixtureCache(t, dir, time.Now().Add(-1*time.Minute))
-	recs := captureLogs(t, slog.LevelDebug)
+	recs := captureLogs(t)
 
 	res, err := Fetch(context.Background(), Credential{AccessToken: "tok"}, dir)
 	if err != nil {
@@ -625,7 +625,7 @@ func TestFetchLogs_API(t *testing.T) {
 		_, _ = w.Write([]byte(sampleAPIBody))
 	})
 	withTestEndpoint(t, srv.URL)
-	recs := captureLogs(t, slog.LevelDebug)
+	recs := captureLogs(t)
 
 	res, err := Fetch(context.Background(), Credential{AccessToken: "tok"}, dir)
 	if err != nil {
@@ -669,7 +669,7 @@ func TestFetchLogs_CacheStale(t *testing.T) {
 		http.Error(w, `{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}`, http.StatusTooManyRequests)
 	})
 	withTestEndpoint(t, srv.URL)
-	recs := captureLogs(t, slog.LevelDebug)
+	recs := captureLogs(t)
 
 	res, err := Fetch(context.Background(), Credential{AccessToken: "tok"}, dir)
 	if err != nil {
@@ -718,7 +718,7 @@ func TestFetchLogs_BodySnippetEscapesControlBytes(t *testing.T) {
 		_, _ = w.Write([]byte("\x1b[2J\r\x00malicious"))
 	})
 	withTestEndpoint(t, srv.URL)
-	recs := captureLogs(t, slog.LevelDebug)
+	recs := captureLogs(t)
 
 	_, _ = Fetch(context.Background(), Credential{AccessToken: "tok"}, dir)
 
@@ -750,7 +750,7 @@ func TestFetchLogs_TransportError(t *testing.T) {
 	url := srv.URL
 	srv.Close()
 	withTestEndpoint(t, url)
-	recs := captureLogs(t, slog.LevelDebug)
+	recs := captureLogs(t)
 
 	_, err := Fetch(context.Background(), Credential{AccessToken: "tok"}, dir)
 	if err == nil {
@@ -790,7 +790,7 @@ func TestFetchLogs_WriteCacheFailure(t *testing.T) {
 		_, _ = w.Write([]byte(sampleAPIBody))
 	})
 	withTestEndpoint(t, srv.URL)
-	recs := captureLogs(t, slog.LevelDebug)
+	recs := captureLogs(t)
 
 	res, err := Fetch(context.Background(), Credential{AccessToken: "tok"}, cacheDir)
 	if err != nil {
@@ -888,7 +888,7 @@ func TestFetch_NoCredentialFieldsInLogs(t *testing.T) {
 }
 
 func TestCaptureLogsHelper(t *testing.T) {
-	recs := captureLogs(t, slog.LevelDebug)
+	recs := captureLogs(t)
 	slog.Debug("first", "k", "v")
 	slog.Warn("second", "n", 42)
 	got := recs()

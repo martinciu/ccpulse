@@ -488,6 +488,8 @@ func spliceLabel(line string, start, width int, label string) string {
 // barsH is the count of bar rows (the X-label row, if any, sits below and is
 // never written). Called from renderWindow only — renderSpringFrame does not
 // call it, so numbers are absent during animation.
+//
+//nolint:gocyclo // tracked in #333 — per-bar label overlay
 func overlayBarLabels(body string, texts []string, barsH, chartW int, zoom ZoomLevel) string {
 	if zoom.BarWidth < barLabelMinWidth || body == "" || len(texts) == 0 {
 		return body
@@ -505,7 +507,7 @@ func overlayBarLabels(body string, texts []string, barsH, chartW int, zoom ZoomL
 	// Strip the bar rows once for column scanning (ANSI-aware). Chart cells
 	// are width-1 (block runes / spaces), so rune index == visual column.
 	stripped := make([][]rune, barsH)
-	for r := 0; r < barsH; r++ {
+	for r := range barsH {
 		stripped[r] = []rune(ansi.Strip(lines[r]))
 	}
 
@@ -519,7 +521,7 @@ func overlayBarLabels(body string, texts []string, barsH, chartW int, zoom ZoomL
 		}
 		cc := col + bw/2 // bar center column, used to probe height
 		top := -1
-		for r := 0; r < barsH; r++ {
+		for r := range barsH {
 			if cc < len(stripped[r]) && stripped[r][cc] != ' ' {
 				top = r
 				break
@@ -620,7 +622,7 @@ func formatXLabel(t time.Time, zoom ZoomLevel, now time.Time, order dateOrder) s
 type chartUnit int
 
 const (
-	chartUnitCost      chartUnit = iota
+	chartUnitCost chartUnit = iota
 	chartUnitTokens
 	chartUnitRemaining
 	chartUnitCount // sentinel — cycle modulus
@@ -861,7 +863,8 @@ func formatBarValue(v float64, unit chartUnit) string {
 // Y-label overlay path in Model.View() — passed through here for that
 // reason too.
 func buildChart(values []float64, starts []time.Time, peak float64,
-	chartW, chartH int, now time.Time, zoom ZoomLevel, unit chartUnit, order dateOrder) string {
+	chartW, chartH int, now time.Time, zoom ZoomLevel, unit chartUnit, order dateOrder,
+) string {
 	start := time.Now()
 	if chartH < 1 {
 		chartH = 1
@@ -956,8 +959,8 @@ func isLineMode(u chartUnit) bool {
 // SetStyles(line, color) would fail to compile against ntcharts v0.5.1.
 func buildLineChart(pts5h, pts7d []cache.UtilizationPoint,
 	from, to time.Time, chartW, chartH int,
-	now time.Time, zoom ZoomLevel, order dateOrder, source string) string {
-
+	now time.Time, zoom ZoomLevel, order dateOrder, source string,
+) string {
 	logStart := time.Now()
 	if chartH < 1 {
 		chartH = 1

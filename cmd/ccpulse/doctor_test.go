@@ -13,22 +13,21 @@ import (
 )
 
 // writeSettings creates a temp HOME with ~/.claude/settings.json containing
-// the given contents and returns the temp home dir. If contents is empty,
-// no settings.json is written (file-missing case).
-func writeSettings(t *testing.T, contents string) string {
+// the given contents. If contents is empty, no settings.json is written
+// (file-missing case).
+func writeSettings(t *testing.T, contents string) {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	if contents == "" {
-		return home
+		return
 	}
-	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0700); err != nil {
+	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(home, ".claude", "settings.json"), []byte(contents), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(home, ".claude", "settings.json"), []byte(contents), 0o600); err != nil {
 		t.Fatalf("write settings: %v", err)
 	}
-	return home
 }
 
 func TestCheckClaudeCodeHook_FileMissing(t *testing.T) {

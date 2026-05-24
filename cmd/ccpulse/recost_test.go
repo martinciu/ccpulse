@@ -20,20 +20,20 @@ func TestRecostUsesConfiguredCacheDir(t *testing.T) {
 	t.Cleanup(func() { channel.Set("dev") })
 
 	// Write config with the temp cache dir
-	if err := os.MkdirAll(filepath.Join(cfgDir, "ccpulse"), 0700); err != nil {
+	if err := os.MkdirAll(filepath.Join(cfgDir, "ccpulse"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	configPath := filepath.Join(cfgDir, "ccpulse", "config.toml")
 	configContent := `[paths]
 cache_dir = "` + cacheDir + `"
 `
-	if err := os.WriteFile(configPath, []byte(configContent), 0600); err != nil {
+	if err := os.WriteFile(configPath, []byte(configContent), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
 	// Create and populate cache with at least one message so recost has something to scan
 	dbPath := filepath.Join(cacheDir, "state.db")
-	if err := os.MkdirAll(cacheDir, 0700); err != nil {
+	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	db, err := cache.Open(dbPath)

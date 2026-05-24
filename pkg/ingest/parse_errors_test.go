@@ -37,7 +37,7 @@ func TestAppendParseErrorsRotatesAt10MB(t *testing.T) {
 
 	// Pre-fill with > 10 MB.
 	big := strings.Repeat("x", 11*1024*1024)
-	if err := os.WriteFile(logPath, []byte(big), 0644); err != nil {
+	if err := os.WriteFile(logPath, []byte(big), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -112,10 +112,10 @@ func TestAppendParseErrors_SanitizesSourcePath(t *testing.T) {
 func TestAppendParseErrors_OpensLogOncePerCall(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "parse-errors.log")
-	var n int64
+	var n atomic.Int64
 	prev := openLogFile
 	openLogFile = func(path string) (*os.File, error) {
-		atomic.AddInt64(&n, 1)
+		n.Add(1)
 		return prev(path)
 	}
 	defer func() { openLogFile = prev }()
@@ -125,7 +125,7 @@ func TestAppendParseErrors_OpensLogOncePerCall(t *testing.T) {
 		perrs[i] = parse.ParseError{Line: i, Err: errors.New("e")}
 	}
 	AppendParseErrors(logPath, "src.jsonl", perrs)
-	if got := atomic.LoadInt64(&n); got != 1 {
+	if got := n.Load(); got != 1 {
 		t.Fatalf("openLogFile calls: got %d want 1", got)
 	}
 }

@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/BurntSushi/toml"
+	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/martinciu/ccpulse/pkg/devlog"
 )
@@ -138,10 +138,10 @@ func TestRunTUI_MalformedConfig(t *testing.T) {
 
 	// channel is "dev" by default in tests; DefaultPath() → $XDG_CONFIG_HOME/ccpulse-dev/config.toml
 	ccpulseDir := filepath.Join(cfgDir, "ccpulse-dev")
-	if err := os.MkdirAll(ccpulseDir, 0700); err != nil {
+	if err := os.MkdirAll(ccpulseDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(ccpulseDir, "config.toml"), []byte("[[broken\n"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(ccpulseDir, "config.toml"), []byte("[[broken\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 

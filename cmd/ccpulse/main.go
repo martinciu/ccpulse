@@ -189,6 +189,7 @@ func ensureConfigFile(path string) error {
 	}
 	return secfile.WriteFile(path, defaultTOMLBytes())
 }
+
 // initDevlog wraps devlog.Init and surfaces failures to w (typically
 // os.Stderr) along with a remediation hint. Devlog is best-effort, so
 // errors are non-fatal — they only mean slog output is now going to
@@ -221,6 +222,8 @@ func watcherStartupError(projectsRoot string, err error) error {
 // for the quota poller's context and for the startup backfill, so
 // SIGINT/SIGTERM cancels in-flight work even before the user quits
 // the TUI itself.
+//
+//nolint:gocyclo,funlen // tracked in #333 — TUI startup wiring
 func runTUI(ctx context.Context, errOut io.Writer) error {
 	cfg, err := config.Load(config.DefaultPath())
 	if err != nil && !os.IsNotExist(err) {
@@ -451,8 +454,11 @@ func main() {
 	channel.Set(buildChannel)
 	ctx, stop := signal.NotifyContext(context.Background(),
 		os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	if err := newRootCmd().ExecuteContext(ctx); err != nil {
+	// stop() unconditionally, not via defer: the error path calls os.Exit,
+	// which would skip a deferred stop() (gocritic exitAfterDefer).
+	err := newRootCmd().ExecuteContext(ctx)
+	stop()
+	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(exitCodeFor(err))
 	}

@@ -12,11 +12,13 @@ import (
 	"github.com/fsnotify/fsnotify"
 )
 
+// Watcher watches a directory tree for JSONL file changes and fires debounced callbacks.
 type Watcher struct {
 	w   *fsnotify.Watcher
 	deb time.Duration
 }
 
+// New creates a Watcher rooted at root, subscribing to root and all existing subdirectories.
 func New(root string) (*Watcher, error) {
 	if _, err := os.Stat(root); err != nil {
 		return nil, fmt.Errorf("watch root %s: %w", root, err)
@@ -29,15 +31,14 @@ func New(root string) (*Watcher, error) {
 		fw.Close()
 		return nil, fmt.Errorf("watch root %s: %w", root, err)
 	}
-	// Walk the existing tree and add every subdirectory.
-	if err := filepath.WalkDir(root, func(p string, d os.DirEntry, _ error) error {
+	// Walk the existing tree and add every subdirectory. Best-effort:
+	// a walk error is non-fatal — the root itself is already watched.
+	_ = filepath.WalkDir(root, func(p string, d os.DirEntry, _ error) error {
 		if d != nil && d.IsDir() && p != root {
 			_ = fw.Add(p)
 		}
 		return nil
-	}); err != nil {
-		// non-fatal: best-effort
-	}
+	})
 	return &Watcher{w: fw, deb: 100 * time.Millisecond}, nil
 }
 
@@ -52,6 +53,8 @@ func New(root string) (*Watcher, error) {
 // past the fireBufferSize cap are dropped silently — the buffer is
 // sized generously (256) so in practice this never fires; a slow
 // onChange is the more likely first symptom.
+//
+//nolint:gocognit,gocyclo // tracked in #333 — fsnotify event loop
 func (w *Watcher) Run(onChange func(path string)) {
 	const fireBufferSize = 256
 	// pending grows monotonically with the set of distinct files seen
@@ -82,8 +85,8 @@ func (w *Watcher) Run(onChange func(path string)) {
 			if !strings.HasSuffix(e.Name, ".jsonl") {
 				continue
 			}
-			if !(e.Op&fsnotify.Write == fsnotify.Write ||
-				e.Op&fsnotify.Create == fsnotify.Create) {
+			if e.Op&fsnotify.Write != fsnotify.Write &&
+				e.Op&fsnotify.Create != fsnotify.Create {
 				continue
 			}
 			name := e.Name
@@ -109,4 +112,5 @@ func (w *Watcher) Run(onChange func(path string)) {
 	}
 }
 
+// Close shuts down the underlying fsnotify watcher, causing Run to return.
 func (w *Watcher) Close() error { return w.w.Close() }

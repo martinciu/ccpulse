@@ -155,6 +155,8 @@ type FetchResult struct {
 // flock on a sibling lock file: the first caller refreshes the cache, the
 // rest re-read under the lock and find a fresh entry — eliminating the
 // duplicate-API-hit race that survived the atomic-write fix in #75.
+//
+//nolint:gocyclo // tracked in #333 — cache/API fallback paths
 func Fetch(ctx context.Context, cred Credential, cacheDir string) (res FetchResult, err error) {
 	if cred.AccessToken == "" {
 		return FetchResult{}, errors.New("anthro: empty access token")
@@ -245,7 +247,7 @@ func acquireFetchLock(cacheDir string) (release func(), err error) {
 func fetchAPI(ctx context.Context, token string) (Usage, error) {
 	ctx, cancel := context.WithTimeout(ctx, httpTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
 	if err != nil {
 		return Usage{}, err
 	}

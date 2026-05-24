@@ -22,10 +22,10 @@ var (
 	// per chartUnit so the bar color tells the user which axis is plotted
 	// (tokens vs cost), independent of bucket height. The header quota
 	// bars keep the green→red gradient where the ramp IS meaningful.
-	colorChartTokens       = lipgloss.AdaptiveColor{Light: "#1565c0", Dark: "#64b5f6"} // Material Blue 800 / 300
-	colorChartCost         = lipgloss.AdaptiveColor{Light: "#ff8f00", Dark: "#ffca28"} // Material Amber 800 / 400
-	colorChartRemaining5h  = lipgloss.AdaptiveColor{Light: "#2e7d32", Dark: "#81c784"} // Material Green 800 / 300
-	colorChartRemaining7d  = lipgloss.AdaptiveColor{Light: "#6a1b9a", Dark: "#ce93d8"} // Material Purple 800 / 300
+	colorChartTokens      = lipgloss.AdaptiveColor{Light: "#1565c0", Dark: "#64b5f6"} // Material Blue 800 / 300
+	colorChartCost        = lipgloss.AdaptiveColor{Light: "#ff8f00", Dark: "#ffca28"} // Material Amber 800 / 400
+	colorChartRemaining5h = lipgloss.AdaptiveColor{Light: "#2e7d32", Dark: "#81c784"} // Material Green 800 / 300
+	colorChartRemaining7d = lipgloss.AdaptiveColor{Light: "#6a1b9a", Dark: "#ce93d8"} // Material Purple 800 / 300
 
 	// colorBarLabel is the knockout foreground for in-bar 24h numbers (#308).
 	// Dark-theme bars are bright (amber #ffca28 / blue #64b5f6) -> near-black

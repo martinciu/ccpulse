@@ -35,6 +35,8 @@ func scannerInitialCap() int {
 // ParseFromOffsetWithErrors is ParseFromOffset that also returns
 // per-line ParseError records for malformed JSON. Each error's Line
 // field is the absolute line number in the source file.
+//
+//nolint:revive // ParseFromOffsetWithErrors stutters; retained for compatibility — part of the established incremental-tail API
 func ParseFromOffsetWithErrors(path, slug string, startOffset int64, startLine int) ([]Message, []ParseError, int64, int, error) {
 	f, err := os.Open(path)
 	if err != nil {

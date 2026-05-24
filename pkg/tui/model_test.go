@@ -576,7 +576,7 @@ func TestRefreshChart_Underfill_RemainingMode(t *testing.T) {
 	if err := c.InsertMessages(msgs, tab); err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		u := anthro.Usage{
 			FiveHour: &anthro.Bucket{Utilization: float64(20 + i*10), ResetsAt: timePtr(now.Add(time.Hour))},
 			SevenDay: &anthro.Bucket{Utilization: float64(10 + i*5), ResetsAt: timePtr(now.Add(24 * time.Hour))},
@@ -803,7 +803,7 @@ func TestSevenDayBarRendered(t *testing.T) {
 
 	// Labels and divider must appear on the same line — bars sit
 	// side-by-side inside the header box rather than stacked.
-	for _, line := range strings.Split(v, "\n") {
+	for line := range strings.SplitSeq(v, "\n") {
 		if strings.Contains(line, "5h") && strings.Contains(line, "7d") && strings.Contains(line, " │ ") {
 			return
 		}
@@ -829,7 +829,7 @@ func TestQuotaBarsSymmetric(t *testing.T) {
 		win  status.Window
 	}{
 		{"40cols_clamp", 40, status.Window{Percent: 5, MinutesToReset: intPtr(52), Has7d: true, Percent7d: 24, MinutesToReset7d: intPtr(8640)}},
-		{"60cols_short_times", 60, status.Window{Percent: 5, MinutesToReset: intPtr(52), Has7d: true, Percent7d: 24, MinutesToReset7d: intPtr(8640)}},   // 6d
+		{"60cols_short_times", 60, status.Window{Percent: 5, MinutesToReset: intPtr(52), Has7d: true, Percent7d: 24, MinutesToReset7d: intPtr(8640)}},  // 6d
 		{"60cols_long_times", 60, status.Window{Percent: 95, MinutesToReset: intPtr(299), Has7d: true, Percent7d: 80, MinutesToReset7d: intPtr(1439)}}, // 4h 59m / 23:59
 		{"80cols_short_times", 80, status.Window{Percent: 5, MinutesToReset: intPtr(52), Has7d: true, Percent7d: 24, MinutesToReset7d: intPtr(8640)}},
 		{"80cols_long_times", 80, status.Window{Percent: 95, MinutesToReset: intPtr(299), Has7d: true, Percent7d: 80, MinutesToReset7d: intPtr(1439)}},
@@ -1007,7 +1007,7 @@ func TestHeaderShowsDevChip(t *testing.T) {
 		t.Errorf("expected [DEV] chip in dev header, got:\n%s", got)
 	}
 	// [DEV] now lives on the footer line, side-by-side with keybindings.
-	for _, line := range strings.Split(got, "\n") {
+	for line := range strings.SplitSeq(got, "\n") {
 		if strings.Contains(line, "[DEV]") && strings.Contains(line, "q quit") {
 			return
 		}
@@ -1024,7 +1024,7 @@ func TestFooterRightAlignsIndicators(t *testing.T) {
 	v := m.View()
 
 	var footer string
-	for _, line := range strings.Split(v, "\n") {
+	for line := range strings.SplitSeq(v, "\n") {
 		if strings.Contains(line, "q quit") {
 			footer = line
 			break
@@ -1094,7 +1094,7 @@ func TestRenderIndicators(t *testing.T) {
 				stIdx := strings.Index(got, "⚠")
 				ixIdx := strings.Index(got, "indexing")
 				devIdx := strings.Index(got, "[DEV]")
-				if !(stIdx < ixIdx && ixIdx < devIdx) {
+				if stIdx >= ixIdx || ixIdx >= devIdx {
 					t.Errorf("expected stale < indexing < [DEV] order, got %q", got)
 				}
 			}
@@ -1353,10 +1353,14 @@ func TestBeginUnitAnimation(t *testing.T) {
 	}
 	now := time.Now().UTC().Truncate(15 * time.Minute)
 	msgs := []parse.Message{
-		{SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7",
-			Timestamp: now.Add(-30 * time.Minute), InputTokens: 10000, OutputTokens: 5000},
-		{SessionID: "s2", ProjectSlug: "p", Model: "claude-opus-4-7",
-			Timestamp: now.Add(-10 * time.Minute), InputTokens: 30000, OutputTokens: 15000},
+		{
+			SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7",
+			Timestamp: now.Add(-30 * time.Minute), InputTokens: 10000, OutputTokens: 5000,
+		},
+		{
+			SessionID: "s2", ProjectSlug: "p", Model: "claude-opus-4-7",
+			Timestamp: now.Add(-10 * time.Minute), InputTokens: 30000, OutputTokens: 15000,
+		},
 	}
 	if err := c.InsertMessages(msgs, tab); err != nil {
 		t.Fatalf("InsertMessages: %v", err)
@@ -1869,8 +1873,10 @@ func TestRefreshDuringAnimationSnapsAndContinues(t *testing.T) {
 	now := time.Now().UTC().Truncate(15 * time.Minute)
 	// Initial state: one message.
 	msgs := []parse.Message{
-		{SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7",
-			Timestamp: now.Add(-2 * time.Hour), InputTokens: 10000, OutputTokens: 5000},
+		{
+			SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7",
+			Timestamp: now.Add(-2 * time.Hour), InputTokens: 10000, OutputTokens: 5000,
+		},
 	}
 	if err := c.InsertMessages(msgs, tab); err != nil {
 		t.Fatalf("InsertMessages: %v", err)
@@ -1898,8 +1904,10 @@ func TestRefreshDuringAnimationSnapsAndContinues(t *testing.T) {
 	// 29.75h), otherwise the count stays pinned at the padded width and the
 	// "refreshed" proxy below can't observe the growth. -48h ≈ 192 buckets.
 	newMsgs := []parse.Message{
-		{SessionID: "s2", ProjectSlug: "p", Model: "claude-opus-4-7",
-			Timestamp: now.Add(-48 * time.Hour), InputTokens: 50000, OutputTokens: 25000},
+		{
+			SessionID: "s2", ProjectSlug: "p", Model: "claude-opus-4-7",
+			Timestamp: now.Add(-48 * time.Hour), InputTokens: 50000, OutputTokens: 25000,
+		},
 	}
 	if err := c.InsertMessages(newMsgs, tab); err != nil {
 		t.Fatalf("InsertMessages (new): %v", err)
@@ -1938,8 +1946,10 @@ func TestRefreshDoesNotAnimate(t *testing.T) {
 		t.Fatalf("pricing.Load: %v", err)
 	}
 	msgs := []parse.Message{
-		{SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7",
-			Timestamp: time.Now().UTC().Add(-time.Hour), InputTokens: 1000},
+		{
+			SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7",
+			Timestamp: time.Now().UTC().Add(-time.Hour), InputTokens: 1000,
+		},
 	}
 	if err := c.InsertMessages(msgs, tab); err != nil {
 		t.Fatalf("InsertMessages: %v", err)
@@ -1982,10 +1992,14 @@ func TestRefreshChart_CostMode(t *testing.T) {
 	}
 	now := time.Now().UTC().Truncate(15 * time.Minute)
 	msgs := []parse.Message{
-		{SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7",
-			Timestamp: now.Add(-30 * time.Minute), InputTokens: 10000, OutputTokens: 5000},
-		{SessionID: "s2", ProjectSlug: "p", Model: "claude-opus-4-7",
-			Timestamp: now.Add(-10 * time.Minute), InputTokens: 30000, OutputTokens: 15000},
+		{
+			SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7",
+			Timestamp: now.Add(-30 * time.Minute), InputTokens: 10000, OutputTokens: 5000,
+		},
+		{
+			SessionID: "s2", ProjectSlug: "p", Model: "claude-opus-4-7",
+			Timestamp: now.Add(-10 * time.Minute), InputTokens: 30000, OutputTokens: 15000,
+		},
 	}
 	if err := c.InsertMessages(msgs, tab); err != nil {
 		t.Fatalf("InsertMessages: %v", err)
@@ -2117,7 +2131,7 @@ func seedScrollTestModel(t *testing.T, count int) (*Model, func()) {
 		c.Close()
 		t.Fatal(err)
 	}
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		u := anthro.Usage{
 			FiveHour: &anthro.Bucket{Utilization: float64(10 + i*5), ResetsAt: timePtr(now.Add(time.Hour))},
 			SevenDay: &anthro.Bucket{Utilization: float64(5 + i*2), ResetsAt: timePtr(now.Add(24 * time.Hour))},
@@ -2188,10 +2202,7 @@ func TestRemainingMode_CanvasWidthMatchesBar(t *testing.T) {
 				t.Errorf("[%s] from/to differ: bar=[%v,%v) rem=[%v,%v)",
 					zoom.Label, barFrom, barTo, remFrom, remTo)
 			}
-			want := barCanvasW
-			if want < m.chartWidth() {
-				want = m.chartWidth()
-			}
+			want := max(barCanvasW, m.chartWidth())
 			if remCanvasW != want {
 				t.Errorf("[%s] canvasW differ: bar=%d rem=%d (chartWidth=%d, want=%d)",
 					zoom.Label, barCanvasW, remCanvasW, m.chartWidth(), want)
@@ -2474,10 +2485,14 @@ func TestView_CostModeRendersDollarPrefix(t *testing.T) {
 	}
 	now := time.Now().UTC().Truncate(15 * time.Minute)
 	msgs := []parse.Message{
-		{SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7",
-			Timestamp: now.Add(-30 * time.Minute), InputTokens: 10000, OutputTokens: 5000},
-		{SessionID: "s2", ProjectSlug: "p", Model: "claude-opus-4-7",
-			Timestamp: now.Add(-10 * time.Minute), InputTokens: 30000, OutputTokens: 15000},
+		{
+			SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7",
+			Timestamp: now.Add(-30 * time.Minute), InputTokens: 10000, OutputTokens: 5000,
+		},
+		{
+			SessionID: "s2", ProjectSlug: "p", Model: "claude-opus-4-7",
+			Timestamp: now.Add(-10 * time.Minute), InputTokens: 30000, OutputTokens: 15000,
+		},
 	}
 	if err := c.InsertMessages(msgs, tab); err != nil {
 		t.Fatalf("InsertMessages: %v", err)
@@ -2705,7 +2720,7 @@ func TestUnitToggle_24hCycle(t *testing.T) {
 	if err := c.InsertMessages(msgs, tab); err != nil {
 		t.Fatalf("InsertMessages: %v", err)
 	}
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		u := anthro.Usage{
 			FiveHour: &anthro.Bucket{Utilization: float64(10 + i*5), ResetsAt: timePtr(now.Add(time.Hour))},
 			SevenDay: &anthro.Bucket{Utilization: float64(5 + i*2), ResetsAt: timePtr(now.Add(24 * time.Hour))},
@@ -2914,10 +2929,14 @@ func seedTwoPhaseAnimationModel(t *testing.T) Model {
 	}
 	now := time.Now().UTC().Truncate(15 * time.Minute)
 	msgs := []parse.Message{
-		{SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7",
-			Timestamp: now.Add(-30 * time.Minute), InputTokens: 10000, OutputTokens: 5000},
-		{SessionID: "s2", ProjectSlug: "p", Model: "claude-opus-4-7",
-			Timestamp: now.Add(-10 * time.Minute), InputTokens: 30000, OutputTokens: 15000},
+		{
+			SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7",
+			Timestamp: now.Add(-30 * time.Minute), InputTokens: 10000, OutputTokens: 5000,
+		},
+		{
+			SessionID: "s2", ProjectSlug: "p", Model: "claude-opus-4-7",
+			Timestamp: now.Add(-10 * time.Minute), InputTokens: 30000, OutputTokens: 15000,
+		},
 	}
 	if err := c.InsertMessages(msgs, tab); err != nil {
 		t.Fatalf("InsertMessages: %v", err)
@@ -3253,9 +3272,9 @@ func TestVisibleBuckets_BarWidthOne(t *testing.T) {
 func TestRenderSpringFrame_MatchesPreSpringBoundary(t *testing.T) {
 	t.Parallel()
 	const (
-		N       = 60  // number of 24h buckets
-		zoomIdx = 2   // 24h zoom: BarWidth=10, BarGap=2, stride=12
-		chartH  = 20  // representative chart height
+		N       = 60 // number of 24h buckets
+		zoomIdx = 2  // 24h zoom: BarWidth=10, BarGap=2, stride=12
+		chartH  = 20 // representative chart height
 	)
 
 	zoom := ZoomLevels[zoomIdx]
@@ -3275,9 +3294,9 @@ func TestRenderSpringFrame_MatchesPreSpringBoundary(t *testing.T) {
 	}
 
 	cases := []struct {
-		name       string
-		w          int
-		wantSlack  int // expected leading blank cols in pre-spring view
+		name      string
+		w         int
+		wantSlack int // expected leading blank cols in pre-spring view
 	}{
 		{name: "slack=2_leading_gap", w: 122},
 		{name: "slack=10_partial_bar", w: 130},
@@ -3379,7 +3398,7 @@ func TestRefreshChart_RemainingMode(t *testing.T) {
 	defer c.Close()
 
 	now := time.Now().UTC().Truncate(time.Minute)
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		u := anthro.Usage{
 			FiveHour: &anthro.Bucket{Utilization: float64(i * 10), ResetsAt: timePtr(now.Add(time.Hour))},
 			SevenDay: &anthro.Bucket{Utilization: float64(i * 5), ResetsAt: timePtr(now.Add(24 * time.Hour))},
@@ -3855,10 +3874,14 @@ func seedIntroModel(t *testing.T, reduceMotion bool) Model {
 	}
 	now := time.Now().UTC().Truncate(15 * time.Minute)
 	msgs := []parse.Message{
-		{SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7",
-			Timestamp: now.Add(-30 * time.Minute), InputTokens: 10000, OutputTokens: 5000},
-		{SessionID: "s2", ProjectSlug: "p", Model: "claude-opus-4-7",
-			Timestamp: now.Add(-10 * time.Minute), InputTokens: 30000, OutputTokens: 15000},
+		{
+			SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7",
+			Timestamp: now.Add(-30 * time.Minute), InputTokens: 10000, OutputTokens: 5000,
+		},
+		{
+			SessionID: "s2", ProjectSlug: "p", Model: "claude-opus-4-7",
+			Timestamp: now.Add(-10 * time.Minute), InputTokens: 30000, OutputTokens: 15000,
+		},
 	}
 	if err := c.InsertMessages(msgs, tab); err != nil {
 		t.Fatalf("InsertMessages: %v", err)
@@ -4146,7 +4169,7 @@ func TestIntro_RealisticStartupSequence(t *testing.T) {
 	// Now drive the hold tick → grow ticks until settle.
 	const maxTicks = 200
 	settled := false
-	for i := 0; i < maxTicks; i++ {
+	for range maxTicks {
 		updated, _ = m.Update(springTickMsg{gen: m.springGen})
 		m = updated.(Model)
 		if !m.springActive {
@@ -4209,8 +4232,10 @@ func TestIntro_EmptyCacheDeferred(t *testing.T) {
 	// Populate the cache and deliver a RefreshMsg.
 	now := time.Now().UTC().Truncate(15 * time.Minute)
 	if err := c.InsertMessages([]parse.Message{
-		{SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7",
-			Timestamp: now.Add(-30 * time.Minute), InputTokens: 10000, OutputTokens: 5000},
+		{
+			SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7",
+			Timestamp: now.Add(-30 * time.Minute), InputTokens: 10000, OutputTokens: 5000,
+		},
 	}, tab); err != nil {
 		t.Fatalf("InsertMessages: %v", err)
 	}
@@ -4592,8 +4617,10 @@ func TestIntro_QuotaBars_DeferredArmOnEmptyCache(t *testing.T) {
 	}
 	now := time.Now().UTC().Truncate(15 * time.Minute)
 	if err := c.InsertMessages([]parse.Message{
-		{SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7",
-			Timestamp: now.Add(-10 * time.Minute), InputTokens: 30000, OutputTokens: 15000},
+		{
+			SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7",
+			Timestamp: now.Add(-10 * time.Minute), InputTokens: 30000, OutputTokens: 15000,
+		},
 	}, tab); err != nil {
 		t.Fatalf("InsertMessages: %v", err)
 	}
@@ -4727,7 +4754,7 @@ func TestIntro_QuotaBars_QuotaArrivesDuringGrow(t *testing.T) {
 
 	// A few grow ticks happen before quota arrives. With targets at 0
 	// the springs are stationary at 0 — no visible motion.
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		updated, _ = m.Update(springTickMsg{gen: m.springGen})
 		m = updated.(Model)
 	}
@@ -5354,7 +5381,7 @@ func TestScroll_RebuildUsesWindowedWidth(t *testing.T) {
 		}
 	}
 	if chartW < 0 {
-		t.Fatalf("no tui.buildChart record captured after scroll; the windowed "+
+		t.Fatalf("no tui.buildChart record captured after scroll; the windowed " +
 			"rebuild did not run")
 	}
 	if chartW >= int64(m.lastCanvasW) {

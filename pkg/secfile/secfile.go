@@ -19,6 +19,7 @@ import (
 	"syscall"
 )
 
+// DirMode and FileMode are the enforced permission bits for ccpulse-owned directories and files respectively.
 const (
 	DirMode  os.FileMode = 0o700
 	FileMode os.FileMode = 0o600

@@ -1,3 +1,4 @@
+// Package tui implements the Bubble Tea model — header quota bars and the horizontally-scrollable token histogram.
 package tui
 
 import (
@@ -329,6 +330,7 @@ type Model struct {
 	dateOrder dateOrder
 }
 
+// New constructs a Model from the given Deps, initialising progress bars, viewport, and key bindings.
 func New(d Deps) Model {
 	m := Model{
 		deps:      d,
@@ -347,8 +349,12 @@ func New(d Deps) Model {
 	return m
 }
 
+// Init implements tea.Model; it fires the initial now-tick command.
 func (m Model) Init() tea.Cmd { return m.scheduleNowTick() }
 
+// Update implements tea.Model; it dispatches all Bubble Tea messages and drives the TUI state machine.
+//
+//nolint:gocognit,nestif,gocyclo,funlen // tracked in #333 — central TUI message dispatch
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -668,6 +674,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// View implements tea.Model; it renders the full TUI frame — header quota bars, separator, and token histogram.
 func (m Model) View() string {
 	if m.w == 0 {
 		return "" // pre-init; don't time
@@ -679,16 +686,16 @@ func (m Model) View() string {
 	if m.showHelp {
 		body = m.help.FullHelpView(m.keys.FullHelp())
 	} else {
-		fade := 1.0
-		labelUnit := chartUnit(m.unitIdx)
-		labelPeak := m.peak
 		rawBody := m.viewport.View()
-		if m.springActive {
+		switch {
+		case m.springActive:
 			var maxR float64
 			for _, r := range m.springRatios {
 				maxR = max(maxR, r)
 			}
-			fade = maxR
+			fade := maxR
+			labelUnit := chartUnit(m.unitIdx)
+			labelPeak := m.peak
 			// Determine whether the current rendered frame is a line chart.
 			// Exit phase shows OLD type; hold/enter shows NEW type.
 			renderingLine := false
@@ -707,9 +714,9 @@ func (m Model) View() string {
 			} else {
 				body = overlayYLabel(rawBody, labelPeak, labelUnit, m.chartHeight(), fade)
 			}
-		} else if chartUnit(m.unitIdx) == chartUnitRemaining {
+		case chartUnit(m.unitIdx) == chartUnitRemaining:
 			body = overlayYTicks(rawBody, m.chartHeight(), 1.0)
-		} else {
+		default:
 			body = overlayYLabel(rawBody, m.peak, chartUnit(m.unitIdx), m.chartHeight(), 1.0)
 		}
 	}
@@ -1001,10 +1008,7 @@ func (m *Model) beginUnitAnimation() {
 	// Size spring arrays to max(old, new) so cross-mode transitions
 	// (bar↔line) don't bail out in renderSpringFrame's bar branch when
 	// the user's scroll position is past the smaller side's length.
-	n := len(newValues)
-	if len(m.oldValues) > n {
-		n = len(m.oldValues)
-	}
+	n := max(len(m.oldValues), len(newValues))
 
 	// Phase 2 targets sized to n; entries past len(newValues) stay 0
 	// (invisible bars on the long side of a bar↔line cross-transition).
@@ -1199,6 +1203,8 @@ func (m *Model) maybeArmIntro() tea.Cmd {
 // Sets viewport.XOffset = 0 because the windowed canvas is rendered
 // starting at slice col 0; the leadingPad below shifts content to
 // match the pre-spring viewport position.
+//
+//nolint:gocyclo // tracked in #333 — spring animation frame assembly
 func (m *Model) renderSpringFrame() {
 	if len(m.springRatios) == 0 {
 		return
@@ -1255,10 +1261,7 @@ func (m *Model) renderSpringFrame() {
 		// time→col linearly — so the settle transition to refreshChart's
 		// full canvas doesn't visibly snap. Parallels the bar branch's
 		// computeSpringSlice windowing.
-		fullCanvasW := zoom.CanvasWidth(bucketCountInRange(fullFrom, fullTo, zoom.Duration))
-		if fullCanvasW < m.viewport.Width {
-			fullCanvasW = m.viewport.Width
-		}
+		fullCanvasW := max(zoom.CanvasWidth(bucketCountInRange(fullFrom, fullTo, zoom.Duration)), m.viewport.Width)
 		vpW := m.viewport.Width
 		chartXOffset := m.viewportXOffset * zoom.stride()
 		// Clamp: after #207's ceil-maxX in remaining mode, chartXOffset+vpW
@@ -1314,17 +1317,8 @@ func (m *Model) renderSpringFrame() {
 	// the slice indices stay valid for both arrays. With springs sized to
 	// max(old, new) and rangeStarts chosen to match the active phase, the
 	// two slices line up 1:1 in normal flow; the clamp is a safety net.
-	start := m.springXOffset
-	if start < 0 {
-		start = 0
-	}
-	end := start + nv
-	if end > len(m.springRatios) {
-		end = len(m.springRatios)
-	}
-	if end > len(rangeStarts) {
-		end = len(rangeStarts)
-	}
+	start := max(m.springXOffset, 0)
+	end := min(start+nv, len(m.springRatios), len(rangeStarts))
 	if start >= end {
 		return
 	}
@@ -1382,6 +1376,7 @@ func earliestRemainingSampleAt(pts5h, pts7d []cache.UtilizationPoint) time.Time 
 //     renderSpringFrame's slack-handling computeSpringSlice was tuned
 //     against. The bucket-aligned canvas guarantees lastStarts and
 //     visibleBuckets line up.
+//
 //   - Remaining mode: ceil-divide the column gap by stride. lastStarts
 //     in remaining mode is sparse usage_samples (not bucket-aligned),
 //     so the bar-mode clamp would collapse to 0 the moment sample
@@ -1421,10 +1416,7 @@ func (m *Model) setX(n int) {
 		maxX = (gap + stride - 1) / stride
 		if earliest := earliestRemainingSampleAt(m.lastPts5h, m.lastPts7d); !earliest.IsZero() &&
 			!m.lastChartFrom.IsZero() && m.lastChartTo.After(m.lastChartFrom) {
-			minX = timeToColumn(earliest, m.lastCanvasW, m.lastChartFrom, m.lastChartTo) / stride
-			if minX > maxX {
-				minX = maxX
-			}
+			minX = min(timeToColumn(earliest, m.lastCanvasW, m.lastChartFrom, m.lastChartTo)/stride, maxX)
 		}
 	} else {
 		maxX = max(0, len(m.lastStarts)-m.visibleBuckets())
@@ -1498,6 +1490,8 @@ func (m Model) scheduleNowTick() tea.Cmd {
 // Safe to call when deps.Cache is nil (no-op). Loads the full history
 // present in the cache, from the earliest message up to "now". On an
 // empty cache or a DB error, renders a placeholder.
+//
+//nolint:gocognit,gocyclo,funlen // tracked in #333 — chart rebuild branching
 func (m *Model) refreshChart() {
 	if m.deps.Cache == nil {
 		return
@@ -1711,10 +1705,7 @@ func (m *Model) refreshChart() {
 		// left edge in both modes. Floor at chartWidth() so a short
 		// usage_samples history still spans the visible area instead
 		// of rendering in a narrow slice on the left.
-		canvasW = zoom.CanvasWidth(bucketCountInRange(from, to, zoom.Duration))
-		if canvasW < m.chartWidth() {
-			canvasW = m.chartWidth()
-		}
+		canvasW = max(zoom.CanvasWidth(bucketCountInRange(from, to, zoom.Duration)), m.chartWidth())
 	} else {
 		canvasW = zoom.CanvasWidth(len(values))
 	}
@@ -1749,10 +1740,7 @@ func (m *Model) refreshChart() {
 		bucketCount := (canvasW + max(zoom.BarGap, 0)) / stride
 		m.setX(bucketCount)
 	default:
-		targetCol := timeToColumn(anchorTime, canvasW, from, to)
-		if targetCol > rightEdgeCol {
-			targetCol = rightEdgeCol
-		}
+		targetCol := min(timeToColumn(anchorTime, canvasW, from, to), rightEdgeCol)
 		m.setX(targetCol / stride)
 	}
 
@@ -1801,17 +1789,8 @@ func (m *Model) renderWindow() {
 	zoom := ZoomLevels[m.zoomIdx]
 	nv := m.visibleBuckets()
 
-	start := m.viewportXOffset
-	if start < 0 {
-		start = 0
-	}
-	end := start + nv
-	if end > len(m.lastValues) {
-		end = len(m.lastValues)
-	}
-	if end > len(m.lastStarts) {
-		end = len(m.lastStarts)
-	}
+	start := max(m.viewportXOffset, 0)
+	end := min(start+nv, len(m.lastValues), len(m.lastStarts))
 	if start >= end {
 		return
 	}

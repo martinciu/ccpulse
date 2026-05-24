@@ -652,12 +652,18 @@ func TestIOTokenBuckets_ContiguousRange(t *testing.T) {
 	ts3 := time.Date(2026, 5, 9, 11, 57, 0, 0, time.UTC)
 
 	msgs := []parse.Message{
-		{SessionID: "s1", ProjectSlug: "p", Model: "claude-sonnet-4-6",
-			Timestamp: ts1, InputTokens: 1000, OutputTokens: 500},
-		{SessionID: "s2", ProjectSlug: "p", Model: "claude-sonnet-4-6",
-			Timestamp: ts2, InputTokens: 2000, OutputTokens: 800},
-		{SessionID: "s3", ProjectSlug: "p", Model: "claude-sonnet-4-6",
-			Timestamp: ts3, InputTokens: 500, OutputTokens: 200},
+		{
+			SessionID: "s1", ProjectSlug: "p", Model: "claude-sonnet-4-6",
+			Timestamp: ts1, InputTokens: 1000, OutputTokens: 500,
+		},
+		{
+			SessionID: "s2", ProjectSlug: "p", Model: "claude-sonnet-4-6",
+			Timestamp: ts2, InputTokens: 2000, OutputTokens: 800,
+		},
+		{
+			SessionID: "s3", ProjectSlug: "p", Model: "claude-sonnet-4-6",
+			Timestamp: ts3, InputTokens: 500, OutputTokens: 200,
+		},
 	}
 	if err := c.InsertMessages(msgs, tab); err != nil {
 		t.Fatal(err)
@@ -829,8 +835,10 @@ func TestIOTokenBuckets_IncludesInFlightBucket(t *testing.T) {
 	// non-UTC inputs would also work; UTC here just matches reality.
 	now := time.Now().UTC()
 	msgs := []parse.Message{
-		{SessionID: "s1", ProjectSlug: "p", Model: "claude-sonnet-4-6",
-			Timestamp: now, InputTokens: 1000, OutputTokens: 500},
+		{
+			SessionID: "s1", ProjectSlug: "p", Model: "claude-sonnet-4-6",
+			Timestamp: now, InputTokens: 1000, OutputTokens: 500,
+		},
 	}
 	if err := c.InsertMessages(msgs, tab); err != nil {
 		t.Fatal(err)
@@ -1063,7 +1071,7 @@ func TestRemoveWithSiblings(t *testing.T) {
 	base := filepath.Join(dir, "state.db")
 
 	for _, suffix := range []string{"", "-wal", "-shm"} {
-		if err := os.WriteFile(base+suffix, []byte("planted"), 0644); err != nil {
+		if err := os.WriteFile(base+suffix, []byte("planted"), 0o644); err != nil {
 			t.Fatalf("plant %s: %v", base+suffix, err)
 		}
 	}
@@ -1139,8 +1147,10 @@ func TestInsertMessages_NormalizesNonUTCTimestamp(t *testing.T) {
 	ts := time.Date(2026, 5, 9, 11, 50, 0, 0, loc)
 
 	msgs := []parse.Message{
-		{SessionID: "s1", ProjectSlug: "p", Model: "claude-sonnet-4-6",
-			Timestamp: ts, InputTokens: 1000, OutputTokens: 500},
+		{
+			SessionID: "s1", ProjectSlug: "p", Model: "claude-sonnet-4-6",
+			Timestamp: ts, InputTokens: 1000, OutputTokens: 500,
+		},
 	}
 	if err := c.InsertMessages(msgs, tab); err != nil {
 		t.Fatal(err)
@@ -1451,9 +1461,9 @@ func TestIOTokenBuckets_24h_DST_FallBack(t *testing.T) {
 	// 2026-10-25 Europe/Berlin: clocks fall 03:00 CEST -> 02:00 CET.
 	// Local day is 25h, from 2026-10-24T22:00:00Z to 2026-10-25T23:00:00Z.
 	for _, ts := range []time.Time{
-		time.Date(2026, 10, 24, 22, 0, 0, 0, time.UTC), // 00:00 CEST
-		time.Date(2026, 10, 25, 0, 30, 0, 0, time.UTC), // 02:30 CEST (first 02:xx)
-		time.Date(2026, 10, 25, 1, 30, 0, 0, time.UTC), // 02:30 CET  (second 02:xx after fall-back)
+		time.Date(2026, 10, 24, 22, 0, 0, 0, time.UTC),  // 00:00 CEST
+		time.Date(2026, 10, 25, 0, 30, 0, 0, time.UTC),  // 02:30 CEST (first 02:xx)
+		time.Date(2026, 10, 25, 1, 30, 0, 0, time.UTC),  // 02:30 CET  (second 02:xx after fall-back)
 		time.Date(2026, 10, 25, 22, 59, 0, 0, time.UTC), // 23:59 CET
 	} {
 		insertMessage(t, c, ts, 100)
@@ -1638,12 +1648,18 @@ func TestCostBuckets_ContiguousRange(t *testing.T) {
 	ts3 := time.Date(2026, 5, 9, 11, 57, 0, 0, time.UTC)
 
 	msgs := []parse.Message{
-		{SessionID: "s1", ProjectSlug: "p", Model: "claude-sonnet-4-6",
-			Timestamp: ts1, InputTokens: 1000, OutputTokens: 500},
-		{SessionID: "s2", ProjectSlug: "p", Model: "claude-sonnet-4-6",
-			Timestamp: ts2, InputTokens: 2000, OutputTokens: 800},
-		{SessionID: "s3", ProjectSlug: "p", Model: "claude-sonnet-4-6",
-			Timestamp: ts3, InputTokens: 500, OutputTokens: 200},
+		{
+			SessionID: "s1", ProjectSlug: "p", Model: "claude-sonnet-4-6",
+			Timestamp: ts1, InputTokens: 1000, OutputTokens: 500,
+		},
+		{
+			SessionID: "s2", ProjectSlug: "p", Model: "claude-sonnet-4-6",
+			Timestamp: ts2, InputTokens: 2000, OutputTokens: 800,
+		},
+		{
+			SessionID: "s3", ProjectSlug: "p", Model: "claude-sonnet-4-6",
+			Timestamp: ts3, InputTokens: 500, OutputTokens: 200,
+		},
 	}
 	if err := c.InsertMessages(msgs, tab); err != nil {
 		t.Fatal(err)
@@ -1744,8 +1760,10 @@ func TestCostBuckets_PricingUnknownContributesZero(t *testing.T) {
 	tab, _ := pricing.Load()
 	ts := time.Date(2026, 5, 9, 11, 50, 0, 0, time.UTC)
 	msgs := []parse.Message{
-		{SessionID: "s1", ProjectSlug: "p", Model: "model-not-in-pricing-json",
-			Timestamp: ts, InputTokens: 1000, OutputTokens: 500},
+		{
+			SessionID: "s1", ProjectSlug: "p", Model: "model-not-in-pricing-json",
+			Timestamp: ts, InputTokens: 1000, OutputTokens: 500,
+		},
 	}
 	if err := c.InsertMessages(msgs, tab); err != nil {
 		t.Fatal(err)

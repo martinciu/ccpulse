@@ -1,4 +1,4 @@
-.PHONY: build install seed-dev seed-dev-config seed-dev-cache seed-front-loaded reset-dev test lint vulncheck snapshot demo
+.PHONY: build install seed-dev seed-dev-config seed-dev-cache seed-front-loaded reset-dev test lint lint-fix fmt vulncheck snapshot demo
 
 BIN := ccpulse
 INSTALL_DIR := $(HOME)/.local/bin
@@ -25,7 +25,13 @@ test:
 	go test ./...
 
 lint:
-	go vet ./...
+	golangci-lint run ./...
+
+lint-fix:
+	golangci-lint run --fix ./...
+
+fmt:
+	golangci-lint fmt ./...
 
 vulncheck:
 	go run golang.org/x/vuln/cmd/govulncheck@latest ./...

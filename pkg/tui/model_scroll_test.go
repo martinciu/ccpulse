@@ -92,7 +92,7 @@ func TestEarliestRemainingSampleAt(t *testing.T) {
 // directly — no manual stride or canvas-width arithmetic.
 // viewport.Width=30 (not 80) ensures maxX=66 ≥ 60, so tests that check
 // in-range position preservation have room to land above minX=48.
-func remainingModeModel(pts5h, pts7d []cache.UtilizationPoint) *Model {
+func remainingModeModel(pts5h []cache.UtilizationPoint) *Model {
 	from := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
 	to := from.Add(24 * time.Hour)
 	m := New(Deps{})
@@ -105,7 +105,7 @@ func remainingModeModel(pts5h, pts7d []cache.UtilizationPoint) *Model {
 	m.lastCanvasW = 96 // 96 cols of 15m at stride=1 → spans 24h
 	m.lastZoomStride = 1
 	m.lastPts5h = pts5h
-	m.lastPts7d = pts7d
+	m.lastPts7d = nil
 	return &m
 }
 
@@ -114,7 +114,7 @@ func TestSetX_RemainingMode_ClampsAtInRangeLeftEdge(t *testing.T) {
 	from := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
 	// Earliest sample is 12h into the canvas = column 48.
 	pts5h := []cache.UtilizationPoint{{At: from.Add(12 * time.Hour)}}
-	m := remainingModeModel(pts5h, nil)
+	m := remainingModeModel(pts5h)
 
 	m.setX(0) // try to pan to the far left
 
@@ -127,7 +127,7 @@ func TestSetX_RemainingMode_OutOfRangeSnapsIn(t *testing.T) {
 	t.Parallel()
 	from := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
 	pts5h := []cache.UtilizationPoint{{At: from.Add(12 * time.Hour)}}
-	m := remainingModeModel(pts5h, nil)
+	m := remainingModeModel(pts5h)
 	m.viewportXOffset = 5 // simulate a stale pre-switch anchor
 
 	// refreshChart-style restore: anchorTime maps to col 5; setX clamps up.
@@ -142,7 +142,7 @@ func TestSetX_RemainingMode_InRangePreservesPosition(t *testing.T) {
 	t.Parallel()
 	from := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
 	pts5h := []cache.UtilizationPoint{{At: from.Add(12 * time.Hour)}}
-	m := remainingModeModel(pts5h, nil)
+	m := remainingModeModel(pts5h)
 
 	m.setX(60) // already past the in-range left edge (48)
 
@@ -153,7 +153,7 @@ func TestSetX_RemainingMode_InRangePreservesPosition(t *testing.T) {
 
 func TestSetX_RemainingMode_EmptySamplesLowerBoundZero(t *testing.T) {
 	t.Parallel()
-	m := remainingModeModel(nil, nil)
+	m := remainingModeModel(nil)
 
 	// Must not panic on empty slices; minX stays 0 because earliest IsZero.
 	m.setX(0)
@@ -165,7 +165,7 @@ func TestSetX_RemainingMode_EmptySamplesLowerBoundZero(t *testing.T) {
 
 func TestSetX_RemainingMode_EmptySamplesClampsToCanvasMaxX(t *testing.T) {
 	t.Parallel()
-	m := remainingModeModel(nil, nil)
+	m := remainingModeModel(nil)
 
 	m.setX(999) // overshoot upper bound
 	// Upper bound: max(0, lastCanvasW - viewport.Width) / stride
@@ -179,7 +179,7 @@ func TestSetX_BarModeAfterRemaining_BarBoundsRestored(t *testing.T) {
 	t.Parallel()
 	from := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
 	pts5h := []cache.UtilizationPoint{{At: from.Add(12 * time.Hour)}}
-	m := remainingModeModel(pts5h, nil)
+	m := remainingModeModel(pts5h)
 	// Populate bar-mode state: 200 buckets in lastStarts (much wider
 	// than the canvas; bar-mode clamp is len(lastStarts)-visibleBuckets).
 	m.lastStarts = make([]time.Time, 200)
@@ -208,7 +208,7 @@ func TestSetX_RemainingMode_MinXAboveMaxX_CollapsesToMaxX(t *testing.T) {
 	// minX to 66. Without that collapse, min(max(n, 80), 66) would
 	// produce 80 — wrong direction past maxX.
 	pts5h := []cache.UtilizationPoint{{At: from.Add(20 * time.Hour)}}
-	m := remainingModeModel(pts5h, nil)
+	m := remainingModeModel(pts5h)
 
 	m.setX(0) // any value; clamp pulls up to the collapsed minX (= maxX).
 
@@ -226,7 +226,7 @@ func TestSetX_RemainingMode_ZeroChartFromSkipsLowerBound(t *testing.T) {
 	// in setX must short-circuit the lower-bound clamp, leaving minX=0
 	// and the existing canvas-clamp path intact.
 	pts5h := []cache.UtilizationPoint{{At: from.Add(12 * time.Hour)}}
-	m := remainingModeModel(pts5h, nil)
+	m := remainingModeModel(pts5h)
 	m.lastChartFrom = time.Time{}
 
 	m.setX(0)
@@ -316,7 +316,7 @@ func TestScrollStep_ThreeBucketsAt15m(t *testing.T) {
 // rune across all rows of s (ANSI already stripped). -1 if s is all spaces.
 func rightmostNonSpaceCol(s string) int {
 	maxCol := -1
-	for _, line := range strings.Split(s, "\n") {
+	for line := range strings.SplitSeq(s, "\n") {
 		last := -1
 		for i, r := range []rune(line) {
 			if r != ' ' {
@@ -403,7 +403,6 @@ func TestRefreshChart_Underfill_FlushRight(t *testing.T) {
 func TestRefreshChart_Underfill_ScrollLocked(t *testing.T) {
 	t.Parallel()
 	for _, zi := range []int{0, 1, 2} { // 15m, 1h, 24h
-		zi := zi
 		t.Run(ZoomLevels[zi].Label, func(t *testing.T) {
 			t.Parallel()
 			m, c := seedBarModel(t, zi, 2, ZoomLevels[zi].Duration)

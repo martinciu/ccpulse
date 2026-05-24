@@ -115,7 +115,7 @@ func TestParseMixedLines(t *testing.T) {
 }
 
 func TestParseWithErrors_ReportsOversizedLine(t *testing.T) {
-	withScannerMaxBytes(t, 4096)
+	withScannerMaxBytes(t)
 
 	valid := validAssistantLine("")
 	big := `{"type":"assistant","padding":"` + strings.Repeat("x", 5000) + `"}` + "\n"

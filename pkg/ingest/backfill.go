@@ -36,6 +36,8 @@ type Backfill struct {
 // callback fires and the TUI never shows the indicator. Honours
 // ctx cancellation between files; never aborts on a single bad
 // file. ProjectsRoot missing returns nil with no callbacks.
+//
+//nolint:gocyclo // tracked in #333 — cold-walk backfill loop
 func (b *Backfill) Run(ctx context.Context, onProgress func(Progress)) error {
 	// Pre-stat the root so a missing ProjectsRoot exits cleanly with
 	// zero progress callbacks. The walker below can't distinguish

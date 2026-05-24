@@ -124,7 +124,7 @@ func parseCredential(b []byte) (Credential, error) {
 		return Credential{}, ErrNoCredential
 	}
 	if o.SubscriptionType == "" {
-		return Credential{}, fmt.Errorf("invalid credential: subscriptionType is empty")
+		return Credential{}, errors.New("invalid credential: subscriptionType is empty")
 	}
 	c := Credential{
 		AccessToken:      o.AccessToken,

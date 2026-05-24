@@ -10,7 +10,9 @@ mise install          # fetch Go 1.25 (first-time setup)
 make build            # go build -o ccpulse ./cmd/ccpulse
 make install          # build → ~/.local/bin/ccpulse (release channel)
 make test             # go test ./...
-make lint             # go vet ./...
+make lint             # golangci-lint run ./... (tuned .golangci.yml gate)
+make lint-fix         # golangci-lint run --fix ./... (auto-fix)
+make fmt              # golangci-lint fmt ./... (gofumpt)
 make vulncheck        # govulncheck ./... (run before release-blocking PRs)
 
 make seed-dev         # populate fixture config + cache for TUI probes
@@ -19,6 +21,8 @@ make reset-dev        # blow away seeded dev state
 go test ./pkg/cache/... -run TestIntegrity   # single package / single test
 go test ./...                                # all packages
 ```
+
+`make lint` runs `golangci-lint` (v2, pinned in `.mise.toml`) against the tuned `.golangci.yml` — the source of truth for enabled linters. Complexity hotspots deferred during adoption are tracked in the #333 follow-up issue and carry `//nolint` directives with that reference.
 
 Release artifacts are produced by GoReleaser (`goreleaser release --clean`). The `version`, `commit`, and `date` vars in `cmd/ccpulse/main.go` are injected via ldflags at release time.
 

@@ -1,3 +1,4 @@
+// Package status computes the 5-hour rolling and 7-day quota windows and maps plan tier to token ceiling.
 package status
 
 import (
@@ -58,6 +59,7 @@ type Tokens5hBreakdown struct {
 	CacheWrite1h int64 `json:"cache_write_1h"`
 }
 
+// JSON serializes w to a compact JSON string for the status --json subcommand.
 func JSON(w Window) (string, error) {
 	b, err := json.Marshal(w)
 	return string(b), err

@@ -1,8 +1,10 @@
+// Package pricing embeds pricing.json and computes the USD cost of a message.
 package pricing
 
 import (
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"sort"
@@ -14,6 +16,7 @@ import (
 //go:embed history/*.json
 var historyFS embed.FS
 
+// ModelRate holds the per-million-token billing rates for one model.
 type ModelRate struct {
 	InputPerMtok        float64 `json:"input_per_mtok"`
 	OutputPerMtok       float64 `json:"output_per_mtok"`
@@ -22,6 +25,7 @@ type ModelRate struct {
 	CacheWrite1hPerMtok float64 `json:"cache_write_1h_per_mtok"`
 }
 
+// Table is a versioned snapshot of per-model billing rates decoded from a pricing JSON file.
 type Table struct {
 	Version  string               `json:"version"`
 	Currency string               `json:"currency"`
@@ -61,7 +65,7 @@ func Load() (History, error) {
 		entries = append(entries, t)
 	}
 	if len(entries) == 0 {
-		return History{}, fmt.Errorf("pricing: no history entries embedded")
+		return History{}, errors.New("pricing: no history entries embedded")
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Version < entries[j].Version })
 	return History{entries: entries}, nil
@@ -78,7 +82,7 @@ func parseTable(b []byte) (Table, error) {
 		return t, fmt.Errorf("unsupported currency %q (expected USD)", t.Currency)
 	}
 	if t.Version == "" {
-		return t, fmt.Errorf("missing version field")
+		return t, errors.New("missing version field")
 	}
 	return t, nil
 }
@@ -124,7 +128,7 @@ func (h History) CostFor(m parse.Message) (cost float64, version string, unknown
 // code — use Load() instead, which reads the embedded history/*.json.
 func HistoryForTest(entries []Table) (History, error) {
 	if len(entries) == 0 {
-		return History{}, fmt.Errorf("pricing: HistoryForTest: empty entries")
+		return History{}, errors.New("pricing: HistoryForTest: empty entries")
 	}
 	cp := make([]Table, len(entries))
 	copy(cp, entries)

@@ -53,10 +53,11 @@ func TestNextBoundary_24hLocalMidnight(t *testing.T) {
 }
 
 // seedModelAt builds a Model backed by a temp-DB cache with nBuckets messages
-// spaced `spacing` apart ending at `now`, with the chart clock pinned to `now`.
-// unitIdx selects the chart unit (e.g. int(chartUnitTokens), int(chartUnitRemaining)).
+// spaced 15m apart ending at `now`, with the chart clock pinned to `now`.
+// unitIdx selects the chart unit (e.g. int(chartUnitTokens), int(chartUnitRemaining));
+// the zoom is fixed at the 15m level (zoomIdx 0).
 // Mirrors seedBarModel but injects the #311 clock seam.
-func seedModelAt(t *testing.T, unitIdx, zoomIdx, nBuckets int, spacing time.Duration, now time.Time) (Model, *cache.Cache) {
+func seedModelAt(t *testing.T, unitIdx, nBuckets int, now time.Time) (Model, *cache.Cache) {
 	t.Helper()
 	c, err := cache.Open(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
@@ -73,7 +74,7 @@ func seedModelAt(t *testing.T, unitIdx, zoomIdx, nBuckets int, spacing time.Dura
 				SessionID:   "s",
 				ProjectSlug: "p",
 				Model:       "claude-opus-4-7",
-				Timestamp:   now.Add(-time.Duration(i) * spacing),
+				Timestamp:   now.Add(-time.Duration(i) * 15 * time.Minute),
 				InputTokens: 5000,
 			})
 		}
@@ -83,7 +84,7 @@ func seedModelAt(t *testing.T, unitIdx, zoomIdx, nBuckets int, spacing time.Dura
 	}
 	m := New(Deps{Cache: c})
 	m.unitIdx = unitIdx
-	m.zoomIdx = zoomIdx
+	m.zoomIdx = 0 // 15m
 	m.w, m.h = 122, 40
 	m.viewport.Width = m.chartWidth()
 	m.viewport.Height = m.chartHeight()
@@ -97,7 +98,7 @@ func TestRefreshChart_UsesInjectedClock(t *testing.T) {
 	// A clock far from real wall-time: if the seam is unwired, refreshChart
 	// uses time.Now() and lastChartTo lands ~2026, failing this assertion.
 	fixed := time.Date(2020, 1, 15, 9, 23, 0, 0, time.UTC)
-	m, c := seedModelAt(t, int(chartUnitTokens), 0 /* 15m */, 8, 15*time.Minute, fixed)
+	m, c := seedModelAt(t, int(chartUnitTokens), 8, fixed)
 	defer c.Close()
 	if want := nextBoundary(fixed, ZoomLevels[0]); !m.lastChartTo.Equal(want) {
 		t.Errorf("lastChartTo = %v, want %v (driven by injected clock)", m.lastChartTo, want)
@@ -115,7 +116,7 @@ func TestInit_ArmsNowTick(t *testing.T) {
 func TestNowTick_StaleGenDropped(t *testing.T) {
 	t.Parallel()
 	base := time.Date(2026, 5, 23, 14, 7, 0, 0, time.UTC)
-	m, c := seedModelAt(t, int(chartUnitTokens), 0, 8, 15*time.Minute, base)
+	m, c := seedModelAt(t, int(chartUnitTokens), 8, base)
 	defer c.Close()
 	to1 := m.lastChartTo
 	updated, cmd := m.Update(nowTickMsg{gen: m.nowGen + 1}) // stale
@@ -132,7 +133,7 @@ func TestNowTick_AdvancesWindowWhenPinned(t *testing.T) {
 	t.Parallel()
 	base := time.Date(2026, 5, 23, 14, 7, 0, 0, time.UTC)
 	// Few buckets → underfilled → locked flush-right (always pinned, scroll inert).
-	m, c := seedModelAt(t, int(chartUnitTokens), 0, 4, 15*time.Minute, base)
+	m, c := seedModelAt(t, int(chartUnitTokens), 4, base)
 	defer c.Close()
 	if !m.underfilled {
 		t.Fatalf("precondition: expected underfilled (locked-pinned) model")
@@ -162,7 +163,7 @@ func TestNowTick_FreezesWhenScrolled(t *testing.T) {
 	t.Parallel()
 	base := time.Date(2026, 5, 23, 14, 7, 0, 0, time.UTC)
 	// Wide dataset → scrollable (not underfilled).
-	m, c := seedModelAt(t, int(chartUnitTokens), 0, 300, 15*time.Minute, base)
+	m, c := seedModelAt(t, int(chartUnitTokens), 300, base)
 	defer c.Close()
 	if m.underfilled {
 		t.Fatalf("precondition: expected a wide (scrollable) model, got underfilled")
@@ -195,7 +196,7 @@ func TestNowTick_FreezesDuringIntro(t *testing.T) {
 	t.Parallel()
 	base := time.Date(2026, 5, 23, 14, 7, 0, 0, time.UTC)
 	// 8 buckets → underfilled, spring intro active.
-	m, c := seedModelAt(t, int(chartUnitTokens), 0, 8, 15*time.Minute, base)
+	m, c := seedModelAt(t, int(chartUnitTokens), 8, base)
 	defer c.Close()
 	// Simulate the startup intro animation being in-flight.
 	m.springIntro = true
@@ -218,7 +219,7 @@ func TestNowTick_FreezesDuringIntro(t *testing.T) {
 func TestNowTick_AdvancesRemainingUnit(t *testing.T) {
 	t.Parallel()
 	base := time.Date(2026, 5, 23, 14, 7, 0, 0, time.UTC)
-	m, c := seedModelAt(t, int(chartUnitRemaining), 0 /*15m*/, 0 /*no messages*/, 15*time.Minute, base)
+	m, c := seedModelAt(t, int(chartUnitRemaining), 0 /*no messages*/, base)
 	defer c.Close()
 	to1 := m.lastChartTo
 	next := nextBoundary(base, ZoomLevels[0])
@@ -236,7 +237,7 @@ func TestNowTick_AdvancesRemainingUnit(t *testing.T) {
 func TestZoom_RearmsNowTick(t *testing.T) {
 	t.Parallel()
 	base := time.Date(2026, 5, 23, 14, 7, 0, 0, time.UTC)
-	m, c := seedModelAt(t, int(chartUnitTokens), 0, 8, 15*time.Minute, base)
+	m, c := seedModelAt(t, int(chartUnitTokens), 8, base)
 	defer c.Close()
 	gen0 := m.nowGen
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("z")})

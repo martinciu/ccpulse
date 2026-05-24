@@ -47,10 +47,8 @@ func projFor(sev string, window time.Duration) *status.Projection {
 			MinutesTo100Pct: &eta, Confidence: "ok",
 		}
 	case "danger":
-		eta := int(window.Minutes() * 0.02) // <= 10% of window → danger
-		if eta < 1 {
-			eta = 1
-		}
+		// <= 10% of window → danger
+		eta := max(int(window.Minutes()*0.02), 1)
 		return &status.Projection{
 			ElapsedMinutes: 90, SlopePctPerHour: 40,
 			ProjectedPctAtReset: 220, WillOverreach: true,
