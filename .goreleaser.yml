@@ -88,7 +88,9 @@ changelog:
   filters:
     exclude:
       - '^chore'
-      - '^docs'
+      # Match an optional leading emoji token before the type — commits here are
+      # emoji-prefixed (`📊 docs:`), so a bare `^docs` anchor never fires. (#327)
+      - '^(\S+\s+)?docs(:|\()'
       - '^test'
       - '^(🧹|🧪|📝|🙈)'
       - 'Merge pull request'
