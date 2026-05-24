@@ -192,3 +192,39 @@ func assertFits(t *testing.T, m Model) {
 		t.Errorf("View() rendered %d lines, exceeds terminal height %d (w=%d)\n%s", got, m.h, m.w, v)
 	}
 }
+
+// TestViewFitsTerminal_ChartBody exercises the viewport-clipped chart body
+// across width × height × cache × unit. The body is clipped to chartHeight()
+// by construction, so this is a sanity backstop confirming no render path
+// (bar for cost/tokens, line for remaining; empty vs populated) adds height.
+func TestViewFitsTerminal_ChartBody(t *testing.T) {
+	t.Parallel()
+	cEmpty := emptyFitCache(t)
+	cFull := seedFitCache(t, fitNow)
+	win := windowFor("safe", true)
+	units := []struct {
+		name string
+		idx  int
+	}{
+		{"cost", int(chartUnitCost)},
+		{"tokens", int(chartUnitTokens)},
+		{"remaining", int(chartUnitRemaining)},
+	}
+	for _, w := range fitWidths {
+		for _, h := range []int{20, 40, 60} {
+			for _, cacheState := range []struct {
+				name string
+				c    *cache.Cache
+			}{{"empty", cEmpty}, {"populated", cFull}} {
+				for _, u := range units {
+					w, h, cacheState, u := w, h, cacheState, u
+					name := "w" + itoa(w) + "_h" + itoa(h) + "_" + cacheState.name + "_" + u.name
+					t.Run(name, func(t *testing.T) {
+						m := buildFitModel(cacheState.c, w, h, win, u.idx, false)
+						assertFits(t, m)
+					})
+				}
+			}
+		}
+	}
+}
