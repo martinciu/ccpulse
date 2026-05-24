@@ -277,6 +277,48 @@ func TestQuotaBarsRendersIdleForNil5hResetsAt(t *testing.T) {
 	}
 }
 
+func TestQuotaHeaderFitsBoxWidth(t *testing.T) {
+	// The two-bar quota header must fit inside the bordered box's inner
+	// content width (m.w - 4: 2 border cols + 2 padding cols). If
+	// progressWidth() oversizes the bars relative to the per-side chrome
+	// (label + barTimeGap + statusBlockMaxW slot) the bars row overflows
+	// and lipgloss wraps it, breaking the header into 5+ lines with a
+	// misaligned bottom border. Regression guard for #316, which widened
+	// statusBlockMaxW 6→7 without updating progressWidth's chrome budget.
+	//
+	// Worst-case reset strings fill both slots: 5h "4h 59m" (6 cols) and
+	// 7d "23h 59m" (7 cols), so the 7-col slot is fully exercised.
+	widths := []int{80, 100, 120, 121, 160, 200}
+	for _, w := range widths {
+		t.Run(fmt.Sprintf("w=%d", w), func(t *testing.T) {
+			m := New(Deps{})
+			m.w, m.h = w, 40
+			m.window = status.Window{
+				Percent:          61,
+				MinutesToReset:   intPtr(299), // "4h 59m"
+				Has7d:            true,
+				Percent7d:        50,
+				MinutesToReset7d: intPtr(1439), // "23h 59m"
+			}
+			m.progress = newProgressBar(m.progressWidth())
+			m.progress7d = newProgressBar(m.progressWidth())
+
+			inner := w - 4 // RoundedBorder (2) + Padding(0,1) (2)
+			for i, line := range strings.Split(m.quotaBars(), "\n") {
+				if lw := lipgloss.Width(line); lw > inner {
+					t.Errorf("quotaBars line %d width %d exceeds inner box width %d (w=%d)\nline: %q",
+						i, lw, inner, w, line)
+				}
+			}
+
+			header := renderHeader(m.w, m.quotaBars())
+			if got := len(strings.Split(header, "\n")); got != 4 {
+				t.Errorf("header is %d lines, want 4 (top border + 2 rows + bottom border); content wrapped:\n%s", got, header)
+			}
+		})
+	}
+}
+
 func TestHelpToggle(t *testing.T) {
 	m := New(Deps{})
 	m.w, m.h = 120, 40

@@ -1957,21 +1957,27 @@ func (m Model) chartHeight() int {
 // (matched across both sides for symmetry — the prerequisite for centring
 // the │ divider exactly):
 //   - 3 cols dim label prefix ("5h " or "7d ")
-//   - 1 col bar→time margin (barTimeGap)
-//   - 6 cols right-aligned time slot ("4h 59m" worst case; 7d's "23:59"
-//     fits in 5 cols and gets 1 col of leading pad to stay symmetric)
+//   - barTimeGap cols bar→time margin (1)
+//   - statusBlockMaxW cols right-aligned time slot ("23h 59m" 7d worst
+//     case; the 5h "4h 59m" fits in 6 and gets 1 col of leading pad to
+//     stay symmetric)
 //
-// Per-side fixed chrome total: 3 + 1 + 6 = 10 cols. The header box
-// itself reserves 4 cols (border + padding), and a 3-col " │ " divider
-// sits between the two halves. Total fixed chrome = 4 + 10 + 3 + 10 = 27,
-// split across two bars.
+// The chrome budget is derived from statusBlockMaxW and barTimeGap rather
+// than baked into a literal so it stays in lockstep with renderQuotaSide:
+// #316 widened the slot 6→7 but a hardcoded constant here did not, so each
+// bar was sized 1 col too wide and the header row overflowed the box and
+// wrapped. The header box reserves 4 cols (border + padding) and a 3-col
+// " │ " divider sits between the two halves.
 //
-// At odd parities of (W - 27), integer division gives a 1-col residual
-// that lipgloss absorbs as a trailing pad inside the box. Doesn't affect
+// At odd parities the integer division leaves a 1-col residual that
+// lipgloss absorbs as a trailing pad inside the box. Doesn't affect
 // divider centring because the divider is positioned relative to the
 // symmetric chrome, not derived from total width.
 func (m Model) progressWidth() int {
-	w := (m.w - 27) / 2
+	const labelW = 3 // lipgloss.Width("5h ") == lipgloss.Width("7d ")
+	perSide := labelW + lipgloss.Width(barTimeGap) + statusBlockMaxW
+	chrome := 4 + 3 + 2*perSide // 4 = border+padding, 3 = " │ " divider
+	w := (m.w - chrome) / 2
 	if w < 6 {
 		return 6
 	}
