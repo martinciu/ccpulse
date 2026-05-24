@@ -482,11 +482,11 @@ func TestScroll24h_OldestEdgeClampsToZero(t *testing.T) {
 
 func TestRenderWindow_24hInBarLabels(t *testing.T) {
 	t.Parallel()
-	// seedBarModel sets unit=tokens, 5000 input tokens/bucket -> "5k" per bar.
+	// seedBarModel sets unit=tokens, 5000 input tokens/bucket -> "5,000" per bar.
 	m, c := seedBarModel(t, 2 /* 24h */, 10, 24*time.Hour)
 	defer c.Close()
 	got := ansi.Strip(m.viewport.View())
-	if !strings.Contains(got, "5k") {
-		t.Errorf("24h viewport missing in-bar token label %q:\n%s", "5k", got)
+	if !strings.Contains(got, "5,000") {
+		t.Errorf("24h viewport missing in-bar token label %q:\n%s", "5,000", got)
 	}
 }
