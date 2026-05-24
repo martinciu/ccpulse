@@ -338,7 +338,7 @@ func TestRenderBurnRateSide(t *testing.T) {
 			name:        "nil projection renders dim no-data",
 			p:           nil,
 			wantSubstrs: []string{"(no data)"},
-			notSubstrs:  []string{"%/h", "limit in", "projecting"},
+			notSubstrs:  []string{"%/h", "→", "·"},
 			wantStyle:   dim,
 		},
 		{
@@ -350,7 +350,7 @@ func TestRenderBurnRateSide(t *testing.T) {
 				Confidence:          "low",
 			},
 			wantSubstrs: []string{"warming up"},
-			notSubstrs:  []string{"30%/h", "150", "limit in"},
+			notSubstrs:  []string{"30%/h", "150", "→", "·"},
 			wantStyle:   dim,
 		},
 		{
@@ -361,8 +361,8 @@ func TestRenderBurnRateSide(t *testing.T) {
 				WillOverreach:       false,
 				Confidence:          "ok",
 			},
-			wantSubstrs: []string{"12%/h", "projecting 54%"},
-			notSubstrs:  []string{"limit in", "already at limit"},
+			wantSubstrs: []string{"12%/h", "→54%"},
+			notSubstrs:  []string{"·", "limit", "projecting"},
 			wantStyle:   safe,
 		},
 		{
@@ -374,7 +374,8 @@ func TestRenderBurnRateSide(t *testing.T) {
 				MinutesTo100Pct:     &min41,
 				Confidence:          "ok",
 			},
-			wantSubstrs: []string{"23%/h", "projecting 117%", "limit in 41m"},
+			wantSubstrs: []string{"23%/h", "→117%", "·41m"},
+			notSubstrs:  []string{"projecting", "limit in"},
 			wantStyle:   watch,
 		},
 		{
@@ -386,11 +387,12 @@ func TestRenderBurnRateSide(t *testing.T) {
 				MinutesTo100Pct:     &min9,
 				Confidence:          "ok",
 			},
-			wantSubstrs: []string{"45%/h", "projecting 200%", "limit in 9m"},
+			wantSubstrs: []string{"45%/h", "→200%", "·9m"},
+			notSubstrs:  []string{"projecting", "limit in"},
 			wantStyle:   danger,
 		},
 		{
-			name: "danger with nil eta degrades to 'already at limit'",
+			name: "danger with nil eta degrades to 'at limit'",
 			p: &status.Projection{
 				SlopePctPerHour:     100,
 				ProjectedPctAtReset: 500,
@@ -398,8 +400,8 @@ func TestRenderBurnRateSide(t *testing.T) {
 				MinutesTo100Pct:     nil,
 				Confidence:          "ok",
 			},
-			wantSubstrs: []string{"already at limit"},
-			notSubstrs:  []string{"limit in"},
+			wantSubstrs: []string{"100%/h", "at limit"},
+			notSubstrs:  []string{"→", "500", "projecting"},
 			wantStyle:   danger,
 		},
 	}
@@ -497,8 +499,8 @@ func TestRenderBurnRateSide_PerDay(t *testing.T) {
 				WillOverreach:       false,
 				Confidence:          "ok",
 			},
-			wantSubstrs: []string{"12%/day", "projecting 60%"},
-			notSubstrs:  []string{"%/h", "limit in"},
+			wantSubstrs: []string{"12%/day", "→60%"},
+			notSubstrs:  []string{"%/h", "·", "projecting"},
 			wantStyle:   safe,
 		},
 	}

@@ -278,44 +278,91 @@ func TestQuotaBarsRendersIdleForNil5hResetsAt(t *testing.T) {
 }
 
 func TestQuotaHeaderFitsBoxWidth(t *testing.T) {
-	// The two-bar quota header must fit inside the bordered box's inner
-	// content width (m.w - 4: 2 border cols + 2 padding cols). If
-	// progressWidth() oversizes the bars relative to the per-side chrome
-	// (label + barTimeGap + statusBlockMaxW slot) the bars row overflows
-	// and lipgloss wraps it, breaking the header into 5+ lines with a
-	// misaligned bottom border. Regression guard for #316, which widened
-	// statusBlockMaxW 6→7 without updating progressWidth's chrome budget.
-	//
-	// Worst-case reset strings fill both slots: 5h "4h 59m" (6 cols) and
-	// 7d "23h 59m" (7 cols), so the 7-col slot is fully exercised.
-	widths := []int{80, 100, 120, 121, 160, 200}
-	for _, w := range widths {
-		t.Run(fmt.Sprintf("w=%d", w), func(t *testing.T) {
-			m := New(Deps{})
-			m.w, m.h = w, 40
-			m.window = status.Window{
-				Percent:          61,
-				MinutesToReset:   intPtr(299), // "4h 59m"
-				Has7d:            true,
-				Percent7d:        50,
-				MinutesToReset7d: intPtr(1439), // "23h 59m"
-			}
-			m.progress = newProgressBar(m.progressWidth())
-			m.progress7d = newProgressBar(m.progressWidth())
+	// The boxed quota header must fit its inner content width (m.w - 4:
+	// 2 border cols + 2 padding cols) AND stay exactly 4 lines (top border +
+	// bars row + burn-rate row + bottom border) across BOTH terminal widths
+	// and projection states. lipgloss wraps any content wider than the inner
+	// width, which grows the box past 4 lines and misaligns the bottom border
+	// (and breaks chartHeight's fixed 7-row overhead). Two regression classes
+	// live here:
+	//   - #316/#318: the bars row oversized when statusBlockMaxW widened 6→7.
+	//   - #320: the burn-rate row (renderBurnRateSide) wrapped a long
+	//     watch/danger projection string because lipgloss .Width() word-wraps
+	//     overflow rather than truncating it.
+	// The widest sub-24h reset/eta string is "23h 59m" (7 cols); the 7d burn
+	// rate "%/day" token is wider than the 5h "%/h" token, so the 7d side is
+	// the binding case. The extreme_* case (4-digit projected %) forces the
+	// ansi.Truncate backstop. Narrow widths (≤48) exercise the lowered
+	// bar-width floor that lets the bars row shrink to fit.
+	proj := func(over bool, projected int, eta *int) *status.Projection {
+		return &status.Projection{
+			SlopePctPerHour:     12, // 7d renders 12*24 = 288%/day
+			ProjectedPctAtReset: projected,
+			WillOverreach:       over,
+			MinutesTo100Pct:     eta,
+			Confidence:          "ok",
+		}
+	}
+	base := func() status.Window {
+		return status.Window{
+			Percent:          61,
+			MinutesToReset:   intPtr(299), // "4h 59m" (widest 5h reset)
+			Has7d:            true,
+			Percent7d:        50,
+			MinutesToReset7d: intPtr(1439), // "23h 59m" (widest sub-24h 7d reset)
+		}
+	}
+	withProj := func(p *status.Projection) status.Window {
+		w := base()
+		w.Projection = &status.Projections{FiveHour: p, SevenDay: p}
+		return w
+	}
+	no7d := func() status.Window {
+		w := base()
+		w.Has7d = false
+		w.MinutesToReset7d = nil
+		return w
+	}
 
-			inner := w - 4 // RoundedBorder (2) + Padding(0,1) (2)
-			for i, line := range strings.Split(m.quotaBars(), "\n") {
-				if lw := lipgloss.Width(line); lw > inner {
-					t.Errorf("quotaBars line %d width %d exceeds inner box width %d (w=%d)\nline: %q",
-						i, lw, inner, w, line)
+	cases := []struct {
+		name string
+		win  status.Window
+	}{
+		{"no_projection_7d", base()},
+		{"no_projection_no7d", no7d()},
+		{"safe", withProj(proj(false, 54, nil))},
+		{"watch_long_eta", withProj(proj(true, 154, intPtr(1439)))}, // widest burn string
+		{"danger_short_eta", withProj(proj(true, 200, intPtr(9)))},
+		{"danger_no_eta", withProj(proj(true, 500, nil))},
+		{"extreme_magnitude", withProj(proj(true, 9999, intPtr(1439)))}, // forces truncation
+	}
+
+	// 40/44 sit in the old clamp-overflow regime; 121 is an odd parity.
+	widths := []int{40, 44, 60, 80, 100, 120, 121, 160, 200}
+	for _, tc := range cases {
+		for _, w := range widths {
+			t.Run(fmt.Sprintf("%s/w=%d", tc.name, w), func(t *testing.T) {
+				m := New(Deps{})
+				m.w, m.h = w, 40
+				m.window = tc.win
+				m.progress = newProgressBar(m.progressWidth())
+				m.progress7d = newProgressBar(m.progressWidth())
+
+				bars := m.quotaBars()
+				inner := w - 4 // RoundedBorder (2) + Padding(0,1) (2)
+				for i, line := range strings.Split(bars, "\n") {
+					if lw := lipgloss.Width(line); lw > inner {
+						t.Errorf("quotaBars line %d width %d exceeds inner box width %d\nline: %q",
+							i, lw, inner, line)
+					}
 				}
-			}
 
-			header := renderHeader(m.w, m.quotaBars())
-			if got := len(strings.Split(header, "\n")); got != 4 {
-				t.Errorf("header is %d lines, want 4 (top border + 2 rows + bottom border); content wrapped:\n%s", got, header)
-			}
-		})
+				header := renderHeader(m.w, bars)
+				if got := len(strings.Split(header, "\n")); got != 4 {
+					t.Errorf("header is %d lines, want 4 (top border + 2 rows + bottom border); content wrapped:\n%s", got, header)
+				}
+			})
+		}
 	}
 }
 
@@ -772,9 +819,10 @@ func TestQuotaBarsSymmetric(t *testing.T) {
 	// index.
 	//
 	// Cases span the linear regime (60–120 cols, where progressWidth =
-	// (W-35)/2) and the clamp regime (40 cols, where progressWidth pins
-	// at 6 and the bars-row overflows the box — the symmetry property
-	// must still hold inside the overflow).
+	// (W-29)/2) and the narrow regime (40 cols, where the bar shrinks
+	// toward minBarWidth so the bars row still fits the box — see #320).
+	// Symmetry (left width == right width) must hold either way; box-fit
+	// itself is pinned separately by TestQuotaHeaderFitsBoxWidth.
 	cases := []struct {
 		name string
 		w    int

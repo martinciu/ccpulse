@@ -161,7 +161,7 @@ func newSeededCache(t *testing.T) *cache.Cache {
 // that overreaches (95% with ~45m to reset, so ~4h 15m elapsed). The
 // projection's MinutesTo100Pct lands in single-digit minutes — well
 // inside the burnImminentThreshold — so the rendered header should
-// show "limit in" copy in the red style.
+// show the compact ·eta limit clause in the red style.
 //
 // Why this test: the unit tests cover renderBurnRateSide in isolation,
 // but only this scenario verifies the full wiring (QuotaMsg →
@@ -198,8 +198,14 @@ func TestProgram_BurnRateOverreach(t *testing.T) {
 		t.Fatalf("FinalOutput read: %v", err)
 	}
 	final := string(out)
-	if !strings.Contains(final, "limit in") {
-		t.Errorf("expected 'limit in' copy after overreach QuotaMsg; got:\n%s", final)
+	// Compact danger copy is "{rate} →{proj}% ·{eta}" (issue #320 abbreviated
+	// the former "projecting …/limit in …" words to the → and · symbols).
+	// Assert both the projected (→) and eta (·) markers so this still verifies
+	// the full overreach template wired through, not merely any projection.
+	for _, want := range []string{"→", "·"} {
+		if !strings.Contains(final, want) {
+			t.Errorf("expected compact danger marker %q after overreach QuotaMsg; got:\n%s", want, final)
+		}
 	}
 	// Danger style marker — produce the same envelope the renderer would use
 	// and check it appears somewhere in the frame. Avoids hard-coding

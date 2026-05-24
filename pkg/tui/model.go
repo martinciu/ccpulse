@@ -1978,11 +1978,21 @@ func (m Model) progressWidth() int {
 	perSide := labelW + lipgloss.Width(barTimeGap) + statusBlockMaxW
 	chrome := 4 + 3 + 2*perSide // 4 = border+padding, 3 = " │ " divider
 	w := (m.w - chrome) / 2
-	if w < 6 {
-		return 6
+	if w < minBarWidth {
+		return minBarWidth
 	}
 	return w
 }
+
+// minBarWidth is the smallest a quota bar may shrink to. Lowered from the
+// former 6/10 floors so the two bars shrink to fit narrow terminals and
+// the bars row stops overflowing the box (#320): the row fits whenever
+// bar ≤ (m.w - chrome)/2, which progressWidth returns exactly — the old
+// floors forced a too-wide bar below ~48 cols and lipgloss wrapped the
+// row. Below ~31 cols the label/reset/divider chrome alone exceeds the
+// width and nothing helps; a 1-col bar is degenerate but keeps the box
+// intact down to that point.
+const minBarWidth = 1
 
 // newProgressBar builds a quota bar using the project's green → red
 // gradient (Material 500 #4caf50 → #f44336). WithGradient — not
@@ -1993,8 +2003,8 @@ func (m Model) progressWidth() int {
 // the limit. The actual fill amount is supplied at render time via
 // progress.ViewAs.
 func newProgressBar(w int) progress.Model {
-	if w < 10 {
-		w = 10
+	if w < minBarWidth {
+		w = minBarWidth
 	}
 	return progress.New(
 		progress.WithWidth(w),
