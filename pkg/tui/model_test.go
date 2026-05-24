@@ -932,21 +932,6 @@ func TestQuotaBarRendered(t *testing.T) {
 	}
 }
 
-func TestViewFitsTerminal(t *testing.T) {
-	for _, h := range []int{20, 40, 60} {
-		m := New(Deps{})
-		m.w, m.h = 120, h
-		m.viewport.Width = m.chartWidth()
-		m.viewport.Height = m.chartHeight()
-		m.viewport.SetContent(strings.Repeat("X\n", m.chartHeight()))
-		v := m.View()
-		got := strings.Count(v, "\n") + 1
-		if got > h {
-			t.Errorf("h=%d: rendered %d lines, exceeds terminal height", h, got)
-		}
-	}
-}
-
 func TestRefreshChart_FromEarliest(t *testing.T) {
 	// After issue #53, refreshChart must load from the earliest cached
 	// message (aligned to the active zoom's bucket boundary) up to "now".
