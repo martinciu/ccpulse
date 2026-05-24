@@ -87,8 +87,12 @@ changelog:
       order: 99
   filters:
     exclude:
-      - '^chore'
-      - '^docs'
-      - '^test'
+      # Match an optional leading emoji token before the conventional type —
+      # commits here are emoji-prefixed (`📊 docs:`, `🧹 chore:`), so the bare
+      # `^chore`/`^docs`/`^test` anchors never fire. The `(:|\()` boundary keeps
+      # `test` from swallowing "testing"/"latest"/"fastest". (#327)
+      - '^(\S+\s+)?chore(:|\()'
+      - '^(\S+\s+)?docs(:|\()'
+      - '^(\S+\s+)?test(:|\()'
       - '^(🧹|🧪|📝|🙈)'
       - 'Merge pull request'
