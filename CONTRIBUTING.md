@@ -43,6 +43,22 @@ ccpulse is MIT-licensed — fork it freely and make it your own. The
 [Build from source](README.md#build-from-source) section of the README has
 everything you need to get a local build going.
 
+## Versioning
+
+ccpulse follows [Semantic Versioning](https://semver.org), with the **minor**
+number as the release counter:
+
+- **Minor** (`0.1.0` → `0.2.0`) — every normal release, bundling features and
+  fixes together.
+- **Patch** (`0.2.1`) — reserved for an out-of-band hotfix between releases; it
+  normally stays at `0`.
+- **Major** (`1.0.0`) — the point at which the `ccpulse status --json` schema
+  and the CLI flags are declared stable.
+
+Until `1.0.0`, ccpulse is in `0.x`: the public surfaces (`status --json` field
+shapes, CLI flags, config keys, cache schema) may still change between minor
+releases. Any breaking change is called out in the release notes.
+
 ## Security
 
 Please don't file security reports publicly. Report vulnerabilities privately
