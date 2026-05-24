@@ -702,6 +702,33 @@ func TestFormatBarValue(t *testing.T) {
 	}
 }
 
+func TestGroupThousands(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		n    int64
+		want string
+	}{
+		{"zero", 0, "0"},
+		{"single digit", 5, "5"},
+		{"three digits", 999, "999"},
+		{"exactly one thousand", 1000, "1,000"},
+		{"five digits", 12340, "12,340"},
+		{"six digits", 123400, "123,400"},
+		{"just below million", 999999, "999,999"},
+		{"seven digits", 1000000, "1,000,000"},
+		{"negative guard", -1234, "-1,234"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := groupThousands(tt.n); got != tt.want {
+				t.Errorf("groupThousands(%d) = %q, want %q", tt.n, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestOverlayBarLabels_PlacesAtBarTops(t *testing.T) {
 	now := time.Now()
 	zoom := ZoomLevels[2] // 24h: BarWidth=10, BarGap=2, stride=12

@@ -759,6 +759,37 @@ func roundCompact(mantissa float64, exp, dec int) (string, int) {
 	}
 }
 
+// groupThousands renders n in base 10 with comma thousands separators
+// (e.g. 12340 -> "12,340"). Used by formatBarValue for the full-number
+// 24h bar labels below the M threshold (#324). Hand-rolled to avoid
+// promoting golang.org/x/text from an indirect to a direct dependency.
+func groupThousands(n int64) string {
+	neg := n < 0
+	s := strconv.FormatInt(n, 10)
+	if neg {
+		s = s[1:] // strip leading '-'; re-added below
+	}
+	if len(s) > 3 {
+		var b strings.Builder
+		pre := len(s) % 3
+		if pre > 0 {
+			b.WriteString(s[:pre])
+			b.WriteByte(',')
+		}
+		for i := pre; i < len(s); i += 3 {
+			b.WriteString(s[i : i+3])
+			if i+3 < len(s) {
+				b.WriteByte(',')
+			}
+		}
+		s = b.String()
+	}
+	if neg {
+		return "-" + s
+	}
+	return s
+}
+
 // formatBarValue renders v as the compact in-bar label for the active unit
 // (#308). Cost: whole dollars, no cents ("$0", "$45", "$1k", "$1M"). Tokens:
 // integer at k and below ("42", "750k"), one decimal at M/G ("1.2M", whole
