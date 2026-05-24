@@ -1,3 +1,4 @@
+// Package pricing embeds pricing.json and computes the USD cost of a message.
 package pricing
 
 import (
@@ -15,6 +16,7 @@ import (
 //go:embed history/*.json
 var historyFS embed.FS
 
+// ModelRate holds the per-million-token billing rates for one model.
 type ModelRate struct {
 	InputPerMtok        float64 `json:"input_per_mtok"`
 	OutputPerMtok       float64 `json:"output_per_mtok"`
@@ -23,6 +25,7 @@ type ModelRate struct {
 	CacheWrite1hPerMtok float64 `json:"cache_write_1h_per_mtok"`
 }
 
+// Table is a versioned snapshot of per-model billing rates decoded from a pricing JSON file.
 type Table struct {
 	Version  string               `json:"version"`
 	Currency string               `json:"currency"`

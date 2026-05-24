@@ -1,3 +1,4 @@
+// Package cache persists parsed messages and time-bucketed token aggregates in a local SQLite database (modernc.org/sqlite).
 package cache
 
 import (
@@ -71,6 +72,7 @@ func init() {
 //go:embed schema.sql
 var schemaSQL string
 
+// SchemaVersion is the expected on-disk schema version; a mismatch triggers an auto-rebuild.
 const SchemaVersion = "6"
 
 // normalizeResetsAtSQL flips legacy `0001-01-01T00:00:00Z` sentinels
@@ -102,6 +104,7 @@ const cachePragmas = "_pragma=busy_timeout(5000)" +
 	"&_pragma=synchronous(normal)" +
 	"&_pragma=temp_store(memory)"
 
+// Cache is the SQLite-backed store for message rows, file cursors, and usage samples.
 type Cache struct {
 	db *sql.DB
 	// lockFile is the fd holding the cache flock. Must not be dup'd or passed
@@ -188,6 +191,7 @@ func NewFromDB(db *sql.DB) *Cache {
 	return &Cache{db: db}
 }
 
+// DB returns the underlying *sql.DB for callers that need direct query access.
 func (c *Cache) DB() *sql.DB { return c.db }
 
 // Close closes the underlying DB and releases the cache lock fd.
@@ -455,6 +459,7 @@ func (c *Cache) UtilizationSince(column string, since time.Time) ([]UtilizationP
 	return out, nil
 }
 
+// InsertMessages upserts parsed messages into the messages table, computing and storing per-message USD cost estimates.
 func (c *Cache) InsertMessages(msgs []parse.Message, hist pricing.History) error {
 	tx, err := c.db.Begin()
 	if err != nil {
@@ -498,6 +503,7 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 	return tx.Commit()
 }
 
+// RecordFile upserts the byte-offset cursor and mtime for path into the files table.
 func (c *Cache) RecordFile(path string, mtimeNs, offset, lastLine int64) error {
 	_, err := c.db.Exec(`
 INSERT INTO files(path, mtime_ns, last_offset_bytes, last_line)
@@ -510,6 +516,7 @@ ON CONFLICT(path) DO UPDATE SET
 	return err
 }
 
+// GetFile looks up the stored byte-offset cursor for path; found is false when the file has not been indexed yet.
 func (c *Cache) GetFile(path string) (mtime, offset, line int64, found bool, err error) {
 	row := c.db.QueryRow(`SELECT mtime_ns, last_offset_bytes, last_line FROM files WHERE path = ?`, path)
 	err = row.Scan(&mtime, &offset, &line)

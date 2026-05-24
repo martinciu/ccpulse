@@ -10,6 +10,7 @@ import (
 	"time"
 )
 
+// Message is a single assistant turn decoded from a Claude Code JSONL transcript line.
 type Message struct {
 	SessionID          string
 	ProjectSlug        string
@@ -49,6 +50,9 @@ type rawLine struct {
 	} `json:"message"`
 }
 
+// ParseError records a per-line parsing failure with its absolute line number and underlying error.
+//
+//nolint:revive // ParseError stutters; retained for compatibility — callers already reference it as parse.ParseError
 type ParseError struct {
 	Line int
 	Err  error
@@ -69,6 +73,8 @@ var ErrOversizedLineSkipped = errors.New("oversized line skipped")
 // error, and any lines after the oversized one are not yielded.
 // Callers that need to skip past the oversized line and continue
 // parsing must use the file-based ParseFromOffsetWithErrors.
+//
+//nolint:revive // ParseWithErrors stutters; retained for compatibility — callers that dot-import would lose all parse. prefix
 func ParseWithErrors(r io.Reader, projectSlug string) ([]Message, []ParseError, error) {
 	var msgs []Message
 	var errs []ParseError

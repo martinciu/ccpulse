@@ -1,3 +1,4 @@
+// Package config loads the TOML config at ~/.config/ccpulse/config.toml.
 package config
 
 import (
@@ -11,19 +12,23 @@ import (
 //go:embed default.toml
 var defaultTOML []byte
 
+// History holds transcript retention settings.
 type History struct {
 	RetentionDays int `toml:"retention_days"`
 }
 
+// Paths holds filesystem root and cache-directory overrides.
 type Paths struct {
 	ProjectsRoot string `toml:"projects_root"`
 	CacheDir     string `toml:"cache_dir"`
 }
 
+// UI holds TUI presentation preferences such as reduced-motion mode.
 type UI struct {
 	ReduceMotion bool `toml:"reduce_motion"`
 }
 
+// Config is the top-level configuration structure decoded from config.toml.
 type Config struct {
 	History History `toml:"history"`
 	Paths   Paths   `toml:"paths"`

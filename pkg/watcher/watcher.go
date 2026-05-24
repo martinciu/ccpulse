@@ -12,11 +12,13 @@ import (
 	"github.com/fsnotify/fsnotify"
 )
 
+// Watcher watches a directory tree for JSONL file changes and fires debounced callbacks.
 type Watcher struct {
 	w   *fsnotify.Watcher
 	deb time.Duration
 }
 
+// New creates a Watcher rooted at root, subscribing to root and all existing subdirectories.
 func New(root string) (*Watcher, error) {
 	if _, err := os.Stat(root); err != nil {
 		return nil, fmt.Errorf("watch root %s: %w", root, err)
@@ -110,4 +112,5 @@ func (w *Watcher) Run(onChange func(path string)) {
 	}
 }
 
+// Close shuts down the underlying fsnotify watcher, causing Run to return.
 func (w *Watcher) Close() error { return w.w.Close() }

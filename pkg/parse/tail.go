@@ -18,6 +18,8 @@ import (
 // shape as the silent JSON-unmarshal-error swallow already in this
 // loop. Callers that need parse-error visibility use the WithErrors
 // variant.
+//
+//nolint:revive // ParseFromOffset stutters; retained for compatibility — part of the established incremental-tail API
 func ParseFromOffset(path, slug string, startOffset int64, startLine int) ([]Message, int64, int, error) {
 	f, err := os.Open(path)
 	if err != nil {

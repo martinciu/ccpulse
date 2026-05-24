@@ -1,3 +1,4 @@
+// Package tui implements the Bubble Tea model — header quota bars and the horizontally-scrollable token histogram.
 package tui
 
 import (
@@ -329,6 +330,7 @@ type Model struct {
 	dateOrder dateOrder
 }
 
+// New constructs a Model from the given Deps, initialising progress bars, viewport, and key bindings.
 func New(d Deps) Model {
 	m := Model{
 		deps:      d,
@@ -347,8 +349,11 @@ func New(d Deps) Model {
 	return m
 }
 
+// Init implements tea.Model; it fires the initial now-tick command.
 func (m Model) Init() tea.Cmd { return m.scheduleNowTick() }
 
+// Update implements tea.Model; it dispatches all Bubble Tea messages and drives the TUI state machine.
+//
 //nolint:gocognit,nestif,gocyclo,funlen // tracked in #333 — central TUI message dispatch
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -669,6 +674,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// View implements tea.Model; it renders the full TUI frame — header quota bars, separator, and token histogram.
 func (m Model) View() string {
 	if m.w == 0 {
 		return "" // pre-init; don't time

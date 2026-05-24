@@ -48,8 +48,8 @@ linters:
       require-specific: true
     revive:
       rules:
-        - name: unused-parameter
-          disabled: true
+        - name: exported
+        - name: package-comments
 
   exclusions:
     presets:
