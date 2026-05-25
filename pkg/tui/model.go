@@ -1576,6 +1576,24 @@ func (m Model) scheduleNowTick() tea.Cmd {
 	})
 }
 
+// clearChart resets the chart to the empty-cache placeholder and zeroes the
+// cached canvas state. It resets only the fields every reset path shares;
+// call-site-specific extras (underfilled at the EarliestMessageTime branch,
+// lastPts5h/7d in loadRemainingSeries) stay at their sites so behavior is
+// preserved exactly.
+func (m *Model) clearChart() {
+	m.viewport.SetContent(emptyPlaceholder(m.chartWidth(), m.chartHeight()))
+	m.lastValues = nil
+	m.lastStarts = nil
+	m.peak = 0
+	m.lastCanvasW = 0
+	m.lastZoomStride = 0
+	m.lastChartFrom = time.Time{}
+	m.lastChartTo = time.Time{}
+	m.hasData = false
+	m.setX(0)
+}
+
 // refreshChart queries the cache and updates the viewport content.
 // Safe to call when deps.Cache is nil (no-op). Loads the full history
 // present in the cache, from the earliest message up to "now". On an
@@ -1640,17 +1658,10 @@ func (m *Model) refreshChart() {
 		// Genuine DB read failure: keep the placeholder. (An empty cache —
 		// ok == false, err == nil — falls through to the padded-window path
 		// below, so the warming-up state shows a full-width axis instead, #300.)
-		m.viewport.SetContent(emptyPlaceholder(m.chartWidth(), m.chartHeight()))
-		m.lastValues = nil
-		m.lastStarts = nil
-		m.peak = 0
-		m.lastCanvasW = 0
-		m.lastZoomStride = 0
-		m.lastChartFrom = time.Time{}
-		m.lastChartTo = time.Time{}
+		// underfilled is set explicitly here (clearChart leaves it untouched):
+		// this branch runs before the dataBuckets-based assignment below.
+		m.clearChart()
 		m.underfilled = false
-		m.hasData = false
-		m.setX(0)
 		return
 	}
 
