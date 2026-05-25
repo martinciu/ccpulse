@@ -487,7 +487,6 @@ func TestProjectSevenDay_SlopeCases(t *testing.T) {
 	}
 }
 
-
 func TestFilterCurrentBucket(t *testing.T) {
 	t0 := time.Date(2026, 5, 25, 0, 0, 0, 0, time.UTC)
 	reset1 := "2026-06-01T00:00:00.000Z"

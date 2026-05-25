@@ -117,17 +117,7 @@ func projectSevenDay(
 		return linear
 	}
 
-	currentBucketID := samples[len(samples)-1].ResetsAt
-	var filtered []cache.SevenDaySample
-	for _, s := range samples {
-		if s.ResetsAt != currentBucketID {
-			continue
-		}
-		if math.IsNaN(s.Pct) || math.IsInf(s.Pct, 0) {
-			continue
-		}
-		filtered = append(filtered, s)
-	}
+	filtered := filterCurrentBucket(samples)
 
 	if len(filtered) < minSamplesForSlope {
 		return linear
