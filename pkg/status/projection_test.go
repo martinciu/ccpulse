@@ -487,6 +487,40 @@ func TestProjectSevenDay_SlopeCases(t *testing.T) {
 	}
 }
 
+
+func TestFilterCurrentBucket(t *testing.T) {
+	t0 := time.Date(2026, 5, 25, 0, 0, 0, 0, time.UTC)
+	reset1 := "2026-06-01T00:00:00.000Z"
+	reset2 := "2026-06-02T00:00:00.000Z"
+	tests := []struct {
+		name string
+		in   []cache.SevenDaySample
+		want int
+	}{
+		{"empty", nil, 0},
+		{"single bucket kept", []cache.SevenDaySample{
+			{At: t0, Pct: 10, ResetsAt: reset2},
+			{At: t0.Add(time.Hour), Pct: 20, ResetsAt: reset2},
+		}, 2},
+		{"older bucket dropped", []cache.SevenDaySample{
+			{At: t0, Pct: 10, ResetsAt: reset1},
+			{At: t0.Add(time.Hour), Pct: 20, ResetsAt: reset2},
+		}, 1},
+		{"NaN and Inf dropped", []cache.SevenDaySample{
+			{At: t0, Pct: math.NaN(), ResetsAt: reset2},
+			{At: t0.Add(time.Hour), Pct: math.Inf(1), ResetsAt: reset2},
+			{At: t0.Add(2 * time.Hour), Pct: 30, ResetsAt: reset2},
+		}, 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := len(filterCurrentBucket(tt.in)); got != tt.want {
+				t.Errorf("filterCurrentBucket() len = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRound2(t *testing.T) {
 	cases := []struct {
 		in   float64
