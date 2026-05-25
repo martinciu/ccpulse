@@ -1293,8 +1293,6 @@ func (m *Model) maybeArmIntro() tea.Cmd {
 // Sets viewport.XOffset = 0 because the windowed canvas is rendered
 // starting at slice col 0; the leadingPad below shifts content to
 // match the pre-spring viewport position.
-//
-//nolint:gocyclo // tracked in #333 — spring animation frame assembly
 func (m *Model) renderSpringFrame() {
 	if len(m.springRatios) == 0 {
 		return
@@ -1313,83 +1311,100 @@ func (m *Model) renderSpringFrame() {
 	}
 
 	if renderAsLine {
-		// Shape-fraction convention: springRatios[i] is a uniform scalar in
-		// [0,1] where 1.0 = full real shape and 0 = flat line at 100% headroom.
-		// Both exit and enter use the SAME ratio direction (springShrinking:
-		// 1→0, springGrowing: 0→1). The visual direction is produced by
-		// interpPt below, which maps the scalar onto the displayed value via
-		// displayed = 1.0 + (target-1.0)*maxR — so maxR=0 renders flat 100%
-		// and maxR=1 renders the real shape. This is why exit (line
-		// collapses upward to 100%) and enter (line drops from 100% to real
-		// shape) both use ratios approaching 1.0 → 0 and 0 → 1.0 respectively
-		// without needing separate direction flags.
-		// maxR is the global envelope; all ratios move together.
-		var maxR float64
-		for _, r := range m.springRatios {
-			maxR = max(maxR, r)
-		}
-
-		// Select which pts to interpolate: old data during exit, new during enter.
-		pts5h, pts7d := m.lastPts5h, m.lastPts7d
-		if m.springPhase == springShrinking && m.oldIsLine {
-			pts5h, pts7d = m.oldPts5h, m.oldPts7d
-		}
-
-		fullFrom, fullTo := m.lastChartFrom, m.lastChartTo
-		if fullFrom.IsZero() {
-			fullFrom = time.Now().Add(-5 * time.Hour)
-		}
-		if fullTo.IsZero() {
-			fullTo = time.Now()
-		}
-
-		// PERF (#180): window the line chart to the visible viewport.
-		// Full-canvas rebuild at canvasW=2880 blows the 60fps frame
-		// budget (~93ms per real-binary probe). The windowed render at
-		// canvasW=viewport.Width is pixel-identical inside the visible
-		// region because timeserieslinechart's WithTimeRange maps
-		// time→col linearly — so the settle transition to refreshChart's
-		// full canvas doesn't visibly snap. Parallels the bar branch's
-		// computeSpringSlice windowing.
-		fullCanvasW := max(zoom.CanvasWidth(bucketCountInRange(fullFrom, fullTo, zoom.Duration)), m.viewport.Width)
-		vpW := m.viewport.Width
-		chartXOffset := m.viewportXOffset * zoom.stride()
-		// Clamp: after #207's ceil-maxX in remaining mode, chartXOffset+vpW
-		// can exceed fullCanvasW by up to stride-1 cols at 24h zoom. Without
-		// this, viewTo saturates to fullTo via columnToTime but viewFrom
-		// still advances — yielding a higher col-per-time density than the
-		// steady-state full-canvas render and a visible horizontal stretch
-		// on the spring → settle transition.
-		if maxOff := fullCanvasW - vpW; chartXOffset > maxOff {
-			chartXOffset = maxOff
-		}
-		viewFrom := columnToTime(chartXOffset, fullCanvasW, fullFrom, fullTo)
-		viewTo := columnToTime(chartXOffset+vpW, fullCanvasW, fullFrom, fullTo)
-
-		slicedPts5h := slicePointsInRange(pts5h, viewFrom, viewTo)
-		slicedPts7d := slicePointsInRange(pts7d, viewFrom, viewTo)
-
-		interpPt := func(p cache.UtilizationPoint) cache.UtilizationPoint {
-			target := max(0, 1.0-p.Pct/100.0)
-			// displayed ∈ [1.0, target]: 1.0 (flat) when maxR=0, target (real) when maxR=1.
-			displayed := 1.0 + (target-1.0)*maxR
-			return cache.UtilizationPoint{At: p.At, Pct: (1.0 - displayed) * 100.0}
-		}
-
-		interp5h := make([]cache.UtilizationPoint, len(slicedPts5h))
-		for i, p := range slicedPts5h {
-			interp5h[i] = interpPt(p)
-		}
-		interp7d := make([]cache.UtilizationPoint, len(slicedPts7d))
-		for i, p := range slicedPts7d {
-			interp7d[i] = interpPt(p)
-		}
-
-		m.viewport.SetContent(buildLineChart(interp5h, interp7d, viewFrom, viewTo, vpW, chartH, time.Now(), zoom, m.dateOrder, "spring"))
-		m.viewport.SetXOffset(0)
+		m.renderSpringLineFrame(zoom, chartH)
 		return
 	}
+	m.renderSpringBarFrame(zoom, chartH)
+}
 
+// renderSpringLineFrame renders one frame of the line-chart (remaining-mode)
+// spring transition: it interpolates the windowed utilization points toward
+// the flat 100%-headroom line via the springRatios envelope and paints the
+// viewport. Split out of renderSpringFrame (#336). See renderSpringFrame for
+// the shape-fraction convention and the #180 viewport-windowing rationale.
+func (m *Model) renderSpringLineFrame(zoom ZoomLevel, chartH int) {
+	// Shape-fraction convention: springRatios[i] is a uniform scalar in
+	// [0,1] where 1.0 = full real shape and 0 = flat line at 100% headroom.
+	// Both exit and enter use the SAME ratio direction (springShrinking:
+	// 1→0, springGrowing: 0→1). The visual direction is produced by
+	// interpPt below, which maps the scalar onto the displayed value via
+	// displayed = 1.0 + (target-1.0)*maxR — so maxR=0 renders flat 100%
+	// and maxR=1 renders the real shape. This is why exit (line
+	// collapses upward to 100%) and enter (line drops from 100% to real
+	// shape) both use ratios approaching 1.0 → 0 and 0 → 1.0 respectively
+	// without needing separate direction flags.
+	// maxR is the global envelope; all ratios move together.
+	var maxR float64
+	for _, r := range m.springRatios {
+		maxR = max(maxR, r)
+	}
+
+	// Select which pts to interpolate: old data during exit, new during enter.
+	pts5h, pts7d := m.lastPts5h, m.lastPts7d
+	if m.springPhase == springShrinking && m.oldIsLine {
+		pts5h, pts7d = m.oldPts5h, m.oldPts7d
+	}
+
+	fullFrom, fullTo := m.lastChartFrom, m.lastChartTo
+	if fullFrom.IsZero() {
+		fullFrom = time.Now().Add(-5 * time.Hour)
+	}
+	if fullTo.IsZero() {
+		fullTo = time.Now()
+	}
+
+	// PERF (#180): window the line chart to the visible viewport.
+	// Full-canvas rebuild at canvasW=2880 blows the 60fps frame
+	// budget (~93ms per real-binary probe). The windowed render at
+	// canvasW=viewport.Width is pixel-identical inside the visible
+	// region because timeserieslinechart's WithTimeRange maps
+	// time→col linearly — so the settle transition to refreshChart's
+	// full canvas doesn't visibly snap. Parallels the bar branch's
+	// computeSpringSlice windowing.
+	fullCanvasW := max(zoom.CanvasWidth(bucketCountInRange(fullFrom, fullTo, zoom.Duration)), m.viewport.Width)
+	vpW := m.viewport.Width
+	chartXOffset := m.viewportXOffset * zoom.stride()
+	// Clamp: after #207's ceil-maxX in remaining mode, chartXOffset+vpW
+	// can exceed fullCanvasW by up to stride-1 cols at 24h zoom. Without
+	// this, viewTo saturates to fullTo via columnToTime but viewFrom
+	// still advances — yielding a higher col-per-time density than the
+	// steady-state full-canvas render and a visible horizontal stretch
+	// on the spring → settle transition.
+	if maxOff := fullCanvasW - vpW; chartXOffset > maxOff {
+		chartXOffset = maxOff
+	}
+	viewFrom := columnToTime(chartXOffset, fullCanvasW, fullFrom, fullTo)
+	viewTo := columnToTime(chartXOffset+vpW, fullCanvasW, fullFrom, fullTo)
+
+	slicedPts5h := slicePointsInRange(pts5h, viewFrom, viewTo)
+	slicedPts7d := slicePointsInRange(pts7d, viewFrom, viewTo)
+
+	interpPt := func(p cache.UtilizationPoint) cache.UtilizationPoint {
+		target := max(0, 1.0-p.Pct/100.0)
+		// displayed ∈ [1.0, target]: 1.0 (flat) when maxR=0, target (real) when maxR=1.
+		displayed := 1.0 + (target-1.0)*maxR
+		return cache.UtilizationPoint{At: p.At, Pct: (1.0 - displayed) * 100.0}
+	}
+
+	interp5h := make([]cache.UtilizationPoint, len(slicedPts5h))
+	for i, p := range slicedPts5h {
+		interp5h[i] = interpPt(p)
+	}
+	interp7d := make([]cache.UtilizationPoint, len(slicedPts7d))
+	for i, p := range slicedPts7d {
+		interp7d[i] = interpPt(p)
+	}
+
+	m.viewport.SetContent(buildLineChart(interp5h, interp7d, viewFrom, viewTo, vpW, chartH, time.Now(), zoom, m.dateOrder, "spring"))
+	m.viewport.SetXOffset(0)
+}
+
+// renderSpringBarFrame renders one frame of the bar-chart spring transition:
+// it slices the visible springRatios window (flush-right via
+// computeSpringSlice), colors it by the active phase's unit, and paints the
+// viewport. Split out of renderSpringFrame (#336). Steady-state twin:
+// renderWindow.
+func (m *Model) renderSpringBarFrame(zoom ZoomLevel, chartH int) {
 	nv := m.visibleBuckets()
 
 	// Pick the starts that align with the springRatios for the current
