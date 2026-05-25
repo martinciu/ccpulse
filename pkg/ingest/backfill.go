@@ -26,56 +26,24 @@ type Backfill struct {
 	onBeforeProcess func(path string)
 }
 
-// Run enumerates .jsonl files, filters out files that are already
-// caught up, sorts the remainder newest-mtime first, and feeds each
-// through Ingester.ProcessFile. onProgress is only called when
-// there is at least one file to process: Active:true Done:0 Total:N
-// before the loop, (i+1)/N after each file, and once at the end
-// with Active:false. When every file is already caught up (the
-// common case immediately after `index --rebuild`), no progress
-// callback fires and the TUI never shows the indicator. Honours
-// ctx cancellation between files; never aborts on a single bad
-// file. ProjectsRoot missing returns nil with no callbacks.
-//
-//nolint:gocyclo // tracked in #333 — cold-walk backfill loop
-func (b *Backfill) Run(ctx context.Context, onProgress func(Progress)) error {
-	// Pre-stat the root so a missing ProjectsRoot exits cleanly with
-	// zero progress callbacks. The walker below can't distinguish
-	// "root vanished" from "one subdirectory unreadable" — we want
-	// the former to skip the indicator entirely.
-	if _, err := os.Stat(b.Ingester.ProjectsRoot); err != nil {
-		LogFileError(b.Ingester.ParseErrorsLog, b.Ingester.ProjectsRoot, err)
-		return nil
-	}
+type backfillEntry struct {
+	path  string
+	mtime time.Time
+}
 
-	type entry struct {
-		path  string
-		mtime time.Time
-	}
-
-	// One SELECT replaces what was previously an O(N) GetFile call
-	// per visited path. ProcessFile inside the work loop still calls
-	// GetFile and re-checks offset == st.Size, so this map is a
-	// filter hint, not the authoritative gate: an empty map (after
-	// a query error) is safe — every file falls through to
-	// ProcessFile, which no-ops the caught-up ones.
+// collectStaleFiles walks ProjectsRoot for .jsonl files whose stored offset
+// differs from their current size, returning them newest-mtime first. Per-entry
+// errors are logged and skipped; the walk never aborts on one bad file. The
+// offsets map is a filter hint only — ProcessFile re-checks offset == size, so
+// an empty map (after a query error) is safe.
+func (b *Backfill) collectStaleFiles() []backfillEntry {
 	offsets, err := b.Ingester.Cache.AllFileOffsets()
 	if err != nil {
 		LogFileError(b.Ingester.ParseErrorsLog, b.Ingester.ProjectsRoot, err)
 		offsets = map[string]int64{}
 	}
 
-	// The visitor swallows per-entry errors (logged, return nil) so
-	// the walk continues across permission glitches in single
-	// subdirectories. Root-not-found is handled by the pre-stat
-	// above, so WalkDir's return value is always nil here.
-	//
-	// We also drop files whose stored offset already matches the
-	// current size — Ingester.ProcessFile would skip them anyway,
-	// but enqueueing them here would inflate Total and tick the
-	// indicator across files that need no work (very visible after
-	// `index --rebuild`).
-	var entries []entry
+	var entries []backfillEntry
 	_ = filepath.WalkDir(b.Ingester.ProjectsRoot, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
 			LogFileError(b.Ingester.ParseErrorsLog, p, err)
@@ -95,30 +63,55 @@ func (b *Backfill) Run(ctx context.Context, onProgress func(Progress)) error {
 		if off, ok := offsets[p]; ok && off == info.Size() {
 			return nil
 		}
-		entries = append(entries, entry{path: p, mtime: info.ModTime()})
+		entries = append(entries, backfillEntry{path: p, mtime: info.ModTime()})
 		return nil
 	})
 
 	sort.Slice(entries, func(i, j int) bool {
 		return entries[i].mtime.After(entries[j].mtime)
 	})
+	return entries
+}
 
+// notify forwards progress to onProgress when a callback is registered.
+func notify(onProgress func(Progress), p Progress) {
+	if onProgress != nil {
+		onProgress(p)
+	}
+}
+
+// Run enumerates .jsonl files, filters out files that are already
+// caught up, sorts the remainder newest-mtime first, and feeds each
+// through Ingester.ProcessFile. onProgress is only called when
+// there is at least one file to process: Active:true Done:0 Total:N
+// before the loop, (i+1)/N after each file, and once at the end
+// with Active:false. When every file is already caught up (the
+// common case immediately after `index --rebuild`), no progress
+// callback fires and the TUI never shows the indicator. Honours
+// ctx cancellation between files; never aborts on a single bad
+// file. ProjectsRoot missing returns nil with no callbacks.
+func (b *Backfill) Run(ctx context.Context, onProgress func(Progress)) error {
+	// Pre-stat the root so a missing ProjectsRoot exits cleanly with zero
+	// progress callbacks (the walker can't distinguish "root vanished" from
+	// "one subdirectory unreadable").
+	if _, err := os.Stat(b.Ingester.ProjectsRoot); err != nil {
+		LogFileError(b.Ingester.ParseErrorsLog, b.Ingester.ProjectsRoot, err)
+		return nil
+	}
+
+	entries := b.collectStaleFiles()
 	total := len(entries)
 	if total == 0 {
 		// Nothing to do — don't show the indicator at all.
 		return nil
 	}
 
-	if onProgress != nil {
-		onProgress(Progress{Done: 0, Total: total, Active: true})
-	}
+	notify(onProgress, Progress{Done: 0, Total: total, Active: true})
 
 	for i, e := range entries {
 		select {
 		case <-ctx.Done():
-			if onProgress != nil {
-				onProgress(Progress{Done: i, Total: total, Active: false})
-			}
+			notify(onProgress, Progress{Done: i, Total: total, Active: false})
 			return nil
 		default:
 		}
@@ -128,13 +121,9 @@ func (b *Backfill) Run(ctx context.Context, onProgress func(Progress)) error {
 		}
 		_, _ = b.Ingester.ProcessFile(e.path)
 
-		if onProgress != nil {
-			onProgress(Progress{Done: i + 1, Total: total, Active: true})
-		}
+		notify(onProgress, Progress{Done: i + 1, Total: total, Active: true})
 	}
 
-	if onProgress != nil {
-		onProgress(Progress{Done: total, Total: total, Active: false})
-	}
+	notify(onProgress, Progress{Done: total, Total: total, Active: false})
 	return nil
 }
