@@ -1576,6 +1576,94 @@ func (m Model) scheduleNowTick() tea.Cmd {
 	})
 }
 
+// chartSeries carries the per-unit data loaded for one refreshChart pass:
+// the bar/line values, their bucket-start times, the y-axis peak (set only
+// for remaining mode; bar modes recompute it in renderWindow), and which
+// unit produced them.
+type chartSeries struct {
+	values []float64
+	starts []time.Time
+	peak   float64
+	unit   chartUnit
+}
+
+// loadSeries loads the active unit's series for the [from, to] window.
+// Returns ok=false when the unit's query fails or yields no data; the caller
+// then resets via clearChart. loadRemainingSeries owns the lastPts5h/7d and
+// hasData side effects (its existing behavior).
+func (m *Model) loadSeries(zoom ZoomLevel, from, to time.Time) (chartSeries, bool) {
+	switch chartUnit(m.unitIdx) {
+	case chartUnitCost:
+		return m.loadCostSeries(zoom, from, to)
+	case chartUnitRemaining:
+		return m.loadRemainingSeries(from)
+	default:
+		return m.loadTokenSeries(zoom, from, to)
+	}
+}
+
+func (m *Model) loadCostSeries(zoom ZoomLevel, from, to time.Time) (chartSeries, bool) {
+	buckets, err := m.deps.Cache.CostBuckets(zoom.Duration, from, to)
+	if err != nil || len(buckets) == 0 {
+		return chartSeries{}, false
+	}
+	values := make([]float64, len(buckets))
+	starts := make([]time.Time, len(buckets))
+	for i, b := range buckets {
+		values[i] = b.Cost
+		starts[i] = b.BucketStart
+	}
+	return chartSeries{values: values, starts: starts, unit: chartUnitCost}, true
+}
+
+func (m *Model) loadRemainingSeries(from time.Time) (chartSeries, bool) {
+	pts5h, err5h := m.deps.Cache.UtilizationSince("five_hour_pct", from)
+	pts7d, err7d := m.deps.Cache.UtilizationSince("seven_day_pct", from)
+	if err5h != nil && err7d != nil {
+		// Both queries failed: nil the cached points (the reset extra this
+		// path owns), then signal failure — the caller runs clearChart.
+		m.lastPts5h = nil
+		m.lastPts7d = nil
+		return chartSeries{}, false
+	}
+	if err5h != nil {
+		pts5h = nil
+	}
+	if err7d != nil {
+		pts7d = nil
+	}
+	m.lastPts5h = pts5h
+	m.lastPts7d = pts7d
+	// #300: remaining mode has real data only when usage samples exist; the
+	// padded axis (no samples) is a warming-up state, not data.
+	m.hasData = len(pts5h) > 0 || len(pts7d) > 0
+	anchor := pts5h
+	if len(anchor) == 0 {
+		anchor = pts7d
+	}
+	values := make([]float64, len(anchor))
+	starts := make([]time.Time, len(anchor))
+	for i, p := range anchor {
+		values[i] = max(0, 1.0-p.Pct/100.0)
+		starts[i] = p.At
+	}
+	return chartSeries{values: values, starts: starts, peak: 1.0, unit: chartUnitRemaining}, true
+}
+
+func (m *Model) loadTokenSeries(zoom ZoomLevel, from, to time.Time) (chartSeries, bool) {
+	buckets, err := m.deps.Cache.IOTokenBuckets(zoom.Duration, from, to)
+	if err != nil || len(buckets) == 0 {
+		return chartSeries{}, false
+	}
+	values := make([]float64, len(buckets))
+	starts := make([]time.Time, len(buckets))
+	for i, b := range buckets {
+		values[i] = float64(b.Tokens)
+		starts[i] = b.BucketStart
+	}
+	return chartSeries{values: values, starts: starts, unit: chartUnitTokens}, true
+}
+
 // clearChart resets the chart to the empty-cache placeholder and zeroes the
 // cached canvas state. It resets only the fields every reset path shares;
 // call-site-specific extras (underfilled at the EarliestMessageTime branch,
@@ -1701,106 +1789,17 @@ func (m *Model) refreshChart() {
 	// remaining-mode branch overrides this with whether usage samples exist.
 	m.hasData = ok
 
-	var (
-		values []float64
-		starts []time.Time
-		peak   float64
-		unit   chartUnit
-	)
-	switch m.unitIdx {
-	case int(chartUnitCost): // cost
-		buckets, err := m.deps.Cache.CostBuckets(zoom.Duration, from, to)
-		if err != nil || len(buckets) == 0 {
-			m.viewport.SetContent(emptyPlaceholder(m.chartWidth(), m.chartHeight()))
-			m.lastValues = nil
-			m.lastStarts = nil
-			m.peak = 0
-			m.lastCanvasW = 0
-			m.lastZoomStride = 0
-			m.lastChartFrom = time.Time{}
-			m.lastChartTo = time.Time{}
-			m.hasData = false
-			m.setX(0)
-			return
-		}
-		values = make([]float64, len(buckets))
-		starts = make([]time.Time, len(buckets))
-		for i, b := range buckets {
-			values[i] = b.Cost
-			starts[i] = b.BucketStart
-		}
-		unit = chartUnitCost
-	case int(chartUnitRemaining): // remaining quota line chart
-		pts5h, err5h := m.deps.Cache.UtilizationSince("five_hour_pct", from)
-		pts7d, err7d := m.deps.Cache.UtilizationSince("seven_day_pct", from)
-		if err5h != nil && err7d != nil {
-			m.viewport.SetContent(emptyPlaceholder(m.chartWidth(), m.chartHeight()))
-			m.lastValues = nil
-			m.lastStarts = nil
-			m.lastPts5h = nil
-			m.lastPts7d = nil
-			m.peak = 0
-			m.lastCanvasW = 0
-			m.lastZoomStride = 0
-			m.lastChartFrom = time.Time{}
-			m.lastChartTo = time.Time{}
-			m.hasData = false
-			m.setX(0)
-			return
-		}
-		if err5h != nil {
-			pts5h = nil
-		}
-		if err7d != nil {
-			pts7d = nil
-		}
-		m.lastPts5h = pts5h
-		m.lastPts7d = pts7d
-		// #300: remaining mode has real data only when usage samples exist; the
-		// padded axis (no samples) is a warming-up state, not data.
-		m.hasData = len(pts5h) > 0 || len(pts7d) > 0
-		peak = 1.0
-		anchor := pts5h
-		if len(anchor) == 0 {
-			anchor = pts7d
-		}
-		values = make([]float64, len(anchor))
-		starts = make([]time.Time, len(anchor))
-		for i, p := range anchor {
-			values[i] = max(0, 1.0-p.Pct/100.0)
-			starts[i] = p.At
-		}
-		unit = chartUnitRemaining
-	default: // tokens
-		buckets, err := m.deps.Cache.IOTokenBuckets(zoom.Duration, from, to)
-		if err != nil || len(buckets) == 0 {
-			m.viewport.SetContent(emptyPlaceholder(m.chartWidth(), m.chartHeight()))
-			m.lastValues = nil
-			m.lastStarts = nil
-			m.peak = 0
-			m.lastCanvasW = 0
-			m.lastZoomStride = 0
-			m.lastChartFrom = time.Time{}
-			m.lastChartTo = time.Time{}
-			m.hasData = false
-			m.setX(0)
-			return
-		}
-		values = make([]float64, len(buckets))
-		starts = make([]time.Time, len(buckets))
-		for i, b := range buckets {
-			values[i] = float64(b.Tokens)
-			starts[i] = b.BucketStart
-		}
-		unit = chartUnitTokens
+	series, loaded := m.loadSeries(zoom, from, to)
+	if !loaded {
+		m.clearChart()
+		return
 	}
-
-	m.lastValues = values
-	m.lastStarts = starts
+	m.lastValues = series.values
+	m.lastStarts = series.starts
 
 	chartH := m.chartHeight()
 	var canvasW int
-	if unit == chartUnitRemaining {
+	if series.unit == chartUnitRemaining {
 		// Mirror bar mode's canvas-width formula so 'z' zoom and 'u'
 		// unit-toggle preserve the same time-range under the viewport's
 		// left edge in both modes. Floor at chartWidth() so a short
@@ -1808,7 +1807,7 @@ func (m *Model) refreshChart() {
 		// of rendering in a narrow slice on the left.
 		canvasW = max(zoom.CanvasWidth(bucketCountInRange(from, to, zoom.Duration)), m.chartWidth())
 	} else {
-		canvasW = zoom.CanvasWidth(len(values))
+		canvasW = zoom.CanvasWidth(len(series.values))
 	}
 	m.lastChartFrom = from
 	m.lastChartTo = to
@@ -1853,8 +1852,8 @@ func (m *Model) refreshChart() {
 	// re-apply dance is gone). Remaining mode keeps the full-canvas line
 	// chart plus the re-apply setX to restore the offset against the new
 	// wide canvas after a bar→line spring left narrow content behind.
-	if unit == chartUnitRemaining {
-		m.peak = peak // 1.0, set in the switch above
+	if series.unit == chartUnitRemaining {
+		m.peak = series.peak // 1.0, set in loadRemainingSeries
 		m.viewport.SetContent(buildLineChart(m.lastPts5h, m.lastPts7d, from, to, canvasW, chartH, m.now(), zoom, m.dateOrder, "refresh"))
 		m.setX(m.viewportXOffset)
 	} else {
