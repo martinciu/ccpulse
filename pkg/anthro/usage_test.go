@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -903,5 +904,31 @@ func TestCaptureLogsHelper(t *testing.T) {
 	}
 	if n, ok := attrMap(got[1])["n"].(int64); !ok || n != 42 {
 		t.Errorf("rec[1].n = %v, want int64(42)", attrMap(got[1])["n"])
+	}
+}
+
+func TestFreshFromCache(t *testing.T) {
+	now := time.Date(2026, 5, 25, 12, 0, 0, 0, time.UTC)
+	u := Usage{FiveHour: &Bucket{Utilization: 42}}
+	tests := []struct {
+		name     string
+		cached   cachedUsage
+		cacheErr error
+		wantOK   bool
+	}{
+		{"fresh", cachedUsage{Usage: u, UpdatedAt: now.Add(-time.Minute)}, nil, true},
+		{"stale", cachedUsage{Usage: u, UpdatedAt: now.Add(-10 * time.Minute)}, nil, false},
+		{"cache error", cachedUsage{}, errors.New("missing"), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res, ok := freshFromCache(tt.cached, tt.cacheErr, now)
+			if ok != tt.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tt.wantOK)
+			}
+			if ok && res.Source != "cache_fresh" {
+				t.Errorf("Source = %q, want cache_fresh", res.Source)
+			}
+		})
 	}
 }

@@ -33,7 +33,6 @@ func newStatusCmd() *cobra.Command {
 	return c
 }
 
-//nolint:gocyclo // tracked in #333 — status output assembly
 func runStatus(cmd *cobra.Command, asJSON, quiet bool) error {
 	cfg, err := config.Load(config.DefaultPath())
 	if err != nil && !os.IsNotExist(err) {
@@ -61,17 +60,7 @@ func runStatus(cmd *cobra.Command, asJSON, quiet bool) error {
 
 	// Record a usage sample whenever Fetch returned genuinely fresh data.
 	// Best-effort — failure to record never blocks the visible quota number.
-	if q.Source == "api" && q.Usage != nil {
-		if recErr := c.RecordUsageSample(*q.Usage, q.UpdatedAt); recErr != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "ccpulse: record sample: %v\n", recErr)
-		}
-		if cfg.History.RetentionDays > 0 {
-			cutoff := time.Now().Add(-time.Duration(cfg.History.RetentionDays) * 24 * time.Hour)
-			if _, prErr := c.PruneUsageSamples(cutoff); prErr != nil {
-				fmt.Fprintf(cmd.ErrOrStderr(), "ccpulse: prune samples: %v\n", prErr)
-			}
-		}
-	}
+	recordUsageSample(cmd, c, cfg, q)
 
 	w, err := status.Compute(c.DB(), time.Now(), q)
 	if err != nil {
@@ -82,22 +71,45 @@ func runStatus(cmd *cobra.Command, asJSON, quiet bool) error {
 		return nil
 	}
 
-	switch {
-	case asJSON:
-		j, _ := status.JSON(w)
-		fmt.Fprintln(cmd.OutOrStdout(), j)
-	default:
-		if w.Quota != nil {
-			if w.MinutesToReset != nil {
-				fmt.Fprintf(cmd.OutOrStdout(), "5h window: %d%% used, resets in %dm\n", w.Percent, *w.MinutesToReset)
-			} else {
-				fmt.Fprintf(cmd.OutOrStdout(), "5h window: %d%% used, idle\n", w.Percent)
-			}
-		} else {
-			fmt.Fprintln(cmd.OutOrStdout(), "5h window: no quota data — run 'claude /login' for percent display, or use --json for tokens/cost.")
+	printStatus(cmd.OutOrStdout(), w, asJSON)
+	return nil
+}
+
+// recordUsageSample persists a freshly-fetched usage sample and prunes samples
+// past the retention horizon. Best-effort: failures go to stderr and never block
+// the status output.
+func recordUsageSample(cmd *cobra.Command, c *cache.Cache, cfg config.Config, q status.QuotaInput) {
+	if q.Source != "api" || q.Usage == nil {
+		return
+	}
+	errOut := cmd.ErrOrStderr()
+	if recErr := c.RecordUsageSample(*q.Usage, q.UpdatedAt); recErr != nil {
+		fmt.Fprintf(errOut, "ccpulse: record sample: %v\n", recErr)
+	}
+	if cfg.History.RetentionDays > 0 {
+		cutoff := time.Now().Add(-time.Duration(cfg.History.RetentionDays) * 24 * time.Hour)
+		if _, prErr := c.PruneUsageSamples(cutoff); prErr != nil {
+			fmt.Fprintf(errOut, "ccpulse: prune samples: %v\n", prErr)
 		}
 	}
-	return nil
+}
+
+// printStatus renders the computed window to out, as JSON or the human summary.
+func printStatus(out io.Writer, w status.Window, asJSON bool) {
+	if asJSON {
+		j, _ := status.JSON(w)
+		fmt.Fprintln(out, j)
+		return
+	}
+	if w.Quota == nil {
+		fmt.Fprintln(out, "5h window: no quota data — run 'claude /login' for percent display, or use --json for tokens/cost.")
+		return
+	}
+	if w.MinutesToReset != nil {
+		fmt.Fprintf(out, "5h window: %d%% used, resets in %dm\n", w.Percent, *w.MinutesToReset)
+		return
+	}
+	fmt.Fprintf(out, "5h window: %d%% used, idle\n", w.Percent)
 }
 
 // buildQuotaInput resolves the credential and (best-effort) fetches usage data.

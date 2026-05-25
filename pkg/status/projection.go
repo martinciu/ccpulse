@@ -81,7 +81,27 @@ const (
 	minSpanForSlope        = 4 * time.Hour // must match sevenDayLowConfidenceCutoff
 )
 
-//nolint:gocyclo // tracked in #333 — 7d projection branches
+// filterCurrentBucket keeps only the samples in the most recent reset bucket
+// (identified by the last sample's ResetsAt), dropping NaN/Inf utilisation
+// values. Returns nil for empty input.
+func filterCurrentBucket(samples []cache.SevenDaySample) []cache.SevenDaySample {
+	if len(samples) == 0 {
+		return nil
+	}
+	currentBucketID := samples[len(samples)-1].ResetsAt
+	var filtered []cache.SevenDaySample
+	for _, s := range samples {
+		if s.ResetsAt != currentBucketID {
+			continue
+		}
+		if math.IsNaN(s.Pct) || math.IsInf(s.Pct, 0) {
+			continue
+		}
+		filtered = append(filtered, s)
+	}
+	return filtered
+}
+
 func projectSevenDay(
 	samples []cache.SevenDaySample,
 	currentPct float64,
@@ -97,17 +117,7 @@ func projectSevenDay(
 		return linear
 	}
 
-	currentBucketID := samples[len(samples)-1].ResetsAt
-	var filtered []cache.SevenDaySample
-	for _, s := range samples {
-		if s.ResetsAt != currentBucketID {
-			continue
-		}
-		if math.IsNaN(s.Pct) || math.IsInf(s.Pct, 0) {
-			continue
-		}
-		filtered = append(filtered, s)
-	}
+	filtered := filterCurrentBucket(samples)
 
 	if len(filtered) < minSamplesForSlope {
 		return linear

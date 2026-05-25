@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/fsnotify/fsnotify"
 )
 
 func TestNew_MissingRoot(t *testing.T) {
@@ -126,5 +128,25 @@ func TestWatcherRunReturnsOnClose(t *testing.T) {
 		// good — Run returned
 	case <-time.After(2 * time.Second):
 		t.Fatal("Run did not return within 2s of Close")
+	}
+}
+
+func TestIsJSONLWrite(t *testing.T) {
+	tests := []struct {
+		name string
+		ev   fsnotify.Event
+		want bool
+	}{
+		{"jsonl write", fsnotify.Event{Name: "a.jsonl", Op: fsnotify.Write}, true},
+		{"jsonl create", fsnotify.Event{Name: "a.jsonl", Op: fsnotify.Create}, true},
+		{"jsonl chmod only", fsnotify.Event{Name: "a.jsonl", Op: fsnotify.Chmod}, false},
+		{"non-jsonl write", fsnotify.Event{Name: "a.txt", Op: fsnotify.Write}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isJSONLWrite(tt.ev); got != tt.want {
+				t.Errorf("isJSONLWrite(%+v) = %v, want %v", tt.ev, got, tt.want)
+			}
+		})
 	}
 }

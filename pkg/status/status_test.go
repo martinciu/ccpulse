@@ -444,3 +444,38 @@ func TestCompute_SevenDayUsesRecencyWeightedProjection(t *testing.T) {
 		t.Errorf("ProjectedPctAtReset = %d, want 50", got.ProjectedPctAtReset)
 	}
 }
+
+func TestResolveFiveHour(t *testing.T) {
+	now := time.Date(2026, 5, 25, 12, 0, 0, 0, time.UTC)
+	reset := now.Add(90 * time.Minute)
+	t.Run("api with reset", func(t *testing.T) {
+		q := QuotaInput{Usage: &anthro.Usage{FiveHour: &anthro.Bucket{Utilization: 55, ResetsAt: &reset}}}
+		pct, mins := resolveFiveHour(q, "", now)
+		if pct != 55 {
+			t.Errorf("pct = %d, want 55", pct)
+		}
+		if mins == nil || *mins != 90 {
+			t.Errorf("mins = %v, want 90", mins)
+		}
+	})
+	t.Run("api idle (no reset)", func(t *testing.T) {
+		q := QuotaInput{Usage: &anthro.Usage{FiveHour: &anthro.Bucket{Utilization: 12}}}
+		pct, mins := resolveFiveHour(q, "", now)
+		if pct != 12 {
+			t.Errorf("pct = %d, want 12", pct)
+		}
+		if mins != nil {
+			t.Errorf("mins = %v, want nil", mins)
+		}
+	})
+	t.Run("no usage falls back to oldest", func(t *testing.T) {
+		oldest := now.Add(-2 * time.Hour).Format("2006-01-02T15:04:05.000Z07:00")
+		pct, mins := resolveFiveHour(QuotaInput{}, oldest, now)
+		if pct != 0 {
+			t.Errorf("pct = %d, want 0", pct)
+		}
+		if mins == nil || *mins != 180 {
+			t.Errorf("mins = %v, want 180", mins)
+		}
+	})
+}

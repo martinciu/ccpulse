@@ -142,6 +142,16 @@ type FetchResult struct {
 	UpdatedAt time.Time // when the data was actually pulled from Anthropic
 }
 
+// freshFromCache returns a cache_fresh result when the cached entry is valid and
+// younger than cacheTTL. ok is false when there is no usable fresh entry, telling
+// the caller to fall through to the API path.
+func freshFromCache(cached cachedUsage, cacheErr error, now time.Time) (FetchResult, bool) {
+	if cacheErr == nil && now.Sub(cached.UpdatedAt) < cacheTTL {
+		return FetchResult{Usage: cached.Usage, Source: "cache_fresh", UpdatedAt: cached.UpdatedAt}, true
+	}
+	return FetchResult{}, false
+}
+
 // Fetch resolves the usage data per the spec's resolution tree:
 //  1. cache exists & fresh           → cache_fresh
 //  2. cache exists & stale + API ok  → api (cache rewritten)
@@ -155,8 +165,6 @@ type FetchResult struct {
 // flock on a sibling lock file: the first caller refreshes the cache, the
 // rest re-read under the lock and find a fresh entry — eliminating the
 // duplicate-API-hit race that survived the atomic-write fix in #75.
-//
-//nolint:gocyclo // tracked in #333 — cache/API fallback paths
 func Fetch(ctx context.Context, cred Credential, cacheDir string) (res FetchResult, err error) {
 	if cred.AccessToken == "" {
 		return FetchResult{}, errors.New("anthro: empty access token")
@@ -182,8 +190,8 @@ func Fetch(ctx context.Context, cred Credential, cacheDir string) (res FetchResu
 		slog.Debug("anthro.Fetch", attrs...)
 	}()
 
-	if cacheErr == nil && now.Sub(cached.UpdatedAt) < cacheTTL {
-		return FetchResult{Usage: cached.Usage, Source: "cache_fresh", UpdatedAt: cached.UpdatedAt}, nil
+	if res, ok := freshFromCache(cached, cacheErr, now); ok {
+		return res, nil
 	}
 
 	if release, lockErr := acquireFetchLock(cacheDir); lockErr == nil {
@@ -191,8 +199,8 @@ func Fetch(ctx context.Context, cred Credential, cacheDir string) (res FetchResu
 		defer release()
 		now = time.Now()
 		cached, cacheErr = readCache(cachePath)
-		if cacheErr == nil && now.Sub(cached.UpdatedAt) < cacheTTL {
-			return FetchResult{Usage: cached.Usage, Source: "cache_fresh", UpdatedAt: cached.UpdatedAt}, nil
+		if res, ok := freshFromCache(cached, cacheErr, now); ok {
+			return res, nil
 		}
 	}
 
