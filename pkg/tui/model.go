@@ -417,70 +417,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case springTickMsg:
 		return m, m.handleSpringTick(msg)
 	case QuotaMsg:
-		m.quota = msg.Usage
-		m.quotaSource = msg.Source
-		m.quotaUpdatedAt = msg.UpdatedAt
-		m.recomputeWindow()
-		// (#192) Quota arrival timing fix. Two paths:
-		//
-		// 1. In-flight: the open-path intro is still running but the
-		//    quota targets were snapshotted as 0 because m.quota was
-		//    nil at arm. Re-snapshot to live values so the springs
-		//    ease toward real targets for the remainder of the grow.
-		// 2. Late arrival: the chart intro armed and settled with no
-		//    quota loaded (springs ran 0→0 invisibly). Kick a
-		//    quota-only slide-in now, skipping the hold beat (the
-		//    bars already sat at 0 throughout the chart intro — no
-		//    new beat to register).
-		if m.springIntro {
-			m.quotaTarget5h = float64(m.window.Percent) / 100.0
-			if m.window.Has7d {
-				m.quotaTarget7d = float64(m.window.Percent7d) / 100.0
-			} else {
-				m.quotaTarget7d = 0
-			}
-			m.quotaIntroPending = false
-		} else if m.quotaIntroPending && !m.introPending && !m.deps.ReduceMotion {
-			target5h := float64(m.window.Percent) / 100.0
-			var target7d float64
-			if m.window.Has7d {
-				target7d = float64(m.window.Percent7d) / 100.0
-			}
-			if target5h > 0 || target7d > 0 {
-				m.quotaTarget5h = target5h
-				m.quotaTarget7d = target7d
-				m.quotaRatio5h = 0
-				m.quotaRatio7d = 0
-				m.quotaVel5h = phase2InitialVelocityV0 * target5h
-				m.quotaVel7d = phase2InitialVelocityV0 * target7d
-				m.quotaSpring5h = harmonica.NewSpring(
-					harmonica.FPS(springFPS),
-					phase2Frequency, phase2Damping,
-				)
-				m.quotaSpring7d = harmonica.NewSpring(
-					harmonica.FPS(springFPS),
-					phase2Frequency, phase2Damping,
-				)
-				m.quotaIntroPending = false
-				// Zero residual chart velocities from the prior settle
-				// so reusing the springGrowing arm for the quota-only
-				// late-arrival intro doesn't wobble the chart bars.
-				// Position is already at-target (copy in the settle
-				// block), velocity was never reset.
-				clear(m.springVelocities)
-				m.springActive = true
-				m.springIntro = true
-				m.springPhase = springGrowing
-				m.springGen++
-				gen := m.springGen
-				return m, tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
-					return springTickMsg{gen: gen}
-				})
-			}
-			// Targets both zero — nothing to animate. Clear the flag
-			// so we don't keep checking on every QuotaMsg.
-			m.quotaIntroPending = false
-		}
+		return m, m.handleQuotaMsg(msg)
 	case RefreshMsg:
 		start := time.Now()
 		m.recomputeWindow()
@@ -691,6 +628,87 @@ func (m *Model) advanceSpringGrowing(gen int) tea.Cmd {
 		return nil
 	}
 	m.renderSpringFrame()
+	return tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
+		return springTickMsg{gen: gen}
+	})
+}
+
+// handleQuotaMsg records fresh usage, recomputes the window, and resolves the
+// open-path quota intro: re-snapshot targets while the intro is in flight, or
+// kick a late-arrival quota-only slide-in if it already settled (#192).
+func (m *Model) handleQuotaMsg(msg QuotaMsg) tea.Cmd {
+	m.quota = msg.Usage
+	m.quotaSource = msg.Source
+	m.quotaUpdatedAt = msg.UpdatedAt
+	m.recomputeWindow()
+	// (#192) Quota arrival timing fix. Two paths:
+	//
+	// 1. In-flight: the open-path intro is still running but the
+	//    quota targets were snapshotted as 0 because m.quota was
+	//    nil at arm. Re-snapshot to live values so the springs
+	//    ease toward real targets for the remainder of the grow.
+	// 2. Late arrival: the chart intro armed and settled with no
+	//    quota loaded (springs ran 0→0 invisibly). Kick a
+	//    quota-only slide-in now, skipping the hold beat (the
+	//    bars already sat at 0 throughout the chart intro — no
+	//    new beat to register).
+	if m.springIntro {
+		m.quotaTarget5h = float64(m.window.Percent) / 100.0
+		if m.window.Has7d {
+			m.quotaTarget7d = float64(m.window.Percent7d) / 100.0
+		} else {
+			m.quotaTarget7d = 0
+		}
+		m.quotaIntroPending = false
+		return nil
+	}
+	if m.quotaIntroPending && !m.introPending && !m.deps.ReduceMotion {
+		return m.kickLateArrivalQuotaIntro()
+	}
+	return nil
+}
+
+// kickLateArrivalQuotaIntro starts a quota-only slide-in when the Anthropic
+// poller delivered usage after the chart intro already settled (#192). Returns
+// nil when both targets are zero (nothing to animate).
+func (m *Model) kickLateArrivalQuotaIntro() tea.Cmd {
+	target5h := float64(m.window.Percent) / 100.0
+	var target7d float64
+	if m.window.Has7d {
+		target7d = float64(m.window.Percent7d) / 100.0
+	}
+	if target5h <= 0 && target7d <= 0 {
+		// Targets both zero — nothing to animate. Clear the flag
+		// so we don't keep checking on every QuotaMsg.
+		m.quotaIntroPending = false
+		return nil
+	}
+	m.quotaTarget5h = target5h
+	m.quotaTarget7d = target7d
+	m.quotaRatio5h = 0
+	m.quotaRatio7d = 0
+	m.quotaVel5h = phase2InitialVelocityV0 * target5h
+	m.quotaVel7d = phase2InitialVelocityV0 * target7d
+	m.quotaSpring5h = harmonica.NewSpring(
+		harmonica.FPS(springFPS),
+		phase2Frequency, phase2Damping,
+	)
+	m.quotaSpring7d = harmonica.NewSpring(
+		harmonica.FPS(springFPS),
+		phase2Frequency, phase2Damping,
+	)
+	m.quotaIntroPending = false
+	// Zero residual chart velocities from the prior settle
+	// so reusing the springGrowing arm for the quota-only
+	// late-arrival intro doesn't wobble the chart bars.
+	// Position is already at-target (copy in the settle
+	// block), velocity was never reset.
+	clear(m.springVelocities)
+	m.springActive = true
+	m.springIntro = true
+	m.springPhase = springGrowing
+	m.springGen++
+	gen := m.springGen
 	return tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
 		return springTickMsg{gen: gen}
 	})
