@@ -356,6 +356,8 @@ func yLabelMidFloor(unit chartUnit) float64 {
 //
 // Skip semantics:
 //
+//	inBarNumbers (wide zoom, 24h, #335): return body unchanged — overlayBarLabels
+//	  draws per-bucket numbers, so the max/mid axis labels are redundant chrome.
 //	peak <= 0 || chartH < 6 || body == "" || fade <= 0:
 //	  return body unchanged (top-of-function early return).
 //	niceCeilingFloat(peak) <= 0: defensive — return body unchanged.
@@ -365,7 +367,13 @@ func yLabelMidFloor(unit chartUnit) float64 {
 //
 // max and mid share labelFadeStyle(fade) — one style instance, two
 // renders, same allocation pattern as the prior single-label path.
-func overlayYLabel(body string, peak float64, unit chartUnit, chartH int, fade float64) string {
+func overlayYLabel(body string, peak float64, unit chartUnit, chartH int, fade float64, inBarNumbers bool) string {
+	// At wide zooms (24h) overlayBarLabels draws each bucket's value inside the
+	// bar (#308), so the spliced max/mid axis labels are redundant — and the
+	// yLabelSlotW slot would overlay the leftmost bar. Suppress entirely (#335).
+	if inBarNumbers {
+		return body
+	}
 	if peak <= 0 || chartH < 6 || body == "" || fade <= 0 {
 		return body
 	}
@@ -401,8 +409,11 @@ func overlayYLabel(body string, peak float64, unit chartUnit, chartH int, fade f
 // itself (gaps stay blank). For BarWidth=1 / BarGap=0 the centering
 // math falls back to col (labelW ≥ 3 > 1, so (1-labelW)/2 < 0). Labels
 // that would overflow chartW on the right are dropped. Empty starts → "".
-// colorMuted foreground throughout — Y axis labels are default fg so
-// the eye distinguishes the two rows when they sit close.
+// colorMuted foreground throughout. As of #335 the bar-chart Y labels
+// (overlayYLabel) and the quota Y ticks (overlayYTicks) are colorMuted too,
+// so all three label rows read as one muted chrome layer; the bar-chart Y
+// labels are additionally suppressed at wide zooms (24h) where in-bar numbers
+// replace them.
 func renderXLabels(starts []time.Time, chartW int, zoom ZoomLevel, now time.Time, order dateOrder) string {
 	if chartW < 1 || len(starts) == 0 {
 		return ""
@@ -448,6 +459,13 @@ const (
 	// shorter bars stay clean colored stubs (#308).
 	barLabelMinRows = 2
 )
+
+// hasInBarNumbers reports whether this zoom is wide enough for overlayBarLabels
+// to draw per-bucket numbers inside the bars (#308). It is the single source of
+// truth for "in-bar numbers are active at this zoom", consumed both by
+// overlayBarLabels (to draw them) and overlayYLabel (to suppress the now-
+// redundant Y labels, #335), so the two decisions can never drift apart.
+func (z ZoomLevel) hasInBarNumbers() bool { return z.BarWidth >= barLabelMinWidth }
 
 // barLabelStyle returns the knockout style for in-bar numbers over the active
 // unit's bar color (#308): dark/light adaptive foreground on the bar's own
@@ -523,7 +541,7 @@ func barLabelPlacement(stripped [][]rune, col, bw, barsH, chartW, labelW int) (s
 // never written). Called from renderWindow only — renderSpringFrame does not
 // call it, so numbers are absent during animation.
 func overlayBarLabels(body string, texts []string, barsH, chartW int, zoom ZoomLevel) string {
-	if zoom.BarWidth < barLabelMinWidth || body == "" || len(texts) == 0 {
+	if !zoom.hasInBarNumbers() || body == "" || len(texts) == 0 {
 		return body
 	}
 	bw := max(zoom.BarWidth, 1)

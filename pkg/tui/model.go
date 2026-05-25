@@ -802,12 +802,12 @@ func (m Model) View() string {
 			if renderingLine {
 				body = overlayYTicks(rawBody, m.chartHeight(), fade)
 			} else {
-				body = overlayYLabel(rawBody, labelPeak, labelUnit, m.chartHeight(), fade)
+				body = overlayYLabel(rawBody, labelPeak, labelUnit, m.chartHeight(), fade, ZoomLevels[m.zoomIdx].hasInBarNumbers())
 			}
 		case chartUnit(m.unitIdx) == chartUnitRemaining:
 			body = overlayYTicks(rawBody, m.chartHeight(), 1.0)
 		default:
-			body = overlayYLabel(rawBody, m.peak, chartUnit(m.unitIdx), m.chartHeight(), 1.0)
+			body = overlayYLabel(rawBody, m.peak, chartUnit(m.unitIdx), m.chartHeight(), 1.0, ZoomLevels[m.zoomIdx].hasInBarNumbers())
 		}
 	}
 	footer := m.renderFooter()
