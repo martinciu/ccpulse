@@ -415,107 +415,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.indexFadeStop = 0
 		return m, nil
 	case springTickMsg:
-		if !m.springActive || msg.gen != m.springGen {
-			// springActive=false → no animation in flight at all.
-			// gen mismatch → tick belongs to a superseded animation
-			// generation (rapid 'u' press during animation). Either way,
-			// drop without rescheduling so the loop doesn't perpetuate.
-			return m, nil
-		}
-		gen := m.springGen
-		switch m.springPhase {
-		case springShrinking:
-			var maxR float64
-			for i := range m.springRatios {
-				pos := m.springProjectiles[i].Update()
-				// Defensive clamp — early-exit beats us to it under
-				// well-tuned per-bar gravity, but Projectile keeps
-				// accelerating past zero if we let it.
-				pos.X = max(pos.X, 0)
-				m.springRatios[i] = pos.X
-				maxR = max(maxR, pos.X)
-			}
-			if maxR < phaseTransitionThreshold {
-				// Phase 1 → Hold handoff: snap ratios to zero, render the
-				// all-zero frame once, schedule a one-shot tick at
-				// phaseHoldDuration. Phase 2 state (springTargetRatios,
-				// springVelocities) is seeded in the springHolding case
-				// when the hold tick arrives — not here (#163).
-				for i := range m.springRatios {
-					m.springRatios[i] = 0
-				}
-				m.springPhase = springHolding
-				m.renderSpringFrame()
-				return m, tea.Tick(phaseHoldDuration, func(time.Time) tea.Msg {
-					return springTickMsg{gen: gen}
-				})
-			}
-			m.renderSpringFrame()
-			return m, tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
-				return springTickMsg{gen: gen}
-			})
-
-		case springHolding:
-			// Hold tick arrived: seed Phase 2 targets and initial
-			// velocities, switch to springGrowing, resume FPS ticking.
-			// Ratios remain at zero (already snapped in the Phase 1
-			// threshold-cross). The first springGrowing tick will move
-			// them off zero (#163).
-			for i := range m.springRatios {
-				m.springTargetRatios[i] = m.springFinalTargets[i]
-				m.springVelocities[i] = phase2InitialVelocityV0 * m.springFinalTargets[i]
-			}
-			// Quota-bar Phase 2 seeding (#192). quotaTarget5h/7d were
-			// snapshotted at arm in beginIntroAnimation; mirror the
-			// bucket V_i = V0 * target_i contract.
-			m.quotaVel5h = phase2InitialVelocityV0 * m.quotaTarget5h
-			m.quotaVel7d = phase2InitialVelocityV0 * m.quotaTarget7d
-			m.springPhase = springGrowing
-			m.renderSpringFrame()
-			return m, tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
-				return springTickMsg{gen: gen}
-			})
-
-		case springGrowing:
-			var maxGap float64
-			for i := range m.springRatios {
-				r, v := m.springs[i].Update(m.springRatios[i],
-					m.springVelocities[i], m.springTargetRatios[i])
-				m.springRatios[i] = r
-				m.springVelocities[i] = v
-				gap := math.Abs(m.springTargetRatios[i] - r)
-				maxGap = max(maxGap, gap)
-			}
-			// Quota-bar Phase 2 advance (#192). Two scalar Update calls
-			// per tick; their gaps fold into the same maxGap so the
-			// existing settle check fires when ALL three surfaces are
-			// within threshold of their targets.
-			r5, v5 := m.quotaSpring5h.Update(
-				m.quotaRatio5h, m.quotaVel5h, m.quotaTarget5h,
-			)
-			m.quotaRatio5h, m.quotaVel5h = r5, v5
-			maxGap = max(maxGap, math.Abs(m.quotaTarget5h-r5))
-
-			r7, v7 := m.quotaSpring7d.Update(
-				m.quotaRatio7d, m.quotaVel7d, m.quotaTarget7d,
-			)
-			m.quotaRatio7d, m.quotaVel7d = r7, v7
-			maxGap = max(maxGap, math.Abs(m.quotaTarget7d-r7))
-
-			if maxGap < phaseTransitionThreshold {
-				copy(m.springRatios, m.springTargetRatios)
-				m.springActive = false
-				m.springIntro = false
-				m.springPhase = springIdle
-				m.refreshChart()
-				return m, nil
-			}
-			m.renderSpringFrame()
-			return m, tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
-				return springTickMsg{gen: gen}
-			})
-		}
-		return m, nil
+		return m, m.handleSpringTick(msg)
 	case QuotaMsg:
 		m.quota = msg.Usage
 		m.quotaSource = msg.Source
@@ -672,6 +572,128 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+// handleSpringTick dispatches one unit-toggle / intro animation tick to the
+// active phase, dropping stale or superseded-generation ticks (#218).
+func (m *Model) handleSpringTick(msg springTickMsg) tea.Cmd {
+	if !m.springActive || msg.gen != m.springGen {
+		// springActive=false → no animation in flight at all.
+		// gen mismatch → tick belongs to a superseded animation
+		// generation (rapid 'u' press during animation). Either way,
+		// drop without rescheduling so the loop doesn't perpetuate.
+		return nil
+	}
+	gen := m.springGen
+	switch m.springPhase {
+	case springShrinking:
+		return m.advanceSpringShrinking(gen)
+	case springHolding:
+		return m.advanceSpringHolding(gen)
+	case springGrowing:
+		return m.advanceSpringGrowing(gen)
+	}
+	return nil
+}
+
+// advanceSpringShrinking runs one Phase-1 (Projectile fall) tick. gen is the
+// animation generation captured by handleSpringTick.
+func (m *Model) advanceSpringShrinking(gen int) tea.Cmd {
+	var maxR float64
+	for i := range m.springRatios {
+		pos := m.springProjectiles[i].Update()
+		// Defensive clamp — early-exit beats us to it under
+		// well-tuned per-bar gravity, but Projectile keeps
+		// accelerating past zero if we let it.
+		pos.X = max(pos.X, 0)
+		m.springRatios[i] = pos.X
+		maxR = max(maxR, pos.X)
+	}
+	if maxR < phaseTransitionThreshold {
+		// Phase 1 → Hold handoff: snap ratios to zero, render the
+		// all-zero frame once, schedule a one-shot tick at
+		// phaseHoldDuration. Phase 2 state (springTargetRatios,
+		// springVelocities) is seeded in the springHolding case
+		// when the hold tick arrives — not here (#163).
+		for i := range m.springRatios {
+			m.springRatios[i] = 0
+		}
+		m.springPhase = springHolding
+		m.renderSpringFrame()
+		return tea.Tick(phaseHoldDuration, func(time.Time) tea.Msg {
+			return springTickMsg{gen: gen}
+		})
+	}
+	m.renderSpringFrame()
+	return tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
+		return springTickMsg{gen: gen}
+	})
+}
+
+// advanceSpringHolding seeds Phase 2 targets/velocities on the hold tick and
+// switches to springGrowing (#163, quota seeding #192).
+func (m *Model) advanceSpringHolding(gen int) tea.Cmd {
+	// Hold tick arrived: seed Phase 2 targets and initial
+	// velocities, switch to springGrowing, resume FPS ticking.
+	// Ratios remain at zero (already snapped in the Phase 1
+	// threshold-cross). The first springGrowing tick will move
+	// them off zero (#163).
+	for i := range m.springRatios {
+		m.springTargetRatios[i] = m.springFinalTargets[i]
+		m.springVelocities[i] = phase2InitialVelocityV0 * m.springFinalTargets[i]
+	}
+	// Quota-bar Phase 2 seeding (#192). quotaTarget5h/7d were
+	// snapshotted at arm in beginIntroAnimation; mirror the
+	// bucket V_i = V0 * target_i contract.
+	m.quotaVel5h = phase2InitialVelocityV0 * m.quotaTarget5h
+	m.quotaVel7d = phase2InitialVelocityV0 * m.quotaTarget7d
+	m.springPhase = springGrowing
+	m.renderSpringFrame()
+	return tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
+		return springTickMsg{gen: gen}
+	})
+}
+
+// advanceSpringGrowing runs one Phase-2 (Spring grow) tick across bucket and
+// quota springs; settles when every surface is within threshold (#192).
+func (m *Model) advanceSpringGrowing(gen int) tea.Cmd {
+	var maxGap float64
+	for i := range m.springRatios {
+		r, v := m.springs[i].Update(m.springRatios[i],
+			m.springVelocities[i], m.springTargetRatios[i])
+		m.springRatios[i] = r
+		m.springVelocities[i] = v
+		gap := math.Abs(m.springTargetRatios[i] - r)
+		maxGap = max(maxGap, gap)
+	}
+	// Quota-bar Phase 2 advance (#192). Two scalar Update calls
+	// per tick; their gaps fold into the same maxGap so the
+	// existing settle check fires when ALL three surfaces are
+	// within threshold of their targets.
+	r5, v5 := m.quotaSpring5h.Update(
+		m.quotaRatio5h, m.quotaVel5h, m.quotaTarget5h,
+	)
+	m.quotaRatio5h, m.quotaVel5h = r5, v5
+	maxGap = max(maxGap, math.Abs(m.quotaTarget5h-r5))
+
+	r7, v7 := m.quotaSpring7d.Update(
+		m.quotaRatio7d, m.quotaVel7d, m.quotaTarget7d,
+	)
+	m.quotaRatio7d, m.quotaVel7d = r7, v7
+	maxGap = max(maxGap, math.Abs(m.quotaTarget7d-r7))
+
+	if maxGap < phaseTransitionThreshold {
+		copy(m.springRatios, m.springTargetRatios)
+		m.springActive = false
+		m.springIntro = false
+		m.springPhase = springIdle
+		m.refreshChart()
+		return nil
+	}
+	m.renderSpringFrame()
+	return tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
+		return springTickMsg{gen: gen}
+	})
 }
 
 // View implements tea.Model; it renders the full TUI frame — header quota bars, separator, and token histogram.
