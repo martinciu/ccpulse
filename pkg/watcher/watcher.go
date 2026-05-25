@@ -53,15 +53,8 @@ func New(root string) (*Watcher, error) {
 // past the fireBufferSize cap are dropped silently — the buffer is
 // sized generously (256) so in practice this never fires; a slow
 // onChange is the more likely first symptom.
-//
-//nolint:gocognit,gocyclo // tracked in #333 — fsnotify event loop
 func (w *Watcher) Run(onChange func(path string)) {
 	const fireBufferSize = 256
-	// pending grows monotonically with the set of distinct files seen
-	// during this Run — entries are not deleted on fire (Stop on a
-	// fired timer is a no-op, and the next event for the same path
-	// overwrites the entry). For ccpulse's expected file count this
-	// is a non-issue; the deferred Stop loop cleans up on shutdown.
 	pending := map[string]*time.Timer{}
 	fire := make(chan string, fireBufferSize)
 	defer func() {
@@ -75,32 +68,7 @@ func (w *Watcher) Run(onChange func(path string)) {
 			if !ok {
 				return
 			}
-			// Newly-created directory: subscribe so we see writes inside it.
-			if e.Op&fsnotify.Create == fsnotify.Create {
-				if info, err := os.Stat(e.Name); err == nil && info.IsDir() {
-					_ = w.w.Add(e.Name)
-					continue
-				}
-			}
-			if !strings.HasSuffix(e.Name, ".jsonl") {
-				continue
-			}
-			if e.Op&fsnotify.Write != fsnotify.Write &&
-				e.Op&fsnotify.Create != fsnotify.Create {
-				continue
-			}
-			name := e.Name
-			if t, ok := pending[name]; ok {
-				t.Stop()
-			}
-			pending[name] = time.AfterFunc(w.deb, func() {
-				// Non-blocking: drops on shutdown (no receiver) and
-				// on full buffer (slow onChange overwhelmed by burst).
-				select {
-				case fire <- name:
-				default:
-				}
-			})
+			w.handleEvent(e, pending, fire)
 		case path := <-fire:
 			onChange(path)
 		case _, ok := <-w.w.Errors:
@@ -110,6 +78,49 @@ func (w *Watcher) Run(onChange func(path string)) {
 			// ignore — fsnotify error stream
 		}
 	}
+}
+
+// isJSONLWrite reports whether e is a WRITE or CREATE event on a .jsonl file —
+// the only events that should trigger a debounced onChange.
+func isJSONLWrite(e fsnotify.Event) bool {
+	if !strings.HasSuffix(e.Name, ".jsonl") {
+		return false
+	}
+	return e.Op&fsnotify.Write == fsnotify.Write ||
+		e.Op&fsnotify.Create == fsnotify.Create
+}
+
+// handleEvent processes one fsnotify event: it subscribes newly-created
+// directories and, for .jsonl writes, (re)arms a debounce timer that sends the
+// path on fire when it elapses. Runs synchronously in the Run goroutine, so
+// pending is accessed by that goroutine only — no extra synchronisation needed.
+// pending grows monotonically with the set of distinct files seen this Run;
+// entries are not deleted on fire (Stop on a fired timer is a no-op, and the
+// next event for the same path overwrites the entry). The deferred Stop loop in
+// Run cleans up on shutdown.
+func (w *Watcher) handleEvent(e fsnotify.Event, pending map[string]*time.Timer, fire chan<- string) {
+	// Newly-created directory: subscribe so we see writes inside it.
+	if e.Op&fsnotify.Create == fsnotify.Create {
+		if info, err := os.Stat(e.Name); err == nil && info.IsDir() {
+			_ = w.w.Add(e.Name)
+			return
+		}
+	}
+	if !isJSONLWrite(e) {
+		return
+	}
+	name := e.Name
+	if t, ok := pending[name]; ok {
+		t.Stop()
+	}
+	pending[name] = time.AfterFunc(w.deb, func() {
+		// Non-blocking: drops on shutdown (no receiver) and on full buffer
+		// (slow onChange overwhelmed by burst).
+		select {
+		case fire <- name:
+		default:
+		}
+	})
 }
 
 // Close shuts down the underlying fsnotify watcher, causing Run to return.
