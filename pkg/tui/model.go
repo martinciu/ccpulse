@@ -352,326 +352,416 @@ func New(d Deps) Model {
 // Init implements tea.Model; it fires the initial now-tick command.
 func (m Model) Init() tea.Cmd { return m.scheduleNowTick() }
 
-// Update implements tea.Model; it dispatches all Bubble Tea messages and drives the TUI state machine.
-//
-//nolint:gocognit,nestif,gocyclo,funlen // tracked in #333 — central TUI message dispatch
+// Update implements tea.Model; it dispatches all Bubble Tea messages to the
+// per-message handlers that drive the TUI state machine.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.w, m.h = msg.Width, msg.Height
-		m.viewport.Width = m.chartWidth()
-		m.viewport.Height = m.chartHeight()
-		// help.Width controls when ShortHelp ellipsizes; if left at 0
-		// the footer can wrap onto the body row and break chartHeight().
-		m.help.Width = m.w
-		m.progress = newProgressBar(m.progressWidth())
-		m.progress7d = newProgressBar(m.progressWidth())
-		m.refreshChart()
-		return m, m.maybeArmIntro()
+		return m, m.handleWindowSize(msg)
 	case IndexProgressMsg:
-		wasActive := m.indexLastActive
-		m.indexActive = msg.Active
-		m.indexDone = msg.Done
-		m.indexTotal = msg.Total
-		m.indexLastActive = msg.Active
-		switch {
-		case msg.Active:
-			// Defensive — clears any in-flight fade if a second
-			// backfill ever re-enters the active state. Unreachable
-			// in current code (Backfill.Run is one-shot).
-			m.indexFadeStop = 0
-		case wasActive && !msg.Active:
-			// Falling edge — start the post-backfill banner.
-			m.indexFadeStop = 1
-			if m.deps.ReduceMotion {
-				// Reduce-motion: one full-opacity dwell, no fade ladder.
-				return m, tea.Tick(indexBannerDwellDuration, func(time.Time) tea.Msg {
-					return indexBannerClearMsg{}
-				})
-			}
-			return m, tea.Tick(indexFadeStepDuration, func(time.Time) tea.Msg {
-				return tickFadeMsg{}
-			})
-		}
+		return m, m.handleIndexProgress(msg)
 	case tickFadeMsg:
-		if m.indexFadeStop == 0 {
-			// Stale tick — no fade in progress. Drop silently.
-			return m, nil
-		}
-		m.indexFadeStop++
-		if m.indexFadeStop > indexFadeStopCount {
-			m.indexFadeStop = 0
-			return m, nil
-		}
-		return m, tea.Tick(indexFadeStepDuration, func(time.Time) tea.Msg {
-			return tickFadeMsg{}
-		})
+		return m, m.handleTickFade()
 	case indexBannerClearMsg:
-		if m.indexFadeStop == 0 {
-			// Stale tick — banner already dismissed (e.g. user re-entered
-			// indexing mid-dwell). Drop silently.
-			return m, nil
-		}
-		m.indexFadeStop = 0
+		m.handleIndexBannerClear()
 		return m, nil
 	case springTickMsg:
-		if !m.springActive || msg.gen != m.springGen {
-			// springActive=false → no animation in flight at all.
-			// gen mismatch → tick belongs to a superseded animation
-			// generation (rapid 'u' press during animation). Either way,
-			// drop without rescheduling so the loop doesn't perpetuate.
-			return m, nil
-		}
-		gen := m.springGen
-		switch m.springPhase {
-		case springShrinking:
-			var maxR float64
-			for i := range m.springRatios {
-				pos := m.springProjectiles[i].Update()
-				// Defensive clamp — early-exit beats us to it under
-				// well-tuned per-bar gravity, but Projectile keeps
-				// accelerating past zero if we let it.
-				pos.X = max(pos.X, 0)
-				m.springRatios[i] = pos.X
-				maxR = max(maxR, pos.X)
-			}
-			if maxR < phaseTransitionThreshold {
-				// Phase 1 → Hold handoff: snap ratios to zero, render the
-				// all-zero frame once, schedule a one-shot tick at
-				// phaseHoldDuration. Phase 2 state (springTargetRatios,
-				// springVelocities) is seeded in the springHolding case
-				// when the hold tick arrives — not here (#163).
-				for i := range m.springRatios {
-					m.springRatios[i] = 0
-				}
-				m.springPhase = springHolding
-				m.renderSpringFrame()
-				return m, tea.Tick(phaseHoldDuration, func(time.Time) tea.Msg {
-					return springTickMsg{gen: gen}
-				})
-			}
-			m.renderSpringFrame()
-			return m, tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
-				return springTickMsg{gen: gen}
-			})
-
-		case springHolding:
-			// Hold tick arrived: seed Phase 2 targets and initial
-			// velocities, switch to springGrowing, resume FPS ticking.
-			// Ratios remain at zero (already snapped in the Phase 1
-			// threshold-cross). The first springGrowing tick will move
-			// them off zero (#163).
-			for i := range m.springRatios {
-				m.springTargetRatios[i] = m.springFinalTargets[i]
-				m.springVelocities[i] = phase2InitialVelocityV0 * m.springFinalTargets[i]
-			}
-			// Quota-bar Phase 2 seeding (#192). quotaTarget5h/7d were
-			// snapshotted at arm in beginIntroAnimation; mirror the
-			// bucket V_i = V0 * target_i contract.
-			m.quotaVel5h = phase2InitialVelocityV0 * m.quotaTarget5h
-			m.quotaVel7d = phase2InitialVelocityV0 * m.quotaTarget7d
-			m.springPhase = springGrowing
-			m.renderSpringFrame()
-			return m, tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
-				return springTickMsg{gen: gen}
-			})
-
-		case springGrowing:
-			var maxGap float64
-			for i := range m.springRatios {
-				r, v := m.springs[i].Update(m.springRatios[i],
-					m.springVelocities[i], m.springTargetRatios[i])
-				m.springRatios[i] = r
-				m.springVelocities[i] = v
-				gap := math.Abs(m.springTargetRatios[i] - r)
-				maxGap = max(maxGap, gap)
-			}
-			// Quota-bar Phase 2 advance (#192). Two scalar Update calls
-			// per tick; their gaps fold into the same maxGap so the
-			// existing settle check fires when ALL three surfaces are
-			// within threshold of their targets.
-			r5, v5 := m.quotaSpring5h.Update(
-				m.quotaRatio5h, m.quotaVel5h, m.quotaTarget5h,
-			)
-			m.quotaRatio5h, m.quotaVel5h = r5, v5
-			maxGap = max(maxGap, math.Abs(m.quotaTarget5h-r5))
-
-			r7, v7 := m.quotaSpring7d.Update(
-				m.quotaRatio7d, m.quotaVel7d, m.quotaTarget7d,
-			)
-			m.quotaRatio7d, m.quotaVel7d = r7, v7
-			maxGap = max(maxGap, math.Abs(m.quotaTarget7d-r7))
-
-			if maxGap < phaseTransitionThreshold {
-				copy(m.springRatios, m.springTargetRatios)
-				m.springActive = false
-				m.springIntro = false
-				m.springPhase = springIdle
-				m.refreshChart()
-				return m, nil
-			}
-			m.renderSpringFrame()
-			return m, tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
-				return springTickMsg{gen: gen}
-			})
-		}
-		return m, nil
+		return m, m.handleSpringTick(msg)
 	case QuotaMsg:
-		m.quota = msg.Usage
-		m.quotaSource = msg.Source
-		m.quotaUpdatedAt = msg.UpdatedAt
-		m.recomputeWindow()
-		// (#192) Quota arrival timing fix. Two paths:
-		//
-		// 1. In-flight: the open-path intro is still running but the
-		//    quota targets were snapshotted as 0 because m.quota was
-		//    nil at arm. Re-snapshot to live values so the springs
-		//    ease toward real targets for the remainder of the grow.
-		// 2. Late arrival: the chart intro armed and settled with no
-		//    quota loaded (springs ran 0→0 invisibly). Kick a
-		//    quota-only slide-in now, skipping the hold beat (the
-		//    bars already sat at 0 throughout the chart intro — no
-		//    new beat to register).
-		if m.springIntro {
-			m.quotaTarget5h = float64(m.window.Percent) / 100.0
-			if m.window.Has7d {
-				m.quotaTarget7d = float64(m.window.Percent7d) / 100.0
-			} else {
-				m.quotaTarget7d = 0
-			}
-			m.quotaIntroPending = false
-		} else if m.quotaIntroPending && !m.introPending && !m.deps.ReduceMotion {
-			target5h := float64(m.window.Percent) / 100.0
-			var target7d float64
-			if m.window.Has7d {
-				target7d = float64(m.window.Percent7d) / 100.0
-			}
-			if target5h > 0 || target7d > 0 {
-				m.quotaTarget5h = target5h
-				m.quotaTarget7d = target7d
-				m.quotaRatio5h = 0
-				m.quotaRatio7d = 0
-				m.quotaVel5h = phase2InitialVelocityV0 * target5h
-				m.quotaVel7d = phase2InitialVelocityV0 * target7d
-				m.quotaSpring5h = harmonica.NewSpring(
-					harmonica.FPS(springFPS),
-					phase2Frequency, phase2Damping,
-				)
-				m.quotaSpring7d = harmonica.NewSpring(
-					harmonica.FPS(springFPS),
-					phase2Frequency, phase2Damping,
-				)
-				m.quotaIntroPending = false
-				// Zero residual chart velocities from the prior settle
-				// so reusing the springGrowing arm for the quota-only
-				// late-arrival intro doesn't wobble the chart bars.
-				// Position is already at-target (copy in the settle
-				// block), velocity was never reset.
-				clear(m.springVelocities)
-				m.springActive = true
-				m.springIntro = true
-				m.springPhase = springGrowing
-				m.springGen++
-				gen := m.springGen
-				return m, tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
-					return springTickMsg{gen: gen}
-				})
-			}
-			// Targets both zero — nothing to animate. Clear the flag
-			// so we don't keep checking on every QuotaMsg.
-			m.quotaIntroPending = false
-		}
+		return m, m.handleQuotaMsg(msg)
 	case RefreshMsg:
-		start := time.Now()
-		m.recomputeWindow()
-		// Suppress refreshChart while the intro is in flight so the
-		// startup-time RefreshMsg race (cmd/ccpulse/main.go:329 +
-		// watcher events) doesn't hard-cut the intro via refreshChart's
-		// spring-abort block. The intro's terminal springGrowing tick
-		// fires its own refreshChart after settle (~600 ms), so any
-		// data updates that arrived during the intro are picked up
-		// there.
-		if !m.springIntro {
-			m.refreshChart()
-		}
-		slog.Debug("tui.refreshMsg",
-			"dur_ms", time.Since(start).Milliseconds(),
-			"zoom", ZoomLevels[m.zoomIdx].Label)
-		return m, m.maybeArmIntro()
+		return m, m.handleRefresh()
 	case nowTickMsg:
-		if msg.gen != m.nowGen {
-			// Stale chain from a previous zoom cadence — drop without
-			// rescheduling so duplicate chains can't accumulate (#311).
-			return m, nil
-		}
-		// Mirror RefreshMsg's intro guard: don't hard-cut the startup intro;
-		// its terminal refreshChart picks up the advance. refreshChart's
-		// wasPinned/anchorTime block does the rest — pinned advances to the
-		// new right edge, scrolled stays anchored — for all three units.
-		if !m.springIntro {
-			m.refreshChart()
-		}
-		// One log line per boundary crossing — the live-advance cadence is
-		// one wakeup per bucket, so this is not a per-frame hot path. Logs
-		// only the zoom label (no paths, tokens, or credentials).
-		slog.Debug("tui.nowTick", "zoom", ZoomLevels[m.zoomIdx].Label)
-		return m, m.scheduleNowTick()
+		return m, m.handleNowTick(msg)
 	case tea.KeyMsg:
-		switch {
-		case msg.String() == "ctrl+c":
-			return m, tea.Quit
-		case key.Matches(msg, m.keys.Quit):
-			return m, tea.Quit
-		case key.Matches(msg, m.keys.Help):
-			m.showHelp = !m.showHelp
-		case m.showHelp:
-			// Suppress chart-affecting keys while the help overlay is up,
-			// so dismissing help returns the user to the same scroll/zoom
-			// state they left.
-		case key.Matches(msg, m.keys.Zoom):
-			m.zoomIdx = (m.zoomIdx + 1) % len(ZoomLevels)
-			m.refreshChart()
-			// Re-arm the live-advance tick on the new zoom's cadence; the
-			// bumped gen drops the previous cadence's in-flight tick (#311).
-			m.nowGen++
-			return m, m.scheduleNowTick()
-		case key.Matches(msg, m.keys.Unit):
-			m.unitIdx = (m.unitIdx + 1) % int(chartUnitCount)
-			if m.deps.ReduceMotion {
-				// Snap directly: no spring state, no tick scheduling.
-				// refreshChart is the same call that beginUnitAnimation
-				// makes internally — without it the viewport keeps showing
-				// the old unit's content.
-				m.refreshChart()
-			} else {
-				m.beginUnitAnimation()
-				if m.springActive {
-					// After beginUnitAnimation, viewport content is the new
-					// full-canvas with XOffset preserved at the user's
-					// wall-clock anchor (via refreshChart). Use the shadow
-					// scroll position as the spring's window so the animated
-					// slice matches what the user is actually looking at.
-					m.springXOffset = m.viewportXOffset
-					// Paint spring-frame-0 (old heights, old unit, old color)
-					// synchronously so the next View() call doesn't show one
-					// frame of refreshChart's new-unit content before the
-					// first tick paints the falling old-unit chart.
-					m.renderSpringFrame()
-					gen := m.springGen
-					return m, tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
-						return springTickMsg{gen: gen}
-					})
-				}
-			}
-		case key.Matches(msg, m.keys.ScrollLeft):
-			m.scrollLeft(ZoomLevels[m.zoomIdx].ScrollStep)
-			return m, nil
-		case key.Matches(msg, m.keys.ScrollRight):
-			m.scrollRight(ZoomLevels[m.zoomIdx].ScrollStep)
-			return m, nil
-		}
+		return m, m.handleKey(msg)
 	}
 	return m, nil
+}
+
+// handleWindowSize re-lays out the viewport, progress bars, and help width on
+// terminal resize, then re-queries the chart and (re)arms the intro.
+func (m *Model) handleWindowSize(msg tea.WindowSizeMsg) tea.Cmd {
+	m.w, m.h = msg.Width, msg.Height
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	// help.Width controls when ShortHelp ellipsizes; if left at 0
+	// the footer can wrap onto the body row and break chartHeight().
+	m.help.Width = m.w
+	m.progress = newProgressBar(m.progressWidth())
+	m.progress7d = newProgressBar(m.progressWidth())
+	m.refreshChart()
+	return m.maybeArmIntro()
+}
+
+// handleIndexProgress tracks backfill progress and starts the post-backfill
+// banner (fade ladder, or a single dwell under reduce-motion) on the
+// active→idle falling edge.
+func (m *Model) handleIndexProgress(msg IndexProgressMsg) tea.Cmd {
+	wasActive := m.indexLastActive
+	m.indexActive = msg.Active
+	m.indexDone = msg.Done
+	m.indexTotal = msg.Total
+	m.indexLastActive = msg.Active
+	switch {
+	case msg.Active:
+		// Defensive — clears any in-flight fade if a second
+		// backfill ever re-enters the active state. Unreachable
+		// in current code (Backfill.Run is one-shot).
+		m.indexFadeStop = 0
+	case wasActive && !msg.Active:
+		// Falling edge — start the post-backfill banner.
+		m.indexFadeStop = 1
+		if m.deps.ReduceMotion {
+			// Reduce-motion: one full-opacity dwell, no fade ladder.
+			return tea.Tick(indexBannerDwellDuration, func(time.Time) tea.Msg {
+				return indexBannerClearMsg{}
+			})
+		}
+		return tea.Tick(indexFadeStepDuration, func(time.Time) tea.Msg {
+			return tickFadeMsg{}
+		})
+	}
+	return nil
+}
+
+// handleTickFade advances the post-backfill checkmark fade ladder, stopping
+// after indexFadeStopCount steps.
+func (m *Model) handleTickFade() tea.Cmd {
+	if m.indexFadeStop == 0 {
+		// Stale tick — no fade in progress. Drop silently.
+		return nil
+	}
+	m.indexFadeStop++
+	if m.indexFadeStop > indexFadeStopCount {
+		m.indexFadeStop = 0
+		return nil
+	}
+	return tea.Tick(indexFadeStepDuration, func(time.Time) tea.Msg {
+		return tickFadeMsg{}
+	})
+}
+
+// handleIndexBannerClear dismisses the reduce-motion post-backfill banner.
+func (m *Model) handleIndexBannerClear() {
+	if m.indexFadeStop == 0 {
+		// Stale tick — banner already dismissed (e.g. user re-entered
+		// indexing mid-dwell). Drop silently.
+		return
+	}
+	m.indexFadeStop = 0
+}
+
+// handleRefresh recomputes the window and re-queries the chart on a watcher
+// event, suppressing the chart rebuild while the open-path intro is running.
+func (m *Model) handleRefresh() tea.Cmd {
+	start := time.Now()
+	m.recomputeWindow()
+	// Suppress refreshChart while the intro is in flight so the
+	// startup-time RefreshMsg race (cmd/ccpulse/main.go:329 +
+	// watcher events) doesn't hard-cut the intro via refreshChart's
+	// spring-abort block. The intro's terminal springGrowing tick
+	// fires its own refreshChart after settle (~600 ms), so any
+	// data updates that arrived during the intro are picked up
+	// there.
+	if !m.springIntro {
+		m.refreshChart()
+	}
+	slog.Debug("tui.refreshMsg",
+		"dur_ms", time.Since(start).Milliseconds(),
+		"zoom", ZoomLevels[m.zoomIdx].Label)
+	return m.maybeArmIntro()
+}
+
+// handleNowTick advances the live chart window at a bucket boundary and
+// re-arms the next tick, dropping stale cadence chains (#311).
+func (m *Model) handleNowTick(msg nowTickMsg) tea.Cmd {
+	if msg.gen != m.nowGen {
+		// Stale chain from a previous zoom cadence — drop without
+		// rescheduling so duplicate chains can't accumulate (#311).
+		return nil
+	}
+	// Mirror RefreshMsg's intro guard: don't hard-cut the startup intro;
+	// its terminal refreshChart picks up the advance. refreshChart's
+	// wasPinned/anchorTime block does the rest — pinned advances to the
+	// new right edge, scrolled stays anchored — for all three units.
+	if !m.springIntro {
+		m.refreshChart()
+	}
+	// One log line per boundary crossing — the live-advance cadence is
+	// one wakeup per bucket, so this is not a per-frame hot path. Logs
+	// only the zoom label (no paths, tokens, or credentials).
+	slog.Debug("tui.nowTick", "zoom", ZoomLevels[m.zoomIdx].Label)
+	return m.scheduleNowTick()
+}
+
+// handleSpringTick dispatches one unit-toggle / intro animation tick to the
+// active phase, dropping stale or superseded-generation ticks (#218).
+func (m *Model) handleSpringTick(msg springTickMsg) tea.Cmd {
+	if !m.springActive || msg.gen != m.springGen {
+		// springActive=false → no animation in flight at all.
+		// gen mismatch → tick belongs to a superseded animation
+		// generation (rapid 'u' press during animation). Either way,
+		// drop without rescheduling so the loop doesn't perpetuate.
+		return nil
+	}
+	gen := m.springGen
+	switch m.springPhase {
+	case springShrinking:
+		return m.advanceSpringShrinking(gen)
+	case springHolding:
+		return m.advanceSpringHolding(gen)
+	case springGrowing:
+		return m.advanceSpringGrowing(gen)
+	}
+	return nil
+}
+
+// advanceSpringShrinking runs one Phase-1 (Projectile fall) tick. gen is the
+// animation generation captured by handleSpringTick.
+func (m *Model) advanceSpringShrinking(gen int) tea.Cmd {
+	var maxR float64
+	for i := range m.springRatios {
+		pos := m.springProjectiles[i].Update()
+		// Defensive clamp — early-exit beats us to it under
+		// well-tuned per-bar gravity, but Projectile keeps
+		// accelerating past zero if we let it.
+		pos.X = max(pos.X, 0)
+		m.springRatios[i] = pos.X
+		maxR = max(maxR, pos.X)
+	}
+	if maxR < phaseTransitionThreshold {
+		// Phase 1 → Hold handoff: snap ratios to zero, render the
+		// all-zero frame once, schedule a one-shot tick at
+		// phaseHoldDuration. Phase 2 state (springTargetRatios,
+		// springVelocities) is seeded in the springHolding case
+		// when the hold tick arrives — not here (#163).
+		for i := range m.springRatios {
+			m.springRatios[i] = 0
+		}
+		m.springPhase = springHolding
+		m.renderSpringFrame()
+		return tea.Tick(phaseHoldDuration, func(time.Time) tea.Msg {
+			return springTickMsg{gen: gen}
+		})
+	}
+	m.renderSpringFrame()
+	return tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
+		return springTickMsg{gen: gen}
+	})
+}
+
+// advanceSpringHolding seeds Phase 2 targets/velocities on the hold tick and
+// switches to springGrowing (#163, quota seeding #192).
+func (m *Model) advanceSpringHolding(gen int) tea.Cmd {
+	// Hold tick arrived: seed Phase 2 targets and initial
+	// velocities, switch to springGrowing, resume FPS ticking.
+	// Ratios remain at zero (already snapped in the Phase 1
+	// threshold-cross). The first springGrowing tick will move
+	// them off zero (#163).
+	for i := range m.springRatios {
+		m.springTargetRatios[i] = m.springFinalTargets[i]
+		m.springVelocities[i] = phase2InitialVelocityV0 * m.springFinalTargets[i]
+	}
+	// Quota-bar Phase 2 seeding (#192). quotaTarget5h/7d were
+	// snapshotted at arm in beginIntroAnimation; mirror the
+	// bucket V_i = V0 * target_i contract.
+	m.quotaVel5h = phase2InitialVelocityV0 * m.quotaTarget5h
+	m.quotaVel7d = phase2InitialVelocityV0 * m.quotaTarget7d
+	m.springPhase = springGrowing
+	m.renderSpringFrame()
+	return tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
+		return springTickMsg{gen: gen}
+	})
+}
+
+// advanceSpringGrowing runs one Phase-2 (Spring grow) tick across bucket and
+// quota springs; settles when every surface is within threshold (#192).
+func (m *Model) advanceSpringGrowing(gen int) tea.Cmd {
+	var maxGap float64
+	for i := range m.springRatios {
+		r, v := m.springs[i].Update(m.springRatios[i],
+			m.springVelocities[i], m.springTargetRatios[i])
+		m.springRatios[i] = r
+		m.springVelocities[i] = v
+		gap := math.Abs(m.springTargetRatios[i] - r)
+		maxGap = max(maxGap, gap)
+	}
+	// Quota-bar Phase 2 advance (#192). Two scalar Update calls
+	// per tick; their gaps fold into the same maxGap so the
+	// existing settle check fires when ALL three surfaces are
+	// within threshold of their targets.
+	r5, v5 := m.quotaSpring5h.Update(
+		m.quotaRatio5h, m.quotaVel5h, m.quotaTarget5h,
+	)
+	m.quotaRatio5h, m.quotaVel5h = r5, v5
+	maxGap = max(maxGap, math.Abs(m.quotaTarget5h-r5))
+
+	r7, v7 := m.quotaSpring7d.Update(
+		m.quotaRatio7d, m.quotaVel7d, m.quotaTarget7d,
+	)
+	m.quotaRatio7d, m.quotaVel7d = r7, v7
+	maxGap = max(maxGap, math.Abs(m.quotaTarget7d-r7))
+
+	if maxGap < phaseTransitionThreshold {
+		copy(m.springRatios, m.springTargetRatios)
+		m.springActive = false
+		m.springIntro = false
+		m.springPhase = springIdle
+		m.refreshChart()
+		return nil
+	}
+	m.renderSpringFrame()
+	return tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
+		return springTickMsg{gen: gen}
+	})
+}
+
+// handleQuotaMsg records fresh usage, recomputes the window, and resolves the
+// open-path quota intro: re-snapshot targets while the intro is in flight, or
+// kick a late-arrival quota-only slide-in if it already settled (#192).
+func (m *Model) handleQuotaMsg(msg QuotaMsg) tea.Cmd {
+	m.quota = msg.Usage
+	m.quotaSource = msg.Source
+	m.quotaUpdatedAt = msg.UpdatedAt
+	m.recomputeWindow()
+	// (#192) Quota arrival timing fix. Two paths:
+	//
+	// 1. In-flight: the open-path intro is still running but the
+	//    quota targets were snapshotted as 0 because m.quota was
+	//    nil at arm. Re-snapshot to live values so the springs
+	//    ease toward real targets for the remainder of the grow.
+	// 2. Late arrival: the chart intro armed and settled with no
+	//    quota loaded (springs ran 0→0 invisibly). Kick a
+	//    quota-only slide-in now, skipping the hold beat (the
+	//    bars already sat at 0 throughout the chart intro — no
+	//    new beat to register).
+	if m.springIntro {
+		m.quotaTarget5h = float64(m.window.Percent) / 100.0
+		if m.window.Has7d {
+			m.quotaTarget7d = float64(m.window.Percent7d) / 100.0
+		} else {
+			m.quotaTarget7d = 0
+		}
+		m.quotaIntroPending = false
+		return nil
+	}
+	if m.quotaIntroPending && !m.introPending && !m.deps.ReduceMotion {
+		return m.kickLateArrivalQuotaIntro()
+	}
+	return nil
+}
+
+// kickLateArrivalQuotaIntro starts a quota-only slide-in when the Anthropic
+// poller delivered usage after the chart intro already settled (#192). Returns
+// nil when both targets are zero (nothing to animate).
+func (m *Model) kickLateArrivalQuotaIntro() tea.Cmd {
+	target5h := float64(m.window.Percent) / 100.0
+	var target7d float64
+	if m.window.Has7d {
+		target7d = float64(m.window.Percent7d) / 100.0
+	}
+	if target5h <= 0 && target7d <= 0 {
+		// Targets both zero — nothing to animate. Clear the flag
+		// so we don't keep checking on every QuotaMsg.
+		m.quotaIntroPending = false
+		return nil
+	}
+	m.quotaTarget5h = target5h
+	m.quotaTarget7d = target7d
+	m.quotaRatio5h = 0
+	m.quotaRatio7d = 0
+	m.quotaVel5h = phase2InitialVelocityV0 * target5h
+	m.quotaVel7d = phase2InitialVelocityV0 * target7d
+	m.quotaSpring5h = harmonica.NewSpring(
+		harmonica.FPS(springFPS),
+		phase2Frequency, phase2Damping,
+	)
+	m.quotaSpring7d = harmonica.NewSpring(
+		harmonica.FPS(springFPS),
+		phase2Frequency, phase2Damping,
+	)
+	m.quotaIntroPending = false
+	// Zero residual chart velocities from the prior settle
+	// so reusing the springGrowing arm for the quota-only
+	// late-arrival intro doesn't wobble the chart bars.
+	// Position is already at-target (copy in the settle
+	// block), velocity was never reset.
+	clear(m.springVelocities)
+	m.springActive = true
+	m.springIntro = true
+	m.springPhase = springGrowing
+	m.springGen++
+	gen := m.springGen
+	return tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
+		return springTickMsg{gen: gen}
+	})
+}
+
+// handleKey dispatches a key press: quit, help toggle, zoom, unit toggle, and
+// horizontal scroll. Chart-affecting keys are suppressed while help is shown.
+func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
+	switch {
+	case msg.String() == "ctrl+c":
+		return tea.Quit
+	case key.Matches(msg, m.keys.Quit):
+		return tea.Quit
+	case key.Matches(msg, m.keys.Help):
+		m.showHelp = !m.showHelp
+	case m.showHelp:
+		// Suppress chart-affecting keys while the help overlay is up,
+		// so dismissing help returns the user to the same scroll/zoom
+		// state they left.
+	case key.Matches(msg, m.keys.Zoom):
+		m.zoomIdx = (m.zoomIdx + 1) % len(ZoomLevels)
+		m.refreshChart()
+		// Re-arm the live-advance tick on the new zoom's cadence; the
+		// bumped gen drops the previous cadence's in-flight tick (#311).
+		m.nowGen++
+		return m.scheduleNowTick()
+	case key.Matches(msg, m.keys.Unit):
+		return m.handleUnitKey()
+	case key.Matches(msg, m.keys.ScrollLeft):
+		m.scrollLeft(ZoomLevels[m.zoomIdx].ScrollStep)
+		return nil
+	case key.Matches(msg, m.keys.ScrollRight):
+		m.scrollRight(ZoomLevels[m.zoomIdx].ScrollStep)
+		return nil
+	}
+	return nil
+}
+
+// handleUnitKey cycles the chart unit and arms the two-phase toggle animation
+// (or snaps directly under reduce-motion).
+func (m *Model) handleUnitKey() tea.Cmd {
+	m.unitIdx = (m.unitIdx + 1) % int(chartUnitCount)
+	if m.deps.ReduceMotion {
+		// Snap directly: no spring state, no tick scheduling.
+		// refreshChart is the same call that beginUnitAnimation
+		// makes internally — without it the viewport keeps showing
+		// the old unit's content.
+		m.refreshChart()
+		return nil
+	}
+	m.beginUnitAnimation()
+	if !m.springActive {
+		return nil
+	}
+	// After beginUnitAnimation, viewport content is the new
+	// full-canvas with XOffset preserved at the user's
+	// wall-clock anchor (via refreshChart). Use the shadow
+	// scroll position as the spring's window so the animated
+	// slice matches what the user is actually looking at.
+	m.springXOffset = m.viewportXOffset
+	// Paint spring-frame-0 (old heights, old unit, old color)
+	// synchronously so the next View() call doesn't show one
+	// frame of refreshChart's new-unit content before the
+	// first tick paints the falling old-unit chart.
+	m.renderSpringFrame()
+	gen := m.springGen
+	return tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
+		return springTickMsg{gen: gen}
+	})
 }
 
 // View implements tea.Model; it renders the full TUI frame — header quota bars, separator, and token histogram.
