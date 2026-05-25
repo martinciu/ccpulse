@@ -664,21 +664,26 @@ ORDER BY bucket_epoch ASC
 	return out, nil
 }
 
-// dailySQL is the shared 24h-zoom SQL form used by both ioTokenBucketsDaily
-// and costBucketsDaily, parameterised by the aggregate expression. The
-// local_day(ts) call uses the Go-registered scalar function (see init()
-// above) so day grouping honours time.Local on every platform.
+// dailyBuckets aggregates messages into one bucket per local-tz calendar
+// day in [from, to). aggExpr is a trusted compile-time SQL fragment — the
+// SUM(...) expression — and is NEVER user input (the two call sites pass
+// string literals), so the fmt.Sprintf into the query is safe. build
+// constructs a typed bucket from a local-midnight day start and the
+// aggregated value.
 //
-// ioTokenBucketsDaily returns one TokenBucket per local-tz calendar day in
-// [from, to). Bucket boundaries are local midnight; SQLite groups via
-// the registered local_day(ts) function. Iteration uses AddDate(0, 0, 1)
-// so DST transitions (spring-forward 23h day, fall-back 25h day) each
-// produce exactly one bucket.
+// The local_day(ts) call uses the Go-registered scalar function (see init()
+// above) so day grouping honours time.Local on every platform. Iteration
+// uses AddDate(0, 0, 1): it advances by one calendar day in time.Local,
+// producing a single bucket per DST transition day (23h spring-forward or
+// 25h fall-back). Add(24*time.Hour) would drift by one hour across each
+// transition and mis-bucket messages near local midnight.
 //
 // BucketStart values are in time.Local — callers must not assume UTC.
-//
-//nolint:dupl // tracked in #333 — near-duplicate of costBucketsDaily
-func (c *Cache) ioTokenBucketsDaily(from, to time.Time) ([]TokenBucket, error) {
+func dailyBuckets[V int64 | float64, T any](
+	c *Cache, unit, aggExpr string,
+	from, to time.Time,
+	build func(start time.Time, v V) T,
+) ([]T, error) {
 	start := time.Now()
 	from = DayStartLocal(from)
 	to = DayStartLocal(to)
@@ -687,47 +692,58 @@ func (c *Cache) ioTokenBucketsDaily(from, to time.Time) ([]TokenBucket, error) {
 	}
 	fromStr := from.UTC().Format(tsFormat)
 	toStr := to.UTC().Format(tsFormat)
-	rows, err := c.db.Query(`
+	query := fmt.Sprintf(`
 SELECT
   local_day(ts) AS day,
-  COALESCE(SUM(input_tokens + output_tokens), 0)
+  %s
 FROM messages
 WHERE ts >= ? AND ts < ?
 GROUP BY day
 ORDER BY day ASC
-`, fromStr, toStr)
+`, aggExpr)
+	rows, err := c.db.Query(query, fromStr, toStr)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	totals := make(map[string]int64)
+	totals := make(map[string]V)
 	for rows.Next() {
 		var day string
-		var tokens int64
-		if err := rows.Scan(&day, &tokens); err != nil {
+		var v V
+		if err := rows.Scan(&day, &v); err != nil {
 			return nil, err
 		}
-		totals[day] = tokens
+		totals[day] = v
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 
-	// AddDate(0, 0, 1) is load-bearing: it advances by one calendar day in
-	// time.Local, producing a single bucket per DST transition day (23h or
-	// 25h). Add(24*time.Hour) would drift by one hour across each
-	// transition and mis-bucket messages near local midnight.
-	out := make([]TokenBucket, 0, int(to.Sub(from)/(24*time.Hour))+1)
+	out := make([]T, 0, int(to.Sub(from)/(24*time.Hour))+1)
 	for d := from; d.Before(to); d = d.AddDate(0, 0, 1) {
 		key := d.Format("2006-01-02")
-		out = append(out, TokenBucket{BucketStart: d, Tokens: totals[key]})
+		out = append(out, build(d, totals[key]))
 	}
-	slog.Debug("cache.ioTokenBucketsDaily",
+	slog.Debug("cache.dailyBuckets",
+		"unit", unit,
+		"zoom", "24h",
 		"dur_ms", time.Since(start).Milliseconds(),
 		"buckets", len(out),
 		"rows_aggregated", len(totals))
 	return out, nil
+}
+
+// ioTokenBucketsDaily returns one TokenBucket per local-tz calendar day in
+// [from, to), aggregating SUM(input_tokens + output_tokens). The COALESCE is
+// defensive only (both columns are NOT NULL). See dailyBuckets for the
+// local-tz / DST / iteration rationale.
+func (c *Cache) ioTokenBucketsDaily(from, to time.Time) ([]TokenBucket, error) {
+	return dailyBuckets(c, "io",
+		"COALESCE(SUM(input_tokens + output_tokens), 0)", from, to,
+		func(d time.Time, v int64) TokenBucket {
+			return TokenBucket{BucketStart: d, Tokens: v}
+		})
 }
 
 // CostBucket is one time-bucketed total of USD cost.
@@ -803,57 +819,15 @@ ORDER BY bucket_epoch ASC
 	return out, nil
 }
 
-// costBucketsDaily mirrors ioTokenBucketsDaily for SUM(cost_usd_estimate).
-// See ioTokenBucketsDaily docs for the local-tz / DST / iteration rationale.
-//
-//nolint:dupl // tracked in #333 — near-duplicate of ioTokenBucketsDaily
+// costBucketsDaily returns one CostBucket per local-tz calendar day in
+// [from, to), aggregating SUM(cost_usd_estimate). See dailyBuckets for the
+// local-tz / DST / iteration rationale.
 func (c *Cache) costBucketsDaily(from, to time.Time) ([]CostBucket, error) {
-	start := time.Now()
-	from = DayStartLocal(from)
-	to = DayStartLocal(to)
-	if !to.After(from) {
-		return nil, nil
-	}
-	fromStr := from.UTC().Format(tsFormat)
-	toStr := to.UTC().Format(tsFormat)
-	rows, err := c.db.Query(`
-SELECT
-  local_day(ts) AS day,
-  SUM(cost_usd_estimate)
-FROM messages
-WHERE ts >= ? AND ts < ?
-GROUP BY day
-ORDER BY day ASC
-`, fromStr, toStr)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	totals := make(map[string]float64)
-	for rows.Next() {
-		var day string
-		var cost float64
-		if err := rows.Scan(&day, &cost); err != nil {
-			return nil, err
-		}
-		totals[day] = cost
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-
-	// See ioTokenBucketsDaily for the AddDate(0,0,1) DST-correctness rationale.
-	out := make([]CostBucket, 0, int(to.Sub(from)/(24*time.Hour))+1)
-	for d := from; d.Before(to); d = d.AddDate(0, 0, 1) {
-		key := d.Format("2006-01-02")
-		out = append(out, CostBucket{BucketStart: d, Cost: totals[key]})
-	}
-	slog.Debug("cache.costBucketsDaily",
-		"dur_ms", time.Since(start).Milliseconds(),
-		"buckets", len(out),
-		"rows_aggregated", len(totals))
-	return out, nil
+	return dailyBuckets(c, "cost",
+		"SUM(cost_usd_estimate)", from, to,
+		func(d time.Time, v float64) CostBucket {
+			return CostBucket{BucketStart: d, Cost: v}
+		})
 }
 
 // zoomLabel returns the compact human label that matches pkg/tui's
