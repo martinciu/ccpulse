@@ -22,7 +22,7 @@ go test ./pkg/cache/... -run TestIntegrity   # single package / single test
 go test ./...                                # all packages
 ```
 
-`make lint` runs `golangci-lint` (v2, pinned in `.mise.toml`) against the tuned `.golangci.yml` — the source of truth for enabled linters. Complexity hotspots deferred during adoption are tracked in the #333 follow-up issue and carry `//nolint` directives with that reference.
+`make lint` runs `golangci-lint` (v2, pinned in `.mise.toml`) against the tuned `.golangci.yml` — the source of truth for enabled linters.
 
 Release artifacts are produced by GoReleaser (`goreleaser release --clean`). The `version`, `commit`, and `date` vars in `cmd/ccpulse/main.go` are injected via ldflags at release time.
 
