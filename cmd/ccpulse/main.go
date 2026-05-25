@@ -222,8 +222,6 @@ func watcherStartupError(projectsRoot string, err error) error {
 // for the quota poller's context and for the startup backfill, so
 // SIGINT/SIGTERM cancels in-flight work even before the user quits
 // the TUI itself.
-//
-//nolint:gocyclo,funlen // tracked in #333 — TUI startup wiring
 func runTUI(ctx context.Context, errOut io.Writer) error {
 	cfg, err := config.Load(config.DefaultPath())
 	if err != nil && !os.IsNotExist(err) {
@@ -237,26 +235,9 @@ func runTUI(ctx context.Context, errOut io.Writer) error {
 		defer logCloser.Close()
 	}
 	dbPath := filepath.Join(cacheDir, "state.db")
-	c, err := cache.Open(dbPath)
+	c, err := openCacheWithRebuild(dbPath, errOut)
 	if err != nil {
-		if errors.Is(err, cache.ErrLockHeld) {
-			fmt.Fprintln(errOut,
-				"ccpulse: cache locked by another ccpulse process (likely `index --rebuild`). Retry shortly.")
-		}
 		return err
-	}
-	// Integrity check; if the cache is corrupt, rebuild from scratch.
-	// JSONL is the source of truth; SQLite is derived.
-	if !c.IntegrityOK() {
-		c.Close()
-		c, err = cache.LockedRebuild(dbPath)
-		if err != nil {
-			if errors.Is(err, cache.ErrLockHeld) {
-				fmt.Fprintln(errOut,
-					"ccpulse: cache integrity check failed and rebuild blocked by another ccpulse process. Close the other instance and retry.")
-			}
-			return err
-		}
 	}
 	defer c.Close()
 
@@ -279,27 +260,13 @@ func runTUI(ctx context.Context, errOut io.Writer) error {
 		return watcherStartupError(projectsRoot, err)
 	}
 
-	cred, credErr := anthro.LoadCredential()
-	if credErr != nil && !errors.Is(credErr, anthro.ErrNoCredential) {
-		fmt.Fprintf(errOut, "ccpulse: %v\n", credErr)
-	}
-	hasOAuth := credErr == nil
-
-	// Demo/test seam: CCPULSE_FAKE_QUOTA injects synthetic quota and
-	// disables the network poller, so the TUI renders populated quota bars
-	// from a credential-less synthetic fixture (used by `make demo`, #265).
-	fakeUsage, fakeTier, fakeQuota := parseFakeQuota(
-		os.Getenv("CCPULSE_FAKE_QUOTA"), os.Getenv("CCPULSE_FAKE_TIER"), time.Now())
-	if fakeQuota {
-		cred = anthro.Credential{RateLimitTier: fakeTier}
-		hasOAuth = true
-	}
+	qs := resolveQuotaStartup(errOut, time.Now())
 
 	m := tui.New(tui.Deps{
 		Cache:        c,
 		ProjectsRoot: projectsRoot,
-		Credential:   cred,
-		HasOAuth:     hasOAuth,
+		Credential:   qs.cred,
+		HasOAuth:     qs.hasOAuth,
 		CacheDir:     cacheDir,
 		IsDev:        channel.IsDev(),
 		ReduceMotion: cfg.UI.ReduceMotion,
@@ -329,20 +296,20 @@ func runTUI(ctx context.Context, errOut io.Writer) error {
 	pollerCtx, cancel := context.WithCancel(ctx)
 
 	switch {
-	case fakeQuota:
+	case qs.fakeQuota:
 		// Push the synthetic quota once; no poller, no network, no
 		// usage.json / usage_samples writes.
 		bg.Go(func() {
 			p.Send(tui.QuotaMsg{
-				Usage:     fakeUsage,
+				Usage:     qs.fakeUsage,
 				Source:    "cache_fresh",
 				UpdatedAt: time.Now().UTC(),
 			})
 		})
-	case hasOAuth:
+	case qs.hasOAuth:
 		retention := time.Duration(cfg.History.RetentionDays) * 24 * time.Hour
 		bg.Go(func() {
-			runQuotaPoller(pollerCtx, p, cred, cacheDir, c, retention)
+			runQuotaPoller(pollerCtx, p, qs.cred, cacheDir, c, retention)
 		})
 	}
 
@@ -353,23 +320,7 @@ func runTUI(ctx context.Context, errOut io.Writer) error {
 		})
 	})
 
-	bfCtx, bfCancel := context.WithCancel(ctx)
-	var bfDone sync.WaitGroup
-	bfDone.Add(1)
-	bf := &ingest.Backfill{Ingester: ing}
-	go func() {
-		defer bfDone.Done()
-		_ = bf.Run(bfCtx, func(pr ingest.Progress) {
-			p.Send(tui.IndexProgressMsg{Done: pr.Done, Total: pr.Total, Active: pr.Active})
-			if !pr.Active {
-				// Coalesce backfill-driven repaints into a single
-				// RefreshMsg at completion. Watcher writes during
-				// backfill still drive their own refreshes via the
-				// goroutine above. See issue #94 for context.
-				p.Send(tui.RefreshMsg{})
-			}
-		})
-	}()
+	bfCancel, bfDone := startBackfill(ctx, p, ing)
 
 	// Kick off an initial refresh so the TUI shows current data on launch.
 	bg.Go(func() {
@@ -386,6 +337,88 @@ func runTUI(ctx context.Context, errOut io.Writer) error {
 
 	_, err = p.Run()
 	return err
+}
+
+// openCacheWithRebuild opens the cache at dbPath, rebuilding from JSONL if the
+// integrity check fails. ErrLockHeld on either path prints an actionable hint to
+// errOut. The caller owns the returned cache (defer Close).
+func openCacheWithRebuild(dbPath string, errOut io.Writer) (*cache.Cache, error) {
+	c, err := cache.Open(dbPath)
+	if err != nil {
+		if errors.Is(err, cache.ErrLockHeld) {
+			fmt.Fprintln(errOut,
+				"ccpulse: cache locked by another ccpulse process (likely `index --rebuild`). Retry shortly.")
+		}
+		return nil, err
+	}
+	// Integrity check; if the cache is corrupt, rebuild from scratch. JSONL is
+	// the source of truth; SQLite is derived.
+	if c.IntegrityOK() {
+		return c, nil
+	}
+	c.Close()
+	c, err = cache.LockedRebuild(dbPath)
+	if err != nil {
+		if errors.Is(err, cache.ErrLockHeld) {
+			fmt.Fprintln(errOut,
+				"ccpulse: cache integrity check failed and rebuild blocked by another ccpulse process. Close the other instance and retry.")
+		}
+		return nil, err
+	}
+	return c, nil
+}
+
+// quotaStartup is the resolved credential + demo-seam state used to wire the
+// quota source.
+type quotaStartup struct {
+	cred      anthro.Credential
+	hasOAuth  bool
+	fakeUsage *anthro.Usage
+	fakeQuota bool
+}
+
+// resolveQuotaStartup loads the OAuth credential (best-effort) and applies the
+// CCPULSE_FAKE_QUOTA demo seam (#265). Credential errors other than
+// ErrNoCredential are surfaced to errOut.
+func resolveQuotaStartup(errOut io.Writer, now time.Time) quotaStartup {
+	cred, credErr := anthro.LoadCredential()
+	if credErr != nil && !errors.Is(credErr, anthro.ErrNoCredential) {
+		fmt.Fprintf(errOut, "ccpulse: %v\n", credErr)
+	}
+	s := quotaStartup{cred: cred, hasOAuth: credErr == nil}
+
+	fakeUsage, fakeTier, fakeQuota := parseFakeQuota(
+		os.Getenv("CCPULSE_FAKE_QUOTA"), os.Getenv("CCPULSE_FAKE_TIER"), now)
+	if fakeQuota {
+		s.cred = anthro.Credential{RateLimitTier: fakeTier}
+		s.hasOAuth = true
+		s.fakeUsage = fakeUsage
+		s.fakeQuota = true
+	}
+	return s
+}
+
+// startBackfill launches the one-shot cold-walk backfill on its own context and
+// WaitGroup. The returned cancel + wg MUST be wired into runTUI's deferred
+// shutdown (cancel before wg.Wait) — see the defer-ordering block in runTUI.
+func startBackfill(ctx context.Context, p *tea.Program, ing *ingest.Ingester) (context.CancelFunc, *sync.WaitGroup) {
+	bfCtx, bfCancel := context.WithCancel(ctx)
+	var bfDone sync.WaitGroup
+	bfDone.Add(1)
+	bf := &ingest.Backfill{Ingester: ing}
+	go func() {
+		defer bfDone.Done()
+		_ = bf.Run(bfCtx, func(pr ingest.Progress) {
+			p.Send(tui.IndexProgressMsg{Done: pr.Done, Total: pr.Total, Active: pr.Active})
+			if !pr.Active {
+				// Coalesce backfill-driven repaints into a single RefreshMsg at
+				// completion. Watcher writes during backfill still drive their
+				// own refreshes. See issue #94.
+				p.Send(tui.RefreshMsg{})
+			}
+		})
+	}()
+	return bfCancel, &bfDone
 }
 
 // runQuotaPoller fires once immediately, then every 2 minutes, fetching
