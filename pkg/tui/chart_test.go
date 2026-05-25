@@ -424,7 +424,7 @@ func TestDateLabel(t *testing.T) {
 func TestOverlayYLabel_InjectsCeilingAndMidpoint(t *testing.T) {
 	t.Parallel()
 	body := "AAAAAAAAAA\nBBBBBBBBBB\nCCCCCCCCCC\nDDDDDDDDDD\nEEEEEEEEEE\nFFFFFFFFFF"
-	out := overlayYLabel(body, 87_000, chartUnitTokens, 6, 1.0)
+	out := overlayYLabel(body, 87_000, chartUnitTokens, 6, 1.0, false)
 	rows := strings.Split(out, "\n")
 	if len(rows) != 6 {
 		t.Fatalf("expected 6 rows, got %d:\n%q", len(rows), out)
@@ -479,7 +479,7 @@ func TestOverlayYLabel_SmallPeakSkipsMid(t *testing.T) {
 	t.Run("cost", func(t *testing.T) {
 		// peak = 0.005 → niceCeiling = 0.005 → max label "$0.01"
 		// mid = 0.0025 < yLabelMidFloor(cost)=0.005 → skip mid
-		out := overlayYLabel(body, 0.005, chartUnitCost, 12, 1.0)
+		out := overlayYLabel(body, 0.005, chartUnitCost, 12, 1.0, false)
 		rows := strings.Split(out, "\n")
 		if len(rows) != 12 {
 			t.Fatalf("expected 12 rows, got %d", len(rows))
@@ -499,7 +499,7 @@ func TestOverlayYLabel_SmallPeakSkipsMid(t *testing.T) {
 	t.Run("tokens", func(t *testing.T) {
 		// peak = 1.0 → niceCeiling = 1.0 → max label "1"
 		// mid = 0.5 < yLabelMidFloor(tokens)=1.0 → skip mid
-		out := overlayYLabel(body, 1.0, chartUnitTokens, 12, 1.0)
+		out := overlayYLabel(body, 1.0, chartUnitTokens, 12, 1.0, false)
 		rows := strings.Split(out, "\n")
 		if len(rows) != 12 {
 			t.Fatalf("expected 12 rows, got %d", len(rows))
@@ -520,7 +520,7 @@ func TestOverlayYLabel_BlankWhenEmpty(t *testing.T) {
 	t.Parallel()
 	body := "AAAAAAAAAA\nBBBBBBBBBB\nCCCCCCCCCC\nDDDDDDDDDD\nEEEEEEEEEE\nFFFFFFFFFF"
 	for _, peak := range []float64{0, -5} {
-		out := overlayYLabel(body, peak, chartUnitTokens, 6, 1.0)
+		out := overlayYLabel(body, peak, chartUnitTokens, 6, 1.0, false)
 		if out != body {
 			t.Errorf("peak=%v: expected body untouched, got %q", peak, out)
 		}
@@ -531,7 +531,7 @@ func TestOverlayYLabel_HeightTooSmall(t *testing.T) {
 	t.Parallel()
 	body := "AAAAAAAAAA\nBBBBBBBBBB\nCCCCCCCCCC\nDDDDDDDDDD\nEEEEEEEEEE"
 	// chartH < 6 leaves body untouched — same threshold renderXLabels uses.
-	if got := overlayYLabel(body, 50_000, chartUnitTokens, 5, 1.0); got != body {
+	if got := overlayYLabel(body, 50_000, chartUnitTokens, 5, 1.0, false); got != body {
 		t.Errorf("expected body untouched at chartH=5, got %q", got)
 	}
 }
@@ -1104,14 +1104,14 @@ func TestOverlayYLabel_FadeZeroSkipsRender(t *testing.T) {
 	// no Y-label rendered.
 	body := strings.Repeat("█  ", 20)
 	body = strings.Join([]string{body, body, body, body, body, body, body}, "\n") // 7 rows
-	if got := overlayYLabel(body, 100_000, chartUnitTokens, 7, 0); got != body {
+	if got := overlayYLabel(body, 100_000, chartUnitTokens, 7, 0, false); got != body {
 		t.Errorf("overlayYLabel(fade=0) modified body; expected pass-through")
 	}
-	if got := overlayYLabel(body, 100_000, chartUnitTokens, 7, -0.5); got != body {
+	if got := overlayYLabel(body, 100_000, chartUnitTokens, 7, -0.5, false); got != body {
 		t.Errorf("overlayYLabel(fade=-0.5) modified body; expected pass-through")
 	}
 	// Sanity: fade == 1.0 still renders the label.
-	if got := overlayYLabel(body, 100_000, chartUnitTokens, 7, 1.0); got == body {
+	if got := overlayYLabel(body, 100_000, chartUnitTokens, 7, 1.0, false); got == body {
 		t.Errorf("overlayYLabel(fade=1.0) returned body unchanged; expected label to be spliced in")
 	}
 }
@@ -1947,5 +1947,20 @@ func TestZoomLevel_HasInBarNumbers(t *testing.T) {
 		if got := c.zoom.hasInBarNumbers(); got != c.want {
 			t.Errorf("%s.hasInBarNumbers() = %v, want %v", c.zoom.Label, got, c.want)
 		}
+	}
+}
+
+// TestOverlayYLabel_SuppressedWhenInBarNumbers pins #335: when in-bar numbers
+// are active (wide zooms, 24h) overlayYLabel returns body unchanged regardless
+// of peak/fade, because overlayBarLabels draws the per-bucket numbers instead.
+func TestOverlayYLabel_SuppressedWhenInBarNumbers(t *testing.T) {
+	t.Parallel()
+	body := "AAAAAAAAAA\nBBBBBBBBBB\nCCCCCCCCCC\nDDDDDDDDDD\nEEEEEEEEEE\nFFFFFFFFFF"
+	if got := overlayYLabel(body, 87_000, chartUnitTokens, 6, 1.0, true); got != body {
+		t.Errorf("inBarNumbers=true: expected body unchanged, got %q", got)
+	}
+	// Control: identical inputs with inBarNumbers=false still splice the labels.
+	if got := overlayYLabel(body, 87_000, chartUnitTokens, 6, 1.0, false); got == body {
+		t.Errorf("inBarNumbers=false: expected labels spliced, got unchanged body")
 	}
 }

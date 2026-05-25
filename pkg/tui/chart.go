@@ -356,6 +356,8 @@ func yLabelMidFloor(unit chartUnit) float64 {
 //
 // Skip semantics:
 //
+//	inBarNumbers (wide zoom, 24h, #335): return body unchanged — overlayBarLabels
+//	  draws per-bucket numbers, so the max/mid axis labels are redundant chrome.
 //	peak <= 0 || chartH < 6 || body == "" || fade <= 0:
 //	  return body unchanged (top-of-function early return).
 //	niceCeilingFloat(peak) <= 0: defensive — return body unchanged.
@@ -365,7 +367,13 @@ func yLabelMidFloor(unit chartUnit) float64 {
 //
 // max and mid share labelFadeStyle(fade) — one style instance, two
 // renders, same allocation pattern as the prior single-label path.
-func overlayYLabel(body string, peak float64, unit chartUnit, chartH int, fade float64) string {
+func overlayYLabel(body string, peak float64, unit chartUnit, chartH int, fade float64, inBarNumbers bool) string {
+	// At wide zooms (24h) overlayBarLabels draws each bucket's value inside the
+	// bar (#308), so the spliced max/mid axis labels are redundant — and the
+	// yLabelSlotW slot would overlay the leftmost bar. Suppress entirely (#335).
+	if inBarNumbers {
+		return body
+	}
 	if peak <= 0 || chartH < 6 || body == "" || fade <= 0 {
 		return body
 	}
