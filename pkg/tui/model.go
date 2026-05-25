@@ -1290,9 +1290,9 @@ func (m *Model) maybeArmIntro() tea.Cmd {
 // bars are invisible anyway; their final positions are committed on
 // settle via the steady-state refreshChart call.
 //
-// Sets viewport.XOffset = 0 because the windowed canvas is rendered
-// starting at slice col 0; the leadingPad below shifts content to
-// match the pre-spring viewport position.
+// Decides line-vs-bar based on m.springPhase and delegates to
+// renderSpringLineFrame or renderSpringBarFrame; each helper paints
+// the viewport and owns its own X-offset handling.
 func (m *Model) renderSpringFrame() {
 	if len(m.springRatios) == 0 {
 		return
