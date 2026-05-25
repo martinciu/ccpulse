@@ -22,15 +22,15 @@ func TestLabelFadeStyle_Quantisation(t *testing.T) {
 		t.Errorf("labelFadeStyle(-0.5).Render = %q, want %q (sentinel; fade clamped)", got, plain)
 	}
 
-	// Direction binding: fade = 1.0 = full opacity = stop 1 = no
-	// Foreground call. Rendering must leave the probe unchanged.
-	// (Matches indexFadeStyle's stop-1 precedent.)
-	if got := labelFadeStyle(1.0).Render(probe); got != plain {
-		t.Errorf("labelFadeStyle(1.0).Render = %q, want %q (stop 1 = no Foreground at full opacity)", got, plain)
+	// Direction binding: fade = 1.0 = full opacity = stop 1 = colorMuted (#335)
+	// so every Y-axis label reads as muted chrome matching the X-axis tick row.
+	wantMuted := lipgloss.NewStyle().Foreground(colorMuted).Render(probe)
+	if got := labelFadeStyle(1.0).Render(probe); got != wantMuted {
+		t.Errorf("labelFadeStyle(1.0).Render = %q, want %q (stop 1 = colorMuted at full opacity)", got, wantMuted)
 	}
 	// fade clamps above 1.0 still map to stop 1.
-	if got := labelFadeStyle(2.0).Render(probe); got != plain {
-		t.Errorf("labelFadeStyle(2.0).Render = %q, want %q (clamped to stop 1)", got, plain)
+	if got := labelFadeStyle(2.0).Render(probe); got != wantMuted {
+		t.Errorf("labelFadeStyle(2.0).Render = %q, want %q (clamped to stop 1 = colorMuted)", got, wantMuted)
 	}
 
 	// Mid and low fade values produce SGR-wrapped output (stops 2–5).

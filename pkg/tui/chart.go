@@ -409,8 +409,11 @@ func overlayYLabel(body string, peak float64, unit chartUnit, chartH int, fade f
 // itself (gaps stay blank). For BarWidth=1 / BarGap=0 the centering
 // math falls back to col (labelW ≥ 3 > 1, so (1-labelW)/2 < 0). Labels
 // that would overflow chartW on the right are dropped. Empty starts → "".
-// colorMuted foreground throughout — Y axis labels are default fg so
-// the eye distinguishes the two rows when they sit close.
+// colorMuted foreground throughout. As of #335 the bar-chart Y labels
+// (overlayYLabel) and the quota Y ticks (overlayYTicks) are colorMuted too,
+// so all three label rows read as one muted chrome layer; the bar-chart Y
+// labels are additionally suppressed at wide zooms (24h) where in-bar numbers
+// replace them.
 func renderXLabels(starts []time.Time, chartW int, zoom ZoomLevel, now time.Time, order dateOrder) string {
 	if chartW < 1 || len(starts) == 0 {
 		return ""

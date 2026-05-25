@@ -1964,3 +1964,24 @@ func TestOverlayYLabel_SuppressedWhenInBarNumbers(t *testing.T) {
 		t.Errorf("inBarNumbers=false: expected labels spliced, got unchanged body")
 	}
 }
+
+// TestOverlayYTicks_TicksMuted pins #335: the 100%/50% quota ticks render in
+// colorMuted (matching the X-axis tick row), not the terminal default fg.
+func TestOverlayYTicks_TicksMuted(t *testing.T) {
+	withForcedColor(t)
+	withForcedDarkBackground(t, true)
+	chartH := 12
+	lines := make([]string, chartH)
+	for i := range lines {
+		lines[i] = strings.Repeat(" ", 60)
+	}
+	body := strings.Join(lines, "\n")
+
+	result := overlayYTicks(body, chartH, 1.0)
+	for _, label := range []string{"100%", " 50%"} {
+		want := lipgloss.NewStyle().Foreground(colorMuted).Render(label)
+		if !strings.Contains(result, want) {
+			t.Errorf("expected %q tick in colorMuted; want substring %q in %q", label, want, result)
+		}
+	}
+}

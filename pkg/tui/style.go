@@ -91,11 +91,12 @@ func indexFadeStyle(stop int) lipgloss.Style {
 //   - ANSI 16-color: stops collapse to default fg / ANSI 8 / ANSI 0 on
 //     dark and default fg / ANSI 8 / ANSI 7 / ANSI 15 on light.
 //
-// Stop 1 deliberately uses no Foreground call (matches indexFadeStyle's
-// stop-1 precedent) so the label at full opacity matches surrounding
-// chart text colour against the user's theme exactly.
+// Stop 1 is special-cased by labelFadeStyle to colorMuted (#335) so every
+// Y-axis label (bar-chart max/mid + quota 100%/50%) reads as muted chrome
+// matching the X-axis tick row. The labelFadeStops[0] entry below stays an
+// unused sentinel.
 var labelFadeStops = []lipgloss.CompleteAdaptiveColor{
-	{}, // stop 1 — sentinel; labelFadeStyle skips Foreground at stop 1
+	{}, // stop 1 — unused sentinel; labelFadeStyle special-cases stop 1 to colorMuted (#335)
 	{
 		Light: lipgloss.CompleteColor{TrueColor: "#777777", ANSI256: "244", ANSI: "8"},
 		Dark:  lipgloss.CompleteColor{TrueColor: "#888888", ANSI256: "244", ANSI: "8"},
@@ -120,7 +121,7 @@ const labelFadeStopCount = 5
 //   - fade <= 0 → hidden sentinel (no Foreground). Caller gates render on fade > 0.
 //   - 0 < fade  → bucket = ceil(fade * 5), clamped to [1, 5]. Stop 1 is brightest.
 //
-// Stop 1 uses no Foreground call (consistent with indexFadeStyle's stop 1).
+// Stop 1 uses colorMuted (#335) so Y-axis labels read as muted chrome.
 // Stops 2–5 use CompleteColor; lipgloss/termenv downsamples per terminal
 // profile, which can collapse adjacent stops on 16-color terminals — the
 // degradation is documented in the spec.
@@ -138,7 +139,7 @@ func labelFadeStyle(fade float64) lipgloss.Style {
 	stop = max(stop, 1)
 	stop = min(stop, labelFadeStopCount)
 	if stop == 1 {
-		return lipgloss.NewStyle()
+		return lipgloss.NewStyle().Foreground(colorMuted)
 	}
 	return lipgloss.NewStyle().Foreground(labelFadeStops[stop-1])
 }

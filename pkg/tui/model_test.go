@@ -3209,10 +3209,11 @@ func TestLabelFade_MidAnimationBinding(t *testing.T) {
 	withForcedDarkBackground(t, true)
 
 	const probe = "$1.23"
+	wantMuted := lipgloss.NewStyle().Foreground(colorMuted).Render(probe)
 	full := labelFadeStyle(1.0).Render(probe)
-	if full != probe {
-		t.Errorf("labelFadeStyle(1.0).Render = %q, want %q (fade=1.0 must be full opacity = no Foreground)",
-			full, probe)
+	if full != wantMuted {
+		t.Errorf("labelFadeStyle(1.0).Render = %q, want %q (fade=1.0 = stop 1 = colorMuted, #335)",
+			full, wantMuted)
 	}
 
 	// Sample two distinct sub-full fade levels and assert they BOTH
