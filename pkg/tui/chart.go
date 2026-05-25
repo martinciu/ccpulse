@@ -449,6 +449,13 @@ const (
 	barLabelMinRows = 2
 )
 
+// hasInBarNumbers reports whether this zoom is wide enough for overlayBarLabels
+// to draw per-bucket numbers inside the bars (#308). It is the single source of
+// truth for "in-bar numbers are active at this zoom", consumed both by
+// overlayBarLabels (to draw them) and overlayYLabel (to suppress the now-
+// redundant Y labels, #335), so the two decisions can never drift apart.
+func (z ZoomLevel) hasInBarNumbers() bool { return z.BarWidth >= barLabelMinWidth }
+
 // barLabelStyle returns the knockout style for in-bar numbers over the active
 // unit's bar color (#308): dark/light adaptive foreground on the bar's own
 // background, so the digits read as cut into the bar.
@@ -523,7 +530,7 @@ func barLabelPlacement(stripped [][]rune, col, bw, barsH, chartW, labelW int) (s
 // never written). Called from renderWindow only — renderSpringFrame does not
 // call it, so numbers are absent during animation.
 func overlayBarLabels(body string, texts []string, barsH, chartW int, zoom ZoomLevel) string {
-	if zoom.BarWidth < barLabelMinWidth || body == "" || len(texts) == 0 {
+	if !zoom.hasInBarNumbers() || body == "" || len(texts) == 0 {
 		return body
 	}
 	bw := max(zoom.BarWidth, 1)

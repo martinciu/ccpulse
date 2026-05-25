@@ -1932,3 +1932,20 @@ func TestPaddedFrom(t *testing.T) {
 		t.Errorf("paddedFrom n=0 = %v, want %v (unchanged)", got, to)
 	}
 }
+
+func TestZoomLevel_HasInBarNumbers(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		zoom ZoomLevel
+		want bool
+	}{
+		{ZoomLevels[0], false}, // 15m, BarWidth=1
+		{ZoomLevels[1], false}, // 1h,  BarWidth=1
+		{ZoomLevels[2], true},  // 24h, BarWidth=10
+	}
+	for _, c := range cases {
+		if got := c.zoom.hasInBarNumbers(); got != c.want {
+			t.Errorf("%s.hasInBarNumbers() = %v, want %v", c.zoom.Label, got, c.want)
+		}
+	}
+}
