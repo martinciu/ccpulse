@@ -1576,6 +1576,49 @@ func (m Model) scheduleNowTick() tea.Cmd {
 	})
 }
 
+// viewportAnchor captures the pre-rebuild horizontal scroll position so
+// refreshChart can restore it against the freshly rebuilt canvas width.
+type viewportAnchor struct {
+	at     time.Time
+	had    bool
+	pinned bool
+}
+
+// snapshotAnchor captures the viewport's scroll anchor BEFORE the rebuild
+// overwrites lastCanvasW / lastChartFrom / lastChartTo. had=false on first
+// load or after an empty-cache reset; pinned=true when the viewport was at
+// the right edge (the restore then re-pins to the new right edge).
+func (m *Model) snapshotAnchor() viewportAnchor {
+	var a viewportAnchor
+	if m.lastCanvasW > 0 && m.lastZoomStride > 0 && !m.lastChartFrom.IsZero() && m.lastChartTo.After(m.lastChartFrom) {
+		prevColOffset := m.viewportXOffset * m.lastZoomStride
+		prevMaxCol := max(0, m.lastCanvasW-m.viewport.Width)
+		a.pinned = prevColOffset >= prevMaxCol
+		if !a.pinned {
+			a.at = columnToTime(prevColOffset, m.lastCanvasW, m.lastChartFrom, m.lastChartTo)
+			a.had = true
+		}
+	}
+	return a
+}
+
+// restoreAnchor restores the scroll position captured by snapshotAnchor
+// against the rebuilt canvas. !had or pinned re-pins to the right edge;
+// otherwise it maps the anchor time back to a column. Routes through setX so
+// the viewport offset and the viewportXOffset shadow stay in sync.
+func (m *Model) restoreAnchor(a viewportAnchor, zoom ZoomLevel, canvasW int, from, to time.Time) {
+	stride := zoom.stride()
+	rightEdgeCol := max(0, canvasW-m.viewport.Width)
+	switch {
+	case !a.had, a.pinned:
+		bucketCount := (canvasW + max(zoom.BarGap, 0)) / stride
+		m.setX(bucketCount)
+	default:
+		targetCol := min(timeToColumn(a.at, canvasW, from, to), rightEdgeCol)
+		m.setX(targetCol / stride)
+	}
+}
+
 // chartSeries carries the per-unit data loaded for one refreshChart pass:
 // the bar/line values, their bucket-start times, the y-axis peak (set only
 // for remaining mode; bar modes recompute it in renderWindow), and which
@@ -1721,20 +1764,7 @@ func (m *Model) refreshChart() {
 	// edge regardless of canvas width. hadAnchor == false on first load
 	// and after empty-cache early-returns; the restore pins to the new
 	// right edge in that case too.
-	var (
-		anchorTime time.Time
-		hadAnchor  bool
-		wasPinned  bool
-	)
-	if m.lastCanvasW > 0 && m.lastZoomStride > 0 && !m.lastChartFrom.IsZero() && m.lastChartTo.After(m.lastChartFrom) {
-		prevColOffset := m.viewportXOffset * m.lastZoomStride
-		prevMaxCol := max(0, m.lastCanvasW-m.viewport.Width)
-		wasPinned = prevColOffset >= prevMaxCol
-		if !wasPinned {
-			anchorTime = columnToTime(prevColOffset, m.lastCanvasW, m.lastChartFrom, m.lastChartTo)
-			hadAnchor = true
-		}
-	}
+	anchor := m.snapshotAnchor()
 
 	zoom := ZoomLevels[m.zoomIdx]
 	// Right edge = the END of the bucket containing now (#311: same instant
@@ -1825,24 +1855,7 @@ func (m *Model) refreshChart() {
 	// The anchor is restored via m.setX so the viewport offset and the
 	// m.viewportXOffset bucket-indexed shadow stay in sync — the invariant
 	// that all scroll mutations route through setX / scrollLeft / scrollRight.
-	stride := zoom.stride()
-	rightEdgeCol := max(0, canvasW-m.viewport.Width)
-	switch {
-	case !hadAnchor, wasPinned:
-		// Pass a sentinel ≥ maxX so setX's clamp lands on the mode-specific
-		// maxX. bucketCount = N when canvasW = N*stride-gap (the steady-state
-		// shape for both bar and remaining mode); when canvasW is floored at
-		// chartWidth() for short data, bucketCount degrades gracefully because
-		// setX's maxX still clamps to 0. Floor-dividing rightEdgeCol by stride
-		// loses up to (stride-1) cols of slack at 24h zoom (BarGap=2) and
-		// produces maxX-1 in either mode — the original #206 symptom plus the
-		// stuck-at-maxX-1 fallout after a bar↔line toggle.
-		bucketCount := (canvasW + max(zoom.BarGap, 0)) / stride
-		m.setX(bucketCount)
-	default:
-		targetCol := min(timeToColumn(anchorTime, canvasW, from, to), rightEdgeCol)
-		m.setX(targetCol / stride)
-	}
+	m.restoreAnchor(anchor, zoom, canvasW, from, to)
 
 	// Paint (#255). Bar modes window the render to the visible slice via
 	// renderWindow, which computes the visible-slice peak and sets the
