@@ -352,111 +352,147 @@ func New(d Deps) Model {
 // Init implements tea.Model; it fires the initial now-tick command.
 func (m Model) Init() tea.Cmd { return m.scheduleNowTick() }
 
-// Update implements tea.Model; it dispatches all Bubble Tea messages and drives the TUI state machine.
-//
-//nolint:gocognit,nestif,gocyclo,funlen // tracked in #333 — central TUI message dispatch
+// Update implements tea.Model; it dispatches all Bubble Tea messages to the
+// per-message handlers that drive the TUI state machine.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.w, m.h = msg.Width, msg.Height
-		m.viewport.Width = m.chartWidth()
-		m.viewport.Height = m.chartHeight()
-		// help.Width controls when ShortHelp ellipsizes; if left at 0
-		// the footer can wrap onto the body row and break chartHeight().
-		m.help.Width = m.w
-		m.progress = newProgressBar(m.progressWidth())
-		m.progress7d = newProgressBar(m.progressWidth())
-		m.refreshChart()
-		return m, m.maybeArmIntro()
+		return m, m.handleWindowSize(msg)
 	case IndexProgressMsg:
-		wasActive := m.indexLastActive
-		m.indexActive = msg.Active
-		m.indexDone = msg.Done
-		m.indexTotal = msg.Total
-		m.indexLastActive = msg.Active
-		switch {
-		case msg.Active:
-			// Defensive — clears any in-flight fade if a second
-			// backfill ever re-enters the active state. Unreachable
-			// in current code (Backfill.Run is one-shot).
-			m.indexFadeStop = 0
-		case wasActive && !msg.Active:
-			// Falling edge — start the post-backfill banner.
-			m.indexFadeStop = 1
-			if m.deps.ReduceMotion {
-				// Reduce-motion: one full-opacity dwell, no fade ladder.
-				return m, tea.Tick(indexBannerDwellDuration, func(time.Time) tea.Msg {
-					return indexBannerClearMsg{}
-				})
-			}
-			return m, tea.Tick(indexFadeStepDuration, func(time.Time) tea.Msg {
-				return tickFadeMsg{}
-			})
-		}
+		return m, m.handleIndexProgress(msg)
 	case tickFadeMsg:
-		if m.indexFadeStop == 0 {
-			// Stale tick — no fade in progress. Drop silently.
-			return m, nil
-		}
-		m.indexFadeStop++
-		if m.indexFadeStop > indexFadeStopCount {
-			m.indexFadeStop = 0
-			return m, nil
-		}
-		return m, tea.Tick(indexFadeStepDuration, func(time.Time) tea.Msg {
-			return tickFadeMsg{}
-		})
+		return m, m.handleTickFade()
 	case indexBannerClearMsg:
-		if m.indexFadeStop == 0 {
-			// Stale tick — banner already dismissed (e.g. user re-entered
-			// indexing mid-dwell). Drop silently.
-			return m, nil
-		}
-		m.indexFadeStop = 0
+		m.handleIndexBannerClear()
 		return m, nil
 	case springTickMsg:
 		return m, m.handleSpringTick(msg)
 	case QuotaMsg:
 		return m, m.handleQuotaMsg(msg)
 	case RefreshMsg:
-		start := time.Now()
-		m.recomputeWindow()
-		// Suppress refreshChart while the intro is in flight so the
-		// startup-time RefreshMsg race (cmd/ccpulse/main.go:329 +
-		// watcher events) doesn't hard-cut the intro via refreshChart's
-		// spring-abort block. The intro's terminal springGrowing tick
-		// fires its own refreshChart after settle (~600 ms), so any
-		// data updates that arrived during the intro are picked up
-		// there.
-		if !m.springIntro {
-			m.refreshChart()
-		}
-		slog.Debug("tui.refreshMsg",
-			"dur_ms", time.Since(start).Milliseconds(),
-			"zoom", ZoomLevels[m.zoomIdx].Label)
-		return m, m.maybeArmIntro()
+		return m, m.handleRefresh()
 	case nowTickMsg:
-		if msg.gen != m.nowGen {
-			// Stale chain from a previous zoom cadence — drop without
-			// rescheduling so duplicate chains can't accumulate (#311).
-			return m, nil
-		}
-		// Mirror RefreshMsg's intro guard: don't hard-cut the startup intro;
-		// its terminal refreshChart picks up the advance. refreshChart's
-		// wasPinned/anchorTime block does the rest — pinned advances to the
-		// new right edge, scrolled stays anchored — for all three units.
-		if !m.springIntro {
-			m.refreshChart()
-		}
-		// One log line per boundary crossing — the live-advance cadence is
-		// one wakeup per bucket, so this is not a per-frame hot path. Logs
-		// only the zoom label (no paths, tokens, or credentials).
-		slog.Debug("tui.nowTick", "zoom", ZoomLevels[m.zoomIdx].Label)
-		return m, m.scheduleNowTick()
+		return m, m.handleNowTick(msg)
 	case tea.KeyMsg:
 		return m, m.handleKey(msg)
 	}
 	return m, nil
+}
+
+// handleWindowSize re-lays out the viewport, progress bars, and help width on
+// terminal resize, then re-queries the chart and (re)arms the intro.
+func (m *Model) handleWindowSize(msg tea.WindowSizeMsg) tea.Cmd {
+	m.w, m.h = msg.Width, msg.Height
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	// help.Width controls when ShortHelp ellipsizes; if left at 0
+	// the footer can wrap onto the body row and break chartHeight().
+	m.help.Width = m.w
+	m.progress = newProgressBar(m.progressWidth())
+	m.progress7d = newProgressBar(m.progressWidth())
+	m.refreshChart()
+	return m.maybeArmIntro()
+}
+
+// handleIndexProgress tracks backfill progress and starts the post-backfill
+// banner (fade ladder, or a single dwell under reduce-motion) on the
+// active→idle falling edge.
+func (m *Model) handleIndexProgress(msg IndexProgressMsg) tea.Cmd {
+	wasActive := m.indexLastActive
+	m.indexActive = msg.Active
+	m.indexDone = msg.Done
+	m.indexTotal = msg.Total
+	m.indexLastActive = msg.Active
+	switch {
+	case msg.Active:
+		// Defensive — clears any in-flight fade if a second
+		// backfill ever re-enters the active state. Unreachable
+		// in current code (Backfill.Run is one-shot).
+		m.indexFadeStop = 0
+	case wasActive && !msg.Active:
+		// Falling edge — start the post-backfill banner.
+		m.indexFadeStop = 1
+		if m.deps.ReduceMotion {
+			// Reduce-motion: one full-opacity dwell, no fade ladder.
+			return tea.Tick(indexBannerDwellDuration, func(time.Time) tea.Msg {
+				return indexBannerClearMsg{}
+			})
+		}
+		return tea.Tick(indexFadeStepDuration, func(time.Time) tea.Msg {
+			return tickFadeMsg{}
+		})
+	}
+	return nil
+}
+
+// handleTickFade advances the post-backfill checkmark fade ladder, stopping
+// after indexFadeStopCount steps.
+func (m *Model) handleTickFade() tea.Cmd {
+	if m.indexFadeStop == 0 {
+		// Stale tick — no fade in progress. Drop silently.
+		return nil
+	}
+	m.indexFadeStop++
+	if m.indexFadeStop > indexFadeStopCount {
+		m.indexFadeStop = 0
+		return nil
+	}
+	return tea.Tick(indexFadeStepDuration, func(time.Time) tea.Msg {
+		return tickFadeMsg{}
+	})
+}
+
+// handleIndexBannerClear dismisses the reduce-motion post-backfill banner.
+func (m *Model) handleIndexBannerClear() {
+	if m.indexFadeStop == 0 {
+		// Stale tick — banner already dismissed (e.g. user re-entered
+		// indexing mid-dwell). Drop silently.
+		return
+	}
+	m.indexFadeStop = 0
+}
+
+// handleRefresh recomputes the window and re-queries the chart on a watcher
+// event, suppressing the chart rebuild while the open-path intro is running.
+func (m *Model) handleRefresh() tea.Cmd {
+	start := time.Now()
+	m.recomputeWindow()
+	// Suppress refreshChart while the intro is in flight so the
+	// startup-time RefreshMsg race (cmd/ccpulse/main.go:329 +
+	// watcher events) doesn't hard-cut the intro via refreshChart's
+	// spring-abort block. The intro's terminal springGrowing tick
+	// fires its own refreshChart after settle (~600 ms), so any
+	// data updates that arrived during the intro are picked up
+	// there.
+	if !m.springIntro {
+		m.refreshChart()
+	}
+	slog.Debug("tui.refreshMsg",
+		"dur_ms", time.Since(start).Milliseconds(),
+		"zoom", ZoomLevels[m.zoomIdx].Label)
+	return m.maybeArmIntro()
+}
+
+// handleNowTick advances the live chart window at a bucket boundary and
+// re-arms the next tick, dropping stale cadence chains (#311).
+func (m *Model) handleNowTick(msg nowTickMsg) tea.Cmd {
+	if msg.gen != m.nowGen {
+		// Stale chain from a previous zoom cadence — drop without
+		// rescheduling so duplicate chains can't accumulate (#311).
+		return nil
+	}
+	// Mirror RefreshMsg's intro guard: don't hard-cut the startup intro;
+	// its terminal refreshChart picks up the advance. refreshChart's
+	// wasPinned/anchorTime block does the rest — pinned advances to the
+	// new right edge, scrolled stays anchored — for all three units.
+	if !m.springIntro {
+		m.refreshChart()
+	}
+	// One log line per boundary crossing — the live-advance cadence is
+	// one wakeup per bucket, so this is not a per-frame hot path. Logs
+	// only the zoom label (no paths, tokens, or credentials).
+	slog.Debug("tui.nowTick", "zoom", ZoomLevels[m.zoomIdx].Label)
+	return m.scheduleNowTick()
 }
 
 // handleSpringTick dispatches one unit-toggle / intro animation tick to the
