@@ -454,59 +454,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		slog.Debug("tui.nowTick", "zoom", ZoomLevels[m.zoomIdx].Label)
 		return m, m.scheduleNowTick()
 	case tea.KeyMsg:
-		switch {
-		case msg.String() == "ctrl+c":
-			return m, tea.Quit
-		case key.Matches(msg, m.keys.Quit):
-			return m, tea.Quit
-		case key.Matches(msg, m.keys.Help):
-			m.showHelp = !m.showHelp
-		case m.showHelp:
-			// Suppress chart-affecting keys while the help overlay is up,
-			// so dismissing help returns the user to the same scroll/zoom
-			// state they left.
-		case key.Matches(msg, m.keys.Zoom):
-			m.zoomIdx = (m.zoomIdx + 1) % len(ZoomLevels)
-			m.refreshChart()
-			// Re-arm the live-advance tick on the new zoom's cadence; the
-			// bumped gen drops the previous cadence's in-flight tick (#311).
-			m.nowGen++
-			return m, m.scheduleNowTick()
-		case key.Matches(msg, m.keys.Unit):
-			m.unitIdx = (m.unitIdx + 1) % int(chartUnitCount)
-			if m.deps.ReduceMotion {
-				// Snap directly: no spring state, no tick scheduling.
-				// refreshChart is the same call that beginUnitAnimation
-				// makes internally — without it the viewport keeps showing
-				// the old unit's content.
-				m.refreshChart()
-			} else {
-				m.beginUnitAnimation()
-				if m.springActive {
-					// After beginUnitAnimation, viewport content is the new
-					// full-canvas with XOffset preserved at the user's
-					// wall-clock anchor (via refreshChart). Use the shadow
-					// scroll position as the spring's window so the animated
-					// slice matches what the user is actually looking at.
-					m.springXOffset = m.viewportXOffset
-					// Paint spring-frame-0 (old heights, old unit, old color)
-					// synchronously so the next View() call doesn't show one
-					// frame of refreshChart's new-unit content before the
-					// first tick paints the falling old-unit chart.
-					m.renderSpringFrame()
-					gen := m.springGen
-					return m, tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
-						return springTickMsg{gen: gen}
-					})
-				}
-			}
-		case key.Matches(msg, m.keys.ScrollLeft):
-			m.scrollLeft(ZoomLevels[m.zoomIdx].ScrollStep)
-			return m, nil
-		case key.Matches(msg, m.keys.ScrollRight):
-			m.scrollRight(ZoomLevels[m.zoomIdx].ScrollStep)
-			return m, nil
-		}
+		return m, m.handleKey(msg)
 	}
 	return m, nil
 }
@@ -708,6 +656,72 @@ func (m *Model) kickLateArrivalQuotaIntro() tea.Cmd {
 	m.springIntro = true
 	m.springPhase = springGrowing
 	m.springGen++
+	gen := m.springGen
+	return tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
+		return springTickMsg{gen: gen}
+	})
+}
+
+// handleKey dispatches a key press: quit, help toggle, zoom, unit toggle, and
+// horizontal scroll. Chart-affecting keys are suppressed while help is shown.
+func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
+	switch {
+	case msg.String() == "ctrl+c":
+		return tea.Quit
+	case key.Matches(msg, m.keys.Quit):
+		return tea.Quit
+	case key.Matches(msg, m.keys.Help):
+		m.showHelp = !m.showHelp
+	case m.showHelp:
+		// Suppress chart-affecting keys while the help overlay is up,
+		// so dismissing help returns the user to the same scroll/zoom
+		// state they left.
+	case key.Matches(msg, m.keys.Zoom):
+		m.zoomIdx = (m.zoomIdx + 1) % len(ZoomLevels)
+		m.refreshChart()
+		// Re-arm the live-advance tick on the new zoom's cadence; the
+		// bumped gen drops the previous cadence's in-flight tick (#311).
+		m.nowGen++
+		return m.scheduleNowTick()
+	case key.Matches(msg, m.keys.Unit):
+		return m.handleUnitKey()
+	case key.Matches(msg, m.keys.ScrollLeft):
+		m.scrollLeft(ZoomLevels[m.zoomIdx].ScrollStep)
+		return nil
+	case key.Matches(msg, m.keys.ScrollRight):
+		m.scrollRight(ZoomLevels[m.zoomIdx].ScrollStep)
+		return nil
+	}
+	return nil
+}
+
+// handleUnitKey cycles the chart unit and arms the two-phase toggle animation
+// (or snaps directly under reduce-motion).
+func (m *Model) handleUnitKey() tea.Cmd {
+	m.unitIdx = (m.unitIdx + 1) % int(chartUnitCount)
+	if m.deps.ReduceMotion {
+		// Snap directly: no spring state, no tick scheduling.
+		// refreshChart is the same call that beginUnitAnimation
+		// makes internally — without it the viewport keeps showing
+		// the old unit's content.
+		m.refreshChart()
+		return nil
+	}
+	m.beginUnitAnimation()
+	if !m.springActive {
+		return nil
+	}
+	// After beginUnitAnimation, viewport content is the new
+	// full-canvas with XOffset preserved at the user's
+	// wall-clock anchor (via refreshChart). Use the shadow
+	// scroll position as the spring's window so the animated
+	// slice matches what the user is actually looking at.
+	m.springXOffset = m.viewportXOffset
+	// Paint spring-frame-0 (old heights, old unit, old color)
+	// synchronously so the next View() call doesn't show one
+	// frame of refreshChart's new-unit content before the
+	// first tick paints the falling old-unit chart.
+	m.renderSpringFrame()
 	gen := m.springGen
 	return tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
 		return springTickMsg{gen: gen}
