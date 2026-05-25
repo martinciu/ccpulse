@@ -469,6 +469,40 @@ func spliceLabel(line string, start, width int, label string) string {
 	return left + label + right
 }
 
+// barLabelPlacement decides where bar i's label lands. It probes the bar's
+// center column from the top of the stripped body to find the first fill row
+// (the bar's visual top), then applies the skip guards: zero-height bar, a
+// bar shorter than barLabelMinRows, a label wider than the bar, or a label
+// that would overflow chartW on the right. Returns ok=false to skip the bar.
+// col is the bar's left column, bw its width, labelW the styled label width.
+func barLabelPlacement(stripped [][]rune, col, bw, barsH, chartW, labelW int) (start, top int, ok bool) {
+	cc := col + bw/2 // bar center column, used to probe height
+	top = -1
+	for r := range barsH {
+		if cc < len(stripped[r]) && stripped[r][cc] != ' ' {
+			top = r
+			break
+		}
+	}
+	if top < 0 {
+		return 0, 0, false // zero-height bar — nothing to label
+	}
+	if barsH-top < barLabelMinRows {
+		return 0, 0, false // too short (#308)
+	}
+	if labelW > bw {
+		return 0, 0, false // would exceed the bar
+	}
+	start = col + (bw-labelW)/2
+	if start < 0 {
+		start = col
+	}
+	if start+labelW > chartW {
+		return 0, 0, false // would overflow the right edge
+	}
+	return start, top, true
+}
+
 // overlayBarLabels splices each bucket's compact number onto the top fill row
 // of its bar, for the steady-state 24h bar chart (#308). texts is 1:1 with the
 // bars in the rendered slice; texts[i]=="" skips bar i. The labels must already
@@ -488,8 +522,6 @@ func spliceLabel(line string, start, width int, label string) string {
 // barsH is the count of bar rows (the X-label row, if any, sits below and is
 // never written). Called from renderWindow only — renderSpringFrame does not
 // call it, so numbers are absent during animation.
-//
-//nolint:gocyclo // tracked in #333 — per-bar label overlay
 func overlayBarLabels(body string, texts []string, barsH, chartW int, zoom ZoomLevel) string {
 	if zoom.BarWidth < barLabelMinWidth || body == "" || len(texts) == 0 {
 		return body
@@ -519,30 +551,10 @@ func overlayBarLabels(body string, texts []string, barsH, chartW int, zoom ZoomL
 		if col >= chartW {
 			break
 		}
-		cc := col + bw/2 // bar center column, used to probe height
-		top := -1
-		for r := range barsH {
-			if cc < len(stripped[r]) && stripped[r][cc] != ' ' {
-				top = r
-				break
-			}
-		}
-		if top < 0 {
-			continue // zero-height bar — nothing to label
-		}
-		if barsH-top < barLabelMinRows {
-			continue // too short (#308)
-		}
 		labelW := lipgloss.Width(text)
-		if labelW > bw {
-			continue // would exceed the bar
-		}
-		start := col + (bw-labelW)/2
-		if start < 0 {
-			start = col
-		}
-		if start+labelW > chartW {
-			continue // would overflow the right edge
+		start, top, ok := barLabelPlacement(stripped, col, bw, barsH, chartW, labelW)
+		if !ok {
+			continue
 		}
 		lines[top] = spliceLabel(lines[top], start, labelW, text)
 	}
