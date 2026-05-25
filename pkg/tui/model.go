@@ -1727,8 +1727,9 @@ func (m *Model) clearChart() {
 
 // refreshChart queries the cache and updates the viewport content.
 // Safe to call when deps.Cache is nil (no-op). Loads the full history
-// present in the cache, from the earliest message up to "now". On an
-// empty cache or a DB error, renders a placeholder.
+// present in the cache, from the earliest message up to "now". On a
+// DB error renders a placeholder; an empty cache renders the padded
+// warming-up axis (#300).
 func (m *Model) refreshChart() {
 	if m.deps.Cache == nil {
 		return
@@ -1749,19 +1750,9 @@ func (m *Model) refreshChart() {
 		// Next beginUnitAnimation re-makes the slices.
 	}
 
-	// Snapshot the wall-clock anchor BEFORE rebuild. The previous canvas
-	// state is captured by lastCanvasW + lastChartFrom/To + lastZoomStride
-	// at the end of the previous refreshChart pass. The viewport's
-	// xOffset is unexported in bubbles v1, so we derive its column
-	// position as viewportXOffset * lastZoomStride — the stride at the
-	// time the viewport was last drawn (which can differ from the
-	// current zoom's stride if the user just pressed 'z').
-	//
-	// wasPinned == true when the viewport was at the right edge before
-	// this refresh; the post-rebuild restore re-pins to the new right
-	// edge regardless of canvas width. hadAnchor == false on first load
-	// and after empty-cache early-returns; the restore pins to the new
-	// right edge in that case too.
+	// Snapshot the wall-clock scroll anchor BEFORE the rebuild overwrites
+	// lastCanvasW / lastChartFrom / lastChartTo. snapshotAnchor handles the
+	// first-load and pinned-to-right-edge cases.
 	anchor := m.snapshotAnchor()
 
 	zoom := ZoomLevels[m.zoomIdx]
@@ -1842,17 +1833,11 @@ func (m *Model) refreshChart() {
 	m.lastCanvasW = canvasW
 	m.lastZoomStride = zoom.stride()
 
-	// Restore the user's anchor BEFORE computing peak so the post-anchor
-	// viewportXOffset can drive the visible-slice peak (#230). Three cases:
-	//   - !hadAnchor (first load, or coming back from an empty-cache
-	//     placeholder): pin to the new right edge.
-	//   - wasPinned: user was at "now", keep them at "now" against the
-	//     new canvas width.
-	//   - else: map anchorTime → column in the new canvas.
-	//
-	// The anchor is restored via m.setX so the viewport offset and the
-	// m.viewportXOffset bucket-indexed shadow stay in sync — the invariant
-	// that all scroll mutations route through setX / scrollLeft / scrollRight.
+	// Restore the scroll anchor against the rebuilt canvas BEFORE peak is
+	// computed, so the post-anchor viewportXOffset drives the visible-slice
+	// peak (#230). restoreAnchor routes through setX so the viewport offset and
+	// the viewportXOffset shadow stay in sync — the invariant that all scroll
+	// mutations go through setX / scrollLeft / scrollRight.
 	m.restoreAnchor(anchor, zoom, canvasW, from, to)
 
 	// Paint (#255). Bar modes window the render to the visible slice via
