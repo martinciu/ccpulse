@@ -1729,8 +1729,6 @@ func (m *Model) clearChart() {
 // Safe to call when deps.Cache is nil (no-op). Loads the full history
 // present in the cache, from the earliest message up to "now". On an
 // empty cache or a DB error, renders a placeholder.
-//
-//nolint:gocognit,gocyclo,funlen // tracked in #333 — chart rebuild branching
 func (m *Model) refreshChart() {
 	if m.deps.Cache == nil {
 		return
