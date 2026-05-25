@@ -25,8 +25,6 @@ type QuotaInput struct {
 // a Window. `Tokens5h` is `input + output` only — see #232 for why this
 // matches Claude Code `/usage`. `Tokens5hBreakdown` exposes all five
 // token kinds for callers that still need the cache-vs-work split.
-//
-//nolint:gocyclo,nestif // tracked in #333 — window computation branches
 func Compute(db *sql.DB, now time.Time, q QuotaInput) (Window, error) {
 	cutoff := now.UTC().Add(-5 * time.Hour).Format("2006-01-02T15:04:05.000Z07:00")
 	row := db.QueryRow(`
@@ -59,21 +57,7 @@ FROM messages WHERE ts >= ?`, cutoff)
 		CeilingPretty:     q.TierPretty,
 	}
 
-	switch {
-	case q.Usage != nil && q.Usage.FiveHour != nil && q.Usage.FiveHour.ResetsAt != nil:
-		w.Percent = clampPct(int(math.Round(q.Usage.FiveHour.Utilization)))
-		mins := max(int(q.Usage.FiveHour.ResetsAt.Sub(now).Minutes()), 0)
-		w.MinutesToReset = &mins
-	case q.Usage != nil && q.Usage.FiveHour != nil:
-		// 5h bucket present but ResetsAt nil → idle window. Carry the
-		// (zero) Percent through but leave MinutesToReset nil so the TUI
-		// and `status --json` can render "idle" rather than a misleading 0.
-		w.Percent = clampPct(int(math.Round(q.Usage.FiveHour.Utilization)))
-	case oldest != "":
-		t, _ := time.Parse("2006-01-02T15:04:05.000Z07:00", oldest)
-		mins := max(int(t.Add(5*time.Hour).Sub(now).Minutes()), 0)
-		w.MinutesToReset = &mins
-	}
+	w.Percent, w.MinutesToReset = resolveFiveHour(q, oldest, now)
 
 	if q.Usage != nil && q.Usage.SevenDay != nil && q.Usage.SevenDay.ResetsAt != nil {
 		w.Has7d = true
@@ -86,43 +70,79 @@ FROM messages WHERE ts >= ?`, cutoff)
 		w.Quota = q.Usage
 		w.QuotaSource = q.Source
 		w.QuotaUpdatedAt = q.UpdatedAt
-
-		var p Projections
-		if q.Usage.FiveHour != nil {
-			fh := projectBucket(
-				q.Usage.FiveHour.Utilization,
-				q.Usage.FiveHour.ResetsAt,
-				now,
-				fiveHourWindow,
-				fiveHourLowConfidenceCutoff,
-			)
-			p.FiveHour = &fh
-		}
-		if q.Usage.SevenDay != nil && q.Usage.SevenDay.ResetsAt != nil {
-			var samples []cache.SevenDaySample
-			if db != nil {
-				cc := cache.NewFromDB(db)
-				var serr error
-				samples, serr = cc.SevenDaySamplesSince(now.Add(-sevenDayTrailingWindow))
-				if serr != nil {
-					slog.Debug("status.Compute: SevenDaySamplesSince failed; falling back to linear",
-						"err", serr)
-					samples = nil
-				}
-			}
-			sd := projectSevenDay(
-				samples,
-				q.Usage.SevenDay.Utilization,
-				q.Usage.SevenDay.ResetsAt,
-				now,
-			)
-			p.SevenDay = &sd
-		}
-		if p.FiveHour != nil || p.SevenDay != nil {
-			w.Projection = &p
-		}
+		w.Projection = buildProjections(db, q.Usage, now)
 	}
 	return w, nil
+}
+
+// resolveFiveHour computes the 5h Percent and MinutesToReset, falling back to
+// the oldest-message heuristic when the API reports no reset boundary.
+func resolveFiveHour(q QuotaInput, oldest string, now time.Time) (percent int, minutesToReset *int) {
+	switch {
+	case q.Usage != nil && q.Usage.FiveHour != nil && q.Usage.FiveHour.ResetsAt != nil:
+		percent = clampPct(int(math.Round(q.Usage.FiveHour.Utilization)))
+		mins := max(int(q.Usage.FiveHour.ResetsAt.Sub(now).Minutes()), 0)
+		minutesToReset = &mins
+	case q.Usage != nil && q.Usage.FiveHour != nil:
+		// 5h bucket present but ResetsAt nil → idle window. Carry the (zero)
+		// Percent through but leave MinutesToReset nil so callers can render
+		// "idle" rather than a misleading 0.
+		percent = clampPct(int(math.Round(q.Usage.FiveHour.Utilization)))
+	case oldest != "":
+		t, _ := time.Parse("2006-01-02T15:04:05.000Z07:00", oldest)
+		mins := max(int(t.Add(5*time.Hour).Sub(now).Minutes()), 0)
+		minutesToReset = &mins
+	}
+	return percent, minutesToReset
+}
+
+// loadSevenDaySamples fetches the trailing 7-day utilisation samples used to
+// derive a measured slope. Returns nil (linear fallback) when db is nil or the
+// query fails.
+func loadSevenDaySamples(db *sql.DB, now time.Time) []cache.SevenDaySample {
+	if db == nil {
+		return nil
+	}
+	cc := cache.NewFromDB(db)
+	samples, err := cc.SevenDaySamplesSince(now.Add(-sevenDayTrailingWindow))
+	if err != nil {
+		slog.Debug("status.Compute: SevenDaySamplesSince failed; falling back to linear",
+			"err", err)
+		return nil
+	}
+	return samples
+}
+
+// buildProjections derives the per-bucket burn-rate predictions from the usage
+// snapshot. Returns nil when neither bucket can be projected.
+func buildProjections(db *sql.DB, usage *anthro.Usage, now time.Time) *Projections {
+	if usage == nil {
+		return nil
+	}
+	var p Projections
+	if usage.FiveHour != nil {
+		fh := projectBucket(
+			usage.FiveHour.Utilization,
+			usage.FiveHour.ResetsAt,
+			now,
+			fiveHourWindow,
+			fiveHourLowConfidenceCutoff,
+		)
+		p.FiveHour = &fh
+	}
+	if usage.SevenDay != nil && usage.SevenDay.ResetsAt != nil {
+		sd := projectSevenDay(
+			loadSevenDaySamples(db, now),
+			usage.SevenDay.Utilization,
+			usage.SevenDay.ResetsAt,
+			now,
+		)
+		p.SevenDay = &sd
+	}
+	if p.FiveHour == nil && p.SevenDay == nil {
+		return nil
+	}
+	return &p
 }
 
 func clampPct(p int) int {
