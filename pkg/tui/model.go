@@ -588,6 +588,9 @@ func (m Model) View() string {
 	if m.w == 0 {
 		return "" // pre-init; don't time
 	}
+	if m.w < MinWidth || m.h < MinHeight {
+		return renderTooSmall(m.w, m.h)
+	}
 	start := time.Now()
 	header := renderHeader(m.w, m.quotaBars())
 	sep := lipgloss.NewStyle().Foreground(colorMuted).Render(strings.Repeat("─", m.w))
