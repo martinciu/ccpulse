@@ -249,6 +249,15 @@ func TestZoomLevels_ScrollStep(t *testing.T) {
 // seedBarModel opens a temp cache, inserts one message per bucket at the
 // given spacing with a flat InputTokens value, and returns a tokens-mode
 // Model at the requested zoom, refreshed and pinned to the right edge.
+//
+// 24h-zoom seed timestamps anchor on cache.DayStartLocal (time.Local-relative,
+// local noon of each successive day back) so the newest seeded message lands
+// in the same local-day bucket the model's window edge produces in ANY host
+// timezone (#349). Sub-day zooms keep the UTC-truncated path — cache.BucketAlign
+// is UTC-aligned (cache.go:578), so seed and window agree without timezone
+// branching. The captured clock is also injected into Model.now (the seam at
+// model.go:140) so refreshChart's window edge agrees with the seed across any
+// local-midnight straddle.
 func seedBarModel(t *testing.T, zoomIdx, nBuckets int, spacing time.Duration) (Model, *cache.Cache) {
 	t.Helper()
 	dir := t.TempDir()
@@ -260,14 +269,23 @@ func seedBarModel(t *testing.T, zoomIdx, nBuckets int, spacing time.Duration) (M
 	if err != nil {
 		t.Fatalf("pricing.Load: %v", err)
 	}
-	now := time.Now().UTC().Truncate(spacing)
+	clock := time.Now()
 	var msgs []parse.Message
 	for i := range nBuckets {
+		var ts time.Time
+		if spacing == 24*time.Hour {
+			// Local noon of each successive day back. Noon's 11-13h
+			// slack to the day boundary keeps every message in a
+			// distinct local calendar day even across DST (≤1h shift).
+			ts = cache.DayStartLocal(clock).AddDate(0, 0, -i).Add(12 * time.Hour)
+		} else {
+			ts = clock.UTC().Truncate(spacing).Add(-time.Duration(i) * spacing)
+		}
 		msgs = append(msgs, parse.Message{
 			SessionID:   "s",
 			ProjectSlug: "p",
 			Model:       "claude-opus-4-7",
-			Timestamp:   now.Add(-time.Duration(i) * spacing),
+			Timestamp:   ts,
 			InputTokens: 5000,
 		})
 	}
@@ -275,6 +293,10 @@ func seedBarModel(t *testing.T, zoomIdx, nBuckets int, spacing time.Duration) (M
 		t.Fatalf("InsertMessages: %v", err)
 	}
 	m := New(Deps{Cache: c})
+	// Pin the model's clock to the same instant the seed anchored on so
+	// refreshChart's window edge agrees with the seed in any host TZ. The
+	// Model.now seam is documented for this use at pkg/tui/model.go:140.
+	m.now = func() time.Time { return clock }
 	m.unitIdx = int(chartUnitTokens)
 	m.zoomIdx = zoomIdx
 	// w=122 → chartWidth()=120 → slack=(120+2)%12=2 at 24h, so the
