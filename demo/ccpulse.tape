@@ -30,6 +30,11 @@ Sleep 2.5s
 # Switch to output view, zoom to 1h, switch to usage view
 Type "u"
 Sleep 2s
+
+# Scroll left
+Left@50ms 20
+Sleep 400ms
+
 Type "z"
 Sleep 2s
 Type "u"
@@ -43,13 +48,13 @@ Sleep 400ms
 Type "u"
 Sleep 2s
 
-# Return to starting state: scroll right, zoom back to 15m (1h -> 24h -> 15m)
+# Scroll right, zoom to 24h, switch to output view
 Right@50ms 20
 Sleep 400ms
 Type "z"
-Sleep 2s
-Type "z"
-Sleep 1.5s
+Sleep 3s
+Type "u"
+Sleep 4s
 
 # Quit
 Type "q"
