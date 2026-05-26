@@ -3,6 +3,21 @@
 All notable changes to ccpulse are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.2.0] — 2026-05-26
+
+### Added
+- "Terminal too small" notice when the window is below 80×24 (#357)
+- Exact per-bucket numbers on 24h chart bars (#310, #325)
+- Chart auto-advances so the right edge tracks "now" (#317)
+- 7d reset timer formatted as `5d 12h` / `18h 34m` (#316)
+- Underfilling chart data is glued to the right edge (#312)
+- Cleaner Y-axis labels on the token chart (#348)
+- Status-bar integration cookbook for tmux + starship (#326)
+
+### Fixed
+- Quota header no longer wraps on narrow terminals (#319, #322)
+- 24h chart stays flush-right while scrolling (#307)
+
 ## [0.1.0] — 2026-05-22
 
 Initial public release.
