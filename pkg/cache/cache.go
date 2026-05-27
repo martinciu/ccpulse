@@ -137,7 +137,7 @@ func openDB(path string) (*sql.DB, error) {
 
 	var version string
 	err = db.QueryRow(`SELECT value FROM meta WHERE key = 'schema_version'`).Scan(&version)
-	if err != nil && err != sql.ErrNoRows {
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		db.Close()
 		return nil, err
 	}
@@ -520,7 +520,7 @@ ON CONFLICT(path) DO UPDATE SET
 func (c *Cache) GetFile(path string) (mtime, offset, line int64, found bool, err error) {
 	row := c.db.QueryRow(`SELECT mtime_ns, last_offset_bytes, last_line FROM files WHERE path = ?`, path)
 	err = row.Scan(&mtime, &offset, &line)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return 0, 0, 0, false, nil
 	}
 	if err != nil {

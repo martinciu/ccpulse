@@ -30,6 +30,10 @@ linters:
     - intrange
     - usestdlibvars
     - perfsprint
+    # regression guards (added in #353)
+    - bodyclose    # HTTP response bodies must be closed (defer resp.Body.Close())
+    - errorlint    # idiomatic error handling (errors.Is/As, %w)
+    - misspell     # typos in comments, strings, identifiers
 
   settings:
     errcheck:
