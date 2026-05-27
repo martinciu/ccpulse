@@ -137,7 +137,7 @@ func openDB(path string) (*sql.DB, error) {
 
 	var version string
 	err = db.QueryRow(`SELECT value FROM meta WHERE key = 'schema_version'`).Scan(&version)
-	if err != nil && err != sql.ErrNoRows {
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		db.Close()
 		return nil, err
 	}

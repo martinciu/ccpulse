@@ -33,7 +33,7 @@ func TestWatcherStartupError(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			got := watcherStartupError(root, tt.in)
 			if tt.wantSame {
-				if got != tt.in {
+				if !errors.Is(got, tt.in) {
 					t.Fatalf("watcherStartupError returned a new error %v; want the input unchanged", got)
 				}
 				return
