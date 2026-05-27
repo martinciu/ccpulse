@@ -1,6 +1,7 @@
 package status
 
 import (
+	"context"
 	"database/sql"
 	"log/slog"
 	"math"
@@ -25,9 +26,9 @@ type QuotaInput struct {
 // a Window. `Tokens5h` is `input + output` only — see #232 for why this
 // matches Claude Code `/usage`. `Tokens5hBreakdown` exposes all five
 // token kinds for callers that still need the cache-vs-work split.
-func Compute(db *sql.DB, now time.Time, q QuotaInput) (Window, error) {
+func Compute(ctx context.Context, db *sql.DB, now time.Time, q QuotaInput) (Window, error) {
 	cutoff := now.UTC().Add(-5 * time.Hour).Format("2006-01-02T15:04:05.000Z07:00")
-	row := db.QueryRow(`
+	row := db.QueryRowContext(ctx, `
 SELECT
   COALESCE(SUM(input_tokens), 0),
   COALESCE(SUM(output_tokens), 0),
@@ -70,7 +71,7 @@ FROM messages WHERE ts >= ?`, cutoff)
 		w.Quota = q.Usage
 		w.QuotaSource = q.Source
 		w.QuotaUpdatedAt = q.UpdatedAt
-		w.Projection = buildProjections(db, q.Usage, now)
+		w.Projection = buildProjections(ctx, db, q.Usage, now)
 	}
 	return w, nil
 }
@@ -99,12 +100,12 @@ func resolveFiveHour(q QuotaInput, oldest string, now time.Time) (percent int, m
 // loadSevenDaySamples fetches the trailing 7-day utilisation samples used to
 // derive a measured slope. Returns nil (linear fallback) when db is nil or the
 // query fails.
-func loadSevenDaySamples(db *sql.DB, now time.Time) []cache.SevenDaySample {
+func loadSevenDaySamples(ctx context.Context, db *sql.DB, now time.Time) []cache.SevenDaySample {
 	if db == nil {
 		return nil
 	}
 	cc := cache.NewFromDB(db)
-	samples, err := cc.SevenDaySamplesSince(now.Add(-sevenDayTrailingWindow))
+	samples, err := cc.SevenDaySamplesSince(ctx, now.Add(-sevenDayTrailingWindow))
 	if err != nil {
 		slog.Debug("status.Compute: SevenDaySamplesSince failed; falling back to linear",
 			"err", err)
@@ -115,7 +116,7 @@ func loadSevenDaySamples(db *sql.DB, now time.Time) []cache.SevenDaySample {
 
 // buildProjections derives the per-bucket burn-rate predictions from the usage
 // snapshot. Returns nil when neither bucket can be projected.
-func buildProjections(db *sql.DB, usage *anthro.Usage, now time.Time) *Projections {
+func buildProjections(ctx context.Context, db *sql.DB, usage *anthro.Usage, now time.Time) *Projections {
 	if usage == nil {
 		return nil
 	}
@@ -132,7 +133,7 @@ func buildProjections(db *sql.DB, usage *anthro.Usage, now time.Time) *Projectio
 	}
 	if usage.SevenDay != nil && usage.SevenDay.ResetsAt != nil {
 		sd := projectSevenDay(
-			loadSevenDaySamples(db, now),
+			loadSevenDaySamples(ctx, db, now),
 			usage.SevenDay.Utilization,
 			usage.SevenDay.ResetsAt,
 			now,
