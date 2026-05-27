@@ -36,7 +36,7 @@ cache_dir = "` + cacheDir + `"
 	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	db, err := cache.Open(dbPath)
+	db, err := cache.Open(t.Context(), dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}

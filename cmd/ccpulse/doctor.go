@@ -45,11 +45,11 @@ func runDoctor(cmd *cobra.Command) error {
 	fmt.Fprintf(out, "ℹ config path: %s\n", config.DefaultPath())
 	fmt.Fprintf(out, "ℹ cache dir:   %s\n", cacheDir)
 	dbPath := filepath.Join(cacheDir, "state.db")
-	c, cacheErr := cache.Open(dbPath)
+	c, cacheErr := cache.Open(cmd.Context(), dbPath)
 	check(out, "cache db opens: "+dbPath, cacheErr == nil, cacheErr)
 	if cacheErr == nil {
 		defer c.Close()
-		_, ierr := c.DB().Exec(`PRAGMA integrity_check`)
+		_, ierr := c.DB().ExecContext(cmd.Context(), `PRAGMA integrity_check`)
 		check(out, "integrity_check", ierr == nil, ierr)
 	}
 

@@ -27,7 +27,7 @@ func TestIndexSIGINTExitsCleanly(t *testing.T) {
 	// Build the binary into a temp dir.
 	tmp := t.TempDir()
 	binPath := filepath.Join(tmp, "ccpulse")
-	build := exec.Command("go", "build", "-o", binPath, "./cmd/ccpulse")
+	build := exec.CommandContext(t.Context(), "go", "build", "-o", binPath, "./cmd/ccpulse")
 	build.Dir = repoRoot(t)
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("go build failed: %v\n%s", err, out)
@@ -49,7 +49,7 @@ func TestIndexSIGINTExitsCleanly(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cmd := exec.Command(binPath, "index", "--rebuild")
+	cmd := exec.CommandContext(t.Context(), binPath, "index", "--rebuild")
 	cmd.Env = append(os.Environ(),
 		"CCPULSE_PROJECTS_ROOT="+projects,
 		"CCPULSE_CACHE_DIR="+cache,

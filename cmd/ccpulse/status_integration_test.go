@@ -153,7 +153,7 @@ func stubUsageServer(t *testing.T, hits *int) *httptest.Server {
 // driver import in this test file) and returns the number of usage_samples rows.
 func countSamples(t *testing.T, dbPath string) int {
 	t.Helper()
-	c, err := cache.Open(dbPath)
+	c, err := cache.Open(t.Context(), dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -476,7 +476,7 @@ func TestStatusQuietStillRecordsSample(t *testing.T) {
 
 	// Verify the row landed in usage_samples.
 	dbPath := filepath.Join(cacheDir, "state.db")
-	c, err := cache.Open(dbPath)
+	c, err := cache.Open(t.Context(), dbPath)
 	if err != nil {
 		t.Fatalf("reopen cache: %v", err)
 	}
@@ -658,7 +658,7 @@ func TestStatusPrunesWhenRetentionConfigured(t *testing.T) {
 	// Pre-seed an old row so the prune step has something to delete.
 	// cache.Open applies schema.sql (which includes usage_samples) — no
 	// need to CREATE TABLE manually.
-	seed, err := cache.Open(filepath.Join(cacheDir, "state.db"))
+	seed, err := cache.Open(t.Context(), filepath.Join(cacheDir, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

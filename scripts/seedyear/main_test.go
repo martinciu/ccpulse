@@ -13,7 +13,7 @@ func TestSeedYear_RejectsReleaseCacheDir(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := runSeed(seedOpts{
+	_, err := runSeed(t.Context(), seedOpts{
 		profile:  "light",
 		cacheDir: cacheDir,
 		seed:     1,
@@ -37,7 +37,7 @@ func TestSeedYear_RejectsUnknownProfile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := runSeed(seedOpts{
+	_, err := runSeed(t.Context(), seedOpts{
 		profile:  "garbage",
 		cacheDir: cacheDir,
 		seed:     1,
@@ -57,7 +57,7 @@ func TestSeedYear_LightProfile_RowCountInRange(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := runSeed(seedOpts{
+	res, err := runSeed(t.Context(), seedOpts{
 		profile:  "light",
 		cacheDir: cacheDir,
 		seed:     1,
@@ -82,7 +82,7 @@ func TestSeedYear_HeavyProfile_RowCountInRange(t *testing.T) {
 
 	// 30 days × 100% × 3.5 sessions × 5.5h × 60s/row ≈ 34k rows.
 	// Range is ~±25% to absorb RNG variance under a fixed seed.
-	res, err := runSeed(seedOpts{
+	res, err := runSeed(t.Context(), seedOpts{
 		profile:  "heavy",
 		cacheDir: cacheDir,
 		seed:     1,
@@ -108,7 +108,7 @@ func TestSeedYear_Idempotent(t *testing.T) {
 		days:     30,
 	}
 
-	res1, err := runSeed(opts)
+	res1, err := runSeed(t.Context(), opts)
 	if err != nil {
 		t.Fatalf("first runSeed: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestSeedYear_Idempotent(t *testing.T) {
 		t.Fatalf("first run inserted 0 rows; nothing to test idempotency against")
 	}
 
-	res2, err := runSeed(opts)
+	res2, err := runSeed(t.Context(), opts)
 	if err != nil {
 		t.Fatalf("second runSeed: %v", err)
 	}

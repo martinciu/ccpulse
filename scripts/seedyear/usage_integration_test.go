@@ -12,11 +12,11 @@ import (
 func openSeededCache(t *testing.T, days int) (*cache.Cache, seedResult) {
 	t.Helper()
 	cacheDir := filepath.Join(t.TempDir(), "ccpulse-dev")
-	res, err := runSeed(seedOpts{profile: "light", cacheDir: cacheDir, seed: 1, days: days})
+	res, err := runSeed(t.Context(), seedOpts{profile: "light", cacheDir: cacheDir, seed: 1, days: days})
 	if err != nil {
 		t.Fatalf("runSeed: %v", err)
 	}
-	c, err := cache.Open(filepath.Join(cacheDir, "state.db"))
+	c, err := cache.Open(t.Context(), filepath.Join(cacheDir, "state.db"))
 	if err != nil {
 		t.Fatalf("reopen cache: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestSeedYear_UsageSamples_Idempotent(t *testing.T) {
 	cacheDir := filepath.Join(t.TempDir(), "ccpulse-dev")
 	opts := seedOpts{profile: "light", cacheDir: cacheDir, seed: 1, days: 30}
 
-	res1, err := runSeed(opts)
+	res1, err := runSeed(t.Context(), opts)
 	if err != nil {
 		t.Fatalf("first runSeed: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestSeedYear_UsageSamples_Idempotent(t *testing.T) {
 		t.Fatal("first run inserted 0 samples; nothing to test idempotency against")
 	}
 
-	res2, err := runSeed(opts)
+	res2, err := runSeed(t.Context(), opts)
 	if err != nil {
 		t.Fatalf("second runSeed: %v", err)
 	}

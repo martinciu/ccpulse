@@ -10,16 +10,19 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"log"
 	"math/rand/v2"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/martinciu/ccpulse/pkg/anthro"
@@ -238,7 +241,7 @@ type seedResult struct {
 // runSeed validates inputs, opens the dev cache, generates synthetic
 // messages, inserts them in batches, and returns a seedResult. Idempotent
 // re-runs with the same opts return zero inserted counts and unchanged totals.
-func runSeed(opts seedOpts) (seedResult, error) {
+func runSeed(ctx context.Context, opts seedOpts) (seedResult, error) {
 	if err := validateCacheDir(opts.cacheDir); err != nil {
 		return seedResult{}, err
 	}
@@ -254,7 +257,7 @@ func runSeed(opts seedOpts) (seedResult, error) {
 		return seedResult{}, fmt.Errorf("create cache dir: %w", err)
 	}
 	dbPath := filepath.Join(opts.cacheDir, "state.db")
-	c, err := cache.Open(dbPath)
+	c, err := cache.Open(ctx, dbPath)
 	if err != nil {
 		return seedResult{}, fmt.Errorf("open cache %s: %w", dbPath, err)
 	}
@@ -265,7 +268,7 @@ func runSeed(opts seedOpts) (seedResult, error) {
 		return seedResult{}, fmt.Errorf("load pricing: %w", err)
 	}
 
-	pre, err := countSeedRows(c)
+	pre, err := countSeedRows(ctx, c)
 	if err != nil {
 		return seedResult{}, fmt.Errorf("count rows (pre): %w", err)
 	}
@@ -275,18 +278,18 @@ func runSeed(opts seedOpts) (seedResult, error) {
 
 	for start := 0; start < len(msgs); start += batchSize {
 		end := min(start+batchSize, len(msgs))
-		if err := c.InsertMessages(msgs[start:end], hist); err != nil {
+		if err := c.InsertMessages(ctx, msgs[start:end], hist); err != nil {
 			return seedResult{}, fmt.Errorf("insert batch [%d:%d]: %w", start, end, err)
 		}
 	}
 
-	post, err := countSeedRows(c)
+	post, err := countSeedRows(ctx, c)
 	if err != nil {
 		return seedResult{}, fmt.Errorf("count rows (post): %w", err)
 	}
 
 	samples := buildUsageSamples(msgs)
-	sInserted, sTotal, err := writeUsageSamples(c, samples)
+	sInserted, sTotal, err := writeUsageSamples(ctx, c, samples)
 	if err != nil {
 		return seedResult{}, fmt.Errorf("write usage samples: %w", err)
 	}
@@ -301,8 +304,8 @@ func runSeed(opts seedOpts) (seedResult, error) {
 // writeUsageSamples persists synthetic samples via the production
 // RecordUsageSample path (INSERT OR IGNORE on the ts PK → idempotent).
 // Returns rows newly inserted this run (pre/post diff) and the post total.
-func writeUsageSamples(c *cache.Cache, samples []usageSample) (inserted, total int64, err error) {
-	pre, err := countUsageSampleRows(c)
+func writeUsageSamples(ctx context.Context, c *cache.Cache, samples []usageSample) (inserted, total int64, err error) {
+	pre, err := countUsageSampleRows(ctx, c)
 	if err != nil {
 		return 0, 0, fmt.Errorf("count usage samples (pre): %w", err)
 	}
@@ -310,20 +313,20 @@ func writeUsageSamples(c *cache.Cache, samples []usageSample) (inserted, total i
 		five := anthro.Bucket{Utilization: s.fiveHour, ResetsAt: &s.fiveReset}
 		seven := anthro.Bucket{Utilization: s.sevenDay, ResetsAt: &s.sevenReset}
 		u := anthro.Usage{FiveHour: &five, SevenDay: &seven}
-		if err := c.RecordUsageSample(u, s.at); err != nil {
+		if err := c.RecordUsageSample(ctx, u, s.at); err != nil {
 			return 0, 0, fmt.Errorf("record usage sample at %s: %w", s.at, err)
 		}
 	}
-	post, err := countUsageSampleRows(c)
+	post, err := countUsageSampleRows(ctx, c)
 	if err != nil {
 		return 0, 0, fmt.Errorf("count usage samples (post): %w", err)
 	}
 	return post - pre, post, nil
 }
 
-func countUsageSampleRows(c *cache.Cache) (int64, error) {
+func countUsageSampleRows(ctx context.Context, c *cache.Cache) (int64, error) {
 	var n int64
-	if err := c.DB().QueryRow(`SELECT COUNT(*) FROM usage_samples`).Scan(&n); err != nil {
+	if err := c.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_samples`).Scan(&n); err != nil {
 		return 0, fmt.Errorf("query usage sample count: %w", err)
 	}
 	return n, nil
@@ -334,9 +337,9 @@ func countUsageSampleRows(c *cache.Cache) (int64, error) {
 // run" by diffing pre vs post counts (cleaner than tracking the
 // SQLite-side rowsAffected, which counts INSERT OR IGNORE skips
 // inconsistently across drivers).
-func countSeedRows(c *cache.Cache) (int64, error) {
+func countSeedRows(ctx context.Context, c *cache.Cache) (int64, error) {
 	var n int64
-	err := c.DB().QueryRow(
+	err := c.DB().QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM messages WHERE session_id LIKE ?`,
 		seedSessionPrefix+"%",
 	).Scan(&n)
@@ -469,7 +472,10 @@ func main() {
 		resolved = expandPath(resolved)
 	}
 
-	res, err := runSeed(seedOpts{
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	res, err := runSeed(ctx, seedOpts{
 		profile:  *profile,
 		cacheDir: resolved,
 		seed:     *seed,

@@ -40,7 +40,7 @@ func runStatus(cmd *cobra.Command, asJSON, quiet bool) error {
 	}
 	cacheDir := envOr("CCPULSE_CACHE_DIR", expand(cfg.Paths.CacheDir))
 	dbPath := filepath.Join(cacheDir, "state.db")
-	c, err := cache.Open(dbPath)
+	c, err := cache.Open(cmd.Context(), dbPath)
 	if err != nil {
 		if errors.Is(err, cache.ErrLockHeld) {
 			fmt.Fprintln(cmd.ErrOrStderr(),
@@ -62,7 +62,7 @@ func runStatus(cmd *cobra.Command, asJSON, quiet bool) error {
 	// Best-effort — failure to record never blocks the visible quota number.
 	recordUsageSample(cmd, c, cfg, q)
 
-	w, err := status.Compute(c.DB(), time.Now(), q)
+	w, err := status.Compute(cmd.Context(), c.DB(), time.Now(), q)
 	if err != nil {
 		return err
 	}
@@ -83,12 +83,12 @@ func recordUsageSample(cmd *cobra.Command, c *cache.Cache, cfg config.Config, q 
 		return
 	}
 	errOut := cmd.ErrOrStderr()
-	if recErr := c.RecordUsageSample(*q.Usage, q.UpdatedAt); recErr != nil {
+	if recErr := c.RecordUsageSample(cmd.Context(), *q.Usage, q.UpdatedAt); recErr != nil {
 		fmt.Fprintf(errOut, "ccpulse: record sample: %v\n", recErr)
 	}
 	if cfg.History.RetentionDays > 0 {
 		cutoff := time.Now().Add(-time.Duration(cfg.History.RetentionDays) * 24 * time.Hour)
-		if _, prErr := c.PruneUsageSamples(cutoff); prErr != nil {
+		if _, prErr := c.PruneUsageSamples(cmd.Context(), cutoff); prErr != nil {
 			fmt.Fprintf(errOut, "ccpulse: prune samples: %v\n", prErr)
 		}
 	}
