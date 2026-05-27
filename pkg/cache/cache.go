@@ -692,6 +692,7 @@ func dailyBuckets[V int64 | float64, T any](
 	}
 	fromStr := from.UTC().Format(tsFormat)
 	toStr := to.UTC().Format(tsFormat)
+	//nolint:gosec // G201: aggExpr is a controlled enum from internal call sites, not user input
 	query := fmt.Sprintf(`
 SELECT
   local_day(ts) AS day,
