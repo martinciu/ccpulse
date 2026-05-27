@@ -14,7 +14,7 @@ import (
 
 func mustOpenTempCache(t *testing.T) *cache.Cache {
 	t.Helper()
-	c, err := cache.Open(filepath.Join(t.TempDir(), "s.db"))
+	c, err := cache.Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -51,7 +51,7 @@ func twoVersionHistory(t *testing.T) pricing.History {
 
 func seedRow(t *testing.T, c *cache.Cache, hist pricing.History, m parse.Message) {
 	t.Helper()
-	if err := c.InsertMessages([]parse.Message{m}, hist); err != nil {
+	if err := c.InsertMessages(t.Context(), []parse.Message{m}, hist); err != nil {
 		t.Fatalf("InsertMessages: %v", err)
 	}
 }

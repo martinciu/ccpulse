@@ -72,7 +72,7 @@ func TestOpenAppliesSchema(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "state.db")
 
-	c, err := Open(path)
+	c, err := Open(t.Context(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestOpenAppliesSchema(t *testing.T) {
 }
 
 func TestInsertMessages(t *testing.T) {
-	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +105,7 @@ func TestInsertMessages(t *testing.T) {
 			InputTokens: 10,
 		},
 	}
-	if err := c.InsertMessages(msgs, tab); err != nil {
+	if err := c.InsertMessages(t.Context(), msgs, tab); err != nil {
 		t.Fatal(err)
 	}
 
@@ -131,16 +131,16 @@ func TestInsertMessages(t *testing.T) {
 }
 
 func TestFileTracking(t *testing.T) {
-	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer c.Close()
 
-	if err := c.RecordFile("/tmp/x.jsonl", 1234, 5678, 42); err != nil {
+	if err := c.RecordFile(t.Context(), "/tmp/x.jsonl", 1234, 5678, 42); err != nil {
 		t.Fatal(err)
 	}
-	mtime, off, line, found, err := c.GetFile("/tmp/x.jsonl")
+	mtime, off, line, found, err := c.GetFile(t.Context(), "/tmp/x.jsonl")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,17 +149,17 @@ func TestFileTracking(t *testing.T) {
 	}
 
 	// Update existing record
-	if err := c.RecordFile("/tmp/x.jsonl", 9999, 8888, 99); err != nil {
+	if err := c.RecordFile(t.Context(), "/tmp/x.jsonl", 9999, 8888, 99); err != nil {
 		t.Fatal(err)
 	}
-	mtime, _, _, _, _ = c.GetFile("/tmp/x.jsonl")
+	mtime, _, _, _, _ = c.GetFile(t.Context(), "/tmp/x.jsonl")
 	if mtime != 9999 {
 		t.Errorf("after update mtime = %d", mtime)
 	}
 }
 
 func TestInsertMessagesIdempotent(t *testing.T) {
-	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,10 +177,10 @@ func TestInsertMessagesIdempotent(t *testing.T) {
 		},
 	}
 
-	if err := c.InsertMessages(msgs, tab); err != nil {
+	if err := c.InsertMessages(t.Context(), msgs, tab); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.InsertMessages(msgs, tab); err != nil {
+	if err := c.InsertMessages(t.Context(), msgs, tab); err != nil {
 		t.Fatal(err)
 	}
 
@@ -194,7 +194,7 @@ func TestInsertMessagesIdempotent(t *testing.T) {
 }
 
 func TestRecordUsageSample_RoundTrip(t *testing.T) {
-	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +212,7 @@ func TestRecordUsageSample_RoundTrip(t *testing.T) {
 		},
 	}
 
-	if err := c.RecordUsageSample(u, when); err != nil {
+	if err := c.RecordUsageSample(t.Context(), u, when); err != nil {
 		t.Fatalf("RecordUsageSample: %v", err)
 	}
 
@@ -272,7 +272,7 @@ func TestRecordUsageSample_RoundTrip(t *testing.T) {
 }
 
 func TestRecordUsageSample_DuplicateTs(t *testing.T) {
-	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,10 +282,10 @@ func TestRecordUsageSample_DuplicateTs(t *testing.T) {
 	first := anthro.Usage{FiveHour: &anthro.Bucket{Utilization: 10.0, ResetsAt: timePtr(when.Add(time.Hour))}}
 	second := anthro.Usage{FiveHour: &anthro.Bucket{Utilization: 99.0, ResetsAt: timePtr(when.Add(time.Hour))}}
 
-	if err := c.RecordUsageSample(first, when); err != nil {
+	if err := c.RecordUsageSample(t.Context(), first, when); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.RecordUsageSample(second, when); err != nil {
+	if err := c.RecordUsageSample(t.Context(), second, when); err != nil {
 		t.Fatalf("second insert should be a silent no-op, got: %v", err)
 	}
 
@@ -307,7 +307,7 @@ func TestRecordUsageSample_DuplicateTs(t *testing.T) {
 }
 
 func TestPruneUsageSamples(t *testing.T) {
-	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -321,13 +321,13 @@ func TestPruneUsageSamples(t *testing.T) {
 	}
 	for i, when := range samples {
 		u := anthro.Usage{FiveHour: &anthro.Bucket{Utilization: float64(i), ResetsAt: timePtr(when.Add(time.Hour))}}
-		if err := c.RecordUsageSample(u, when); err != nil {
+		if err := c.RecordUsageSample(t.Context(), u, when); err != nil {
 			t.Fatal(err)
 		}
 	}
 
 	cutoff := base.Add(-60 * time.Second) // boundary: drop the -100s row, keep -50s and base
-	n, err := c.PruneUsageSamples(cutoff)
+	n, err := c.PruneUsageSamples(t.Context(), cutoff)
 	if err != nil {
 		t.Fatalf("PruneUsageSamples: %v", err)
 	}
@@ -354,7 +354,7 @@ func TestPruneUsageSamples(t *testing.T) {
 }
 
 func TestRecordUsageSample_NilBucket(t *testing.T) {
-	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -366,7 +366,7 @@ func TestRecordUsageSample_NilBucket(t *testing.T) {
 		// SevenDay deliberately nil
 	}
 
-	if err := c.RecordUsageSample(u, when); err != nil {
+	if err := c.RecordUsageSample(t.Context(), u, when); err != nil {
 		t.Fatalf("RecordUsageSample: %v", err)
 	}
 
@@ -395,7 +395,7 @@ func TestRecordUsageSample_NilBucket(t *testing.T) {
 func TestUtilizationSincePerColumnNullPolicy(t *testing.T) {
 	resetNullResetsWarnedForTest()
 
-	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -412,7 +412,7 @@ func TestUtilizationSincePerColumnNullPolicy(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	fh, err := c.UtilizationSince("five_hour_pct", time.Unix(0, 0))
+	fh, err := c.UtilizationSince(t.Context(), "five_hour_pct", time.Unix(0, 0))
 	if err != nil {
 		t.Fatalf("five_hour: %v", err)
 	}
@@ -420,7 +420,7 @@ func TestUtilizationSincePerColumnNullPolicy(t *testing.T) {
 		t.Errorf("five_hour: expected 3 points (idle rows kept), got %d: %+v", len(fh), fh)
 	}
 
-	sd, err := c.UtilizationSince("seven_day_pct", time.Unix(0, 0))
+	sd, err := c.UtilizationSince(t.Context(), "seven_day_pct", time.Unix(0, 0))
 	if err != nil {
 		t.Fatalf("seven_day: %v", err)
 	}
@@ -432,7 +432,7 @@ func TestUtilizationSincePerColumnNullPolicy(t *testing.T) {
 func TestSevenDaySamplesSinceSkipsNullResetsAt(t *testing.T) {
 	resetNullResetsWarnedForTest()
 
-	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -449,7 +449,7 @@ func TestSevenDaySamplesSinceSkipsNullResetsAt(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	got, err := c.SevenDaySamplesSince(time.Unix(0, 0))
+	got, err := c.SevenDaySamplesSince(t.Context(), time.Unix(0, 0))
 	if err != nil {
 		t.Fatalf("SevenDaySamplesSince: %v", err)
 	}
@@ -494,7 +494,7 @@ func TestOpenNormalisesLegacyResetsAtSentinel(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "state.db")
 
-	c, err := Open(path)
+	c, err := Open(t.Context(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -516,7 +516,7 @@ func TestOpenNormalisesLegacyResetsAtSentinel(t *testing.T) {
 
 	// Re-open: the normalisation should run and convert all sentinel
 	// strings to NULL.
-	c, err = Open(path)
+	c, err = Open(t.Context(), path)
 	if err != nil {
 		t.Fatalf("re-open: %v", err)
 	}
@@ -550,7 +550,7 @@ func TestOpenNormalisesLegacyResetsAtSentinel(t *testing.T) {
 
 	// Idempotency: a third Open should be a no-op.
 	c.Close()
-	c, err = Open(path)
+	c, err = Open(t.Context(), path)
 	if err != nil {
 		t.Fatalf("third open: %v", err)
 	}
@@ -558,7 +558,7 @@ func TestOpenNormalisesLegacyResetsAtSentinel(t *testing.T) {
 }
 
 func TestRecordUsageSampleNullResetsAt(t *testing.T) {
-	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -569,7 +569,7 @@ func TestRecordUsageSampleNullResetsAt(t *testing.T) {
 		SevenDay:         &anthro.Bucket{Utilization: 0.0, ResetsAt: nil},
 		SevenDayOmelette: &anthro.Bucket{Utilization: 0.0, ResetsAt: nil},
 	}
-	if err := c.RecordUsageSample(u, time.Unix(1_700_000_000, 0)); err != nil {
+	if err := c.RecordUsageSample(t.Context(), u, time.Unix(1_700_000_000, 0)); err != nil {
 		t.Fatalf("RecordUsageSample: %v", err)
 	}
 
@@ -590,12 +590,12 @@ func TestOpenWipesOnSchemaVersionMismatch(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "state.db")
 
-	c, err := Open(path)
+	c, err := Open(t.Context(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	tab, _ := pricing.Load()
-	if err := c.InsertMessages([]parse.Message{{
+	if err := c.InsertMessages(t.Context(), []parse.Message{{
 		SessionID:   "s1",
 		ProjectSlug: "slug-a",
 		Model:       "claude-opus-4-7",
@@ -612,7 +612,7 @@ func TestOpenWipesOnSchemaVersionMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	c2, err := Open(path)
+	c2, err := Open(t.Context(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -636,7 +636,7 @@ func TestOpenWipesOnSchemaVersionMismatch(t *testing.T) {
 }
 
 func TestIOTokenBuckets_ContiguousRange(t *testing.T) {
-	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -665,13 +665,13 @@ func TestIOTokenBuckets_ContiguousRange(t *testing.T) {
 			Timestamp: ts3, InputTokens: 500, OutputTokens: 200,
 		},
 	}
-	if err := c.InsertMessages(msgs, tab); err != nil {
+	if err := c.InsertMessages(t.Context(), msgs, tab); err != nil {
 		t.Fatal(err)
 	}
 
 	from := time.Date(2026, 5, 9, 11, 0, 0, 0, time.UTC)
 	to := time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)
-	buckets, err := c.IOTokenBuckets(5*time.Minute, from, to)
+	buckets, err := c.IOTokenBuckets(t.Context(), 5*time.Minute, from, to)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -712,7 +712,7 @@ func TestIOTokenBuckets_ContiguousRange(t *testing.T) {
 // and excludes the three cache columns (cache_read, cache_write_5m,
 // cache_write_1h). Matches Claude Code /usage semantics — see #232.
 func TestIOTokenBuckets_InputOutput_CacheExcluded(t *testing.T) {
-	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -735,13 +735,13 @@ func TestIOTokenBuckets_InputOutput_CacheExcluded(t *testing.T) {
 		CacheWrite5mTokens: 200,
 		CacheWrite1hTokens: 75,
 	}}
-	if err := c.InsertMessages(msgs, tab); err != nil {
+	if err := c.InsertMessages(t.Context(), msgs, tab); err != nil {
 		t.Fatal(err)
 	}
 
 	from := time.Date(2026, 5, 9, 11, 45, 0, 0, time.UTC)
 	to := time.Date(2026, 5, 9, 11, 55, 0, 0, time.UTC)
-	buckets, err := c.IOTokenBuckets(5*time.Minute, from, to)
+	buckets, err := c.IOTokenBuckets(t.Context(), 5*time.Minute, from, to)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -759,7 +759,7 @@ func TestIOTokenBuckets_InputOutput_CacheExcluded(t *testing.T) {
 }
 
 func TestIOTokenBuckets_AllEmpty(t *testing.T) {
-	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -767,7 +767,7 @@ func TestIOTokenBuckets_AllEmpty(t *testing.T) {
 
 	from := time.Date(2026, 5, 9, 0, 0, 0, 0, time.UTC)
 	to := time.Date(2026, 5, 9, 6, 0, 0, 0, time.UTC)
-	buckets, err := c.IOTokenBuckets(15*time.Minute, from, to)
+	buckets, err := c.IOTokenBuckets(t.Context(), 15*time.Minute, from, to)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -786,7 +786,7 @@ func TestIOTokenBuckets_AllEmpty(t *testing.T) {
 }
 
 func TestIOTokenBuckets_BoundsSnap(t *testing.T) {
-	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -796,7 +796,7 @@ func TestIOTokenBuckets_BoundsSnap(t *testing.T) {
 	// [11:00, 12:05) → 13 buckets.
 	from := time.Date(2026, 5, 9, 11, 3, 30, 0, time.UTC)
 	to := time.Date(2026, 5, 9, 12, 7, 45, 0, time.UTC)
-	buckets, err := c.IOTokenBuckets(5*time.Minute, from, to)
+	buckets, err := c.IOTokenBuckets(t.Context(), 5*time.Minute, from, to)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -822,7 +822,7 @@ func TestIOTokenBuckets_IncludesInFlightBucket(t *testing.T) {
 	// in-flight bucket containing now must be included as the rightmost
 	// bucket in the [from, to) range — otherwise a freshly-recorded
 	// message stays invisible until the bucket boundary ticks over.
-	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -840,14 +840,14 @@ func TestIOTokenBuckets_IncludesInFlightBucket(t *testing.T) {
 			Timestamp: now, InputTokens: 1000, OutputTokens: 500,
 		},
 	}
-	if err := c.InsertMessages(msgs, tab); err != nil {
+	if err := c.InsertMessages(t.Context(), msgs, tab); err != nil {
 		t.Fatal(err)
 	}
 
 	dur := 5 * time.Minute
 	to := BucketAlign(now, dur).Add(dur)
 	from := to.Add(-time.Hour)
-	buckets, err := c.IOTokenBuckets(dur, from, to)
+	buckets, err := c.IOTokenBuckets(t.Context(), dur, from, to)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -865,13 +865,13 @@ func TestIOTokenBuckets_IncludesInFlightBucket(t *testing.T) {
 }
 
 func TestEarliestMessageTime_Empty(t *testing.T) {
-	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer c.Close()
 
-	ts, ok, err := c.EarliestMessageTime()
+	ts, ok, err := c.EarliestMessageTime(t.Context())
 	if err != nil {
 		t.Fatalf("EarliestMessageTime: %v", err)
 	}
@@ -884,7 +884,7 @@ func TestEarliestMessageTime_Empty(t *testing.T) {
 }
 
 func TestEarliestMessageTime_SingleRow(t *testing.T) {
-	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -892,7 +892,7 @@ func TestEarliestMessageTime_SingleRow(t *testing.T) {
 
 	tab, _ := pricing.Load()
 	want := time.Date(2026, 4, 1, 12, 30, 0, 0, time.UTC)
-	if err := c.InsertMessages([]parse.Message{{
+	if err := c.InsertMessages(t.Context(), []parse.Message{{
 		SessionID:   "s1",
 		ProjectSlug: "slug-a",
 		Model:       "claude-opus-4-7",
@@ -902,7 +902,7 @@ func TestEarliestMessageTime_SingleRow(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ts, ok, err := c.EarliestMessageTime()
+	ts, ok, err := c.EarliestMessageTime(t.Context())
 	if err != nil {
 		t.Fatalf("EarliestMessageTime: %v", err)
 	}
@@ -918,7 +918,7 @@ func TestEarliestMessageTime_SingleRow(t *testing.T) {
 }
 
 func TestEarliestMessageTime_MultipleRows(t *testing.T) {
-	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -940,7 +940,7 @@ func TestEarliestMessageTime_MultipleRows(t *testing.T) {
 	}
 	// Insert in non-sorted order to make sure we return MIN, not the
 	// first-inserted row.
-	if err := c.InsertMessages([]parse.Message{
+	if err := c.InsertMessages(t.Context(), []parse.Message{
 		mk("s2", mid),
 		mk("s3", latest),
 		mk("s1", earliest),
@@ -948,7 +948,7 @@ func TestEarliestMessageTime_MultipleRows(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ts, ok, err := c.EarliestMessageTime()
+	ts, ok, err := c.EarliestMessageTime(t.Context())
 	if err != nil {
 		t.Fatalf("EarliestMessageTime: %v", err)
 	}
@@ -961,7 +961,7 @@ func TestEarliestMessageTime_MultipleRows(t *testing.T) {
 }
 
 func TestOpenSetsWALAndBusyTimeout(t *testing.T) {
-	c, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1003,7 +1003,7 @@ func TestOpenSetsWALAndBusyTimeout(t *testing.T) {
 }
 
 func TestConcurrentReadWriteNoBusy(t *testing.T) {
-	c, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1031,7 +1031,7 @@ func TestConcurrentReadWriteNoBusy(t *testing.T) {
 				Timestamp:   base.Add(time.Duration(i) * time.Millisecond),
 				InputTokens: 100,
 			}
-			if err := c.InsertMessages([]parse.Message{msg}, tab); err != nil {
+			if err := c.InsertMessages(t.Context(), []parse.Message{msg}, tab); err != nil {
 				errs <- fmt.Errorf("InsertMessages: %w", err)
 				return
 			}
@@ -1049,7 +1049,7 @@ func TestConcurrentReadWriteNoBusy(t *testing.T) {
 				return
 			default:
 			}
-			if _, err := c.IOTokenBuckets(5*time.Minute, from, to); err != nil {
+			if _, err := c.IOTokenBuckets(t.Context(), 5*time.Minute, from, to); err != nil {
 				errs <- fmt.Errorf("IOTokenBuckets: %w", err)
 				return
 			}
@@ -1133,7 +1133,7 @@ func TestBucketAlign(t *testing.T) {
 // boundaries the WHERE ts >= ? AND ts < ? lex comparison silently
 // misbehaves when a caller passes non-UTC values.
 func TestInsertMessages_NormalizesNonUTCTimestamp(t *testing.T) {
-	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1152,13 +1152,13 @@ func TestInsertMessages_NormalizesNonUTCTimestamp(t *testing.T) {
 			Timestamp: ts, InputTokens: 1000, OutputTokens: 500,
 		},
 	}
-	if err := c.InsertMessages(msgs, tab); err != nil {
+	if err := c.InsertMessages(t.Context(), msgs, tab); err != nil {
 		t.Fatal(err)
 	}
 
 	from := time.Date(2026, 5, 9, 11, 0, 0, 0, loc)
 	to := time.Date(2026, 5, 9, 12, 0, 0, 0, loc)
-	buckets, err := c.IOTokenBuckets(5*time.Minute, from, to)
+	buckets, err := c.IOTokenBuckets(t.Context(), 5*time.Minute, from, to)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1175,14 +1175,18 @@ func TestInsertMessages_NormalizesNonUTCTimestamp(t *testing.T) {
 }
 
 func TestIntegrityOK_Healthy(t *testing.T) {
-	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer c.Close()
 
-	if !c.IntegrityOK() {
-		t.Fatal("fresh cache should report healthy")
+	ok, err := c.IntegrityOK(t.Context())
+	if err != nil {
+		t.Fatalf("IntegrityOK: unexpected err: %v", err)
+	}
+	if !ok {
+		t.Fatalf("IntegrityOK on healthy cache returned false")
 	}
 }
 
@@ -1196,7 +1200,7 @@ func TestIntegrityOK_Corrupt(t *testing.T) {
 	// page. The explicit wal_checkpoint(TRUNCATE) makes the WAL → main
 	// flush a hard contract instead of leaning on SQLite's default
 	// last-connection-close PASSIVE checkpoint.
-	c, err := Open(path)
+	c, err := Open(t.Context(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1208,7 +1212,7 @@ func TestIntegrityOK_Corrupt(t *testing.T) {
 		t.Fatalf("page_size = %d, want 4096 (test corruption offset assumes default)", pageSize)
 	}
 	tab, _ := pricing.Load()
-	if err := c.InsertMessages([]parse.Message{{
+	if err := c.InsertMessages(t.Context(), []parse.Message{{
 		SessionID:   "s1",
 		ProjectSlug: "p",
 		Model:       "claude-opus-4-7",
@@ -1242,20 +1246,24 @@ func TestIntegrityOK_Corrupt(t *testing.T) {
 	// Phase 3: reopen + verify detection. Re-Open succeeds because the
 	// schema on page 1 is untouched; IntegrityOK returns false via the
 	// integrity_check != "ok" branch.
-	c2, err := Open(path)
+	c2, err := Open(t.Context(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer c2.Close()
 
-	if c2.IntegrityOK() {
-		t.Fatal("page-2-corrupted cache should report unhealthy")
+	ok, err := c2.IntegrityOK(t.Context())
+	if err != nil {
+		t.Fatalf("IntegrityOK: unexpected err: %v", err)
+	}
+	if ok {
+		t.Fatalf("IntegrityOK on corrupt cache returned true")
 	}
 }
 
 func TestInsertMessages_PersistsCwdAndGitBranch(t *testing.T) {
 	dir := t.TempDir()
-	c, err := Open(filepath.Join(dir, "state.db"))
+	c, err := Open(t.Context(), filepath.Join(dir, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1275,7 +1283,7 @@ func TestInsertMessages_PersistsCwdAndGitBranch(t *testing.T) {
 		Cwd:         "/Users/x/proj",
 		GitBranch:   "main",
 	}}
-	if err := c.InsertMessages(msgs, tab); err != nil {
+	if err := c.InsertMessages(t.Context(), msgs, tab); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1330,7 +1338,7 @@ VALUES('s','p',?,'assistant','m',0,?,0,0,0,0,'v1',0,0,'','','')`,
 
 func TestIOTokenBuckets_24h_LocalAlignment(t *testing.T) {
 	withTimeLocal(t, "Europe/Berlin")
-	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1345,7 +1353,7 @@ func TestIOTokenBuckets_24h_LocalAlignment(t *testing.T) {
 
 	from := DayStartLocal(time.Date(2026, 5, 13, 0, 0, 0, 0, time.Local))
 	to := DayStartLocal(time.Date(2026, 5, 15, 0, 0, 0, 0, time.Local))
-	buckets, err := c.IOTokenBuckets(24*time.Hour, from, to)
+	buckets, err := c.IOTokenBuckets(t.Context(), 24*time.Hour, from, to)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1365,7 +1373,7 @@ func TestIOTokenBuckets_24h_LocalAlignment(t *testing.T) {
 
 func TestIOTokenBuckets_24h_EmptyDays(t *testing.T) {
 	withTimeLocal(t, "Europe/Berlin")
-	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1375,7 +1383,7 @@ func TestIOTokenBuckets_24h_EmptyDays(t *testing.T) {
 
 	from := DayStartLocal(time.Date(2026, 5, 13, 0, 0, 0, 0, time.Local))
 	to := DayStartLocal(time.Date(2026, 5, 16, 0, 0, 0, 0, time.Local))
-	buckets, err := c.IOTokenBuckets(24*time.Hour, from, to)
+	buckets, err := c.IOTokenBuckets(t.Context(), 24*time.Hour, from, to)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1390,7 +1398,7 @@ func TestIOTokenBuckets_24h_EmptyDays(t *testing.T) {
 
 func TestIOTokenBuckets_24h_UTCFallback(t *testing.T) {
 	withTimeLocal(t, "UTC")
-	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1401,7 +1409,7 @@ func TestIOTokenBuckets_24h_UTCFallback(t *testing.T) {
 
 	from := DayStartLocal(time.Date(2026, 5, 13, 0, 0, 0, 0, time.Local))
 	to := DayStartLocal(time.Date(2026, 5, 15, 0, 0, 0, 0, time.Local))
-	buckets, err := c.IOTokenBuckets(24*time.Hour, from, to)
+	buckets, err := c.IOTokenBuckets(t.Context(), 24*time.Hour, from, to)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1412,7 +1420,7 @@ func TestIOTokenBuckets_24h_UTCFallback(t *testing.T) {
 
 func TestIOTokenBuckets_24h_DST_SpringForward(t *testing.T) {
 	withTimeLocal(t, "Europe/Berlin")
-	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1435,7 +1443,7 @@ func TestIOTokenBuckets_24h_DST_SpringForward(t *testing.T) {
 
 	from := DayStartLocal(time.Date(2026, 3, 29, 0, 0, 0, 0, time.Local))
 	to := DayStartLocal(time.Date(2026, 3, 31, 0, 0, 0, 0, time.Local))
-	buckets, err := c.IOTokenBuckets(24*time.Hour, from, to)
+	buckets, err := c.IOTokenBuckets(t.Context(), 24*time.Hour, from, to)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1452,7 +1460,7 @@ func TestIOTokenBuckets_24h_DST_SpringForward(t *testing.T) {
 
 func TestIOTokenBuckets_24h_DST_FallBack(t *testing.T) {
 	withTimeLocal(t, "Europe/Berlin")
-	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1473,7 +1481,7 @@ func TestIOTokenBuckets_24h_DST_FallBack(t *testing.T) {
 
 	from := DayStartLocal(time.Date(2026, 10, 25, 0, 0, 0, 0, time.Local))
 	to := DayStartLocal(time.Date(2026, 10, 27, 0, 0, 0, 0, time.Local))
-	buckets, err := c.IOTokenBuckets(24*time.Hour, from, to)
+	buckets, err := c.IOTokenBuckets(t.Context(), 24*time.Hour, from, to)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1490,7 +1498,7 @@ func TestIOTokenBuckets_24h_DST_FallBack(t *testing.T) {
 
 func TestIOTokenBuckets_24h_HalfHourOffsetTz(t *testing.T) {
 	withTimeLocal(t, "Asia/Kolkata") // UTC+5:30, no DST
-	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1503,7 +1511,7 @@ func TestIOTokenBuckets_24h_HalfHourOffsetTz(t *testing.T) {
 
 	from := DayStartLocal(time.Date(2026, 5, 13, 0, 0, 0, 0, time.Local))
 	to := DayStartLocal(time.Date(2026, 5, 15, 0, 0, 0, 0, time.Local))
-	buckets, err := c.IOTokenBuckets(24*time.Hour, from, to)
+	buckets, err := c.IOTokenBuckets(t.Context(), 24*time.Hour, from, to)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1531,7 +1539,7 @@ VALUES('s','p',?,'assistant','m',0,0,0,0,0,?,'v1',0,0,'','','')`,
 
 func TestCostBuckets_24h_LocalAlignment(t *testing.T) {
 	withTimeLocal(t, "Europe/Berlin")
-	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1543,7 +1551,7 @@ func TestCostBuckets_24h_LocalAlignment(t *testing.T) {
 
 	from := DayStartLocal(time.Date(2026, 5, 13, 0, 0, 0, 0, time.Local))
 	to := DayStartLocal(time.Date(2026, 5, 15, 0, 0, 0, 0, time.Local))
-	buckets, err := c.CostBuckets(24*time.Hour, from, to)
+	buckets, err := c.CostBuckets(t.Context(), 24*time.Hour, from, to)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1560,7 +1568,7 @@ func TestCostBuckets_24h_LocalAlignment(t *testing.T) {
 
 func TestCostBuckets_24h_DST_SpringForward(t *testing.T) {
 	withTimeLocal(t, "Europe/Berlin")
-	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1576,7 +1584,7 @@ func TestCostBuckets_24h_DST_SpringForward(t *testing.T) {
 
 	from := DayStartLocal(time.Date(2026, 3, 29, 0, 0, 0, 0, time.Local))
 	to := DayStartLocal(time.Date(2026, 3, 30, 0, 0, 0, 0, time.Local))
-	buckets, err := c.CostBuckets(24*time.Hour, from, to)
+	buckets, err := c.CostBuckets(t.Context(), 24*time.Hour, from, to)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1592,7 +1600,7 @@ func TestZoomLabel_DefaultFallback(t *testing.T) {
 }
 
 func TestInsertMessages_StampsPricingVersion(t *testing.T) {
-	c, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1616,7 +1624,7 @@ func TestInsertMessages_StampsPricingVersion(t *testing.T) {
 		Timestamp:   time.Now(),
 		InputTokens: 1000,
 	}
-	if err := c.InsertMessages([]parse.Message{msg}, hist); err != nil {
+	if err := c.InsertMessages(t.Context(), []parse.Message{msg}, hist); err != nil {
 		t.Fatalf("InsertMessages: %v", err)
 	}
 
@@ -1633,7 +1641,7 @@ func TestInsertMessages_StampsPricingVersion(t *testing.T) {
 }
 
 func TestCostBuckets_ContiguousRange(t *testing.T) {
-	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1661,13 +1669,13 @@ func TestCostBuckets_ContiguousRange(t *testing.T) {
 			Timestamp: ts3, InputTokens: 500, OutputTokens: 200,
 		},
 	}
-	if err := c.InsertMessages(msgs, tab); err != nil {
+	if err := c.InsertMessages(t.Context(), msgs, tab); err != nil {
 		t.Fatal(err)
 	}
 
 	from := time.Date(2026, 5, 9, 11, 0, 0, 0, time.UTC)
 	to := time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)
-	buckets, err := c.CostBuckets(5*time.Minute, from, to)
+	buckets, err := c.CostBuckets(t.Context(), 5*time.Minute, from, to)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1720,7 +1728,7 @@ func approxEqual(a, b, eps float64) bool {
 }
 
 func TestCostBuckets_AllEmpty(t *testing.T) {
-	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1728,7 +1736,7 @@ func TestCostBuckets_AllEmpty(t *testing.T) {
 
 	from := time.Date(2026, 5, 9, 0, 0, 0, 0, time.UTC)
 	to := time.Date(2026, 5, 9, 6, 0, 0, 0, time.UTC)
-	buckets, err := c.CostBuckets(15*time.Minute, from, to)
+	buckets, err := c.CostBuckets(t.Context(), 15*time.Minute, from, to)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1751,7 +1759,7 @@ func TestCostBuckets_PricingUnknownContributesZero(t *testing.T) {
 	// models. Documented as a silent under-report in the spec; this test
 	// pins the behaviour so a future "exclude unpriced" change is a
 	// deliberate decision, not an accident.
-	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1765,13 +1773,13 @@ func TestCostBuckets_PricingUnknownContributesZero(t *testing.T) {
 			Timestamp: ts, InputTokens: 1000, OutputTokens: 500,
 		},
 	}
-	if err := c.InsertMessages(msgs, tab); err != nil {
+	if err := c.InsertMessages(t.Context(), msgs, tab); err != nil {
 		t.Fatal(err)
 	}
 
 	from := time.Date(2026, 5, 9, 11, 0, 0, 0, time.UTC)
 	to := time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)
-	buckets, err := c.CostBuckets(5*time.Minute, from, to)
+	buckets, err := c.CostBuckets(t.Context(), 5*time.Minute, from, to)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1783,13 +1791,13 @@ func TestCostBuckets_PricingUnknownContributesZero(t *testing.T) {
 }
 
 func TestAllFileOffsets_Empty(t *testing.T) {
-	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer c.Close()
 
-	offsets, err := c.AllFileOffsets()
+	offsets, err := c.AllFileOffsets(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1802,7 +1810,7 @@ func TestAllFileOffsets_Empty(t *testing.T) {
 }
 
 func TestAllFileOffsets_ReturnsAllRows(t *testing.T) {
-	c, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1814,12 +1822,12 @@ func TestAllFileOffsets_ReturnsAllRows(t *testing.T) {
 		"/tmp/c.jsonl": 300,
 	}
 	for path, off := range want {
-		if err := c.RecordFile(path, 1, off, 0); err != nil {
+		if err := c.RecordFile(t.Context(), path, 1, off, 0); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	got, err := c.AllFileOffsets()
+	got, err := c.AllFileOffsets(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1835,7 +1843,7 @@ func TestAllFileOffsets_ReturnsAllRows(t *testing.T) {
 
 func TestSevenDaySamplesSince_OrderingAndFilter(t *testing.T) {
 	dir := t.TempDir()
-	c, err := Open(dir + "/state.db")
+	c, err := Open(t.Context(), dir + "/state.db")
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -1850,18 +1858,18 @@ func TestSevenDaySamplesSince_OrderingAndFilter(t *testing.T) {
 
 	now := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
 	// Three samples: 26h ago, 12h ago, now. Insert out-of-order to verify ORDER BY.
-	if err := c.RecordUsageSample(mkUsage(40.0, resetsA), now); err != nil {
+	if err := c.RecordUsageSample(t.Context(), mkUsage(40.0, resetsA), now); err != nil {
 		t.Fatalf("Record now: %v", err)
 	}
-	if err := c.RecordUsageSample(mkUsage(20.0, resetsA), now.Add(-26*time.Hour)); err != nil {
+	if err := c.RecordUsageSample(t.Context(), mkUsage(20.0, resetsA), now.Add(-26*time.Hour)); err != nil {
 		t.Fatalf("Record -26h: %v", err)
 	}
-	if err := c.RecordUsageSample(mkUsage(30.0, resetsA), now.Add(-12*time.Hour)); err != nil {
+	if err := c.RecordUsageSample(t.Context(), mkUsage(30.0, resetsA), now.Add(-12*time.Hour)); err != nil {
 		t.Fatalf("Record -12h: %v", err)
 	}
 
 	since := now.Add(-24 * time.Hour)
-	got, err := c.SevenDaySamplesSince(since)
+	got, err := c.SevenDaySamplesSince(t.Context(), since)
 	if err != nil {
 		t.Fatalf("SevenDaySamplesSince: %v", err)
 	}
@@ -1882,7 +1890,7 @@ func TestSevenDaySamplesSince_OrderingAndFilter(t *testing.T) {
 
 func TestSevenDaySamplesSince_NullPctExcluded(t *testing.T) {
 	dir := t.TempDir()
-	c, err := Open(dir + "/state.db")
+	c, err := Open(t.Context(), dir + "/state.db")
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -1891,16 +1899,16 @@ func TestSevenDaySamplesSince_NullPctExcluded(t *testing.T) {
 	now := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
 
 	// One sample with SevenDay populated; one with SevenDay nil (NULL pct).
-	if err := c.RecordUsageSample(anthro.Usage{
+	if err := c.RecordUsageSample(t.Context(), anthro.Usage{
 		SevenDay: &anthro.Bucket{Utilization: 25.0, ResetsAt: timePtr(now.Add(96 * time.Hour))},
 	}, now.Add(-2*time.Hour)); err != nil {
 		t.Fatalf("Record populated: %v", err)
 	}
-	if err := c.RecordUsageSample(anthro.Usage{}, now.Add(-1*time.Hour)); err != nil {
+	if err := c.RecordUsageSample(t.Context(), anthro.Usage{}, now.Add(-1*time.Hour)); err != nil {
 		t.Fatalf("Record nil bucket: %v", err)
 	}
 
-	got, err := c.SevenDaySamplesSince(now.Add(-24 * time.Hour))
+	got, err := c.SevenDaySamplesSince(t.Context(), now.Add(-24 * time.Hour))
 	if err != nil {
 		t.Fatalf("SevenDaySamplesSince: %v", err)
 	}
@@ -1919,7 +1927,7 @@ func TestSevenDaySamplesSince_ResetsAtNormalized(t *testing.T) {
 	// <2 filtered samples and silently falling back to the linear projection.
 	// This test pins the fix: sub-second jitter must be collapsed to second precision.
 	dir := t.TempDir()
-	c, err := Open(dir + "/state.db")
+	c, err := Open(t.Context(), dir + "/state.db")
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -1930,18 +1938,18 @@ func TestSevenDaySamplesSince_ResetsAtNormalized(t *testing.T) {
 	resets1 := time.Date(2026, 5, 17, 9, 0, 0, 745677000, time.UTC)
 	resets2 := time.Date(2026, 5, 17, 9, 0, 0, 719504000, time.UTC)
 
-	if err := c.RecordUsageSample(anthro.Usage{
+	if err := c.RecordUsageSample(t.Context(), anthro.Usage{
 		SevenDay: &anthro.Bucket{Utilization: 70.0, ResetsAt: &resets1},
 	}, now.Add(-12*time.Hour)); err != nil {
 		t.Fatalf("Record 1: %v", err)
 	}
-	if err := c.RecordUsageSample(anthro.Usage{
+	if err := c.RecordUsageSample(t.Context(), anthro.Usage{
 		SevenDay: &anthro.Bucket{Utilization: 80.0, ResetsAt: &resets2},
 	}, now); err != nil {
 		t.Fatalf("Record 2: %v", err)
 	}
 
-	got, err := c.SevenDaySamplesSince(now.Add(-24 * time.Hour))
+	got, err := c.SevenDaySamplesSince(t.Context(), now.Add(-24 * time.Hour))
 	if err != nil {
 		t.Fatalf("SevenDaySamplesSince: %v", err)
 	}
@@ -1955,7 +1963,7 @@ func TestSevenDaySamplesSince_ResetsAtNormalized(t *testing.T) {
 
 func TestUtilizationSince(t *testing.T) {
 	dir := t.TempDir()
-	c, err := Open(filepath.Join(dir, "state.db"))
+	c, err := Open(t.Context(), filepath.Join(dir, "state.db"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -1974,7 +1982,7 @@ func TestUtilizationSince(t *testing.T) {
 	}
 	for _, s := range samples {
 		u := anthro.Usage{FiveHour: s.fiveHour, SevenDay: s.sevenDay}
-		if err := c.RecordUsageSample(u, s.ts); err != nil {
+		if err := c.RecordUsageSample(t.Context(), u, s.ts); err != nil {
 			t.Fatalf("RecordUsageSample: %v", err)
 		}
 	}
@@ -1993,7 +2001,7 @@ func TestUtilizationSince(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			pts, err := c.UtilizationSince(tt.column, tt.since)
+			pts, err := c.UtilizationSince(t.Context(), tt.column, tt.since)
 			if err != nil {
 				t.Fatalf("UtilizationSince: %v", err)
 			}
@@ -2011,13 +2019,13 @@ func TestUtilizationSince(t *testing.T) {
 
 func TestUtilizationSince_InvalidColumn(t *testing.T) {
 	dir := t.TempDir()
-	c, err := Open(filepath.Join(dir, "state.db"))
+	c, err := Open(t.Context(), filepath.Join(dir, "state.db"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	defer c.Close()
 
-	_, err = c.UtilizationSince("DROP TABLE messages", time.Now())
+	_, err = c.UtilizationSince(t.Context(), "DROP TABLE messages", time.Now())
 	if err == nil {
 		t.Fatal("expected error for invalid column, got nil")
 	}

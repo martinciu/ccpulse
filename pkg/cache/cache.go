@@ -2,6 +2,7 @@
 package cache
 
 import (
+	"context"
 	"database/sql"
 	"database/sql/driver"
 	_ "embed"
@@ -125,18 +126,18 @@ var errSchemaMismatch = errors.New("on-disk schema version mismatch")
 // SchemaVersion — caller decides how to handle it.
 //
 // openDB takes NO lock; the caller owns the flock policy.
-func openDB(path string) (*sql.DB, error) {
+func openDB(ctx context.Context, path string) (*sql.DB, error) {
 	db, err := sql.Open("sqlite", path+"?"+cachePragmas)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := db.Exec(schemaSQL); err != nil {
+	if _, err := db.ExecContext(ctx, schemaSQL); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
 
 	var version string
-	err = db.QueryRow(`SELECT value FROM meta WHERE key = 'schema_version'`).Scan(&version)
+	err = db.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = 'schema_version'`).Scan(&version)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		db.Close()
 		return nil, err
@@ -145,11 +146,11 @@ func openDB(path string) (*sql.DB, error) {
 		db.Close()
 		return nil, errSchemaMismatch
 	}
-	if _, err := db.Exec(`INSERT OR IGNORE INTO meta(key,value) VALUES('schema_version',?)`, SchemaVersion); err != nil {
+	if _, err := db.ExecContext(ctx, `INSERT OR IGNORE INTO meta(key,value) VALUES('schema_version',?)`, SchemaVersion); err != nil {
 		db.Close()
 		return nil, err
 	}
-	if _, err := db.Exec(normalizeResetsAtSQL); err != nil {
+	if _, err := db.ExecContext(ctx, normalizeResetsAtSQL); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("normalize legacy resets_at sentinels: %w", err)
 	}
@@ -163,18 +164,18 @@ func openDB(path string) (*sql.DB, error) {
 // during binary upgrades surfaces as ErrLockHeld for the loser.
 //
 // Cache.Close releases the lock fd.
-func Open(path string) (*Cache, error) {
+func Open(ctx context.Context, path string) (*Cache, error) {
 	lockFile, err := acquireCacheLock(path+".lock", syscall.LOCK_SH)
 	if err != nil {
 		return nil, err
 	}
-	db, err := openDB(path)
+	db, err := openDB(ctx, path)
 	if errors.Is(err, errSchemaMismatch) {
 		// Release SH so LockedRebuild can take EX on a fresh fd
 		// without contention from this process. LockedRebuild
 		// performs the unlink itself.
 		lockFile.Close()
-		return LockedRebuild(path)
+		return LockedRebuild(ctx, path)
 	}
 	if err != nil {
 		lockFile.Close()
@@ -242,7 +243,7 @@ func removeWithSiblings(path string) error {
 // RecordUsageSample inserts a row at when.UTC().Unix() with one column per
 // anthro.Usage bucket. INSERT OR IGNORE: same-second collisions keep the
 // first row. Nil buckets write NULL into both their pct and resets_at columns.
-func (c *Cache) RecordUsageSample(u anthro.Usage, when time.Time) error {
+func (c *Cache) RecordUsageSample(ctx context.Context, u anthro.Usage, when time.Time) error {
 	args := []any{when.UTC().Unix(), "api"}
 	args = append(args, bucketArgs(u.FiveHour)...)
 	args = append(args, bucketArgs(u.SevenDay)...)
@@ -256,7 +257,7 @@ func (c *Cache) RecordUsageSample(u anthro.Usage, when time.Time) error {
 	args = append(args, bucketArgs(u.OmelettePromotional)...)
 	args = append(args, extraUsageArgs(u.ExtraUsage)...)
 
-	_, err := c.db.Exec(insertUsageSampleSQL, args...)
+	_, err := c.db.ExecContext(ctx, insertUsageSampleSQL, args...)
 	return err
 }
 
@@ -315,8 +316,8 @@ func extraUsageArgs(e *anthro.ExtraUsage) []any {
 
 // PruneUsageSamples deletes rows with ts < cutoff.UTC().Unix().
 // Returns the number of rows deleted.
-func (c *Cache) PruneUsageSamples(cutoff time.Time) (int64, error) {
-	res, err := c.db.Exec(`DELETE FROM usage_samples WHERE ts < ?`, cutoff.UTC().Unix())
+func (c *Cache) PruneUsageSamples(ctx context.Context, cutoff time.Time) (int64, error) {
+	res, err := c.db.ExecContext(ctx, `DELETE FROM usage_samples WHERE ts < ?`, cutoff.UTC().Unix())
 	if err != nil {
 		return 0, err
 	}
@@ -340,8 +341,8 @@ type SevenDaySample struct {
 // trailing-window slope for the 7d projection.
 //
 // On any SQL error the caller should fall back to the linear projection.
-func (c *Cache) SevenDaySamplesSince(since time.Time) ([]SevenDaySample, error) {
-	rows, err := c.db.Query(`
+func (c *Cache) SevenDaySamplesSince(ctx context.Context, since time.Time) ([]SevenDaySample, error) {
+	rows, err := c.db.QueryContext(ctx, `
 SELECT ts, seven_day_pct, seven_day_resets_at
 FROM usage_samples
 WHERE ts >= ? AND seven_day_pct IS NOT NULL
@@ -421,12 +422,12 @@ var utilizationColumns = map[string]utilizationPolicy{
 // kept (idle window — pct=0 is truthful); 7d rows with NULL resets_at
 // are filtered + emit the once-per-process WARN (calendar-bucket
 // glitch). See issue #189.
-func (c *Cache) UtilizationSince(column string, since time.Time) ([]UtilizationPoint, error) {
+func (c *Cache) UtilizationSince(ctx context.Context, column string, since time.Time) ([]UtilizationPoint, error) {
 	policy, ok := utilizationColumns[column]
 	if !ok {
 		return nil, fmt.Errorf("invalid utilization column: %q", column)
 	}
-	rows, err := c.db.Query(
+	rows, err := c.db.QueryContext(ctx,
 		fmt.Sprintf(`SELECT ts, %s, %s FROM usage_samples WHERE ts >= ? AND %s IS NOT NULL ORDER BY ts ASC`,
 			column, policy.resetsAtCol, column),
 		since.UTC().Unix(),
@@ -460,14 +461,14 @@ func (c *Cache) UtilizationSince(column string, since time.Time) ([]UtilizationP
 }
 
 // InsertMessages upserts parsed messages into the messages table, computing and storing per-message USD cost estimates.
-func (c *Cache) InsertMessages(msgs []parse.Message, hist pricing.History) error {
-	tx, err := c.db.Begin()
+func (c *Cache) InsertMessages(ctx context.Context, msgs []parse.Message, hist pricing.History) error {
+	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("insert messages: begin tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	stmt, err := tx.Prepare(`
+	stmt, err := tx.PrepareContext(ctx, `
 INSERT OR IGNORE INTO messages
 (session_id, project_slug, ts, role, model,
  input_tokens, output_tokens, cache_read_tokens,
@@ -490,7 +491,7 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 		if m.IsSubagent {
 			sub = 1
 		}
-		if _, err := stmt.Exec(
+		if _, err := stmt.ExecContext(ctx,
 			m.SessionID, m.ProjectSlug, m.Timestamp.UTC().Format(tsFormat),
 			m.Role, m.Model,
 			m.InputTokens, m.OutputTokens, m.CacheReadTokens,
@@ -504,8 +505,8 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 }
 
 // RecordFile upserts the byte-offset cursor and mtime for path into the files table.
-func (c *Cache) RecordFile(path string, mtimeNs, offset, lastLine int64) error {
-	_, err := c.db.Exec(`
+func (c *Cache) RecordFile(ctx context.Context, path string, mtimeNs, offset, lastLine int64) error {
+	_, err := c.db.ExecContext(ctx, `
 INSERT INTO files(path, mtime_ns, last_offset_bytes, last_line)
 VALUES (?, ?, ?, ?)
 ON CONFLICT(path) DO UPDATE SET
@@ -517,8 +518,8 @@ ON CONFLICT(path) DO UPDATE SET
 }
 
 // GetFile looks up the stored byte-offset cursor for path; found is false when the file has not been indexed yet.
-func (c *Cache) GetFile(path string) (mtime, offset, line int64, found bool, err error) {
-	row := c.db.QueryRow(`SELECT mtime_ns, last_offset_bytes, last_line FROM files WHERE path = ?`, path)
+func (c *Cache) GetFile(ctx context.Context, path string) (mtime, offset, line int64, found bool, err error) {
+	row := c.db.QueryRowContext(ctx, `SELECT mtime_ns, last_offset_bytes, last_line FROM files WHERE path = ?`, path)
 	err = row.Scan(&mtime, &offset, &line)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, 0, 0, false, nil
@@ -535,8 +536,8 @@ func (c *Cache) GetFile(path string) (mtime, offset, line int64, found bool, err
 // (non-nil) map when the table is empty. A missing key is the
 // caller's signal that the file is unrecorded — semantically
 // equivalent to GetFile's found=false path.
-func (c *Cache) AllFileOffsets() (map[string]int64, error) {
-	rows, err := c.db.Query(`SELECT path, last_offset_bytes FROM files`)
+func (c *Cache) AllFileOffsets(ctx context.Context) (map[string]int64, error) {
+	rows, err := c.db.QueryContext(ctx, `SELECT path, last_offset_bytes FROM files`)
 	if err != nil {
 		return nil, err
 	}
@@ -558,15 +559,17 @@ func (c *Cache) AllFileOffsets() (map[string]int64, error) {
 }
 
 // IntegrityOK runs `PRAGMA integrity_check` and reports whether SQLite
-// considers the database file healthy. Returns false on any error or
-// non-"ok" result.
-func (c *Cache) IntegrityOK() bool {
-	row := c.db.QueryRow(`PRAGMA integrity_check`)
+// considers the database file healthy. Returns (false, nil) if SQLite
+// reports a non-"ok" result. Returns a non-nil error on ctx cancellation
+// or driver failure — callers should distinguish corrupt-DB (err == nil,
+// ok == false) from cancellation (errors.Is(err, context.Canceled)).
+func (c *Cache) IntegrityOK(ctx context.Context) (bool, error) {
+	row := c.db.QueryRowContext(ctx, `PRAGMA integrity_check`)
 	var s string
 	if err := row.Scan(&s); err != nil {
-		return false
+		return false, err
 	}
-	return s == "ok"
+	return s == "ok", nil
 }
 
 // BucketAlign snaps t down to the nearest multiple of dur in unix
@@ -608,9 +611,9 @@ type TokenBucket struct {
 // reads and writes are deliberately excluded; use CostBuckets for the
 // rate-weighted blend across all five columns. See issue #232 (revises
 // the output-only choice made in #209).
-func (c *Cache) IOTokenBuckets(dur time.Duration, from, to time.Time) ([]TokenBucket, error) {
+func (c *Cache) IOTokenBuckets(ctx context.Context, dur time.Duration, from, to time.Time) ([]TokenBucket, error) {
 	if dur == 24*time.Hour {
-		return c.ioTokenBucketsDaily(from, to)
+		return c.ioTokenBucketsDaily(ctx, from, to)
 	}
 	start := time.Now()
 	from = BucketAlign(from, dur)
@@ -621,7 +624,7 @@ func (c *Cache) IOTokenBuckets(dur time.Duration, from, to time.Time) ([]TokenBu
 	bucketSecs := int64(dur.Seconds())
 	fromStr := from.UTC().Format(tsFormat)
 	toStr := to.UTC().Format(tsFormat)
-	rows, err := c.db.Query(`
+	rows, err := c.db.QueryContext(ctx, `
 SELECT
   CAST(CAST(strftime('%s', ts) AS INTEGER) / ? AS INTEGER) * ? AS bucket_epoch,
   COALESCE(SUM(input_tokens + output_tokens), 0)
@@ -680,6 +683,7 @@ ORDER BY bucket_epoch ASC
 //
 // BucketStart values are in time.Local — callers must not assume UTC.
 func dailyBuckets[V int64 | float64, T any](
+	ctx context.Context,
 	c *Cache, unit, aggExpr string,
 	from, to time.Time,
 	build func(start time.Time, v V) T,
@@ -701,7 +705,7 @@ WHERE ts >= ? AND ts < ?
 GROUP BY day
 ORDER BY day ASC
 `, aggExpr)
-	rows, err := c.db.Query(query, fromStr, toStr)
+	rows, err := c.db.QueryContext(ctx, query, fromStr, toStr)
 	if err != nil {
 		return nil, err
 	}
@@ -738,8 +742,8 @@ ORDER BY day ASC
 // [from, to), aggregating SUM(input_tokens + output_tokens). The COALESCE is
 // defensive only (both columns are NOT NULL). See dailyBuckets for the
 // local-tz / DST / iteration rationale.
-func (c *Cache) ioTokenBucketsDaily(from, to time.Time) ([]TokenBucket, error) {
-	return dailyBuckets(c, "io",
+func (c *Cache) ioTokenBucketsDaily(ctx context.Context, from, to time.Time) ([]TokenBucket, error) {
+	return dailyBuckets(ctx, c, "io",
 		"COALESCE(SUM(input_tokens + output_tokens), 0)", from, to,
 		func(d time.Time, v int64) TokenBucket {
 			return TokenBucket{BucketStart: d, Tokens: v}
@@ -761,9 +765,9 @@ type CostBucket struct {
 // SUM(cost_usd_estimate). Messages with pricing_unknown=1 contribute 0
 // to their bucket because cost_usd_estimate was stored as 0 at ingest;
 // no extra WHERE clause is needed.
-func (c *Cache) CostBuckets(dur time.Duration, from, to time.Time) ([]CostBucket, error) {
+func (c *Cache) CostBuckets(ctx context.Context, dur time.Duration, from, to time.Time) ([]CostBucket, error) {
 	if dur == 24*time.Hour {
-		return c.costBucketsDaily(from, to)
+		return c.costBucketsDaily(ctx, from, to)
 	}
 	start := time.Now()
 	from = BucketAlign(from, dur)
@@ -774,7 +778,7 @@ func (c *Cache) CostBuckets(dur time.Duration, from, to time.Time) ([]CostBucket
 	bucketSecs := int64(dur.Seconds())
 	fromStr := from.UTC().Format(tsFormat)
 	toStr := to.UTC().Format(tsFormat)
-	rows, err := c.db.Query(`
+	rows, err := c.db.QueryContext(ctx, `
 SELECT
   CAST(CAST(strftime('%s', ts) AS INTEGER) / ? AS INTEGER) * ? AS bucket_epoch,
   SUM(cost_usd_estimate)
@@ -822,8 +826,8 @@ ORDER BY bucket_epoch ASC
 // costBucketsDaily returns one CostBucket per local-tz calendar day in
 // [from, to), aggregating SUM(cost_usd_estimate). See dailyBuckets for the
 // local-tz / DST / iteration rationale.
-func (c *Cache) costBucketsDaily(from, to time.Time) ([]CostBucket, error) {
-	return dailyBuckets(c, "cost",
+func (c *Cache) costBucketsDaily(ctx context.Context, from, to time.Time) ([]CostBucket, error) {
+	return dailyBuckets(ctx, c, "cost",
 		"SUM(cost_usd_estimate)", from, to,
 		func(d time.Time, v float64) CostBucket {
 			return CostBucket{BucketStart: d, Cost: v}
@@ -851,9 +855,9 @@ func zoomLabel(d time.Duration) string {
 // EarliestMessageTime returns the timestamp of the oldest row in
 // messages. ok == false when the table is empty (a routine first-launch
 // state, not an error). On non-empty caches the returned time is in UTC.
-func (c *Cache) EarliestMessageTime() (time.Time, bool, error) {
+func (c *Cache) EarliestMessageTime(ctx context.Context) (time.Time, bool, error) {
 	var s sql.NullString
-	if err := c.db.QueryRow(`SELECT MIN(ts) FROM messages`).Scan(&s); err != nil {
+	if err := c.db.QueryRowContext(ctx, `SELECT MIN(ts) FROM messages`).Scan(&s); err != nil {
 		return time.Time{}, false, err
 	}
 	if !s.Valid {

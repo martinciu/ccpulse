@@ -96,13 +96,13 @@ func TestOpen_TwoSharedOpensCoexist(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "state.db")
 
-	a, err := Open(path)
+	a, err := Open(t.Context(), path)
 	if err != nil {
 		t.Fatalf("first Open: %v", err)
 	}
 	t.Cleanup(func() { a.Close() })
 
-	b, err := Open(path)
+	b, err := Open(t.Context(), path)
 	if err != nil {
 		t.Fatalf("second Open: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestOpen_TwoSharedOpensCoexist(t *testing.T) {
 func TestOpen_RecordsLockFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "state.db")
-	c, err := Open(path)
+	c, err := Open(t.Context(), path)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestOpen_RecordsLockFile(t *testing.T) {
 func TestClose_ReleasesLock(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "state.db")
-	c, err := Open(path)
+	c, err := Open(t.Context(), path)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestClose_ReleasesLock(t *testing.T) {
 func TestLockedRebuild_FreshPath(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "state.db")
-	c, err := LockedRebuild(path)
+	c, err := LockedRebuild(t.Context(), path)
 	if err != nil {
 		t.Fatalf("LockedRebuild on fresh path: %v", err)
 	}
@@ -162,12 +162,12 @@ func TestLockedRebuild_RemovesSiblings(t *testing.T) {
 	path := filepath.Join(dir, "state.db")
 
 	// Seed a DB so siblings exist.
-	c, err := Open(path)
+	c, err := Open(t.Context(), path)
 	if err != nil {
 		t.Fatalf("seed Open: %v", err)
 	}
 	tab, _ := pricing.Load()
-	if err := c.InsertMessages([]parse.Message{{
+	if err := c.InsertMessages(t.Context(), []parse.Message{{
 		SessionID:   "seed",
 		ProjectSlug: "slug-a",
 		Model:       "claude-opus-4-7",
@@ -180,7 +180,7 @@ func TestLockedRebuild_RemovesSiblings(t *testing.T) {
 		t.Fatalf("seed close: %v", err)
 	}
 
-	c2, err := LockedRebuild(path)
+	c2, err := LockedRebuild(t.Context(), path)
 	if err != nil {
 		t.Fatalf("LockedRebuild: %v", err)
 	}
@@ -198,13 +198,13 @@ func TestLockedRebuild_RemovesSiblings(t *testing.T) {
 func TestLockedRebuild_RefusedWhenSharedHeld(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "state.db")
-	holder, err := Open(path)
+	holder, err := Open(t.Context(), path)
 	if err != nil {
 		t.Fatalf("holder Open: %v", err)
 	}
 	t.Cleanup(func() { holder.Close() })
 
-	_, err = LockedRebuild(path)
+	_, err = LockedRebuild(t.Context(), path)
 	if !errors.Is(err, ErrLockHeld) {
 		t.Fatalf("LockedRebuild while SH held: got %v, want ErrLockHeld", err)
 	}
@@ -220,7 +220,7 @@ func TestOpen_RefusedWhenExclusiveHeld(t *testing.T) {
 	}
 	t.Cleanup(func() { holderFD.Close() })
 
-	_, err = Open(path)
+	_, err = Open(t.Context(), path)
 	if !errors.Is(err, ErrLockHeld) {
 		t.Fatalf("Open while EX held: got %v, want ErrLockHeld", err)
 	}
@@ -230,7 +230,7 @@ func TestLockedRebuild_DowngradesToShared(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "state.db")
 
-	c, err := LockedRebuild(path)
+	c, err := LockedRebuild(t.Context(), path)
 	if err != nil {
 		t.Fatalf("LockedRebuild: %v", err)
 	}
@@ -238,7 +238,7 @@ func TestLockedRebuild_DowngradesToShared(t *testing.T) {
 
 	// After LockedRebuild returns, another Open(SH) must succeed —
 	// proving the lock was downgraded from EX to SH.
-	c2, err := Open(path)
+	c2, err := Open(t.Context(), path)
 	if err != nil {
 		t.Fatalf("Open after LockedRebuild: %v", err)
 	}
@@ -258,7 +258,7 @@ func TestOpen_SchemaMismatch_LosesToConcurrentHolder(t *testing.T) {
 
 	// Seed schema_version='0' on disk. Mirrors the
 	// TestOpenWipesOnSchemaVersionMismatch pattern in cache_test.go.
-	c, err := Open(path)
+	c, err := Open(t.Context(), path)
 	if err != nil {
 		t.Fatalf("seed Open: %v", err)
 	}
@@ -281,7 +281,7 @@ func TestOpen_SchemaMismatch_LosesToConcurrentHolder(t *testing.T) {
 	// Open succeeds on its own SH (multiple SH coexist), openDB
 	// returns errSchemaMismatch, Open releases its SH, LockedRebuild
 	// attempts LOCK_EX with LOCK_NB → blocked by holder → ErrLockHeld.
-	_, err = Open(path)
+	_, err = Open(t.Context(), path)
 	if !errors.Is(err, ErrLockHeld) {
 		t.Fatalf("Open with schema mismatch + concurrent SH holder: got %v, want ErrLockHeld", err)
 	}

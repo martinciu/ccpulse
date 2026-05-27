@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -69,7 +70,7 @@ func lockModeLabel(mode int) string {
 // Returns ErrLockHeld if any other process holds the lock.
 // LockedRebuild is the ONLY legal way to unlink state.db outside
 // of tests.
-func LockedRebuild(path string) (*Cache, error) {
+func LockedRebuild(ctx context.Context, path string) (*Cache, error) {
 	lockFile, err := acquireCacheLock(path+".lock", syscall.LOCK_EX)
 	if err != nil {
 		return nil, err
@@ -78,7 +79,7 @@ func LockedRebuild(path string) (*Cache, error) {
 		lockFile.Close()
 		return nil, fmt.Errorf("rebuild remove: %w", err)
 	}
-	db, err := openDB(path)
+	db, err := openDB(ctx, path)
 	if err != nil {
 		lockFile.Close()
 		return nil, err
