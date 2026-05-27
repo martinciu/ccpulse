@@ -149,7 +149,7 @@ func TestLockedRebuild_FreshPath(t *testing.T) {
 	}
 	t.Cleanup(func() { c.Close() })
 	var n int
-	if err := c.DB().QueryRow(`SELECT count(*) FROM messages`).Scan(&n); err != nil {
+	if err := c.DB().QueryRowContext(t.Context(), `SELECT count(*) FROM messages`).Scan(&n); err != nil {
 		t.Fatalf("count(*) after fresh rebuild: %v", err)
 	}
 	if n != 0 {
@@ -187,7 +187,7 @@ func TestLockedRebuild_RemovesSiblings(t *testing.T) {
 	t.Cleanup(func() { c2.Close() })
 
 	var n int
-	if err := c2.DB().QueryRow(`SELECT count(*) FROM messages`).Scan(&n); err != nil {
+	if err := c2.DB().QueryRowContext(t.Context(), `SELECT count(*) FROM messages`).Scan(&n); err != nil {
 		t.Fatalf("count(*) after rebuild: %v", err)
 	}
 	if n != 0 {
@@ -262,7 +262,7 @@ func TestOpen_SchemaMismatch_LosesToConcurrentHolder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed Open: %v", err)
 	}
-	if _, err := c.DB().Exec(`UPDATE meta SET value = '0' WHERE key = 'schema_version'`); err != nil {
+	if _, err := c.DB().ExecContext(t.Context(), `UPDATE meta SET value = '0' WHERE key = 'schema_version'`); err != nil {
 		t.Fatalf("seed UPDATE: %v", err)
 	}
 	if err := c.Close(); err != nil {

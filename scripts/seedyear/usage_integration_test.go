@@ -33,7 +33,7 @@ func TestSeedYear_UsageSamples_Populated(t *testing.T) {
 		t.Errorf("first run: samplesTotal=%d, samplesInserted=%d (want equal)", res.samplesTotal, res.samplesInserted)
 	}
 	var n int64
-	if err := c.DB().QueryRow(`SELECT COUNT(*) FROM usage_samples`).Scan(&n); err != nil {
+	if err := c.DB().QueryRowContext(t.Context(), `SELECT COUNT(*) FROM usage_samples`).Scan(&n); err != nil {
 		t.Fatalf("count: %v", err)
 	}
 	if n != res.samplesTotal {
@@ -49,11 +49,11 @@ func TestSeedYear_UsageSamples_SpanAndColumns(t *testing.T) {
 	// ISO-8601 'Z'-suffix parsing depends on the embedded SQLite version.
 	const tsFormat = "2006-01-02T15:04:05.000Z07:00"
 	var sMin, sMax sql.NullInt64
-	if err := c.DB().QueryRow(`SELECT MIN(ts), MAX(ts) FROM usage_samples`).Scan(&sMin, &sMax); err != nil {
+	if err := c.DB().QueryRowContext(t.Context(), `SELECT MIN(ts), MAX(ts) FROM usage_samples`).Scan(&sMin, &sMax); err != nil {
 		t.Fatalf("usage range: %v", err)
 	}
 	var mMinStr, mMaxStr sql.NullString
-	if err := c.DB().QueryRow(`SELECT MIN(ts), MAX(ts) FROM messages`).Scan(&mMinStr, &mMaxStr); err != nil {
+	if err := c.DB().QueryRowContext(t.Context(), `SELECT MIN(ts), MAX(ts) FROM messages`).Scan(&mMinStr, &mMaxStr); err != nil {
 		t.Fatalf("messages range: %v", err)
 	}
 	if !sMin.Valid || !sMax.Valid || !mMinStr.Valid || !mMaxStr.Valid {
@@ -84,7 +84,7 @@ func TestSeedYear_UsageSamples_SpanAndColumns(t *testing.T) {
 		fiveResets  sql.NullString
 		sevenResets sql.NullString
 	)
-	err = c.DB().QueryRow(`
+	err = c.DB().QueryRowContext(t.Context(), `
 SELECT ts, five_hour_pct, seven_day_pct, seven_day_sonnet_pct, five_hour_resets_at, seven_day_resets_at
 FROM usage_samples ORDER BY ts LIMIT 1`).Scan(&ts, &fivePct, &sevenPct, &sonnetPct, &fiveResets, &sevenResets)
 	if err != nil {

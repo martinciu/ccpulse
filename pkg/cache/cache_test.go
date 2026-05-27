@@ -78,7 +78,7 @@ func TestOpenAppliesSchema(t *testing.T) {
 	}
 	defer c.Close()
 
-	row := c.DB().QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('messages','files','meta','usage_samples')`)
+	row := c.DB().QueryRowContext(t.Context(), `SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('messages','files','meta','usage_samples')`)
 	var n int
 	if err := row.Scan(&n); err != nil {
 		t.Fatal(err)
@@ -110,7 +110,7 @@ func TestInsertMessages(t *testing.T) {
 	}
 
 	var n int
-	if err := c.DB().QueryRow(`SELECT count(*) FROM messages`).Scan(&n); err != nil {
+	if err := c.DB().QueryRowContext(t.Context(), `SELECT count(*) FROM messages`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	if n != 1 {
@@ -119,7 +119,7 @@ func TestInsertMessages(t *testing.T) {
 
 	var cost float64
 	var unknown int
-	if err := c.DB().QueryRow(`SELECT cost_usd_estimate, pricing_unknown FROM messages`).Scan(&cost, &unknown); err != nil {
+	if err := c.DB().QueryRowContext(t.Context(), `SELECT cost_usd_estimate, pricing_unknown FROM messages`).Scan(&cost, &unknown); err != nil {
 		t.Fatal(err)
 	}
 	if unknown != 0 {
@@ -185,7 +185,7 @@ func TestInsertMessagesIdempotent(t *testing.T) {
 	}
 
 	var n int
-	if err := c.DB().QueryRow(`SELECT count(*) FROM messages`).Scan(&n); err != nil {
+	if err := c.DB().QueryRowContext(t.Context(), `SELECT count(*) FROM messages`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	if n != 1 {
@@ -222,7 +222,7 @@ func TestRecordUsageSample_RoundTrip(t *testing.T) {
 	var fiveResetsGot, sevenResetsGot, extraCurrency sql.NullString
 	var extraEnabled sql.NullInt64
 	var extraLimit, extraUsed sql.NullFloat64
-	err = c.DB().QueryRow(`SELECT
+	err = c.DB().QueryRowContext(t.Context(), `SELECT
 		ts, source,
 		five_hour_pct, five_hour_resets_at,
 		seven_day_pct, seven_day_resets_at,
@@ -290,7 +290,7 @@ func TestRecordUsageSample_DuplicateTs(t *testing.T) {
 	}
 
 	var n int
-	if err := c.DB().QueryRow(`SELECT count(*) FROM usage_samples`).Scan(&n); err != nil {
+	if err := c.DB().QueryRowContext(t.Context(), `SELECT count(*) FROM usage_samples`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	if n != 1 {
@@ -298,7 +298,7 @@ func TestRecordUsageSample_DuplicateTs(t *testing.T) {
 	}
 
 	var fivePct sql.NullFloat64
-	if err := c.DB().QueryRow(`SELECT five_hour_pct FROM usage_samples`).Scan(&fivePct); err != nil {
+	if err := c.DB().QueryRowContext(t.Context(), `SELECT five_hour_pct FROM usage_samples`).Scan(&fivePct); err != nil {
 		t.Fatal(err)
 	}
 	if !fivePct.Valid || fivePct.Float64 != 10.0 {
@@ -336,7 +336,7 @@ func TestPruneUsageSamples(t *testing.T) {
 	}
 
 	var remaining int
-	if err := c.DB().QueryRow(`SELECT count(*) FROM usage_samples`).Scan(&remaining); err != nil {
+	if err := c.DB().QueryRowContext(t.Context(), `SELECT count(*) FROM usage_samples`).Scan(&remaining); err != nil {
 		t.Fatal(err)
 	}
 	if remaining != 2 {
@@ -345,7 +345,7 @@ func TestPruneUsageSamples(t *testing.T) {
 
 	// Cutoff is strictly less-than: a row exactly at cutoff is kept.
 	var earliest int64
-	if err := c.DB().QueryRow(`SELECT MIN(ts) FROM usage_samples`).Scan(&earliest); err != nil {
+	if err := c.DB().QueryRowContext(t.Context(), `SELECT MIN(ts) FROM usage_samples`).Scan(&earliest); err != nil {
 		t.Fatal(err)
 	}
 	if earliest != base.Add(-50*time.Second).Unix() {
@@ -374,7 +374,7 @@ func TestRecordUsageSample_NilBucket(t *testing.T) {
 	var fiveResets sql.NullString
 	var sevenPct sql.NullFloat64
 	var sevenResets sql.NullString
-	err = c.DB().QueryRow(`SELECT five_hour_pct, five_hour_resets_at, seven_day_pct, seven_day_resets_at FROM usage_samples`).Scan(&fivePct, &fiveResets, &sevenPct, &sevenResets)
+	err = c.DB().QueryRowContext(t.Context(), `SELECT five_hour_pct, five_hour_resets_at, seven_day_pct, seven_day_resets_at FROM usage_samples`).Scan(&fivePct, &fiveResets, &sevenPct, &sevenResets)
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
@@ -403,7 +403,7 @@ func TestUtilizationSincePerColumnNullPolicy(t *testing.T) {
 
 	// 5h: pct non-null, resets_at NULL → idle, keep.
 	// 7d: pct non-null, resets_at NULL → glitch, filter.
-	if _, err := c.DB().Exec(`
+	if _, err := c.DB().ExecContext(t.Context(), `
 		INSERT INTO usage_samples(ts, source, five_hour_pct, five_hour_resets_at, seven_day_pct, seven_day_resets_at) VALUES
 			(1, 'api', 0,  NULL,                   88, '2026-05-10T09:00:00Z'),
 			(2, 'api', 5,  '2026-05-09T16:10:00Z', 89, NULL),
@@ -439,7 +439,7 @@ func TestSevenDaySamplesSinceSkipsNullResetsAt(t *testing.T) {
 	defer c.Close()
 
 	// Mix: two valid rows, two glitch rows (pct non-null, resets_at NULL).
-	if _, err := c.DB().Exec(`
+	if _, err := c.DB().ExecContext(t.Context(), `
 		INSERT INTO usage_samples(ts, source, seven_day_pct, seven_day_resets_at) VALUES
 			(1, 'api', 88, '2026-05-10T09:00:00Z'),
 			(2, 'api', 89, NULL),
@@ -500,7 +500,7 @@ func TestOpenNormalisesLegacyResetsAtSentinel(t *testing.T) {
 	}
 	// Seed three rows with the sentinel across multiple *_resets_at
 	// columns, simulating the pre-fix corruption pattern.
-	if _, err := c.DB().Exec(`
+	if _, err := c.DB().ExecContext(t.Context(), `
 		INSERT INTO usage_samples(ts, source,
 			five_hour_pct,            five_hour_resets_at,
 			seven_day_pct,            seven_day_resets_at,
@@ -523,7 +523,7 @@ func TestOpenNormalisesLegacyResetsAtSentinel(t *testing.T) {
 	defer c.Close()
 
 	var sentinelCount int
-	if err := c.DB().QueryRow(`
+	if err := c.DB().QueryRowContext(t.Context(), `
 		SELECT count(*) FROM usage_samples
 		WHERE five_hour_resets_at          = '0001-01-01T00:00:00Z'
 		   OR seven_day_resets_at          = '0001-01-01T00:00:00Z'
@@ -538,7 +538,7 @@ func TestOpenNormalisesLegacyResetsAtSentinel(t *testing.T) {
 	// Spot-check: row 1's five_hour_resets_at is now NULL; row 2's
 	// seven_day_resets_at is now NULL; row 3's seven_day_omelette is NULL.
 	var n int
-	if err := c.DB().QueryRow(`
+	if err := c.DB().QueryRowContext(t.Context(), `
 		SELECT count(*) FROM usage_samples
 		WHERE ts = 1 AND five_hour_resets_at IS NULL AND seven_day_resets_at = '2026-05-10T09:00:00Z'
 	`).Scan(&n); err != nil {
@@ -574,7 +574,7 @@ func TestRecordUsageSampleNullResetsAt(t *testing.T) {
 	}
 
 	var n int
-	if err := c.DB().QueryRow(`
+	if err := c.DB().QueryRowContext(t.Context(), `
 		SELECT count(*) FROM usage_samples
 		WHERE five_hour_resets_at IS NULL
 		  AND seven_day_resets_at IS NULL
@@ -605,7 +605,7 @@ func TestOpenWipesOnSchemaVersionMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := c.DB().Exec(`UPDATE meta SET value = '0' WHERE key = 'schema_version'`); err != nil {
+	if _, err := c.DB().ExecContext(t.Context(), `UPDATE meta SET value = '0' WHERE key = 'schema_version'`); err != nil {
 		t.Fatal(err)
 	}
 	if err := c.Close(); err != nil {
@@ -619,7 +619,7 @@ func TestOpenWipesOnSchemaVersionMismatch(t *testing.T) {
 	defer c2.Close()
 
 	var n int
-	if err := c2.DB().QueryRow(`SELECT count(*) FROM messages`).Scan(&n); err != nil {
+	if err := c2.DB().QueryRowContext(t.Context(), `SELECT count(*) FROM messages`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	if n != 0 {
@@ -627,7 +627,7 @@ func TestOpenWipesOnSchemaVersionMismatch(t *testing.T) {
 	}
 
 	var version string
-	if err := c2.DB().QueryRow(`SELECT value FROM meta WHERE key = 'schema_version'`).Scan(&version); err != nil {
+	if err := c2.DB().QueryRowContext(t.Context(), `SELECT value FROM meta WHERE key = 'schema_version'`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
 	if version != SchemaVersion {
@@ -1205,7 +1205,7 @@ func TestIntegrityOK_Corrupt(t *testing.T) {
 		t.Fatal(err)
 	}
 	var pageSize int
-	if err := c.DB().QueryRow(`PRAGMA page_size`).Scan(&pageSize); err != nil {
+	if err := c.DB().QueryRowContext(t.Context(), `PRAGMA page_size`).Scan(&pageSize); err != nil {
 		t.Fatal(err)
 	}
 	if pageSize != 4096 {
@@ -1221,7 +1221,7 @@ func TestIntegrityOK_Corrupt(t *testing.T) {
 	}}, tab); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.DB().Exec(`PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
+	if _, err := c.DB().ExecContext(t.Context(), `PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
 		t.Fatal(err)
 	}
 	if err := c.Close(); err != nil {
@@ -1288,7 +1288,7 @@ func TestInsertMessages_PersistsCwdAndGitBranch(t *testing.T) {
 	}
 
 	var cwd, branch string
-	if err := c.DB().QueryRow(
+	if err := c.DB().QueryRowContext(t.Context(),
 		`SELECT cwd, git_branch FROM messages WHERE session_id = 's1'`,
 	).Scan(&cwd, &branch); err != nil {
 		t.Fatal(err)
@@ -1322,7 +1322,7 @@ func TestDayStartLocal(t *testing.T) {
 // care about token sums per ts.
 func insertMessage(t *testing.T, c *Cache, ts time.Time, tokens int64) {
 	t.Helper()
-	_, err := c.DB().Exec(`
+	_, err := c.DB().ExecContext(t.Context(), `
 INSERT INTO messages
 (session_id, project_slug, ts, role, model,
  input_tokens, output_tokens, cache_read_tokens,
@@ -1523,7 +1523,7 @@ func TestIOTokenBuckets_24h_HalfHourOffsetTz(t *testing.T) {
 // insertMessageCost is a cost-only variant of insertMessage.
 func insertMessageCost(t *testing.T, c *Cache, ts time.Time, cost float64) {
 	t.Helper()
-	_, err := c.DB().Exec(`
+	_, err := c.DB().ExecContext(t.Context(), `
 INSERT INTO messages
 (session_id, project_slug, ts, role, model,
  input_tokens, output_tokens, cache_read_tokens,
@@ -1629,7 +1629,7 @@ func TestInsertMessages_StampsPricingVersion(t *testing.T) {
 	}
 
 	var got string
-	if err := c.DB().QueryRow(
+	if err := c.DB().QueryRowContext(t.Context(),
 		`SELECT pricing_version FROM messages WHERE session_id = ?`,
 		"s1",
 	).Scan(&got); err != nil {
@@ -1843,7 +1843,7 @@ func TestAllFileOffsets_ReturnsAllRows(t *testing.T) {
 
 func TestSevenDaySamplesSince_OrderingAndFilter(t *testing.T) {
 	dir := t.TempDir()
-	c, err := Open(t.Context(), dir + "/state.db")
+	c, err := Open(t.Context(), dir+"/state.db")
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -1890,7 +1890,7 @@ func TestSevenDaySamplesSince_OrderingAndFilter(t *testing.T) {
 
 func TestSevenDaySamplesSince_NullPctExcluded(t *testing.T) {
 	dir := t.TempDir()
-	c, err := Open(t.Context(), dir + "/state.db")
+	c, err := Open(t.Context(), dir+"/state.db")
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -1908,7 +1908,7 @@ func TestSevenDaySamplesSince_NullPctExcluded(t *testing.T) {
 		t.Fatalf("Record nil bucket: %v", err)
 	}
 
-	got, err := c.SevenDaySamplesSince(t.Context(), now.Add(-24 * time.Hour))
+	got, err := c.SevenDaySamplesSince(t.Context(), now.Add(-24*time.Hour))
 	if err != nil {
 		t.Fatalf("SevenDaySamplesSince: %v", err)
 	}
@@ -1927,7 +1927,7 @@ func TestSevenDaySamplesSince_ResetsAtNormalized(t *testing.T) {
 	// <2 filtered samples and silently falling back to the linear projection.
 	// This test pins the fix: sub-second jitter must be collapsed to second precision.
 	dir := t.TempDir()
-	c, err := Open(t.Context(), dir + "/state.db")
+	c, err := Open(t.Context(), dir+"/state.db")
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -1949,7 +1949,7 @@ func TestSevenDaySamplesSince_ResetsAtNormalized(t *testing.T) {
 		t.Fatalf("Record 2: %v", err)
 	}
 
-	got, err := c.SevenDaySamplesSince(t.Context(), now.Add(-24 * time.Hour))
+	got, err := c.SevenDaySamplesSince(t.Context(), now.Add(-24*time.Hour))
 	if err != nil {
 		t.Fatalf("SevenDaySamplesSince: %v", err)
 	}

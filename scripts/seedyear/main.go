@@ -453,6 +453,15 @@ func generate(profileName string, p profileParams, days int, rng *rand.Rand) []p
 }
 
 func main() {
+	if err := runMain(); err != nil {
+		log.Fatalf("seedyear: %v", err)
+	}
+}
+
+// runMain wraps the seed driver so deferred cleanup (signal stop) runs on the
+// error path. main() calls log.Fatalf, which would otherwise short-circuit
+// defers (gocritic exitAfterDefer).
+func runMain() error {
 	profile := flag.String("profile", "light", "synthetic data profile: light or heavy")
 	cacheDir := flag.String("cache-dir", "", "override the dev cache dir (must end in '-dev'); default: resolve from pkg/config")
 	seed := flag.Int64("seed", 1, "RNG seed; same value reproduces the same rows for idempotent re-runs")
@@ -465,7 +474,7 @@ func main() {
 		if err != nil {
 			// pkg/config returns a usable default even when the file is
 			// missing; only a parse error is fatal.
-			log.Fatalf("seedyear: load config: %v", err)
+			return fmt.Errorf("load config: %w", err)
 		}
 		resolved = expandPath(cfg.Paths.CacheDir)
 	} else {
@@ -482,8 +491,9 @@ func main() {
 		days:     *days,
 	})
 	if err != nil {
-		log.Fatalf("seedyear: %v", err)
+		return err
 	}
 	fmt.Printf("seeded %s/state.db: %d new messages (%d total), %d new usage samples (%d total)\n",
 		resolved, res.msgsInserted, res.msgsTotal, res.samplesInserted, res.samplesTotal)
+	return nil
 }
