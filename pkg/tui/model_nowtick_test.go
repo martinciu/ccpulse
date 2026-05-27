@@ -59,7 +59,7 @@ func TestNextBoundary_24hLocalMidnight(t *testing.T) {
 // Mirrors seedBarModel but injects the #311 clock seam.
 func seedModelAt(t *testing.T, unitIdx, nBuckets int, now time.Time) (Model, *cache.Cache) {
 	t.Helper()
-	c, err := cache.Open(filepath.Join(t.TempDir(), "state.db"))
+	c, err := cache.Open(t.Context(), filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatalf("cache.Open: %v", err)
 	}
@@ -78,7 +78,7 @@ func seedModelAt(t *testing.T, unitIdx, nBuckets int, now time.Time) (Model, *ca
 				InputTokens: 5000,
 			})
 		}
-		if err := c.InsertMessages(msgs, tab); err != nil {
+		if err := c.InsertMessages(t.Context(), msgs, tab); err != nil {
 			t.Fatalf("InsertMessages: %v", err)
 		}
 	}

@@ -102,7 +102,7 @@ func buildFitModel(c *cache.Cache, w, h int, win status.Window, unitIdx int, sho
 // placeholder.
 func emptyFitCache(t *testing.T) *cache.Cache {
 	t.Helper()
-	c, err := cache.Open(filepath.Join(t.TempDir(), "empty.db"))
+	c, err := cache.Open(t.Context(), filepath.Join(t.TempDir(), "empty.db"))
 	if err != nil {
 		t.Fatalf("cache.Open: %v", err)
 	}
@@ -114,7 +114,7 @@ func emptyFitCache(t *testing.T) *cache.Cache {
 // hours before fitNow, so refreshChart produces real bar/line content.
 func seedFitCache(t *testing.T, now time.Time) *cache.Cache {
 	t.Helper()
-	c, err := cache.Open(filepath.Join(t.TempDir(), "state.db"))
+	c, err := cache.Open(t.Context(), filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatalf("cache.Open: %v", err)
 	}
@@ -134,7 +134,7 @@ func seedFitCache(t *testing.T, now time.Time) *cache.Cache {
 			OutputTokens: int64(500 + i*50),
 		}
 	}
-	if err := c.InsertMessages(msgs, hist); err != nil {
+	if err := c.InsertMessages(t.Context(), msgs, hist); err != nil {
 		t.Fatalf("InsertMessages: %v", err)
 	}
 	return c
