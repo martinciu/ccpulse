@@ -520,7 +520,7 @@ ON CONFLICT(path) DO UPDATE SET
 func (c *Cache) GetFile(path string) (mtime, offset, line int64, found bool, err error) {
 	row := c.db.QueryRow(`SELECT mtime_ns, last_offset_bytes, last_line FROM files WHERE path = ?`, path)
 	err = row.Scan(&mtime, &offset, &line)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return 0, 0, 0, false, nil
 	}
 	if err != nil {

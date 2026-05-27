@@ -121,7 +121,7 @@ func skipPastNewline(f *os.File, startOff int64) (int, bool, error) {
 			}
 		}
 		scanned += n
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			return scanned, false, nil
 		}
 		if err != nil {
