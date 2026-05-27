@@ -167,7 +167,7 @@ func TestBackfillRun_NoIndicatorWhenAllFilesCached(t *testing.T) {
 	// is at-EOF in the cache, so backfill should fire zero progress
 	// callbacks and the indicator should never appear.
 	ing, _, path := newIngesterFixture(t)
-	if _, err := ing.ProcessFile(path); err != nil {
+	if _, err := ing.ProcessFile(t.Context(), path); err != nil {
 		t.Fatal(err)
 	}
 
@@ -215,7 +215,7 @@ func TestBackfillRun_ConcurrentWatcherSameFile(t *testing.T) {
 			if p == path {
 				// Simulate a watcher event for the same file landing
 				// just before backfill processes it.
-				_, _ = ing.ProcessFile(p)
+				_, _ = ing.ProcessFile(t.Context(), p)
 			}
 		},
 	}
@@ -286,7 +286,7 @@ func TestBackfillRun_BatchLoadsCursorsAndFiltersAllCaughtUp(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := ing.Cache.RecordFile(p, info.ModTime().UnixNano(), info.Size(), 1); err != nil {
+		if err := ing.Cache.RecordFile(t.Context(), p, info.ModTime().UnixNano(), info.Size(), 1); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -37,7 +37,7 @@ func newIngesterFixture(t *testing.T) (*Ingester, string, string) {
 		t.Fatal(err)
 	}
 
-	c, err := cache.Open(filepath.Join(cacheDir, "state.db"))
+	c, err := cache.Open(t.Context(), filepath.Join(cacheDir, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func newIngesterFixture(t *testing.T) (*Ingester, string, string) {
 func TestProcessFile_NewFileFullParse(t *testing.T) {
 	ing, _, path := newIngesterFixture(t)
 
-	n, err := ing.ProcessFile(path)
+	n, err := ing.ProcessFile(t.Context(), path)
 	if err != nil {
 		t.Fatalf("ProcessFile: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestProcessFile_NewFileFullParse(t *testing.T) {
 		t.Errorf("messages count = %d, want 1", count)
 	}
 
-	_, off, line, found, err := ing.Cache.GetFile(path)
+	_, off, line, found, err := ing.Cache.GetFile(t.Context(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,10 +99,10 @@ func TestProcessFile_TailFromStoredOffset(t *testing.T) {
 	ing, _, path := newIngesterFixture(t)
 
 	// First pass — full parse, records offset.
-	if _, err := ing.ProcessFile(path); err != nil {
+	if _, err := ing.ProcessFile(t.Context(), path); err != nil {
 		t.Fatal(err)
 	}
-	_, off1, _, _, _ := ing.Cache.GetFile(path)
+	_, off1, _, _, _ := ing.Cache.GetFile(t.Context(), path)
 
 	// Append a second assistant line to the same file.
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
@@ -115,7 +115,7 @@ func TestProcessFile_TailFromStoredOffset(t *testing.T) {
 	f.Close()
 
 	// Second pass — should tail-parse only the appended line.
-	n, err := ing.ProcessFile(path)
+	n, err := ing.ProcessFile(t.Context(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +131,7 @@ func TestProcessFile_TailFromStoredOffset(t *testing.T) {
 		t.Errorf("total messages = %d, want 2", total)
 	}
 
-	_, off2, _, _, _ := ing.Cache.GetFile(path)
+	_, off2, _, _, _ := ing.Cache.GetFile(t.Context(), path)
 	if off2 <= off1 {
 		t.Errorf("offset did not advance: off1=%d off2=%d", off1, off2)
 	}
@@ -141,7 +141,7 @@ func TestProcessFile_SkipsWhenAtEOF(t *testing.T) {
 	ing, _, path := newIngesterFixture(t)
 
 	// First pass: ingest fully.
-	if _, err := ing.ProcessFile(path); err != nil {
+	if _, err := ing.ProcessFile(t.Context(), path); err != nil {
 		t.Fatal(err)
 	}
 
@@ -153,7 +153,7 @@ func TestProcessFile_SkipsWhenAtEOF(t *testing.T) {
 	}
 	t.Cleanup(func() { os.Chmod(path, 0o644) })
 
-	n, err := ing.ProcessFile(path)
+	n, err := ing.ProcessFile(t.Context(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,11 +171,11 @@ func TestProcessFile_ResetsOnTruncation(t *testing.T) {
 
 	// Pretend a previous run recorded a much larger offset.
 	st, _ := os.Stat(path)
-	if err := ing.Cache.RecordFile(path, st.ModTime().UnixNano(), st.Size()*10, 100); err != nil {
+	if err := ing.Cache.RecordFile(t.Context(), path, st.ModTime().UnixNano(), st.Size()*10, 100); err != nil {
 		t.Fatal(err)
 	}
 
-	n, err := ing.ProcessFile(path)
+	n, err := ing.ProcessFile(t.Context(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +183,7 @@ func TestProcessFile_ResetsOnTruncation(t *testing.T) {
 		t.Errorf("inserted after truncation reset = %d, want 1", n)
 	}
 
-	_, off, line, _, _ := ing.Cache.GetFile(path)
+	_, off, line, _, _ := ing.Cache.GetFile(t.Context(), path)
 	if off != st.Size() {
 		t.Errorf("offset after reset = %d, want %d", off, st.Size())
 	}
@@ -204,7 +204,7 @@ func TestProcessFile_TagsSubagentMessages(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := ing.ProcessFile(subPath); err != nil {
+	if _, err := ing.ProcessFile(t.Context(), subPath); err != nil {
 		t.Fatal(err)
 	}
 
@@ -225,7 +225,7 @@ func TestProcessFile_TagsSubagentMessages(t *testing.T) {
 
 func TestProcessFile_TopLevelHasNoSubagentTag(t *testing.T) {
 	ing, _, path := newIngesterFixture(t)
-	if _, err := ing.ProcessFile(path); err != nil {
+	if _, err := ing.ProcessFile(t.Context(), path); err != nil {
 		t.Fatal(err)
 	}
 
@@ -244,7 +244,7 @@ func TestProcessFile_TopLevelHasNoSubagentTag(t *testing.T) {
 func TestProcessFile_CapturesCwdAndGitBranch(t *testing.T) {
 	ing, _, path := newIngesterFixture(t)
 
-	if _, err := ing.ProcessFile(path); err != nil {
+	if _, err := ing.ProcessFile(t.Context(), path); err != nil {
 		t.Fatal(err)
 	}
 
@@ -266,7 +266,7 @@ func TestProcessFile_MissingFileLogsAndReturnsZero(t *testing.T) {
 	ing, projects, _ := newIngesterFixture(t)
 
 	missing := filepath.Join(projects, "-Users-x-foo", "ghost.jsonl")
-	n, err := ing.ProcessFile(missing)
+	n, err := ing.ProcessFile(t.Context(), missing)
 	if err != nil {
 		t.Fatalf("ProcessFile on missing file returned err: %v", err)
 	}
@@ -290,7 +290,7 @@ func TestProcessFile_MalformedLineLoggedValidLinesInserted(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	n, err := ing.ProcessFile(mixedPath)
+	n, err := ing.ProcessFile(t.Context(), mixedPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -310,7 +310,7 @@ func TestProcessFile_MalformedLineLoggedValidLinesInserted(t *testing.T) {
 
 func openTestCache(t *testing.T, cacheDir string) (*cache.Cache, error) {
 	t.Helper()
-	c, err := cache.Open(filepath.Join(cacheDir, "state.db"))
+	c, err := cache.Open(t.Context(), filepath.Join(cacheDir, "state.db"))
 	if err == nil {
 		t.Cleanup(func() { c.Close() })
 	}
