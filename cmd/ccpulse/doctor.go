@@ -49,8 +49,8 @@ func runDoctor(cmd *cobra.Command) error {
 	check(out, "cache db opens: "+dbPath, cacheErr == nil, cacheErr)
 	if cacheErr == nil {
 		defer c.Close()
-		_, ierr := c.DB().ExecContext(cmd.Context(), `PRAGMA integrity_check`)
-		check(out, "integrity_check", ierr == nil, ierr)
+		ok, ierr := c.IntegrityOK(cmd.Context())
+		check(out, "integrity_check", ok && ierr == nil, ierr)
 	}
 
 	hist, perr := pricing.Load()
