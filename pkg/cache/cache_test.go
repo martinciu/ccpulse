@@ -2,6 +2,7 @@ package cache
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -1257,6 +1258,25 @@ func TestIntegrityOK_Corrupt(t *testing.T) {
 	}
 	if ok {
 		t.Fatalf("IntegrityOK on corrupt cache returned true")
+	}
+}
+
+func TestIntegrityOK_CtxCancelled(t *testing.T) {
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	_, err = c.IntegrityOK(ctx)
+	if err == nil {
+		t.Fatalf("IntegrityOK with cancelled ctx: expected error, got nil")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("IntegrityOK with cancelled ctx: got %v, want context.Canceled", err)
 	}
 }
 

@@ -50,7 +50,7 @@ cache_dir = "` + cacheDir + `"
 	root.SetOut(&out)
 	root.SetErr(&errOut)
 
-	err = root.Execute()
+	err = root.ExecuteContext(t.Context())
 	if err != nil {
 		t.Fatalf("recost --dry-run failed: %v\nstdout: %s\nstderr: %s", err, out.String(), errOut.String())
 	}

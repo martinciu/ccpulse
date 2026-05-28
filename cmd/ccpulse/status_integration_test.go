@@ -68,7 +68,7 @@ func TestStatusJSONWithCachedUsage(t *testing.T) {
 	cmd.SetArgs([]string{"--json"})
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
-	if err := cmd.Execute(); err != nil {
+	if err := cmd.ExecuteContext(t.Context()); err != nil {
 		t.Fatalf("status: %v", err)
 	}
 	out := buf.String()
@@ -118,7 +118,7 @@ func TestStatusJSONWithoutCredential(t *testing.T) {
 	cmd.SetArgs([]string{"--json"})
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
-	if err := cmd.Execute(); err != nil {
+	if err := cmd.ExecuteContext(t.Context()); err != nil {
 		t.Fatalf("status: %v", err)
 	}
 	out := buf.String()
@@ -182,7 +182,7 @@ func TestStatusRecordsUsageSampleOnAPIFetch(t *testing.T) {
 	cmd.SetArgs([]string{"--json"})
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
-	if err := cmd.Execute(); err != nil {
+	if err := cmd.ExecuteContext(t.Context()); err != nil {
 		t.Fatalf("status: %v", err)
 	}
 	if hits != 1 {
@@ -210,7 +210,7 @@ func TestStatusSkipsRecordOnCacheFresh(t *testing.T) {
 	cmd.SetArgs([]string{"--json"})
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
-	if err := cmd.Execute(); err != nil {
+	if err := cmd.ExecuteContext(t.Context()); err != nil {
 		t.Fatalf("status: %v", err)
 	}
 	if hits != 0 {
@@ -254,7 +254,7 @@ func TestStatusPercentDisplayWithOAuthAtZero(t *testing.T) {
 	cmd := newStatusCmd()
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
-	if err := cmd.Execute(); err != nil {
+	if err := cmd.ExecuteContext(t.Context()); err != nil {
 		t.Fatalf("status: %v", err)
 	}
 	out := buf.String()
@@ -282,7 +282,7 @@ func TestStatusNoOAuthShowsNoQuotaNotice(t *testing.T) {
 	cmd := newStatusCmd()
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
-	if err := cmd.Execute(); err != nil {
+	if err := cmd.ExecuteContext(t.Context()); err != nil {
 		t.Fatalf("status: %v", err)
 	}
 	out := buf.String()
@@ -322,7 +322,7 @@ func TestStatusExpiredCredentialWritesToCmdErr(t *testing.T) {
 	cmd.SetOut(&outBuf)
 	cmd.SetErr(&errBuf)
 	// Ignore the error return — the command may succeed (quota fetch fails gracefully).
-	_ = cmd.Execute()
+	_ = cmd.ExecuteContext(t.Context())
 
 	if !strings.Contains(errBuf.String(), "OAuth credential expired") {
 		t.Errorf("expected 'OAuth credential expired' in stderr buffer, got: %q", errBuf.String())
@@ -335,7 +335,7 @@ func TestStatusTmuxFlagRemoved(t *testing.T) {
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
 	cmd.SetErr(&buf)
-	err := cmd.Execute()
+	err := cmd.ExecuteContext(t.Context())
 	if err == nil {
 		t.Fatal("expected error for --tmux flag, got nil")
 	}
@@ -384,7 +384,7 @@ func TestStatusJSONProjectionOverreach(t *testing.T) {
 	cmd.SetArgs([]string{"--json"})
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
-	if err := cmd.Execute(); err != nil {
+	if err := cmd.ExecuteContext(t.Context()); err != nil {
 		t.Fatalf("status: %v", err)
 	}
 	out := buf.String()
@@ -438,7 +438,7 @@ func TestStatusQuietSuppressesStdout(t *testing.T) {
 	var out, errBuf bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&errBuf)
-	if err := cmd.Execute(); err != nil {
+	if err := cmd.ExecuteContext(t.Context()); err != nil {
 		t.Fatalf("status --quiet: %v", err)
 	}
 	if got := out.String(); got != "" {
@@ -467,7 +467,7 @@ func TestStatusQuietStillRecordsSample(t *testing.T) {
 	var out, errBuf bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&errBuf)
-	if err := cmd.Execute(); err != nil {
+	if err := cmd.ExecuteContext(t.Context()); err != nil {
 		t.Fatalf("status --quiet: %v", err)
 	}
 	if out.Len() != 0 {
@@ -508,7 +508,7 @@ func TestStatusQuietHardErrorStillExitsNonZero(t *testing.T) {
 	var out, errBuf bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&errBuf)
-	if err := cmd.Execute(); err == nil {
+	if err := cmd.ExecuteContext(t.Context()); err == nil {
 		t.Fatalf("expected non-nil error from hard cache-open failure with --quiet, got nil")
 	}
 }
@@ -542,7 +542,7 @@ func TestStatusQuietStillEmitsStderrDiagnostics(t *testing.T) {
 	cmd.SetOut(&out)
 	cmd.SetErr(&errBuf)
 	// Expired credential is a soft failure; status still computes via JSONL fallback.
-	_ = cmd.Execute()
+	_ = cmd.ExecuteContext(t.Context())
 
 	if out.Len() != 0 {
 		t.Errorf("stdout should be empty with --quiet, got: %q", out.String())
@@ -559,7 +559,7 @@ func TestStatusJSONQuietMutuallyExclusive(t *testing.T) {
 	var out, errBuf bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&errBuf)
-	err := cmd.Execute()
+	err := cmd.ExecuteContext(t.Context())
 	if err == nil {
 		t.Fatalf("expected error for mutually exclusive flags, got nil")
 	}
@@ -595,7 +595,7 @@ func TestRunStatus_MalformedConfig(t *testing.T) {
 	cmd.SetOut(&out)
 	cmd.SetErr(&errBuf)
 
-	err := cmd.Execute()
+	err := cmd.ExecuteContext(t.Context())
 	if err == nil {
 		t.Fatal("runStatus should return error for malformed config, got nil")
 	}
@@ -621,7 +621,7 @@ func TestRunStatus_AbsentConfig_ProducesJSON(t *testing.T) {
 	cmd.SetArgs([]string{"--json"})
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
-	if err := cmd.Execute(); err != nil {
+	if err := cmd.ExecuteContext(t.Context()); err != nil {
 		t.Fatalf("runStatus should succeed with absent config (defaults), got: %v", err)
 	}
 	if !strings.Contains(buf.String(), `"ceiling_label"`) {
@@ -681,7 +681,7 @@ func TestStatusPrunesWhenRetentionConfigured(t *testing.T) {
 	cmd.SetArgs([]string{"--json"})
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
-	if err := cmd.Execute(); err != nil {
+	if err := cmd.ExecuteContext(t.Context()); err != nil {
 		t.Fatalf("status: %v", err)
 	}
 	if hits != 1 {
