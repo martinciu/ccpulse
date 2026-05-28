@@ -501,7 +501,10 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 			return fmt.Errorf("insert messages: exec: %w", err)
 		}
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("insert messages: commit: %w", err)
+	}
+	return nil
 }
 
 // RecordFile upserts the byte-offset cursor and mtime for path into the files table.
