@@ -36,7 +36,7 @@ func TestBackfillRun_WalksFilesNewestFirstWithProgress(t *testing.T) {
 	bf := &Backfill{Ingester: ing}
 
 	var calls []Progress
-	if err := bf.Run(context.Background(), func(p Progress) {
+	if err := bf.Run(t.Context(), func(p Progress) {
 		calls = append(calls, p)
 	}); err != nil {
 		t.Fatal(err)
@@ -109,7 +109,7 @@ func TestBackfillRun_NewestMtimeFirst(t *testing.T) {
 		// hook for tests:
 		onBeforeProcess: func(path string) { seen = append(seen, filepath.Base(path)) },
 	}
-	if err := bf.Run(context.Background(), func(Progress) {}); err != nil {
+	if err := bf.Run(t.Context(), func(Progress) {}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -153,7 +153,7 @@ func TestBackfillRun_EmptyTree(t *testing.T) {
 	bf := &Backfill{Ingester: ing}
 
 	var calls []Progress
-	if err := bf.Run(context.Background(), func(p Progress) { calls = append(calls, p) }); err != nil {
+	if err := bf.Run(t.Context(), func(p Progress) { calls = append(calls, p) }); err != nil {
 		t.Fatal(err)
 	}
 
@@ -173,7 +173,7 @@ func TestBackfillRun_NoIndicatorWhenAllFilesCached(t *testing.T) {
 
 	bf := &Backfill{Ingester: ing}
 	var calls []Progress
-	if err := bf.Run(context.Background(), func(p Progress) { calls = append(calls, p) }); err != nil {
+	if err := bf.Run(t.Context(), func(p Progress) { calls = append(calls, p) }); err != nil {
 		t.Fatal(err)
 	}
 
@@ -193,7 +193,7 @@ func TestBackfillRun_MissingRoot(t *testing.T) {
 	bf := &Backfill{Ingester: ing}
 
 	var calls []Progress
-	if err := bf.Run(context.Background(), func(p Progress) { calls = append(calls, p) }); err != nil {
+	if err := bf.Run(t.Context(), func(p Progress) { calls = append(calls, p) }); err != nil {
 		t.Fatal(err)
 	}
 
@@ -219,7 +219,7 @@ func TestBackfillRun_ConcurrentWatcherSameFile(t *testing.T) {
 			}
 		},
 	}
-	if err := bf.Run(context.Background(), func(Progress) {}); err != nil {
+	if err := bf.Run(t.Context(), func(Progress) {}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -296,7 +296,7 @@ func TestBackfillRun_BatchLoadsCursorsAndFiltersAllCaughtUp(t *testing.T) {
 		Ingester:        ing,
 		onBeforeProcess: func(path string) { processed = append(processed, path) },
 	}
-	if err := bf.Run(context.Background(), func(Progress) {}); err != nil {
+	if err := bf.Run(t.Context(), func(Progress) {}); err != nil {
 		t.Fatal(err)
 	}
 

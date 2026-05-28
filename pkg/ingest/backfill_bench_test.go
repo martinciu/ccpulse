@@ -1,7 +1,6 @@
 package ingest
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -55,7 +54,7 @@ func BenchmarkBackfillEnumerate1k(b *testing.B) {
 	bf := &Backfill{Ingester: ing}
 
 	for b.Loop() {
-		if err := bf.Run(context.Background(), nil); err != nil {
+		if err := bf.Run(b.Context(), nil); err != nil {
 			b.Fatal(err)
 		}
 	}

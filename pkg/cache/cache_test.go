@@ -2,7 +2,6 @@ package cache
 
 import (
 	"bytes"
-	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -971,7 +970,7 @@ func TestOpenSetsWALAndBusyTimeout(t *testing.T) {
 	// one Conn open forces sql.DB to hand us a second, distinct connection —
 	// proving the DSN pragmas hit every conn, not just the one db.Exec
 	// happened to grab. Without the DSN, conn2 would report busy_timeout=0.
-	ctx := context.Background()
+	ctx := t.Context()
 	conn1, err := c.DB().Conn(ctx)
 	if err != nil {
 		t.Fatal(err)

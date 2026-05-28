@@ -65,14 +65,14 @@ func TestRecost_Idempotent(t *testing.T) {
 		Timestamp: time.Date(2026, 5, 10, 0, 0, 0, 0, time.UTC),
 	})
 
-	first, err := c.Recost(context.Background(), hist, cache.RecostOpts{})
+	first, err := c.Recost(t.Context(), hist, cache.RecostOpts{})
 	if err != nil {
 		t.Fatalf("first recost: %v", err)
 	}
 	if first.Updated != 0 {
 		t.Errorf("first recost on freshly-inserted row updated %d rows, want 0", first.Updated)
 	}
-	second, err := c.Recost(context.Background(), hist, cache.RecostOpts{})
+	second, err := c.Recost(t.Context(), hist, cache.RecostOpts{})
 	if err != nil {
 		t.Fatalf("second recost: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestRecost_FixesStaleVersion(t *testing.T) {
 		t.Fatalf("seed stale version: %v", err)
 	}
 
-	stats, err := c.Recost(context.Background(), hist, cache.RecostOpts{})
+	stats, err := c.Recost(t.Context(), hist, cache.RecostOpts{})
 	if err != nil {
 		t.Fatalf("recost: %v", err)
 	}
@@ -137,7 +137,7 @@ func TestRecost_ClearsUnknownWhenModelAdded(t *testing.T) {
 	if _, err := c.DB().Exec(`UPDATE messages SET ts = '2026-05-10T00:00:00.000Z' WHERE session_id = ?`, m.SessionID); err != nil {
 		t.Fatalf("update ts: %v", err)
 	}
-	stats, err := c.Recost(context.Background(), hist, cache.RecostOpts{})
+	stats, err := c.Recost(t.Context(), hist, cache.RecostOpts{})
 	if err != nil {
 		t.Fatalf("recost: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestRecost_PreservesUnknownWhenModelMissing(t *testing.T) {
 		Timestamp: time.Date(2026, 5, 10, 0, 0, 0, 0, time.UTC),
 	}
 	seedRow(t, c, hist, m)
-	stats, err := c.Recost(context.Background(), hist, cache.RecostOpts{})
+	stats, err := c.Recost(t.Context(), hist, cache.RecostOpts{})
 	if err != nil {
 		t.Fatalf("recost: %v", err)
 	}
@@ -182,7 +182,7 @@ func TestRecost_DryRunNoWrites(t *testing.T) {
 	if _, err := c.DB().Exec(`UPDATE messages SET pricing_version = '2026-05-10' WHERE session_id = ?`, m.SessionID); err != nil {
 		t.Fatalf("seed stale: %v", err)
 	}
-	stats, err := c.Recost(context.Background(), hist, cache.RecostOpts{DryRun: true})
+	stats, err := c.Recost(t.Context(), hist, cache.RecostOpts{DryRun: true})
 	if err != nil {
 		t.Fatalf("recost dry-run: %v", err)
 	}
@@ -216,7 +216,7 @@ func TestPricingVersionStats(t *testing.T) {
 		t.Fatalf("seed stale: %v", err)
 	}
 
-	got, err := c.PricingVersionStats(context.Background(), hist)
+	got, err := c.PricingVersionStats(t.Context(), hist)
 	if err != nil {
 		t.Fatalf("PricingVersionStats: %v", err)
 	}
@@ -290,7 +290,7 @@ func TestAutoRecost_SkipsWhenFingerprintMatches(t *testing.T) {
 		t.Fatalf("seed fingerprint: %v", err)
 	}
 
-	c.AutoRecost(context.Background(), hist)
+	c.AutoRecost(t.Context(), hist)
 
 	// Row must still be stale — the early-out prevented any rewrite.
 	var ver string
@@ -312,7 +312,7 @@ func TestRecost_WritesFingerprintOnCommit(t *testing.T) {
 	})
 
 	// Non-dry-run: fingerprint must be written.
-	if _, err := c.Recost(context.Background(), hist, cache.RecostOpts{}); err != nil {
+	if _, err := c.Recost(t.Context(), hist, cache.RecostOpts{}); err != nil {
 		t.Fatalf("recost: %v", err)
 	}
 	var got string
@@ -335,7 +335,7 @@ func TestRecost_WritesFingerprintOnCommit(t *testing.T) {
 	if _, err := c2.DB().Exec(`UPDATE messages SET pricing_version = '1999-01-01'`); err != nil {
 		t.Fatalf("seed stale: %v", err)
 	}
-	if _, err := c2.Recost(context.Background(), hist, cache.RecostOpts{DryRun: true}); err != nil {
+	if _, err := c2.Recost(t.Context(), hist, cache.RecostOpts{DryRun: true}); err != nil {
 		t.Fatalf("recost dry-run: %v", err)
 	}
 	var dryGot string
