@@ -35,6 +35,8 @@ linters:
     - errorlint    # idiomatic error handling (errors.Is/As, %w)
     - misspell     # typos in comments, strings, identifiers
     - noctx        # DB/HTTP/exec calls must use *Context variants (#355)
+    # security (added in #354)
+    - gosec        # security: credentials, perms, SQL, paths, subprocess
 
   settings:
     errcheck:
@@ -55,6 +57,10 @@ linters:
       rules:
         - name: exported
         - name: package-comments
+    gosec:
+      excludes:
+        - G104  # duplicates errcheck — same f.Close() / WriteFile sites
+        - G304  # CLI legitimately reads user-provided paths
 
   exclusions:
     presets:
@@ -71,6 +77,10 @@ linters:
           - nestif
           - revive
           - gocritic
+          - gosec
+      - path: ^scripts/
+        linters:
+          - gosec        # seedyear PRNG (G404), seed_dev_test subprocesses (G204)
 
 formatters:
   enable:

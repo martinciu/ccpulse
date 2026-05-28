@@ -30,6 +30,7 @@ func acquireCacheLock(lockPath string, mode int) (*os.File, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open cache lock %s: %w", lockPath, err)
 	}
+	//nolint:gosec // G115: f.Fd() returns uintptr; OS fds are small ints, no overflow
 	if err := syscall.Flock(int(f.Fd()), mode|syscall.LOCK_NB); err != nil {
 		f.Close()
 		// syscall.EWOULDBLOCK == syscall.EAGAIN on darwin and linux; checking either is sufficient.
@@ -87,6 +88,7 @@ func LockedRebuild(ctx context.Context, path string) (*Cache, error) {
 	// Atomic EX → SH downgrade. flock(2): "subsequent flock()
 	// calls on an already locked file will convert an existing
 	// lock to the new lock mode."
+	//nolint:gosec // G115: f.Fd() returns uintptr; OS fds are small ints, no overflow
 	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_SH); err != nil {
 		db.Close()
 		lockFile.Close()

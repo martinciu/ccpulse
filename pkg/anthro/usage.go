@@ -234,11 +234,13 @@ func acquireFetchLock(cacheDir string) (release func(), err error) {
 	if err != nil {
 		return nil, err
 	}
+	//nolint:gosec // G115: f.Fd() returns uintptr; OS fds are small ints, no overflow
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
 		f.Close()
 		return nil, err
 	}
 	return func() {
+		//nolint:gosec // G115: f.Fd() returns uintptr; OS fds are small ints, no overflow
 		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 		_ = f.Close()
 	}, nil

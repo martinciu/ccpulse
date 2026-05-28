@@ -159,6 +159,7 @@ func newConfigCmd() *cobra.Command {
 			if editor == "" {
 				editor = "vim"
 			}
+			//nolint:gosec // G702: editor from $EDITOR/"vim", path is config.DefaultPath() — both user-owned
 			ed := exec.CommandContext(cmd.Context(), editor, path)
 			ed.Stdin, ed.Stdout, ed.Stderr = os.Stdin, os.Stdout, os.Stderr
 			return ed.Run()
