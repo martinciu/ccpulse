@@ -2,6 +2,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -85,6 +86,14 @@ type QuotaMsg struct {
 
 // Deps wires external dependencies into the TUI model.
 type Deps struct {
+	// Ctx is the program-lifetime ctx threaded into every Cache call
+	// inside the TUI (CostBuckets, IOTokenBuckets, UtilizationSince,
+	// EarliestMessageTime). A Model's lifetime IS the program lifetime,
+	// so this stays on the Model rather than being passed through every
+	// Update/View method. If nil, defaults to context.Background() —
+	// useful for tests that construct Deps{} without touching the DB.
+	Ctx context.Context
+
 	Cache        *cache.Cache
 	ProjectsRoot string
 	Credential   anthro.Credential
@@ -109,6 +118,12 @@ const (
 
 // Model is the root Bubble Tea model for the chart view.
 type Model struct {
+	// ctx is the program-lifetime ctx threaded into every Cache call
+	// inside the TUI. See Deps.Ctx for the convention rationale —
+	// bubbletea Model lifetime IS program lifetime, so this storage is
+	// the documented exception to "never store ctx in a struct".
+	ctx context.Context
+
 	deps       Deps
 	keys       KeyMap
 	progress   progress.Model // 5-hour quota bar
@@ -319,7 +334,11 @@ type Model struct {
 
 // New constructs a Model from the given Deps, initialising progress bars, viewport, and key bindings.
 func New(d Deps) Model {
+	if d.Ctx == nil {
+		d.Ctx = context.Background()
+	}
 	m := Model{
+		ctx:       d.Ctx,
 		deps:      d,
 		keys:      defaultKeyMap(),
 		help:      help.New(),
@@ -808,7 +827,7 @@ func (m *Model) recomputeWindow() {
 		TierSlug:   anthro.TierSlug(m.deps.Credential.RateLimitTier),
 		TierPretty: anthro.TierPretty(m.deps.Credential.RateLimitTier),
 	}
-	if w, err := status.Compute(m.deps.Cache.DB(), time.Now(), in); err == nil {
+	if w, err := status.Compute(m.ctx, m.deps.Cache.DB(), time.Now(), in); err == nil {
 		m.window = w
 	}
 	m.progress = newProgressBar(m.progressWidth())

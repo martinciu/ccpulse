@@ -36,7 +36,7 @@ cache_dir = "` + cacheDir + `"
 	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	db, err := cache.Open(dbPath)
+	db, err := cache.Open(t.Context(), dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,7 @@ cache_dir = "` + cacheDir + `"
 	root.SetOut(&out)
 	root.SetErr(&errOut)
 
-	err = root.Execute()
+	err = root.ExecuteContext(t.Context())
 	if err != nil {
 		t.Fatalf("recost --dry-run failed: %v\nstdout: %s\nstderr: %s", err, out.String(), errOut.String())
 	}

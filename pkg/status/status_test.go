@@ -27,7 +27,7 @@ func freshDB(t *testing.T) *sql.DB {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
-	if _, err := db.Exec(`CREATE TABLE messages (
+	if _, err := db.ExecContext(t.Context(), `CREATE TABLE messages (
 		ts TEXT, input_tokens INTEGER, output_tokens INTEGER,
 		cache_read_tokens INTEGER, cache_write_5m_tokens INTEGER,
 		cache_write_1h_tokens INTEGER, cost_usd_estimate REAL)`); err != nil {
@@ -39,9 +39,9 @@ func freshDB(t *testing.T) *sql.DB {
 func TestComputeWithoutQuota(t *testing.T) {
 	db := freshDB(t)
 	now := time.Date(2026, 5, 9, 15, 0, 0, 0, time.UTC)
-	_, _ = db.Exec(`INSERT INTO messages VALUES (?, 100, 50, 0, 0, 0, 0.01)`,
+	_, _ = db.ExecContext(t.Context(), `INSERT INTO messages VALUES (?, 100, 50, 0, 0, 0, 0.01)`,
 		now.Add(-1*time.Hour).Format("2006-01-02T15:04:05.000Z07:00"))
-	w, err := Compute(db, now, QuotaInput{TierSlug: "unknown", TierPretty: "Unknown"})
+	w, err := Compute(t.Context(), db, now, QuotaInput{TierSlug: "unknown", TierPretty: "Unknown"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func TestComputeWithQuota(t *testing.T) {
 	now := time.Date(2026, 5, 9, 15, 0, 0, 0, time.UTC)
 	resetsAt := now.Add(70 * time.Minute)
 	usage := &anthro.Usage{FiveHour: &anthro.Bucket{Utilization: 12.7, ResetsAt: &resetsAt}}
-	w, err := Compute(db, now, QuotaInput{
+	w, err := Compute(t.Context(), db, now, QuotaInput{
 		Usage: usage, Source: "api", UpdatedAt: now,
 		TierSlug: "max_20x", TierPretty: "Max 20x",
 	})
@@ -125,7 +125,7 @@ func TestCompute_PopulatesSevenDay(t *testing.T) {
 		FiveHour: &anthro.Bucket{Utilization: 14.0, ResetsAt: &resets5h},
 		SevenDay: &anthro.Bucket{Utilization: 89.0, ResetsAt: &resets7d},
 	}
-	w, err := Compute(db, now, QuotaInput{Usage: usage, Source: "api", UpdatedAt: now})
+	w, err := Compute(t.Context(), db, now, QuotaInput{Usage: usage, Source: "api", UpdatedAt: now})
 	if err != nil {
 		t.Fatalf("Compute: %v", err)
 	}
@@ -146,7 +146,7 @@ func TestCompute_OmitsSevenDayWhenSevenDayNil(t *testing.T) {
 	usage := &anthro.Usage{
 		FiveHour: &anthro.Bucket{Utilization: 14.0, ResetsAt: timePtr(now.Add(2 * time.Hour))},
 	}
-	w, err := Compute(db, now, QuotaInput{Usage: usage, Source: "api", UpdatedAt: now})
+	w, err := Compute(t.Context(), db, now, QuotaInput{Usage: usage, Source: "api", UpdatedAt: now})
 	if err != nil {
 		t.Fatalf("Compute: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestCompute_OmitsSevenDayWhenSevenDayNil(t *testing.T) {
 func TestCompute_OmitsSevenDayWhenUsageNil(t *testing.T) {
 	db := freshDB(t)
 	now := time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)
-	w, err := Compute(db, now, QuotaInput{Usage: nil, Source: "cache_stale", UpdatedAt: now})
+	w, err := Compute(t.Context(), db, now, QuotaInput{Usage: nil, Source: "cache_stale", UpdatedAt: now})
 	if err != nil {
 		t.Fatalf("Compute: %v", err)
 	}
@@ -181,7 +181,7 @@ func TestCompute_PopulatesProjection(t *testing.T) {
 		FiveHour: &anthro.Bucket{Utilization: 12.0, ResetsAt: &resets5h},
 		SevenDay: &anthro.Bucket{Utilization: 30.0, ResetsAt: &resets7d},
 	}
-	w, err := Compute(db, now, QuotaInput{Usage: usage, Source: "api", UpdatedAt: now})
+	w, err := Compute(t.Context(), db, now, QuotaInput{Usage: usage, Source: "api", UpdatedAt: now})
 	if err != nil {
 		t.Fatalf("Compute: %v", err)
 	}
@@ -208,7 +208,7 @@ func TestCompute_PopulatesProjection(t *testing.T) {
 func TestCompute_OmitsProjectionWhenQuotaNil(t *testing.T) {
 	db := freshDB(t)
 	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
-	w, err := Compute(db, now, QuotaInput{Usage: nil, Source: "cache_stale", UpdatedAt: now})
+	w, err := Compute(t.Context(), db, now, QuotaInput{Usage: nil, Source: "cache_stale", UpdatedAt: now})
 	if err != nil {
 		t.Fatalf("Compute: %v", err)
 	}
@@ -224,7 +224,7 @@ func TestCompute_OmitsSevenDayProjectionWhenSevenDayNil(t *testing.T) {
 	usage := &anthro.Usage{
 		FiveHour: &anthro.Bucket{Utilization: 12.0, ResetsAt: &resets5h},
 	}
-	w, err := Compute(db, now, QuotaInput{Usage: usage, Source: "api", UpdatedAt: now})
+	w, err := Compute(t.Context(), db, now, QuotaInput{Usage: usage, Source: "api", UpdatedAt: now})
 	if err != nil {
 		t.Fatalf("Compute: %v", err)
 	}
@@ -247,7 +247,7 @@ func TestCompute_OmitsSevenDayProjectionWhenResetsAtNil(t *testing.T) {
 		FiveHour: &anthro.Bucket{Utilization: 12.0, ResetsAt: &resets5h},
 		SevenDay: &anthro.Bucket{Utilization: 30.0, ResetsAt: nil},
 	}
-	w, err := Compute(db, now, QuotaInput{Usage: usage, Source: "api", UpdatedAt: now})
+	w, err := Compute(t.Context(), db, now, QuotaInput{Usage: usage, Source: "api", UpdatedAt: now})
 	if err != nil {
 		t.Fatalf("Compute: %v", err)
 	}
@@ -306,7 +306,7 @@ func TestJSONOutputOmitsProjectionWhenNil(t *testing.T) {
 
 func TestCompute_Tokens5hBreakdown_SumsCorrectly(t *testing.T) {
 	dir := t.TempDir()
-	c, err := cache.Open(dir + "/state.db")
+	c, err := cache.Open(t.Context(), dir+"/state.db")
 	if err != nil {
 		t.Fatalf("Open cache: %v", err)
 	}
@@ -316,7 +316,7 @@ func TestCompute_Tokens5hBreakdown_SumsCorrectly(t *testing.T) {
 	now := time.Now().UTC()
 	ts := now.Add(-1 * time.Hour).Format("2006-01-02T15:04:05.000Z07:00")
 
-	if _, err := db.Exec(`
+	if _, err := db.ExecContext(t.Context(), `
 INSERT INTO messages (
 	session_id, project_slug, ts, role, model,
 	input_tokens, output_tokens, cache_read_tokens,
@@ -327,7 +327,7 @@ INSERT INTO messages (
 		t.Fatalf("seed: %v", err)
 	}
 
-	w, err := Compute(db, now, QuotaInput{})
+	w, err := Compute(t.Context(), db, now, QuotaInput{})
 	if err != nil {
 		t.Fatalf("Compute: %v", err)
 	}
@@ -399,7 +399,7 @@ func TestJSON_IncludesTokens5hBreakdown(t *testing.T) {
 
 func TestCompute_SevenDayUsesRecencyWeightedProjection(t *testing.T) {
 	dir := t.TempDir()
-	c, err := cache.Open(dir + "/state.db")
+	c, err := cache.Open(t.Context(), dir+"/state.db")
 	if err != nil {
 		t.Fatalf("Open cache: %v", err)
 	}
@@ -411,7 +411,7 @@ func TestCompute_SevenDayUsesRecencyWeightedProjection(t *testing.T) {
 	// Front-loaded shape: pct at 50% for the last 24h (slope ≈ 0).
 	for _, hoursBack := range []int{24, 18, 12, 6, 0} {
 		when := now.Add(-time.Duration(hoursBack) * time.Hour)
-		if err := c.RecordUsageSample(anthro.Usage{
+		if err := c.RecordUsageSample(t.Context(), anthro.Usage{
 			SevenDay: &anthro.Bucket{Utilization: 50.0, ResetsAt: &resetsAt},
 		}, when); err != nil {
 			t.Fatalf("RecordUsageSample: %v", err)
@@ -426,7 +426,7 @@ func TestCompute_SevenDayUsesRecencyWeightedProjection(t *testing.T) {
 		UpdatedAt: now,
 	}
 
-	w, err := Compute(c.DB(), now, q)
+	w, err := Compute(t.Context(), c.DB(), now, q)
 	if err != nil {
 		t.Fatalf("Compute: %v", err)
 	}

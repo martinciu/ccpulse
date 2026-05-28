@@ -160,7 +160,7 @@ func newConfigCmd() *cobra.Command {
 				editor = "vim"
 			}
 			//nolint:gosec // G702: editor from $EDITOR/"vim", path is config.DefaultPath() — both user-owned
-			ed := exec.Command(editor, path)
+			ed := exec.CommandContext(cmd.Context(), editor, path)
 			ed.Stdin, ed.Stdout, ed.Stderr = os.Stdin, os.Stdout, os.Stderr
 			return ed.Run()
 		},
@@ -236,7 +236,7 @@ func runTUI(ctx context.Context, errOut io.Writer) error {
 		defer logCloser.Close()
 	}
 	dbPath := filepath.Join(cacheDir, "state.db")
-	c, err := openCacheWithRebuild(dbPath, errOut)
+	c, err := openCacheWithRebuild(ctx, dbPath, errOut)
 	if err != nil {
 		return err
 	}
@@ -264,6 +264,7 @@ func runTUI(ctx context.Context, errOut io.Writer) error {
 	qs := resolveQuotaStartup(errOut, time.Now())
 
 	m := tui.New(tui.Deps{
+		Ctx:          ctx,
 		Cache:        c,
 		ProjectsRoot: projectsRoot,
 		Credential:   qs.cred,
@@ -316,7 +317,7 @@ func runTUI(ctx context.Context, errOut io.Writer) error {
 
 	bg.Go(func() {
 		w.Run(func(path string) {
-			_, _ = ing.ProcessFile(path)
+			_, _ = ing.ProcessFile(ctx, path)
 			p.Send(tui.RefreshMsg{})
 		})
 	})
@@ -342,9 +343,11 @@ func runTUI(ctx context.Context, errOut io.Writer) error {
 
 // openCacheWithRebuild opens the cache at dbPath, rebuilding from JSONL if the
 // integrity check fails. ErrLockHeld on either path prints an actionable hint to
-// errOut. The caller owns the returned cache (defer Close).
-func openCacheWithRebuild(dbPath string, errOut io.Writer) (*cache.Cache, error) {
-	c, err := cache.Open(dbPath)
+// errOut. The caller owns the returned cache (defer Close). Ctx cancellation
+// during the integrity check is bubbled up so a Ctrl-C between Open and tea.Run
+// doesn't trigger a doomed LockedRebuild.
+func openCacheWithRebuild(ctx context.Context, dbPath string, errOut io.Writer) (*cache.Cache, error) {
+	c, err := cache.Open(ctx, dbPath)
 	if err != nil {
 		if errors.Is(err, cache.ErrLockHeld) {
 			fmt.Fprintln(errOut,
@@ -354,11 +357,19 @@ func openCacheWithRebuild(dbPath string, errOut io.Writer) (*cache.Cache, error)
 	}
 	// Integrity check; if the cache is corrupt, rebuild from scratch. JSONL is
 	// the source of truth; SQLite is derived.
-	if c.IntegrityOK() {
+	ok, integrityErr := c.IntegrityOK(ctx)
+	if integrityErr != nil {
+		if errors.Is(integrityErr, context.Canceled) || errors.Is(integrityErr, context.DeadlineExceeded) {
+			c.Close()
+			return nil, integrityErr
+		}
+		// Any other error: treat as corrupt and fall through to rebuild.
+	}
+	if ok {
 		return c, nil
 	}
 	c.Close()
-	c, err = cache.LockedRebuild(dbPath)
+	c, err = cache.LockedRebuild(ctx, dbPath)
 	if err != nil {
 		if errors.Is(err, cache.ErrLockHeld) {
 			fmt.Fprintln(errOut,
@@ -450,9 +461,9 @@ func runQuotaPoller(
 				"cache_age_s", int(time.Since(res.UpdatedAt).Seconds()))
 		}
 		if res.Source == "api" {
-			_ = c.RecordUsageSample(res.Usage, res.UpdatedAt)
+			_ = c.RecordUsageSample(ctx, res.Usage, res.UpdatedAt)
 			if retention > 0 {
-				_, _ = c.PruneUsageSamples(time.Now().Add(-retention))
+				_, _ = c.PruneUsageSamples(ctx, time.Now().Add(-retention))
 			}
 		}
 		p.Send(tui.QuotaMsg{

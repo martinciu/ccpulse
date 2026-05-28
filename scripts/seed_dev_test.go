@@ -48,7 +48,7 @@ func TestSeedDevConfig_CopiesReleasedTOML(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cmd := exec.Command(scriptPath(t), "config")
+	cmd := exec.CommandContext(t.Context(), scriptPath(t), "config")
 	cmd.Env = xdgEnv(dir)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("seed-dev.sh config failed: %v\n%s", err, out)
@@ -86,7 +86,7 @@ func TestSeedDevCache_CopiesReleasedDB(t *testing.T) {
 	// fails on the fake non-database content we wrote. Either way, the
 	// script must produce a byte-identical copy of the source.
 	strippedPath := "/bin:/usr/bin:/usr/sbin:/sbin"
-	cmd := exec.Command(scriptPath(t), "cache")
+	cmd := exec.CommandContext(t.Context(), scriptPath(t), "cache")
 	cmd.Env = xdgEnv(dir, "PATH="+strippedPath)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("seed-dev.sh cache failed: %v\n%s", err, out)
@@ -141,14 +141,14 @@ func TestSeedDevCache_SurvivesMetacharsInCachePath(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := db.Exec(`CREATE TABLE marker (note TEXT); INSERT INTO marker VALUES ('hello-quote');`); err != nil {
+			if _, err := db.ExecContext(t.Context(), `CREATE TABLE marker (note TEXT); INSERT INTO marker VALUES ('hello-quote');`); err != nil {
 				t.Fatal(err)
 			}
 			if err := db.Close(); err != nil {
 				t.Fatal(err)
 			}
 
-			cmd := exec.Command(scriptPath(t), "cache")
+			cmd := exec.CommandContext(t.Context(), scriptPath(t), "cache")
 			cmd.Env = []string{
 				"HOME=" + quoted,
 				"XDG_CONFIG_HOME=" + filepath.Join(quoted, ".config"),
@@ -176,7 +176,7 @@ func TestSeedDevCache_SurvivesMetacharsInCachePath(t *testing.T) {
 			}
 			defer got.Close()
 			var note string
-			if err := got.QueryRow("SELECT note FROM marker").Scan(&note); err != nil {
+			if err := got.QueryRowContext(t.Context(), "SELECT note FROM marker").Scan(&note); err != nil {
 				t.Fatalf("marker row missing from dev db: %v", err)
 			}
 			if note != "hello-quote" {
@@ -189,7 +189,7 @@ func TestSeedDevCache_SurvivesMetacharsInCachePath(t *testing.T) {
 func TestSeedDevConfig_RefusesWhenReleasedAbsent(t *testing.T) {
 	dir := t.TempDir() // no released config exists
 
-	cmd := exec.Command(scriptPath(t), "config")
+	cmd := exec.CommandContext(t.Context(), scriptPath(t), "config")
 	cmd.Env = xdgEnv(dir)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
@@ -199,7 +199,7 @@ func TestSeedDevConfig_RefusesWhenReleasedAbsent(t *testing.T) {
 
 func TestSeedDevUnknownSubcommand(t *testing.T) {
 	dir := t.TempDir()
-	cmd := exec.Command(scriptPath(t), "garbage")
+	cmd := exec.CommandContext(t.Context(), scriptPath(t), "garbage")
 	cmd.Env = xdgEnv(dir)
 	if out, err := cmd.CombinedOutput(); err == nil {
 		t.Fatalf("expected non-zero exit on unknown subcommand; output:\n%s", out)
@@ -230,7 +230,7 @@ func TestResetDev_RemovesDevPathsOnly(t *testing.T) {
 		}
 	}
 
-	cmd := exec.Command(resetScriptPath(t))
+	cmd := exec.CommandContext(t.Context(), resetScriptPath(t))
 	cmd.Env = xdgEnv(dir)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("reset-dev.sh failed: %v\n%s", err, out)

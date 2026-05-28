@@ -1,7 +1,6 @@
 package ingest
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -47,7 +46,7 @@ func BenchmarkBackfillEnumerate1k(b *testing.B) {
 		if err != nil {
 			b.Fatal(err)
 		}
-		if err := ing.Cache.RecordFile(p, info.ModTime().UnixNano(), info.Size(), 1); err != nil {
+		if err := ing.Cache.RecordFile(b.Context(), p, info.ModTime().UnixNano(), info.Size(), 1); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -55,7 +54,7 @@ func BenchmarkBackfillEnumerate1k(b *testing.B) {
 	bf := &Backfill{Ingester: ing}
 
 	for b.Loop() {
-		if err := bf.Run(context.Background(), nil); err != nil {
+		if err := bf.Run(b.Context(), nil); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -67,7 +66,7 @@ func BenchmarkBackfillEnumerate1k(b *testing.B) {
 // in an adapter.
 func newBenchIngester(b *testing.B, projectsRoot, cacheDir string) *Ingester {
 	b.Helper()
-	c, err := cache.Open(filepath.Join(cacheDir, "state.db"))
+	c, err := cache.Open(b.Context(), filepath.Join(cacheDir, "state.db"))
 	if err != nil {
 		b.Fatal(err)
 	}

@@ -119,7 +119,7 @@ func TestProgram_MultiStepInteraction(t *testing.T) {
 func newSeededCache(t *testing.T) *cache.Cache {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "state.db")
-	c, err := cache.Open(path)
+	c, err := cache.Open(t.Context(), path)
 	if err != nil {
 		t.Fatalf("cache.Open: %v", err)
 	}
@@ -151,7 +151,7 @@ func newSeededCache(t *testing.T) *cache.Cache {
 			OutputTokens: 800,
 		},
 	}
-	if err := c.InsertMessages(msgs, tab); err != nil {
+	if err := c.InsertMessages(t.Context(), msgs, tab); err != nil {
 		t.Fatalf("InsertMessages: %v", err)
 	}
 	return c
@@ -335,7 +335,7 @@ func TestZoomCycle_PreservesTimeAnchorInRemaining(t *testing.T) {
 	earlyUsage := anthro.Usage{
 		FiveHour: &anthro.Bucket{Utilization: 5.0, ResetsAt: timePtr(time.Now().UTC())},
 	}
-	if err := m.deps.Cache.RecordUsageSample(earlyUsage, m.lastChartFrom); err != nil {
+	if err := m.deps.Cache.RecordUsageSample(t.Context(), earlyUsage, m.lastChartFrom); err != nil {
 		t.Fatalf("RecordUsageSample early: %v", err)
 	}
 	m.refreshChart()
@@ -404,7 +404,7 @@ func TestRemainingClamp_DoesNotBlockZoomAnchorRestore(t *testing.T) {
 	earlyUsage := anthro.Usage{
 		FiveHour: &anthro.Bucket{Utilization: 5.0, ResetsAt: timePtr(time.Now().UTC())},
 	}
-	if err := m.deps.Cache.RecordUsageSample(earlyUsage, m.lastChartFrom); err != nil {
+	if err := m.deps.Cache.RecordUsageSample(t.Context(), earlyUsage, m.lastChartFrom); err != nil {
 		t.Fatalf("RecordUsageSample early: %v", err)
 	}
 	m.refreshChart()

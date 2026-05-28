@@ -1,6 +1,7 @@
 package ingest
 
 import (
+	"context"
 	"errors"
 	"os"
 
@@ -26,14 +27,14 @@ type Ingester struct {
 // only when InsertMessages itself fails. Stat / open / parse /
 // RecordFile failures are logged to ParseErrorsLog and swallowed
 // so the backfill loop never aborts on a single bad file.
-func (i *Ingester) ProcessFile(path string) (inserted int, err error) {
+func (i *Ingester) ProcessFile(ctx context.Context, path string) (inserted int, err error) {
 	st, err := os.Stat(path)
 	if err != nil {
 		LogFileError(i.ParseErrorsLog, path, err)
 		return 0, nil
 	}
 
-	_, offset, line, found, _ := i.Cache.GetFile(path)
+	_, offset, line, found, _ := i.Cache.GetFile(ctx, path)
 
 	// Skip optimisation: file recorded and size unchanged → nothing new.
 	if found && offset == st.Size() {
@@ -68,13 +69,13 @@ func (i *Ingester) ProcessFile(path string) (inserted int, err error) {
 	}
 
 	if len(msgs) > 0 {
-		if err := i.Cache.InsertMessages(msgs, i.Pricing); err != nil {
+		if err := i.Cache.InsertMessages(ctx, msgs, i.Pricing); err != nil {
 			LogFileError(i.ParseErrorsLog, path, err)
 			return 0, err
 		}
 	}
 
-	if err := i.Cache.RecordFile(path, st.ModTime().UnixNano(), newOff, int64(newLine)); err != nil {
+	if err := i.Cache.RecordFile(ctx, path, st.ModTime().UnixNano(), newOff, int64(newLine)); err != nil {
 		LogFileError(i.ParseErrorsLog, path, err)
 		// Do not return the error: idempotent re-parse will recover
 		// next time. Caller treats this file as successfully ingested.

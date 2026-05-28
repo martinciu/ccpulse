@@ -261,7 +261,7 @@ func TestZoomLevels_ScrollStep(t *testing.T) {
 func seedBarModel(t *testing.T, zoomIdx, nBuckets int, spacing time.Duration) (Model, *cache.Cache) {
 	t.Helper()
 	dir := t.TempDir()
-	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	c, err := cache.Open(t.Context(), filepath.Join(dir, "state.db"))
 	if err != nil {
 		t.Fatalf("cache.Open: %v", err)
 	}
@@ -289,7 +289,7 @@ func seedBarModel(t *testing.T, zoomIdx, nBuckets int, spacing time.Duration) (M
 			InputTokens: 5000,
 		})
 	}
-	if err := c.InsertMessages(msgs, tab); err != nil {
+	if err := c.InsertMessages(t.Context(), msgs, tab); err != nil {
 		t.Fatalf("InsertMessages: %v", err)
 	}
 	m := New(Deps{Cache: c})

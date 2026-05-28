@@ -35,7 +35,7 @@ func (m *Model) loadSeries(zoom ZoomLevel, from, to time.Time) (chartSeries, boo
 }
 
 func (m *Model) loadCostSeries(zoom ZoomLevel, from, to time.Time) (chartSeries, bool) {
-	buckets, err := m.deps.Cache.CostBuckets(zoom.Duration, from, to)
+	buckets, err := m.deps.Cache.CostBuckets(m.ctx, zoom.Duration, from, to)
 	if err != nil || len(buckets) == 0 {
 		return chartSeries{}, false
 	}
@@ -49,8 +49,8 @@ func (m *Model) loadCostSeries(zoom ZoomLevel, from, to time.Time) (chartSeries,
 }
 
 func (m *Model) loadRemainingSeries(from time.Time) (chartSeries, bool) {
-	pts5h, err5h := m.deps.Cache.UtilizationSince("five_hour_pct", from)
-	pts7d, err7d := m.deps.Cache.UtilizationSince("seven_day_pct", from)
+	pts5h, err5h := m.deps.Cache.UtilizationSince(m.ctx, "five_hour_pct", from)
+	pts7d, err7d := m.deps.Cache.UtilizationSince(m.ctx, "seven_day_pct", from)
 	if err5h != nil && err7d != nil {
 		// Both queries failed: nil the cached points (the reset extra this
 		// path owns), then signal failure — the caller runs clearChart.
@@ -83,7 +83,7 @@ func (m *Model) loadRemainingSeries(from time.Time) (chartSeries, bool) {
 }
 
 func (m *Model) loadTokenSeries(zoom ZoomLevel, from, to time.Time) (chartSeries, bool) {
-	buckets, err := m.deps.Cache.IOTokenBuckets(zoom.Duration, from, to)
+	buckets, err := m.deps.Cache.IOTokenBuckets(m.ctx, zoom.Duration, from, to)
 	if err != nil || len(buckets) == 0 {
 		return chartSeries{}, false
 	}
@@ -149,7 +149,7 @@ func (m *Model) refreshChart() {
 	// the live-advance tick is scheduled to fire at).
 	to := nextBoundary(m.now(), zoom)
 
-	earliest, ok, err := m.deps.Cache.EarliestMessageTime()
+	earliest, ok, err := m.deps.Cache.EarliestMessageTime(m.ctx)
 	if err != nil {
 		// Genuine DB read failure: keep the placeholder. (An empty cache —
 		// ok == false, err == nil — falls through to the padded-window path

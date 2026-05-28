@@ -36,8 +36,8 @@ type backfillEntry struct {
 // errors are logged and skipped; the walk never aborts on one bad file. The
 // offsets map is a filter hint only — ProcessFile re-checks offset == size, so
 // an empty map (after a query error) is safe.
-func (b *Backfill) collectStaleFiles() []backfillEntry {
-	offsets, err := b.Ingester.Cache.AllFileOffsets()
+func (b *Backfill) collectStaleFiles(ctx context.Context) []backfillEntry {
+	offsets, err := b.Ingester.Cache.AllFileOffsets(ctx)
 	if err != nil {
 		LogFileError(b.Ingester.ParseErrorsLog, b.Ingester.ProjectsRoot, err)
 		offsets = map[string]int64{}
@@ -99,7 +99,7 @@ func (b *Backfill) Run(ctx context.Context, onProgress func(Progress)) error {
 		return nil
 	}
 
-	entries := b.collectStaleFiles()
+	entries := b.collectStaleFiles(ctx)
 	total := len(entries)
 	if total == 0 {
 		// Nothing to do — don't show the indicator at all.
@@ -119,7 +119,7 @@ func (b *Backfill) Run(ctx context.Context, onProgress func(Progress)) error {
 		if b.onBeforeProcess != nil {
 			b.onBeforeProcess(e.path)
 		}
-		_, _ = b.Ingester.ProcessFile(e.path)
+		_, _ = b.Ingester.ProcessFile(ctx, e.path)
 
 		notify(onProgress, Progress{Done: i + 1, Total: total, Active: true})
 	}

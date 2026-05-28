@@ -34,6 +34,7 @@ linters:
     - bodyclose    # HTTP response bodies must be closed (defer resp.Body.Close())
     - errorlint    # idiomatic error handling (errors.Is/As, %w)
     - misspell     # typos in comments, strings, identifiers
+    - noctx        # DB/HTTP/exec calls must use *Context variants (#355)
     # security (added in #354)
     - gosec        # security: credentials, perms, SQL, paths, subprocess
 

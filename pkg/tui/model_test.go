@@ -38,7 +38,7 @@ func timePtr(t time.Time) *time.Time { return &t }
 func BenchmarkModelView(b *testing.B) {
 	dir := b.TempDir()
 	dbPath := filepath.Join(dir, "state.db")
-	c, err := cache.Open(dbPath)
+	c, err := cache.Open(b.Context(), dbPath)
 	if err != nil {
 		b.Fatalf("cache.Open: %v", err)
 	}
@@ -59,7 +59,7 @@ func BenchmarkModelView(b *testing.B) {
 			InputTokens: int64(1000 + i*100),
 		}
 	}
-	if err := c.InsertMessages(msgs, tab); err != nil {
+	if err := c.InsertMessages(b.Context(), msgs, tab); err != nil {
 		b.Fatalf("InsertMessages: %v", err)
 	}
 
@@ -118,7 +118,7 @@ func TestChartWidth_FloorsAtTen(t *testing.T) {
 func TestRefreshChart_CachesPeak(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "state.db")
-	c, err := cache.Open(dbPath)
+	c, err := cache.Open(t.Context(), dbPath)
 	if err != nil {
 		t.Fatalf("cache.Open: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestRefreshChart_CachesPeak(t *testing.T) {
 		{SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7", Timestamp: now.Add(-30 * time.Minute), InputTokens: 10000, OutputTokens: 5000},
 		{SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7", Timestamp: now.Add(-10 * time.Minute), InputTokens: 30000, OutputTokens: 15000},
 	}
-	if err := c.InsertMessages(msgs, tab); err != nil {
+	if err := c.InsertMessages(t.Context(), msgs, tab); err != nil {
 		t.Fatalf("InsertMessages: %v", err)
 	}
 
@@ -155,7 +155,7 @@ func TestView_YLabelFixedAcrossScroll(t *testing.T) {
 	// label tracks the canvas (#132 bug) instead of the viewport.
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "state.db")
-	c, err := cache.Open(dbPath)
+	c, err := cache.Open(t.Context(), dbPath)
 	if err != nil {
 		t.Fatalf("cache.Open: %v", err)
 	}
@@ -176,7 +176,7 @@ func TestView_YLabelFixedAcrossScroll(t *testing.T) {
 			InputTokens: int64(1000 + i*100),
 		}
 	}
-	if err := c.InsertMessages(msgs, tab); err != nil {
+	if err := c.InsertMessages(t.Context(), msgs, tab); err != nil {
 		t.Fatalf("InsertMessages: %v", err)
 	}
 
@@ -449,7 +449,7 @@ func TestQuitKey(t *testing.T) {
 }
 
 func TestRefreshChart_AllEmptyShowsBaseline(t *testing.T) {
-	c, err := cache.Open(filepath.Join(t.TempDir(), "s.db"))
+	c, err := cache.Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -483,7 +483,7 @@ func TestRefreshChart_AllEmptyShowsBaseline(t *testing.T) {
 // not the "no Claude sessions yet" placeholder (#300).
 func TestRefreshChart_ZeroRows_RendersAxis(t *testing.T) {
 	t.Parallel()
-	c, err := cache.Open(filepath.Join(t.TempDir(), "s.db"))
+	c, err := cache.Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -516,7 +516,7 @@ func TestRefreshChart_ZeroRows_RendersAxis(t *testing.T) {
 // locked (#300).
 func TestRefreshChart_ZeroRows_RemainingMode(t *testing.T) {
 	t.Parallel()
-	c, err := cache.Open(filepath.Join(t.TempDir(), "s.db"))
+	c, err := cache.Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -558,7 +558,7 @@ func TestRefreshChart_ZeroRows_RemainingMode(t *testing.T) {
 // locked scroll, when usage history is sparse (#300).
 func TestRefreshChart_Underfill_RemainingMode(t *testing.T) {
 	t.Parallel()
-	c, err := cache.Open(filepath.Join(t.TempDir(), "s.db"))
+	c, err := cache.Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -573,7 +573,7 @@ func TestRefreshChart_Underfill_RemainingMode(t *testing.T) {
 		{SessionID: "s", ProjectSlug: "p", Model: "claude-opus-4-7", Timestamp: now, InputTokens: 1000},
 		{SessionID: "s", ProjectSlug: "p", Model: "claude-opus-4-7", Timestamp: now.Add(-24 * time.Hour), InputTokens: 2000},
 	}
-	if err := c.InsertMessages(msgs, tab); err != nil {
+	if err := c.InsertMessages(t.Context(), msgs, tab); err != nil {
 		t.Fatal(err)
 	}
 	for i := range 2 {
@@ -581,7 +581,7 @@ func TestRefreshChart_Underfill_RemainingMode(t *testing.T) {
 			FiveHour: &anthro.Bucket{Utilization: float64(20 + i*10), ResetsAt: timePtr(now.Add(time.Hour))},
 			SevenDay: &anthro.Bucket{Utilization: float64(10 + i*5), ResetsAt: timePtr(now.Add(24 * time.Hour))},
 		}
-		if err := c.RecordUsageSample(u, now.Add(time.Duration(-i)*time.Hour)); err != nil {
+		if err := c.RecordUsageSample(t.Context(), u, now.Add(time.Duration(-i)*time.Hour)); err != nil {
 			t.Fatalf("RecordUsageSample: %v", err)
 		}
 	}
@@ -938,7 +938,7 @@ func TestRefreshChart_FromEarliest(t *testing.T) {
 	// We verify this by inserting a single message ~3 hours ago and
 	// confirming IOTokenBuckets returns at least the matching number of
 	// 15m buckets at zoom index 0 (15m zoom, the default).
-	c, err := cache.Open(filepath.Join(t.TempDir(), "s.db"))
+	c, err := cache.Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -947,7 +947,7 @@ func TestRefreshChart_FromEarliest(t *testing.T) {
 	tab, _ := pricing.Load()
 	now := time.Now()
 	earliest := now.Add(-3 * time.Hour)
-	if err := c.InsertMessages([]parse.Message{{
+	if err := c.InsertMessages(t.Context(), []parse.Message{{
 		SessionID:   "s1",
 		ProjectSlug: "slug-a",
 		Model:       "claude-opus-4-7",
@@ -962,7 +962,7 @@ func TestRefreshChart_FromEarliest(t *testing.T) {
 	from := cache.BucketAlign(earliest, zoom.Duration)
 	wantMin := int(to.Sub(from)/zoom.Duration) - 1 // tolerate ±1 bucket on boundary
 
-	buckets, err := c.IOTokenBuckets(zoom.Duration, from, to)
+	buckets, err := c.IOTokenBuckets(t.Context(), zoom.Duration, from, to)
 	if err != nil {
 		t.Fatalf("IOTokenBuckets: %v", err)
 	}
@@ -1341,7 +1341,7 @@ func TestBeginUnitAnimation(t *testing.T) {
 	// (tokens) peak so refreshChart already wrote the new viewport content.
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "state.db")
-	c, err := cache.Open(dbPath)
+	c, err := cache.Open(t.Context(), dbPath)
 	if err != nil {
 		t.Fatalf("cache.Open: %v", err)
 	}
@@ -1362,7 +1362,7 @@ func TestBeginUnitAnimation(t *testing.T) {
 			Timestamp: now.Add(-10 * time.Minute), InputTokens: 30000, OutputTokens: 15000,
 		},
 	}
-	if err := c.InsertMessages(msgs, tab); err != nil {
+	if err := c.InsertMessages(t.Context(), msgs, tab); err != nil {
 		t.Fatalf("InsertMessages: %v", err)
 	}
 
@@ -1582,7 +1582,7 @@ func TestUnitToggle_StaleSpringTickFromPriorAnimation_Dropped(t *testing.T) {
 		u := anthro.Usage{
 			FiveHour: &anthro.Bucket{Utilization: 20.0 + float64(i)*5.0, ResetsAt: &fiveResets},
 		}
-		if err := m.deps.Cache.RecordUsageSample(u, when); err != nil {
+		if err := m.deps.Cache.RecordUsageSample(t.Context(), u, when); err != nil {
 			t.Fatalf("RecordUsageSample: %v", err)
 		}
 	}
@@ -1860,7 +1860,7 @@ func TestRefreshDuringAnimationSnapsAndContinues(t *testing.T) {
 	// new bucket count.
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "state.db")
-	c, err := cache.Open(dbPath)
+	c, err := cache.Open(t.Context(), dbPath)
 	if err != nil {
 		t.Fatalf("cache.Open: %v", err)
 	}
@@ -1878,7 +1878,7 @@ func TestRefreshDuringAnimationSnapsAndContinues(t *testing.T) {
 			Timestamp: now.Add(-2 * time.Hour), InputTokens: 10000, OutputTokens: 5000,
 		},
 	}
-	if err := c.InsertMessages(msgs, tab); err != nil {
+	if err := c.InsertMessages(t.Context(), msgs, tab); err != nil {
 		t.Fatalf("InsertMessages: %v", err)
 	}
 
@@ -1909,7 +1909,7 @@ func TestRefreshDuringAnimationSnapsAndContinues(t *testing.T) {
 			Timestamp: now.Add(-48 * time.Hour), InputTokens: 50000, OutputTokens: 25000,
 		},
 	}
-	if err := c.InsertMessages(newMsgs, tab); err != nil {
+	if err := c.InsertMessages(t.Context(), newMsgs, tab); err != nil {
 		t.Fatalf("InsertMessages (new): %v", err)
 	}
 
@@ -1935,7 +1935,7 @@ func TestRefreshDoesNotAnimate(t *testing.T) {
 	// every time a new message arrives.
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "state.db")
-	c, err := cache.Open(dbPath)
+	c, err := cache.Open(t.Context(), dbPath)
 	if err != nil {
 		t.Fatalf("cache.Open: %v", err)
 	}
@@ -1951,7 +1951,7 @@ func TestRefreshDoesNotAnimate(t *testing.T) {
 			Timestamp: time.Now().UTC().Add(-time.Hour), InputTokens: 1000,
 		},
 	}
-	if err := c.InsertMessages(msgs, tab); err != nil {
+	if err := c.InsertMessages(t.Context(), msgs, tab); err != nil {
 		t.Fatalf("InsertMessages: %v", err)
 	}
 
@@ -1980,7 +1980,7 @@ func TestRefreshChart_CostMode(t *testing.T) {
 	// the cost values into m.lastValues, with m.peak set to max(cost).
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "state.db")
-	c, err := cache.Open(dbPath)
+	c, err := cache.Open(t.Context(), dbPath)
 	if err != nil {
 		t.Fatalf("cache.Open: %v", err)
 	}
@@ -2001,7 +2001,7 @@ func TestRefreshChart_CostMode(t *testing.T) {
 			Timestamp: now.Add(-10 * time.Minute), InputTokens: 30000, OutputTokens: 15000,
 		},
 	}
-	if err := c.InsertMessages(msgs, tab); err != nil {
+	if err := c.InsertMessages(t.Context(), msgs, tab); err != nil {
 		t.Fatalf("InsertMessages: %v", err)
 	}
 
@@ -2107,7 +2107,7 @@ func TestScrollHelpers_UpdateShadowOffset(t *testing.T) {
 // Caller is responsible for cache.Close via the returned cleanup.
 func seedScrollTestModel(t *testing.T, count int) (*Model, func()) {
 	t.Helper()
-	c, err := cache.Open(filepath.Join(t.TempDir(), "s.db"))
+	c, err := cache.Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2127,7 +2127,7 @@ func seedScrollTestModel(t *testing.T, count int) (*Model, func()) {
 			InputTokens: int64(1000 + i*10),
 		}
 	}
-	if err := c.InsertMessages(msgs, tab); err != nil {
+	if err := c.InsertMessages(t.Context(), msgs, tab); err != nil {
 		c.Close()
 		t.Fatal(err)
 	}
@@ -2136,7 +2136,7 @@ func seedScrollTestModel(t *testing.T, count int) (*Model, func()) {
 			FiveHour: &anthro.Bucket{Utilization: float64(10 + i*5), ResetsAt: timePtr(now.Add(time.Hour))},
 			SevenDay: &anthro.Bucket{Utilization: float64(5 + i*2), ResetsAt: timePtr(now.Add(24 * time.Hour))},
 		}
-		if err := c.RecordUsageSample(u, now.Add(time.Duration(-i)*5*time.Minute)); err != nil {
+		if err := c.RecordUsageSample(t.Context(), u, now.Add(time.Duration(-i)*5*time.Minute)); err != nil {
 			c.Close()
 			t.Fatalf("RecordUsageSample: %v", err)
 		}
@@ -2473,7 +2473,7 @@ func TestView_CostModeRendersDollarPrefix(t *testing.T) {
 	// prefix and no unit-level test would catch it.
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "state.db")
-	c, err := cache.Open(dbPath)
+	c, err := cache.Open(t.Context(), dbPath)
 	if err != nil {
 		t.Fatalf("cache.Open: %v", err)
 	}
@@ -2494,7 +2494,7 @@ func TestView_CostModeRendersDollarPrefix(t *testing.T) {
 			Timestamp: now.Add(-10 * time.Minute), InputTokens: 30000, OutputTokens: 15000,
 		},
 	}
-	if err := c.InsertMessages(msgs, tab); err != nil {
+	if err := c.InsertMessages(t.Context(), msgs, tab); err != nil {
 		t.Fatalf("InsertMessages: %v", err)
 	}
 
@@ -2574,7 +2574,7 @@ func TestUnitToggle_SpringStartsAtScrolledOffset(t *testing.T) {
 // 12 the old floor-division produced maxX-1 at certain terminal widths.
 func TestUnitToggle_24hPinnedScrollRestoration(t *testing.T) {
 	dir := t.TempDir()
-	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	c, err := cache.Open(t.Context(), filepath.Join(dir, "state.db"))
 	if err != nil {
 		t.Fatalf("cache.Open: %v", err)
 	}
@@ -2598,7 +2598,7 @@ func TestUnitToggle_24hPinnedScrollRestoration(t *testing.T) {
 			InputTokens: int64(1000 + i*100),
 		}
 	}
-	if err := c.InsertMessages(msgs, tab); err != nil {
+	if err := c.InsertMessages(t.Context(), msgs, tab); err != nil {
 		t.Fatalf("InsertMessages: %v", err)
 	}
 
@@ -2694,7 +2694,7 @@ func TestUnitToggle_24hPinnedScrollRestoration(t *testing.T) {
 // early return in beginUnitAnimation).
 func TestUnitToggle_24hCycle(t *testing.T) {
 	dir := t.TempDir()
-	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	c, err := cache.Open(t.Context(), filepath.Join(dir, "state.db"))
 	if err != nil {
 		t.Fatalf("cache.Open: %v", err)
 	}
@@ -2717,7 +2717,7 @@ func TestUnitToggle_24hCycle(t *testing.T) {
 			InputTokens: int64(1000 + i*100),
 		}
 	}
-	if err := c.InsertMessages(msgs, tab); err != nil {
+	if err := c.InsertMessages(t.Context(), msgs, tab); err != nil {
 		t.Fatalf("InsertMessages: %v", err)
 	}
 	for i := range 5 {
@@ -2725,7 +2725,7 @@ func TestUnitToggle_24hCycle(t *testing.T) {
 			FiveHour: &anthro.Bucket{Utilization: float64(10 + i*5), ResetsAt: timePtr(now.Add(time.Hour))},
 			SevenDay: &anthro.Bucket{Utilization: float64(5 + i*2), ResetsAt: timePtr(now.Add(24 * time.Hour))},
 		}
-		if err := c.RecordUsageSample(u, now.Add(time.Duration(-i)*time.Hour)); err != nil {
+		if err := c.RecordUsageSample(t.Context(), u, now.Add(time.Duration(-i)*time.Hour)); err != nil {
 			t.Fatalf("RecordUsageSample: %v", err)
 		}
 	}
@@ -2917,7 +2917,7 @@ func TestLabelFade_SyncedWithMaxRatio(t *testing.T) {
 func seedTwoPhaseAnimationModel(t *testing.T) Model {
 	t.Helper()
 	dir := t.TempDir()
-	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	c, err := cache.Open(t.Context(), filepath.Join(dir, "state.db"))
 	if err != nil {
 		t.Fatalf("cache.Open: %v", err)
 	}
@@ -2938,7 +2938,7 @@ func seedTwoPhaseAnimationModel(t *testing.T) Model {
 			Timestamp: now.Add(-10 * time.Minute), InputTokens: 30000, OutputTokens: 15000,
 		},
 	}
-	if err := c.InsertMessages(msgs, tab); err != nil {
+	if err := c.InsertMessages(t.Context(), msgs, tab); err != nil {
 		t.Fatalf("InsertMessages: %v", err)
 	}
 
@@ -3093,7 +3093,7 @@ func TestBeginUnitAnimation_EmptyCache(t *testing.T) {
 	// guard inside beginUnitAnimation must then set springActive=false
 	// AND springPhase=springIdle without allocating any spring slices.
 	dir := t.TempDir()
-	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	c, err := cache.Open(t.Context(), filepath.Join(dir, "state.db"))
 	if err != nil {
 		t.Fatalf("cache.Open: %v", err)
 	}
@@ -3124,7 +3124,7 @@ func TestBeginUnitAnimation_EmptyCache(t *testing.T) {
 
 func TestUnitKey_ReduceMotion_EmptyCache(t *testing.T) {
 	dir := t.TempDir()
-	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	c, err := cache.Open(t.Context(), filepath.Join(dir, "state.db"))
 	if err != nil {
 		t.Fatalf("cache.Open: %v", err)
 	}
@@ -3392,7 +3392,7 @@ func TestRenderSpringFrame_MatchesPreSpringBoundary(t *testing.T) {
 
 func TestRefreshChart_RemainingMode(t *testing.T) {
 	dir := t.TempDir()
-	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	c, err := cache.Open(t.Context(), filepath.Join(dir, "state.db"))
 	if err != nil {
 		t.Fatalf("cache.Open: %v", err)
 	}
@@ -3404,7 +3404,7 @@ func TestRefreshChart_RemainingMode(t *testing.T) {
 			FiveHour: &anthro.Bucket{Utilization: float64(i * 10), ResetsAt: timePtr(now.Add(time.Hour))},
 			SevenDay: &anthro.Bucket{Utilization: float64(i * 5), ResetsAt: timePtr(now.Add(24 * time.Hour))},
 		}
-		if err := c.RecordUsageSample(u, now.Add(time.Duration(-i)*3*time.Minute)); err != nil {
+		if err := c.RecordUsageSample(t.Context(), u, now.Add(time.Duration(-i)*3*time.Minute)); err != nil {
 			t.Fatalf("RecordUsageSample: %v", err)
 		}
 	}
@@ -3414,7 +3414,7 @@ func TestRefreshChart_RemainingMode(t *testing.T) {
 		SessionID: "s1", ProjectSlug: "p", Model: "claude-sonnet-4-6",
 		Timestamp: now.Add(-30 * time.Minute), InputTokens: 100,
 	}}
-	if err := c.InsertMessages(msgs, tab); err != nil {
+	if err := c.InsertMessages(t.Context(), msgs, tab); err != nil {
 		t.Fatalf("InsertMessages: %v", err)
 	}
 
@@ -3439,7 +3439,7 @@ func TestRefreshChart_RemainingMode(t *testing.T) {
 
 func TestBeginUnitAnimation_BarToLine(t *testing.T) {
 	dir := t.TempDir()
-	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	c, err := cache.Open(t.Context(), filepath.Join(dir, "state.db"))
 	if err != nil {
 		t.Fatalf("cache.Open: %v", err)
 	}
@@ -3451,7 +3451,7 @@ func TestBeginUnitAnimation_BarToLine(t *testing.T) {
 		SessionID: "s1", ProjectSlug: "p", Model: "claude-sonnet-4-6",
 		Timestamp: now.Add(-30 * time.Minute), InputTokens: 5000,
 	}}
-	if err := c.InsertMessages(msgs, tab); err != nil {
+	if err := c.InsertMessages(t.Context(), msgs, tab); err != nil {
 		t.Fatalf("InsertMessages: %v", err)
 	}
 
@@ -3459,7 +3459,7 @@ func TestBeginUnitAnimation_BarToLine(t *testing.T) {
 		FiveHour: &anthro.Bucket{Utilization: 50.0, ResetsAt: timePtr(now.Add(time.Hour))},
 		SevenDay: &anthro.Bucket{Utilization: 25.0, ResetsAt: timePtr(now.Add(24 * time.Hour))},
 	}
-	if err := c.RecordUsageSample(u, now); err != nil {
+	if err := c.RecordUsageSample(t.Context(), u, now); err != nil {
 		t.Fatalf("RecordUsageSample: %v", err)
 	}
 
@@ -3491,7 +3491,7 @@ func TestBeginUnitAnimation_BarToLine(t *testing.T) {
 
 func TestBeginUnitAnimation_LineToBar(t *testing.T) {
 	dir := t.TempDir()
-	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	c, err := cache.Open(t.Context(), filepath.Join(dir, "state.db"))
 	if err != nil {
 		t.Fatalf("cache.Open: %v", err)
 	}
@@ -3503,14 +3503,14 @@ func TestBeginUnitAnimation_LineToBar(t *testing.T) {
 		SessionID: "s1", ProjectSlug: "p", Model: "claude-sonnet-4-6",
 		Timestamp: now.Add(-30 * time.Minute), InputTokens: 5000, OutputTokens: 2000,
 	}}
-	if err := c.InsertMessages(msgs, tab); err != nil {
+	if err := c.InsertMessages(t.Context(), msgs, tab); err != nil {
 		t.Fatalf("InsertMessages: %v", err)
 	}
 
 	u := anthro.Usage{
 		FiveHour: &anthro.Bucket{Utilization: 50.0, ResetsAt: timePtr(now.Add(time.Hour))},
 	}
-	if err := c.RecordUsageSample(u, now); err != nil {
+	if err := c.RecordUsageSample(t.Context(), u, now); err != nil {
 		t.Fatalf("RecordUsageSample: %v", err)
 	}
 
@@ -3542,7 +3542,7 @@ func TestBeginUnitAnimation_LineToBar(t *testing.T) {
 
 func TestView_RemainingModeShowsYTicks(t *testing.T) {
 	dir := t.TempDir()
-	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	c, err := cache.Open(t.Context(), filepath.Join(dir, "state.db"))
 	if err != nil {
 		t.Fatalf("cache.Open: %v", err)
 	}
@@ -3554,7 +3554,7 @@ func TestView_RemainingModeShowsYTicks(t *testing.T) {
 		SessionID: "s1", ProjectSlug: "p", Model: "claude-sonnet-4-6",
 		Timestamp: now.Add(-30 * time.Minute), InputTokens: 5000,
 	}}
-	if err := c.InsertMessages(msgs, tab); err != nil {
+	if err := c.InsertMessages(t.Context(), msgs, tab); err != nil {
 		t.Fatalf("InsertMessages: %v", err)
 	}
 
@@ -3562,7 +3562,7 @@ func TestView_RemainingModeShowsYTicks(t *testing.T) {
 		FiveHour: &anthro.Bucket{Utilization: 40.0, ResetsAt: timePtr(now.Add(time.Hour))},
 		SevenDay: &anthro.Bucket{Utilization: 20.0, ResetsAt: timePtr(now.Add(24 * time.Hour))},
 	}
-	if err := c.RecordUsageSample(u, now); err != nil {
+	if err := c.RecordUsageSample(t.Context(), u, now); err != nil {
 		t.Fatalf("RecordUsageSample: %v", err)
 	}
 
@@ -3604,7 +3604,7 @@ func TestView_RemainingModeShowsYTicks(t *testing.T) {
 // time values inside renderSpringFrame, which calls time.Now() internally.
 func TestRenderSpringFrame_LineBranchUsesOldSnapshot(t *testing.T) {
 	dir := t.TempDir()
-	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	c, err := cache.Open(t.Context(), filepath.Join(dir, "state.db"))
 	if err != nil {
 		t.Fatalf("cache.Open: %v", err)
 	}
@@ -3618,7 +3618,7 @@ func TestRenderSpringFrame_LineBranchUsesOldSnapshot(t *testing.T) {
 		SessionID: "s1", ProjectSlug: "p", Model: "claude-sonnet-4-6",
 		Timestamp: now.Add(-30 * time.Minute), InputTokens: 5000,
 	}}
-	if err := c.InsertMessages(msgs, tab); err != nil {
+	if err := c.InsertMessages(t.Context(), msgs, tab); err != nil {
 		t.Fatalf("InsertMessages: %v", err)
 	}
 
@@ -3708,7 +3708,7 @@ func TestRenderSpringFrame_LineBranchUsesOldSnapshot(t *testing.T) {
 
 func TestFullUnitCycle_CostTokensRemaining(t *testing.T) {
 	dir := t.TempDir()
-	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	c, err := cache.Open(t.Context(), filepath.Join(dir, "state.db"))
 	if err != nil {
 		t.Fatalf("cache.Open: %v", err)
 	}
@@ -3720,14 +3720,14 @@ func TestFullUnitCycle_CostTokensRemaining(t *testing.T) {
 		SessionID: "s1", ProjectSlug: "p", Model: "claude-sonnet-4-6",
 		Timestamp: now.Add(-30 * time.Minute), InputTokens: 5000,
 	}}
-	if err := c.InsertMessages(msgs, tab); err != nil {
+	if err := c.InsertMessages(t.Context(), msgs, tab); err != nil {
 		t.Fatalf("InsertMessages: %v", err)
 	}
 	u := anthro.Usage{
 		FiveHour: &anthro.Bucket{Utilization: 40.0, ResetsAt: timePtr(now.Add(time.Hour))},
 		SevenDay: &anthro.Bucket{Utilization: 20.0, ResetsAt: timePtr(now.Add(24 * time.Hour))},
 	}
-	if err := c.RecordUsageSample(u, now); err != nil {
+	if err := c.RecordUsageSample(t.Context(), u, now); err != nil {
 		t.Fatalf("RecordUsageSample: %v", err)
 	}
 
@@ -3794,7 +3794,7 @@ func TestRefreshChart_EmptyCacheRecoveryPinsRight(t *testing.T) {
 	seeded := m.deps.Cache
 
 	// Swap in an empty cache to trigger the EarliestMessageTime no-data branch.
-	empty, err := cache.Open(filepath.Join(t.TempDir(), "empty.db"))
+	empty, err := cache.Open(t.Context(), filepath.Join(t.TempDir(), "empty.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3863,7 +3863,7 @@ func TestNew_IntroPendingDefaults(t *testing.T) {
 func seedIntroModel(t *testing.T, reduceMotion bool) Model {
 	t.Helper()
 	dir := t.TempDir()
-	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	c, err := cache.Open(t.Context(), filepath.Join(dir, "state.db"))
 	if err != nil {
 		t.Fatalf("cache.Open: %v", err)
 	}
@@ -3884,7 +3884,7 @@ func seedIntroModel(t *testing.T, reduceMotion bool) Model {
 			Timestamp: now.Add(-10 * time.Minute), InputTokens: 30000, OutputTokens: 15000,
 		},
 	}
-	if err := c.InsertMessages(msgs, tab); err != nil {
+	if err := c.InsertMessages(t.Context(), msgs, tab); err != nil {
 		t.Fatalf("InsertMessages: %v", err)
 	}
 
@@ -4201,7 +4201,7 @@ func TestIntro_EmptyCacheDeferred(t *testing.T) {
 	// the intro (lastValues stays nil); introPending stays true. The
 	// intro fires on the first RefreshMsg that produces non-empty data.
 	dir := t.TempDir()
-	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	c, err := cache.Open(t.Context(), filepath.Join(dir, "state.db"))
 	if err != nil {
 		t.Fatalf("cache.Open: %v", err)
 	}
@@ -4232,7 +4232,7 @@ func TestIntro_EmptyCacheDeferred(t *testing.T) {
 
 	// Populate the cache and deliver a RefreshMsg.
 	now := time.Now().UTC().Truncate(15 * time.Minute)
-	if err := c.InsertMessages([]parse.Message{
+	if err := c.InsertMessages(t.Context(), []parse.Message{
 		{
 			SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7",
 			Timestamp: now.Add(-30 * time.Minute), InputTokens: 10000, OutputTokens: 5000,
@@ -4591,7 +4591,7 @@ func TestIntro_QuotaBars_DeferredArmOnEmptyCache(t *testing.T) {
 	// too (it shares introPending). The first non-empty RefreshMsg
 	// arms both surfaces.
 	dir := t.TempDir()
-	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	c, err := cache.Open(t.Context(), filepath.Join(dir, "state.db"))
 	if err != nil {
 		t.Fatalf("cache.Open: %v", err)
 	}
@@ -4617,7 +4617,7 @@ func TestIntro_QuotaBars_DeferredArmOnEmptyCache(t *testing.T) {
 		t.Fatalf("pricing.Load: %v", err)
 	}
 	now := time.Now().UTC().Truncate(15 * time.Minute)
-	if err := c.InsertMessages([]parse.Message{
+	if err := c.InsertMessages(t.Context(), []parse.Message{
 		{
 			SessionID: "s1", ProjectSlug: "p", Model: "claude-opus-4-7",
 			Timestamp: now.Add(-10 * time.Minute), InputTokens: 30000, OutputTokens: 15000,
@@ -4932,7 +4932,7 @@ func TestIntro_QuotaBars_QuotaLoadedAtArm_ClearsPending(t *testing.T) {
 func TestInitialPaint_PeakFromRightEdgeVisible(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	c, err := cache.Open(t.Context(), filepath.Join(dir, "state.db"))
 	if err != nil {
 		t.Fatalf("cache.Open: %v", err)
 	}
@@ -4969,7 +4969,7 @@ func TestInitialPaint_PeakFromRightEdgeVisible(t *testing.T) {
 			InputTokens: 1000,
 		})
 	}
-	if err := c.InsertMessages(msgs, tab); err != nil {
+	if err := c.InsertMessages(t.Context(), msgs, tab); err != nil {
 		t.Fatalf("InsertMessages: %v", err)
 	}
 
@@ -5002,7 +5002,7 @@ func TestInitialPaint_PeakFromRightEdgeVisible(t *testing.T) {
 func seedOffscreenOutlier(t *testing.T) *Model {
 	t.Helper()
 	dir := t.TempDir()
-	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	c, err := cache.Open(t.Context(), filepath.Join(dir, "state.db"))
 	if err != nil {
 		t.Fatalf("cache.Open: %v", err)
 	}
@@ -5029,7 +5029,7 @@ func seedOffscreenOutlier(t *testing.T) *Model {
 			InputTokens: 1000,
 		})
 	}
-	if err := c.InsertMessages(msgs, tab); err != nil {
+	if err := c.InsertMessages(t.Context(), msgs, tab); err != nil {
 		t.Fatalf("InsertMessages: %v", err)
 	}
 
@@ -5116,7 +5116,7 @@ func TestUnitAnimation_OffscreenOutlierTargetsClamped(t *testing.T) {
 func TestRefresh_PeakFromVisibleSlice(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	c, err := cache.Open(t.Context(), filepath.Join(dir, "state.db"))
 	if err != nil {
 		t.Fatalf("cache.Open: %v", err)
 	}
@@ -5149,7 +5149,7 @@ func TestRefresh_PeakFromVisibleSlice(t *testing.T) {
 			InputTokens: 1000,
 		})
 	}
-	if err := c.InsertMessages(msgs, tab); err != nil {
+	if err := c.InsertMessages(t.Context(), msgs, tab); err != nil {
 		t.Fatalf("InsertMessages: %v", err)
 	}
 
@@ -5190,7 +5190,7 @@ func TestRefresh_PeakFromVisibleSlice(t *testing.T) {
 func TestRenderWindow_ComputesFromVisibleSlice(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	c, err := cache.Open(t.Context(), filepath.Join(dir, "state.db"))
 	if err != nil {
 		t.Fatalf("cache.Open: %v", err)
 	}
@@ -5221,7 +5221,7 @@ func TestRenderWindow_ComputesFromVisibleSlice(t *testing.T) {
 			InputTokens: 1000,
 		})
 	}
-	if err := c.InsertMessages(msgs, tab); err != nil {
+	if err := c.InsertMessages(t.Context(), msgs, tab); err != nil {
 		t.Fatalf("InsertMessages: %v", err)
 	}
 
@@ -5259,7 +5259,7 @@ func TestRenderWindow_ComputesFromVisibleSlice(t *testing.T) {
 func TestScrollDuringSpring_PeakUnchanged(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	c, err := cache.Open(t.Context(), filepath.Join(dir, "state.db"))
 	if err != nil {
 		t.Fatalf("cache.Open: %v", err)
 	}
@@ -5290,7 +5290,7 @@ func TestScrollDuringSpring_PeakUnchanged(t *testing.T) {
 			InputTokens: 1000,
 		})
 	}
-	if err := c.InsertMessages(msgs, tab); err != nil {
+	if err := c.InsertMessages(t.Context(), msgs, tab); err != nil {
 		t.Fatalf("InsertMessages: %v", err)
 	}
 
@@ -5330,7 +5330,7 @@ func TestScrollDuringSpring_PeakUnchanged(t *testing.T) {
 // default.
 func TestScroll_RebuildUsesWindowedWidth(t *testing.T) {
 	dir := t.TempDir()
-	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	c, err := cache.Open(t.Context(), filepath.Join(dir, "state.db"))
 	if err != nil {
 		t.Fatalf("cache.Open: %v", err)
 	}
@@ -5352,7 +5352,7 @@ func TestScroll_RebuildUsesWindowedWidth(t *testing.T) {
 			InputTokens: int64(1000 + i),
 		})
 	}
-	if err := c.InsertMessages(msgs, tab); err != nil {
+	if err := c.InsertMessages(t.Context(), msgs, tab); err != nil {
 		t.Fatalf("InsertMessages: %v", err)
 	}
 
@@ -5409,7 +5409,7 @@ func TestScroll_RebuildUsesWindowedWidth(t *testing.T) {
 func TestRefresh_RestoresRightEdgeAfterNarrowContent(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	c, err := cache.Open(filepath.Join(dir, "state.db"))
+	c, err := cache.Open(t.Context(), filepath.Join(dir, "state.db"))
 	if err != nil {
 		t.Fatalf("cache.Open: %v", err)
 	}
@@ -5431,7 +5431,7 @@ func TestRefresh_RestoresRightEdgeAfterNarrowContent(t *testing.T) {
 			InputTokens: int64(1000 + i),
 		})
 	}
-	if err := c.InsertMessages(msgs, tab); err != nil {
+	if err := c.InsertMessages(t.Context(), msgs, tab); err != nil {
 		t.Fatalf("InsertMessages: %v", err)
 	}
 

@@ -55,7 +55,7 @@ func runIndex(cmd *cobra.Command, rebuild bool) error {
 	}
 	dbPath := filepath.Join(cacheDir, "state.db")
 
-	c, err := cache.LockedRebuild(dbPath)
+	c, err := cache.LockedRebuild(ctx, dbPath)
 	if err != nil {
 		if errors.Is(err, cache.ErrLockHeld) {
 			fmt.Fprintln(cmd.ErrOrStderr(),
@@ -89,7 +89,7 @@ func runIndex(cmd *cobra.Command, rebuild bool) error {
 	}
 
 	var n int
-	if err := c.DB().QueryRow(`SELECT count(*) FROM messages`).Scan(&n); err != nil {
+	if err := c.DB().QueryRowContext(ctx, `SELECT count(*) FROM messages`).Scan(&n); err != nil {
 		return err
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "rebuilt: %d messages\n", n)

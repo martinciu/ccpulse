@@ -31,7 +31,7 @@ func newRecostCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("load pricing: %w", err)
 			}
-			ca, err := cache.Open(filepath.Join(cacheDir, "state.db"))
+			ca, err := cache.Open(cmd.Context(), filepath.Join(cacheDir, "state.db"))
 			if err != nil {
 				if errors.Is(err, cache.ErrLockHeld) {
 					fmt.Fprintln(cmd.ErrOrStderr(),

@@ -36,7 +36,7 @@ func TestBackfillRun_WalksFilesNewestFirstWithProgress(t *testing.T) {
 	bf := &Backfill{Ingester: ing}
 
 	var calls []Progress
-	if err := bf.Run(context.Background(), func(p Progress) {
+	if err := bf.Run(t.Context(), func(p Progress) {
 		calls = append(calls, p)
 	}); err != nil {
 		t.Fatal(err)
@@ -109,7 +109,7 @@ func TestBackfillRun_NewestMtimeFirst(t *testing.T) {
 		// hook for tests:
 		onBeforeProcess: func(path string) { seen = append(seen, filepath.Base(path)) },
 	}
-	if err := bf.Run(context.Background(), func(Progress) {}); err != nil {
+	if err := bf.Run(t.Context(), func(Progress) {}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -153,7 +153,7 @@ func TestBackfillRun_EmptyTree(t *testing.T) {
 	bf := &Backfill{Ingester: ing}
 
 	var calls []Progress
-	if err := bf.Run(context.Background(), func(p Progress) { calls = append(calls, p) }); err != nil {
+	if err := bf.Run(t.Context(), func(p Progress) { calls = append(calls, p) }); err != nil {
 		t.Fatal(err)
 	}
 
@@ -167,13 +167,13 @@ func TestBackfillRun_NoIndicatorWhenAllFilesCached(t *testing.T) {
 	// is at-EOF in the cache, so backfill should fire zero progress
 	// callbacks and the indicator should never appear.
 	ing, _, path := newIngesterFixture(t)
-	if _, err := ing.ProcessFile(path); err != nil {
+	if _, err := ing.ProcessFile(t.Context(), path); err != nil {
 		t.Fatal(err)
 	}
 
 	bf := &Backfill{Ingester: ing}
 	var calls []Progress
-	if err := bf.Run(context.Background(), func(p Progress) { calls = append(calls, p) }); err != nil {
+	if err := bf.Run(t.Context(), func(p Progress) { calls = append(calls, p) }); err != nil {
 		t.Fatal(err)
 	}
 
@@ -193,7 +193,7 @@ func TestBackfillRun_MissingRoot(t *testing.T) {
 	bf := &Backfill{Ingester: ing}
 
 	var calls []Progress
-	if err := bf.Run(context.Background(), func(p Progress) { calls = append(calls, p) }); err != nil {
+	if err := bf.Run(t.Context(), func(p Progress) { calls = append(calls, p) }); err != nil {
 		t.Fatal(err)
 	}
 
@@ -215,11 +215,11 @@ func TestBackfillRun_ConcurrentWatcherSameFile(t *testing.T) {
 			if p == path {
 				// Simulate a watcher event for the same file landing
 				// just before backfill processes it.
-				_, _ = ing.ProcessFile(p)
+				_, _ = ing.ProcessFile(t.Context(), p)
 			}
 		},
 	}
-	if err := bf.Run(context.Background(), func(Progress) {}); err != nil {
+	if err := bf.Run(t.Context(), func(Progress) {}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -286,7 +286,7 @@ func TestBackfillRun_BatchLoadsCursorsAndFiltersAllCaughtUp(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := ing.Cache.RecordFile(p, info.ModTime().UnixNano(), info.Size(), 1); err != nil {
+		if err := ing.Cache.RecordFile(t.Context(), p, info.ModTime().UnixNano(), info.Size(), 1); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -296,7 +296,7 @@ func TestBackfillRun_BatchLoadsCursorsAndFiltersAllCaughtUp(t *testing.T) {
 		Ingester:        ing,
 		onBeforeProcess: func(path string) { processed = append(processed, path) },
 	}
-	if err := bf.Run(context.Background(), func(Progress) {}); err != nil {
+	if err := bf.Run(t.Context(), func(Progress) {}); err != nil {
 		t.Fatal(err)
 	}
 
