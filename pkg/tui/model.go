@@ -574,12 +574,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		// so dismissing help returns the user to the same scroll/zoom
 		// state they left.
 	case key.Matches(msg, m.keys.Zoom):
-		m.zoomIdx = (m.zoomIdx + 1) % len(ZoomLevels)
-		m.refreshChart()
-		// Re-arm the live-advance tick on the new zoom's cadence; the
-		// bumped gen drops the previous cadence's in-flight tick (#311).
-		m.nowGen++
-		return m.scheduleNowTick()
+		return m.handleZoomKey()
 	case key.Matches(msg, m.keys.Unit):
 		return m.handleUnitKey()
 	case key.Matches(msg, m.keys.ScrollLeft):
