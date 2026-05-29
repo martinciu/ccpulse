@@ -74,7 +74,7 @@ func init() {
 var schemaSQL string
 
 // SchemaVersion is the expected on-disk schema version; a mismatch triggers an auto-rebuild.
-const SchemaVersion = "6"
+const SchemaVersion = "7"
 
 // normalizeResetsAtSQL flips legacy `0001-01-01T00:00:00Z` sentinels
 // (written before issue #189 landed) to SQL NULL across every
@@ -460,7 +460,14 @@ func (c *Cache) UtilizationSince(ctx context.Context, column string, since time.
 	return out, nil
 }
 
-// InsertMessages upserts parsed messages into the messages table, computing and storing per-message USD cost estimates.
+// InsertMessages upserts parsed messages into the messages table, collapsing
+// the multiple content-block lines of one logical assistant turn into a single
+// row keyed by (session_id, message_id). Lines without a message.id fall back
+// to a synthetic "synthetic:<ts>" key, preserving the legacy (session_id, ts)
+// identity. The "synthetic:" prefix is RESERVED: real message.id values must
+// not begin with it. On conflict it keeps the MAX of every cumulative usage
+// column (the per-line usage repeats the message total, so MAX == the final
+// total and is robust to streaming partial lines) and the MIN of ts (turn start).
 func (c *Cache) InsertMessages(ctx context.Context, msgs []parse.Message, hist pricing.History) error {
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -469,13 +476,21 @@ func (c *Cache) InsertMessages(ctx context.Context, msgs []parse.Message, hist p
 	defer func() { _ = tx.Rollback() }()
 
 	stmt, err := tx.PrepareContext(ctx, `
-INSERT OR IGNORE INTO messages
-(session_id, project_slug, ts, role, model,
+INSERT INTO messages
+(session_id, message_id, project_slug, ts, role, model,
  input_tokens, output_tokens, cache_read_tokens,
  cache_write_5m_tokens, cache_write_1h_tokens,
  cost_usd_estimate, pricing_version, pricing_unknown,
  is_subagent, parent_session_id, cwd, git_branch)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+ON CONFLICT(session_id, message_id) DO UPDATE SET
+  ts                    = min(excluded.ts, ts),
+  input_tokens          = max(excluded.input_tokens, input_tokens),
+  output_tokens         = max(excluded.output_tokens, output_tokens),
+  cache_read_tokens     = max(excluded.cache_read_tokens, cache_read_tokens),
+  cache_write_5m_tokens = max(excluded.cache_write_5m_tokens, cache_write_5m_tokens),
+  cache_write_1h_tokens = max(excluded.cache_write_1h_tokens, cache_write_1h_tokens),
+  cost_usd_estimate     = max(excluded.cost_usd_estimate, cost_usd_estimate)`)
 	if err != nil {
 		return fmt.Errorf("insert messages: prepare: %w", err)
 	}
@@ -491,8 +506,13 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 		if m.IsSubagent {
 			sub = 1
 		}
+		tsStr := m.Timestamp.UTC().Format(tsFormat)
+		msgID := m.MessageID
+		if msgID == "" {
+			msgID = "synthetic:" + tsStr
+		}
 		if _, err := stmt.ExecContext(ctx,
-			m.SessionID, m.ProjectSlug, m.Timestamp.UTC().Format(tsFormat),
+			m.SessionID, msgID, m.ProjectSlug, tsStr,
 			m.Role, m.Model,
 			m.InputTokens, m.OutputTokens, m.CacheReadTokens,
 			m.CacheWrite5mTokens, m.CacheWrite1hTokens,

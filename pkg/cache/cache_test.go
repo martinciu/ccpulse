@@ -1341,15 +1341,16 @@ func TestDayStartLocal(t *testing.T) {
 // care about token sums per ts.
 func insertMessage(t *testing.T, c *Cache, ts time.Time, tokens int64) {
 	t.Helper()
+	tsStr := ts.UTC().Format("2006-01-02T15:04:05.000Z07:00")
 	_, err := c.DB().ExecContext(t.Context(), `
 INSERT INTO messages
-(session_id, project_slug, ts, role, model,
+(session_id, message_id, project_slug, ts, role, model,
  input_tokens, output_tokens, cache_read_tokens,
  cache_write_5m_tokens, cache_write_1h_tokens,
  cost_usd_estimate, pricing_version, pricing_unknown,
  is_subagent, parent_session_id, cwd, git_branch)
-VALUES('s','p',?,'assistant','m',0,?,0,0,0,0,'v1',0,0,'','','')`,
-		ts.UTC().Format("2006-01-02T15:04:05.000Z07:00"), tokens)
+VALUES('s',?,'p',?,'assistant','m',0,?,0,0,0,0,'v1',0,0,'','','')`,
+		"synthetic:"+tsStr, tsStr, tokens)
 	if err != nil {
 		t.Fatalf("insert: %v", err)
 	}
@@ -1542,15 +1543,16 @@ func TestIOTokenBuckets_24h_HalfHourOffsetTz(t *testing.T) {
 // insertMessageCost is a cost-only variant of insertMessage.
 func insertMessageCost(t *testing.T, c *Cache, ts time.Time, cost float64) {
 	t.Helper()
+	tsStr := ts.UTC().Format("2006-01-02T15:04:05.000Z07:00")
 	_, err := c.DB().ExecContext(t.Context(), `
 INSERT INTO messages
-(session_id, project_slug, ts, role, model,
+(session_id, message_id, project_slug, ts, role, model,
  input_tokens, output_tokens, cache_read_tokens,
  cache_write_5m_tokens, cache_write_1h_tokens,
  cost_usd_estimate, pricing_version, pricing_unknown,
  is_subagent, parent_session_id, cwd, git_branch)
-VALUES('s','p',?,'assistant','m',0,0,0,0,0,?,'v1',0,0,'','','')`,
-		ts.UTC().Format("2006-01-02T15:04:05.000Z07:00"), cost)
+VALUES('s',?,'p',?,'assistant','m',0,0,0,0,0,?,'v1',0,0,'','','')`,
+		"synthetic:"+tsStr, tsStr, cost)
 	if err != nil {
 		t.Fatalf("insert: %v", err)
 	}
@@ -2047,5 +2049,255 @@ func TestUtilizationSince_InvalidColumn(t *testing.T) {
 	_, err = c.UtilizationSince(t.Context(), "DROP TABLE messages", time.Now())
 	if err == nil {
 		t.Fatal("expected error for invalid column, got nil")
+	}
+}
+
+func TestInsertMessages_DedupOnMessageID(t *testing.T) {
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	tab, _ := pricing.Load()
+	base := time.Date(2026, 5, 28, 15, 53, 58, 0, time.UTC)
+	// Use a non-monotonic ramp so that min/first/last each yield a value
+	// other than 64000, while only max yields exactly 64000.
+	// Pattern: ramp linearly from 1 up to a peak of 64000 at the midpoint
+	// (i==87), then back down to 1. This places the maximum at neither the
+	// first nor the last element.
+	outputRamp := func(i int) int64 {
+		half := 175 / 2 // 87
+		if i <= half {
+			return int64(1 + (64000-1)*i/half)
+		}
+		return int64(1 + (64000-1)*(175-1-i)/half)
+	}
+	var msgs []parse.Message
+	for i := range 175 {
+		msgs = append(msgs, parse.Message{
+			SessionID:    "sess-1",
+			MessageID:    "msg_01EaHHYYfAp2yyszT7wAq64w",
+			ProjectSlug:  "slug-a",
+			Model:        "claude-opus-4-8",
+			Timestamp:    base.Add(time.Duration(i) * time.Second),
+			InputTokens:  200,
+			OutputTokens: outputRamp(i),
+		})
+	}
+	if err := c.InsertMessages(t.Context(), msgs, tab); err != nil {
+		t.Fatal(err)
+	}
+
+	var n int
+	var out int64
+	if err := c.DB().QueryRowContext(t.Context(),
+		`SELECT count(*), COALESCE(MAX(output_tokens),0) FROM messages`).Scan(&n, &out); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("row count = %d, want 1 (175 content-block lines, one message)", n)
+	}
+	if out != 64000 {
+		t.Errorf("output_tokens = %d, want 64000 (MAX, not min/first/last)", out)
+	}
+}
+
+func TestInsertMessages_CrossBatchUpsertMAX(t *testing.T) {
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	tab, _ := pricing.Load()
+	ts := time.Date(2026, 5, 28, 15, 53, 58, 0, time.UTC)
+	// Batch A: an early streaming partial line (lower cumulative usage across
+	// all token columns). Strictly lower than batchB in every maxed column.
+	batchA := []parse.Message{{
+		SessionID:          "sess-1",
+		MessageID:          "msg_x",
+		ProjectSlug:        "slug-a",
+		Model:              "claude-opus-4-8",
+		Timestamp:          ts,
+		InputTokens:        100,
+		OutputTokens:       5000,
+		CacheReadTokens:    50,
+		CacheWrite5mTokens: 10,
+		CacheWrite1hTokens: 5,
+	}}
+	// Batch B: the final line of the same message (full cumulative usage).
+	// Strictly higher than batchA in every maxed column so that only MAX
+	// semantics (not min/first/last) keeps batchB's values.
+	batchB := []parse.Message{{
+		SessionID:          "sess-1",
+		MessageID:          "msg_x",
+		ProjectSlug:        "slug-a",
+		Model:              "claude-opus-4-8",
+		Timestamp:          ts.Add(time.Minute),
+		InputTokens:        200,
+		OutputTokens:       64000,
+		CacheReadTokens:    300,
+		CacheWrite5mTokens: 150,
+		CacheWrite1hTokens: 75,
+	}}
+	if err := c.InsertMessages(t.Context(), batchA, tab); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.InsertMessages(t.Context(), batchB, tab); err != nil {
+		t.Fatal(err)
+	}
+
+	var n int
+	var gotInput, gotOutput, gotCacheRead, gotCacheWrite5m, gotCacheWrite1h int64
+	var gotCost float64
+	if err := c.DB().QueryRowContext(t.Context(), `
+		SELECT count(*),
+		       input_tokens, output_tokens,
+		       cache_read_tokens, cache_write_5m_tokens, cache_write_1h_tokens,
+		       cost_usd_estimate
+		FROM messages`).Scan(
+		&n,
+		&gotInput, &gotOutput,
+		&gotCacheRead, &gotCacheWrite5m, &gotCacheWrite1h,
+		&gotCost,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("row count = %d, want 1 (same message across two batches)", n)
+	}
+	if gotOutput != 64000 {
+		t.Errorf("output_tokens = %d, want 64000 (MAX across batches)", gotOutput)
+	}
+	if gotInput != 200 {
+		t.Errorf("input_tokens = %d, want 200 (MAX across batches)", gotInput)
+	}
+	if gotCacheRead != 300 {
+		t.Errorf("cache_read_tokens = %d, want 300 (MAX across batches)", gotCacheRead)
+	}
+	if gotCacheWrite5m != 150 {
+		t.Errorf("cache_write_5m_tokens = %d, want 150 (MAX across batches)", gotCacheWrite5m)
+	}
+	if gotCacheWrite1h != 75 {
+		t.Errorf("cache_write_1h_tokens = %d, want 75 (MAX across batches)", gotCacheWrite1h)
+	}
+	// cost_usd_estimate must be batchB's cost (batchB has strictly higher token
+	// counts so its cost exceeds batchA's cost; the UPSERT keeps the max).
+	wantCost, _, _ := tab.CostFor(batchB[0])
+	if !approxEqual(gotCost, wantCost, 1e-9) {
+		t.Errorf("cost_usd_estimate = %v, want %v (MAX cost matches batchB)", gotCost, wantCost)
+	}
+}
+
+func TestInsertMessages_TSCollapseMIN(t *testing.T) {
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	tab, _ := pricing.Load()
+	first := time.Date(2026, 5, 28, 15, 53, 58, 0, time.UTC)
+	msgs := []parse.Message{
+		{SessionID: "sess-1", MessageID: "msg_x", ProjectSlug: "slug-a", Model: "claude-opus-4-8", Timestamp: first.Add(2 * time.Minute), OutputTokens: 64000},
+		{SessionID: "sess-1", MessageID: "msg_x", ProjectSlug: "slug-a", Model: "claude-opus-4-8", Timestamp: first, OutputTokens: 64000},
+		{SessionID: "sess-1", MessageID: "msg_x", ProjectSlug: "slug-a", Model: "claude-opus-4-8", Timestamp: first.Add(5 * time.Minute), OutputTokens: 64000},
+	}
+	if err := c.InsertMessages(t.Context(), msgs, tab); err != nil {
+		t.Fatal(err)
+	}
+
+	var ts string
+	if err := c.DB().QueryRowContext(t.Context(), `SELECT ts FROM messages`).Scan(&ts); err != nil {
+		t.Fatal(err)
+	}
+	want := first.Format(tsFormat)
+	if ts != want {
+		t.Errorf("ts = %q, want %q (earliest content-block line)", ts, want)
+	}
+}
+
+func TestInsertMessages_FallbackSyntheticID(t *testing.T) {
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	tab, _ := pricing.Load()
+	ts := time.Date(2026, 5, 28, 15, 53, 58, 0, time.UTC)
+	// Two distinct-ts messages with NO MessageID → two synthetic IDs → two rows.
+	distinct := []parse.Message{
+		{SessionID: "sess-1", ProjectSlug: "slug-a", Model: "claude-opus-4-8", Timestamp: ts, OutputTokens: 10},
+		{SessionID: "sess-1", ProjectSlug: "slug-a", Model: "claude-opus-4-8", Timestamp: ts.Add(time.Minute), OutputTokens: 20},
+	}
+	if err := c.InsertMessages(t.Context(), distinct, tab); err != nil {
+		t.Fatal(err)
+	}
+	// Same-ts no-MessageID message → collides with the first synthetic ID → still 2 rows.
+	same := []parse.Message{
+		{SessionID: "sess-1", ProjectSlug: "slug-a", Model: "claude-opus-4-8", Timestamp: ts, OutputTokens: 99},
+	}
+	if err := c.InsertMessages(t.Context(), same, tab); err != nil {
+		t.Fatal(err)
+	}
+
+	var n int
+	if err := c.DB().QueryRowContext(t.Context(), `SELECT count(*) FROM messages`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("row count = %d, want 2 (synthetic fallback keeps (session,ts) semantics)", n)
+	}
+	// The collided synthetic row (same session + ts) must have kept the MAX of
+	// the two competing output_tokens values (99 over the original 10).
+	tsStr := ts.UTC().Format(tsFormat)
+	var gotOut int64
+	if err := c.DB().QueryRowContext(t.Context(),
+		`SELECT output_tokens FROM messages WHERE ts = ?`, tsStr).Scan(&gotOut); err != nil {
+		t.Fatal(err)
+	}
+	if gotOut != 99 {
+		t.Errorf("collided row output_tokens = %d, want 99 (MAX of 10 and 99)", gotOut)
+	}
+}
+
+func TestInsertMessages_RegressionMultilineMessage(t *testing.T) {
+	f, err := os.Open("testdata/multiline_message.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	msgs, err := parse.Parse(f, "slug-a")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(msgs) != 4 {
+		t.Fatalf("parsed %d messages, want 4", len(msgs))
+	}
+
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	tab, _ := pricing.Load()
+	if err := c.InsertMessages(t.Context(), msgs, tab); err != nil {
+		t.Fatal(err)
+	}
+
+	var n int
+	var totalOut int64
+	if err := c.DB().QueryRowContext(t.Context(),
+		`SELECT count(*), COALESCE(SUM(output_tokens),0) FROM messages`).Scan(&n, &totalOut); err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("row count = %d, want 2 (msg_a collapsed from 3 lines, msg_b distinct)", n)
+	}
+	// msg_a contributes 64000 once (not 3x192000), msg_b contributes 1000.
+	if totalOut != 65000 {
+		t.Errorf("SUM(output_tokens) = %d, want 65000 (64000 + 1000, deduped)", totalOut)
 	}
 }
