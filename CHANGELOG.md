@@ -3,6 +3,20 @@
 All notable changes to ccpulse are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.3.0] — 2026-05-29
+
+### Added
+- Pricing snapshot for 2026-05-28 with Claude Opus 4.8 rates ($5 / $25 per
+  Mtok in/out); Opus 4.8 usage on or after that date is now costed correctly
+  (#367)
+
+### Internal
+- Wrap the previously-dropped `tx.Commit` error in `cache.InsertMessages` (#365)
+- Thread `context.Context` through `pkg/cache` and enable the `noctx` linter
+  (#355)
+- Enable `gosec` with tuned excludes (#354)
+- Enable the `bodyclose`, `misspell`, and `errorlint` linters (#353)
+
 ## [0.2.0] — 2026-05-26
 
 ### Added
