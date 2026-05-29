@@ -15,6 +15,19 @@ import (
 
 const metaKeyRecostFingerprint = "last_recost_history_fingerprint"
 
+// recostAlgoTag versions the recost RESOLUTION ALGORITHM. It is prefixed onto the
+// fingerprint so an algorithm change (not just a new snapshot) forces a one-time
+// recost on the next launch after upgrade. Bump when CostFor's resolution logic
+// changes. "ff1" = fall-forward (issue #368).
+const recostAlgoTag = "ff1"
+
+// recostFingerprint is the value stored in meta to detect when a recost is
+// needed. It combines the algorithm tag with the embedded snapshot version set,
+// so either a new snapshot or an algorithm bump triggers AutoRecost.
+func recostFingerprint(hist pricing.History) string {
+	return recostAlgoTag + ":" + strings.Join(hist.Versions(), ",")
+}
+
 // RecostStats summarizes a Recost run.
 type RecostStats struct {
 	Scanned int
@@ -74,7 +87,7 @@ func (c *Cache) Recost(ctx context.Context, hist pricing.History, opts RecostOpt
 	}
 
 	if !opts.DryRun {
-		fp := strings.Join(hist.Versions(), ",")
+		fp := recostFingerprint(hist)
 		if _, err := tx.ExecContext(ctx,
 			`INSERT OR REPLACE INTO meta(key,value) VALUES(?,?)`,
 			metaKeyRecostFingerprint, fp); err != nil {
@@ -96,7 +109,7 @@ func (c *Cache) Recost(ctx context.Context, hist pricing.History, opts RecostOpt
 // It performs a fingerprint early-out: if the meta table already holds a
 // fingerprint matching the current hist, Recost is skipped entirely (silent).
 func (c *Cache) AutoRecost(ctx context.Context, hist pricing.History) {
-	fp := strings.Join(hist.Versions(), ",")
+	fp := recostFingerprint(hist)
 	var stored string
 	_ = c.db.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = ?`, metaKeyRecostFingerprint).Scan(&stored)
 	if stored == fp {

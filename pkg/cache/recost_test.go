@@ -322,7 +322,7 @@ func TestAutoRecost_SkipsWhenFingerprintMatches(t *testing.T) {
 		t.Fatalf("seed stale version: %v", err)
 	}
 	// Pre-write the matching fingerprint into meta so AutoRecost short-circuits.
-	fp := strings.Join(hist.Versions(), ",")
+	fp := "ff1:" + strings.Join(hist.Versions(), ",")
 	if _, err := c.DB().Exec(`INSERT OR REPLACE INTO meta(key,value) VALUES('last_recost_history_fingerprint',?)`, fp); err != nil {
 		t.Fatalf("seed fingerprint: %v", err)
 	}
@@ -336,6 +336,46 @@ func TestAutoRecost_SkipsWhenFingerprintMatches(t *testing.T) {
 	}
 	if ver != "1999-01-01" {
 		t.Errorf("pricing_version = %q after AutoRecost with matching fingerprint, want 1999-01-01 (skipped)", ver)
+	}
+}
+
+func TestAutoRecost_RunsAfterAlgorithmBump(t *testing.T) {
+	c := mustOpenTempCache(t)
+	hist := twoVersionHistory(t)
+	m := parse.Message{
+		SessionID: "s1", ProjectSlug: "p", Role: "assistant",
+		Model: "claude-haiku-4-5", InputTokens: 1_000_000,
+		Timestamp: time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC),
+	}
+	seedRow(t, c, hist, m)
+	// Orphaned pre-#368 state + an OLD-FORMAT fingerprint (version list, no algo
+	// tag) as a pre-#368 build would have written it.
+	if _, err := c.DB().Exec(
+		`UPDATE messages SET pricing_unknown = 1, cost_usd_estimate = 0, pricing_version = '2026-05-09' WHERE session_id = ?`,
+		m.SessionID); err != nil {
+		t.Fatalf("seed orphaned state: %v", err)
+	}
+	oldFP := strings.Join(hist.Versions(), ",") // no "ff1:" prefix
+	if _, err := c.DB().Exec(
+		`INSERT OR REPLACE INTO meta(key,value) VALUES('last_recost_history_fingerprint',?)`, oldFP); err != nil {
+		t.Fatalf("seed old fingerprint: %v", err)
+	}
+
+	c.AutoRecost(t.Context(), hist) // new tag != stored ⇒ must NOT short-circuit
+
+	var unk int
+	if err := c.DB().QueryRow(`SELECT pricing_unknown FROM messages WHERE session_id = ?`, m.SessionID).Scan(&unk); err != nil {
+		t.Fatalf("read row: %v", err)
+	}
+	if unk != 0 {
+		t.Errorf("pricing_unknown = %d after AutoRecost, want 0 (algorithm bump should trigger rescue)", unk)
+	}
+	var fp string
+	if err := c.DB().QueryRow(`SELECT value FROM meta WHERE key = 'last_recost_history_fingerprint'`).Scan(&fp); err != nil {
+		t.Fatalf("read fingerprint: %v", err)
+	}
+	if want := "ff1:" + strings.Join(hist.Versions(), ","); fp != want {
+		t.Errorf("fingerprint = %q, want %q", fp, want)
 	}
 }
 
@@ -356,7 +396,7 @@ func TestRecost_WritesFingerprintOnCommit(t *testing.T) {
 	if err := c.DB().QueryRow(`SELECT value FROM meta WHERE key = 'last_recost_history_fingerprint'`).Scan(&got); err != nil {
 		t.Fatalf("read fingerprint: %v", err)
 	}
-	want := strings.Join(hist.Versions(), ",")
+	want := "ff1:" + strings.Join(hist.Versions(), ",")
 	if got != want {
 		t.Errorf("fingerprint = %q, want %q", got, want)
 	}
