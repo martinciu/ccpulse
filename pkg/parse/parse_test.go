@@ -166,3 +166,27 @@ func TestParseReportsMalformed(t *testing.T) {
 		t.Errorf("err line = %d, want 4", errs[0].Line)
 	}
 }
+
+func TestParse_CapturesMessageID(t *testing.T) {
+	f, err := os.Open("testdata/with_message_id.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	msgs, err := Parse(f, "test-slug")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 4 {
+		t.Fatalf("got %d messages, want 4", len(msgs))
+	}
+	for i := range 3 {
+		if msgs[i].MessageID != "msg_01EaHHYYfAp2yyszT7wAq64w" {
+			t.Errorf("msgs[%d].MessageID = %q, want msg_01EaHHYYfAp2yyszT7wAq64w", i, msgs[i].MessageID)
+		}
+	}
+	if msgs[3].MessageID != "" {
+		t.Errorf("msgs[3].MessageID = %q, want empty (line has no message.id)", msgs[3].MessageID)
+	}
+}

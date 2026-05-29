@@ -13,6 +13,7 @@ import (
 // Message is a single assistant turn decoded from a Claude Code JSONL transcript line.
 type Message struct {
 	SessionID          string
+	MessageID          string
 	ProjectSlug        string
 	Timestamp          time.Time
 	Role               string
@@ -35,6 +36,7 @@ type rawLine struct {
 	Cwd       string    `json:"cwd"`
 	GitBranch string    `json:"gitBranch"`
 	Message   struct {
+		ID    string `json:"id"`
 		Role  string `json:"role"`
 		Model string `json:"model"`
 		Usage struct {
@@ -108,6 +110,7 @@ func ParseWithErrors(r io.Reader, projectSlug string) ([]Message, []ParseError, 
 func toMessage(raw rawLine, slug string) Message {
 	return Message{
 		SessionID:          raw.SessionID,
+		MessageID:          raw.Message.ID,
 		ProjectSlug:        slug,
 		Timestamp:          raw.Timestamp,
 		Role:               raw.Message.Role,
