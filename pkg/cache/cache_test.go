@@ -1341,15 +1341,16 @@ func TestDayStartLocal(t *testing.T) {
 // care about token sums per ts.
 func insertMessage(t *testing.T, c *Cache, ts time.Time, tokens int64) {
 	t.Helper()
+	tsStr := ts.UTC().Format("2006-01-02T15:04:05.000Z07:00")
 	_, err := c.DB().ExecContext(t.Context(), `
 INSERT INTO messages
-(session_id, project_slug, ts, role, model,
+(session_id, message_id, project_slug, ts, role, model,
  input_tokens, output_tokens, cache_read_tokens,
  cache_write_5m_tokens, cache_write_1h_tokens,
  cost_usd_estimate, pricing_version, pricing_unknown,
  is_subagent, parent_session_id, cwd, git_branch)
-VALUES('s','p',?,'assistant','m',0,?,0,0,0,0,'v1',0,0,'','','')`,
-		ts.UTC().Format("2006-01-02T15:04:05.000Z07:00"), tokens)
+VALUES('s',?,'p',?,'assistant','m',0,?,0,0,0,0,'v1',0,0,'','','')`,
+		"synthetic:"+tsStr, tsStr, tokens)
 	if err != nil {
 		t.Fatalf("insert: %v", err)
 	}
@@ -1542,15 +1543,16 @@ func TestIOTokenBuckets_24h_HalfHourOffsetTz(t *testing.T) {
 // insertMessageCost is a cost-only variant of insertMessage.
 func insertMessageCost(t *testing.T, c *Cache, ts time.Time, cost float64) {
 	t.Helper()
+	tsStr := ts.UTC().Format("2006-01-02T15:04:05.000Z07:00")
 	_, err := c.DB().ExecContext(t.Context(), `
 INSERT INTO messages
-(session_id, project_slug, ts, role, model,
+(session_id, message_id, project_slug, ts, role, model,
  input_tokens, output_tokens, cache_read_tokens,
  cache_write_5m_tokens, cache_write_1h_tokens,
  cost_usd_estimate, pricing_version, pricing_unknown,
  is_subagent, parent_session_id, cwd, git_branch)
-VALUES('s','p',?,'assistant','m',0,0,0,0,0,?,'v1',0,0,'','','')`,
-		ts.UTC().Format("2006-01-02T15:04:05.000Z07:00"), cost)
+VALUES('s',?,'p',?,'assistant','m',0,0,0,0,0,?,'v1',0,0,'','','')`,
+		"synthetic:"+tsStr, tsStr, cost)
 	if err != nil {
 		t.Fatalf("insert: %v", err)
 	}
@@ -2047,5 +2049,146 @@ func TestUtilizationSince_InvalidColumn(t *testing.T) {
 	_, err = c.UtilizationSince(t.Context(), "DROP TABLE messages", time.Now())
 	if err == nil {
 		t.Fatal("expected error for invalid column, got nil")
+	}
+}
+
+func TestInsertMessages_DedupOnMessageID(t *testing.T) {
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	tab, _ := pricing.Load()
+	base := time.Date(2026, 5, 28, 15, 53, 58, 0, time.UTC)
+	var msgs []parse.Message
+	for i := range 175 {
+		msgs = append(msgs, parse.Message{
+			SessionID:    "sess-1",
+			MessageID:    "msg_01EaHHYYfAp2yyszT7wAq64w",
+			ProjectSlug:  "slug-a",
+			Model:        "claude-opus-4-8",
+			Timestamp:    base.Add(time.Duration(i) * time.Second),
+			InputTokens:  200,
+			OutputTokens: 64000,
+		})
+	}
+	if err := c.InsertMessages(t.Context(), msgs, tab); err != nil {
+		t.Fatal(err)
+	}
+
+	var n int
+	var out int64
+	if err := c.DB().QueryRowContext(t.Context(),
+		`SELECT count(*), COALESCE(MAX(output_tokens),0) FROM messages`).Scan(&n, &out); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("row count = %d, want 1 (175 content-block lines, one message)", n)
+	}
+	if out != 64000 {
+		t.Errorf("output_tokens = %d, want 64000 (cumulative, not 175x)", out)
+	}
+}
+
+func TestInsertMessages_CrossBatchUpsertMAX(t *testing.T) {
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	tab, _ := pricing.Load()
+	ts := time.Date(2026, 5, 28, 15, 53, 58, 0, time.UTC)
+	// Batch A: an early streaming partial line (lower cumulative usage).
+	batchA := []parse.Message{{
+		SessionID: "sess-1", MessageID: "msg_x", ProjectSlug: "slug-a",
+		Model: "claude-opus-4-8", Timestamp: ts, InputTokens: 200, OutputTokens: 5000,
+	}}
+	// Batch B: the final line of the same message (full cumulative usage).
+	batchB := []parse.Message{{
+		SessionID: "sess-1", MessageID: "msg_x", ProjectSlug: "slug-a",
+		Model: "claude-opus-4-8", Timestamp: ts.Add(time.Minute), InputTokens: 200, OutputTokens: 64000,
+	}}
+	if err := c.InsertMessages(t.Context(), batchA, tab); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.InsertMessages(t.Context(), batchB, tab); err != nil {
+		t.Fatal(err)
+	}
+
+	var n int
+	var out int64
+	if err := c.DB().QueryRowContext(t.Context(),
+		`SELECT count(*), COALESCE(MAX(output_tokens),0) FROM messages`).Scan(&n, &out); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("row count = %d, want 1 (same message across two batches)", n)
+	}
+	if out != 64000 {
+		t.Errorf("output_tokens = %d, want 64000 (MAX across batches)", out)
+	}
+}
+
+func TestInsertMessages_TSCollapseMIN(t *testing.T) {
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	tab, _ := pricing.Load()
+	first := time.Date(2026, 5, 28, 15, 53, 58, 0, time.UTC)
+	msgs := []parse.Message{
+		{SessionID: "sess-1", MessageID: "msg_x", ProjectSlug: "slug-a", Model: "claude-opus-4-8", Timestamp: first.Add(2 * time.Minute), OutputTokens: 64000},
+		{SessionID: "sess-1", MessageID: "msg_x", ProjectSlug: "slug-a", Model: "claude-opus-4-8", Timestamp: first, OutputTokens: 64000},
+		{SessionID: "sess-1", MessageID: "msg_x", ProjectSlug: "slug-a", Model: "claude-opus-4-8", Timestamp: first.Add(5 * time.Minute), OutputTokens: 64000},
+	}
+	if err := c.InsertMessages(t.Context(), msgs, tab); err != nil {
+		t.Fatal(err)
+	}
+
+	var ts string
+	if err := c.DB().QueryRowContext(t.Context(), `SELECT ts FROM messages`).Scan(&ts); err != nil {
+		t.Fatal(err)
+	}
+	want := first.Format(tsFormat)
+	if ts != want {
+		t.Errorf("ts = %q, want %q (earliest content-block line)", ts, want)
+	}
+}
+
+func TestInsertMessages_FallbackSyntheticID(t *testing.T) {
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	tab, _ := pricing.Load()
+	ts := time.Date(2026, 5, 28, 15, 53, 58, 0, time.UTC)
+	// Two distinct-ts messages with NO MessageID → two synthetic IDs → two rows.
+	distinct := []parse.Message{
+		{SessionID: "sess-1", ProjectSlug: "slug-a", Model: "claude-opus-4-8", Timestamp: ts, OutputTokens: 10},
+		{SessionID: "sess-1", ProjectSlug: "slug-a", Model: "claude-opus-4-8", Timestamp: ts.Add(time.Minute), OutputTokens: 20},
+	}
+	if err := c.InsertMessages(t.Context(), distinct, tab); err != nil {
+		t.Fatal(err)
+	}
+	// Same-ts no-MessageID message → collides with the first synthetic ID → still 2 rows.
+	same := []parse.Message{
+		{SessionID: "sess-1", ProjectSlug: "slug-a", Model: "claude-opus-4-8", Timestamp: ts, OutputTokens: 99},
+	}
+	if err := c.InsertMessages(t.Context(), same, tab); err != nil {
+		t.Fatal(err)
+	}
+
+	var n int
+	if err := c.DB().QueryRowContext(t.Context(), `SELECT count(*) FROM messages`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("row count = %d, want 2 (synthetic fallback keeps (session,ts) semantics)", n)
 	}
 }
