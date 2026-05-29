@@ -189,7 +189,7 @@ func TestHistory_TableAt(t *testing.T) {
 		{"exact earliest", mustTime("2026-05-09T00:00:00Z"), "2026-05-09"},
 		{"between versions -> preceding", mustTime("2026-05-09T23:59:59Z"), "2026-05-09"},
 		{"exact later version", mustTime("2026-05-10T00:00:00Z"), "2026-05-10"},
-		{"after latest -> latest", mustTime("2099-01-01T00:00:00Z"), "2026-05-10"},
+		{"after latest -> latest", mustTime("2099-01-01T00:00:00Z"), "2026-05-28"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
