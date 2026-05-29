@@ -155,11 +155,13 @@ func snapshotTable(ctx context.Context, db *sql.DB, table, where string) preserv
 	}
 	rows, err := db.QueryContext(ctx, q)
 	if err != nil {
+		slog.Warn("cache.snapshotTableFailed", "table", table, "err", err)
 		return preservedTable{}
 	}
 	defer rows.Close()
 	cols, err := rows.Columns()
 	if err != nil {
+		slog.Warn("cache.snapshotTableFailed", "table", table, "err", err)
 		return preservedTable{}
 	}
 	var out [][]any
@@ -170,11 +172,13 @@ func snapshotTable(ctx context.Context, db *sql.DB, table, where string) preserv
 			ptrs[i] = &vals[i]
 		}
 		if err := rows.Scan(ptrs...); err != nil {
+			slog.Warn("cache.snapshotTableFailed", "table", table, "err", err)
 			return preservedTable{}
 		}
 		out = append(out, vals)
 	}
 	if err := rows.Err(); err != nil {
+		slog.Warn("cache.snapshotTableFailed", "table", table, "err", err)
 		return preservedTable{}
 	}
 	return preservedTable{cols: cols, rows: out}
