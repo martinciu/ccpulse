@@ -177,3 +177,70 @@ func TestZoomKey_NoData_Snaps(t *testing.T) {
 		t.Errorf("no-data 'z': cmd=nil, want now-tick re-arm")
 	}
 }
+
+func TestZoomSpring_SettlesAndRestoresSteadyState(t *testing.T) {
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	m, c := seedRemainingModelWithSamples(t, 60, now)
+	defer c.Close()
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
+	m = updated.(Model)
+	if !m.springActive || m.springKind != springKindZoom {
+		t.Fatalf("arm sanity: springActive=%v springKind=%d", m.springActive, m.springKind)
+	}
+	nowGenAfterArm := m.nowGen
+
+	// Drive constructed springTickMsgs (the codebase pattern — never invoke the
+	// tick Cmd, which would real-sleep 16.7ms/frame). 600 ticks (10s @ 60fps)
+	// is generous; the critically-damped spring to r=1 settles well within that.
+	const maxTicks = 600
+	var lastCmd tea.Cmd
+	for i := 0; i < maxTicks && m.springActive; i++ {
+		updated, lastCmd = m.Update(springTickMsg{gen: m.springGen})
+		m = updated.(Model)
+	}
+	if m.springActive {
+		t.Fatalf("zoom squeeze did not settle within %d ticks", maxTicks)
+	}
+	if m.springKind != springKindNone {
+		t.Errorf("after settle: springKind=%d, want springKindNone(%d)", m.springKind, springKindNone)
+	}
+	// Settle re-arms the live-advance now-tick: cmd is non-nil and nowGen is
+	// bumped. We do NOT invoke lastCmd — scheduleNowTick fires at the next
+	// bucket boundary (up to 1h away), so invoking it would block that long.
+	if lastCmd == nil {
+		t.Errorf("settle tick: cmd=nil, want now-tick re-arm")
+	}
+	if m.nowGen == nowGenAfterArm {
+		t.Errorf("settle: nowGen=%d unchanged, want bumped (now-tick re-armed)", m.nowGen)
+	}
+	// refreshChart ran at settle → steady-state full-canvas restored.
+	if m.lastCanvasW == 0 {
+		t.Errorf("after settle: lastCanvasW=0, want steady-state canvas restored")
+	}
+}
+
+func TestZoomSpring_WindowLerpsTowardNew(t *testing.T) {
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	m, c := seedRemainingModelWithSamples(t, 60, now)
+	defer c.Close()
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
+	m = updated.(Model)
+
+	snap := m.zoomSnap
+	// One tick: r moves off 0, so the lerped viewFrom must sit between the old
+	// and new window starts (when the window narrows; for a widening window the
+	// direction inverts, so the bounds check is gated on oFrom.Before(nFrom)).
+	updated, _ = m.Update(springTickMsg{gen: m.springGen})
+	m = updated.(Model)
+
+	if m.zoomSpringR <= 0 {
+		t.Errorf("after one tick: zoomSpringR=%v, want > 0", m.zoomSpringR)
+	}
+	gotFrom := lerpTime(snap.oFrom, snap.nFrom, m.zoomSpringR)
+	if snap.oFrom.Before(snap.nFrom) {
+		if gotFrom.Before(snap.oFrom) || gotFrom.After(snap.nFrom) {
+			t.Errorf("lerped from %v outside [%v, %v]", gotFrom, snap.oFrom, snap.nFrom)
+		}
+	}
+}

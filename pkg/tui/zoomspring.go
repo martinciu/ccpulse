@@ -12,6 +12,7 @@
 package tui
 
 import (
+	"math"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -142,11 +143,32 @@ func (m *Model) renderZoomFrame(viewFrom, viewTo time.Time) {
 	m.viewport.SetXOffset(0)
 }
 
-// handleZoomSpringTick advances one frame of the zoom squeeze. Real
-// interpolation lands in Task 4; this minimal form settles immediately so the
-// dispatch wiring in Task 1 stays green and inert until Task 3 arms it.
+// handleZoomSpringTick advances one frame of the zoom squeeze: step the spring
+// toward r=1, lerp the visible window oWin→nWin, render windowed, and settle
+// when within phaseTransitionThreshold of the target. On settle it restores the
+// steady-state full canvas via refreshChart and re-arms the live-advance
+// now-tick on the new cadence (#311 coexistence). gen is the captured
+// generation; the next tick carries it so a superseding 'z'/'u' drops it.
 func (m *Model) handleZoomSpringTick(gen int) tea.Cmd {
-	m.springActive = false
-	m.springKind = springKindNone
-	return nil
+	r, vel := m.zoomSpring.Update(m.zoomSpringR, m.zoomSpringVel, 1.0)
+	m.zoomSpringR = r
+	m.zoomSpringVel = vel
+
+	if math.Abs(1.0-r) < phaseTransitionThreshold {
+		m.zoomSpringR = 1.0
+		m.springActive = false
+		m.springKind = springKindNone
+		m.refreshChart() // restore the full scrollable canvas at the new zoom.
+		// Re-arm the live edge on the new cadence now that the squeeze is done.
+		m.nowGen++
+		return m.scheduleNowTick()
+	}
+
+	viewFrom := lerpTime(m.zoomSnap.oFrom, m.zoomSnap.nFrom, r)
+	viewTo := lerpTime(m.zoomSnap.oTo, m.zoomSnap.nTo, r)
+	m.renderZoomFrame(viewFrom, viewTo)
+
+	return tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
+		return springTickMsg{gen: gen}
+	})
 }
