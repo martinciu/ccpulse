@@ -134,9 +134,11 @@ func (m *Model) refreshChart() {
 		m.springActive = false
 		m.springIntro = false
 		m.springPhase = springIdle
+		m.springKind = springKindNone
 		// springProjectiles, springFinalTargets, oldPeak, oldUnitIdx
 		// remain populated but unread — guarded by springActive=false.
-		// Next beginUnitAnimation re-makes the slices.
+		// Next beginUnitAnimation re-makes the slices. Zoom scalars
+		// (zoomSpringR/Vel/zoomSnap) likewise stay set but unread (#373).
 	}
 
 	// Snapshot the wall-clock scroll anchor BEFORE the rebuild overwrites

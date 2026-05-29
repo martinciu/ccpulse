@@ -116,6 +116,19 @@ const (
 	quotaSide7d
 )
 
+// springKind tags which animation is currently in flight so handleSpringTick
+// can dispatch the shared springTickMsg to the right machine. The unit toggle
+// (two-phase, per-bar) and the zoom squeeze (single-phase, single-scalar) are
+// mutually exclusive — refreshChart aborts any in-flight animation — so one
+// master springActive flag plus this tag is sufficient. See issue #373.
+type springKind int
+
+const (
+	springKindNone springKind = iota
+	springKindUnit
+	springKindZoom
+)
+
 // Model is the root Bubble Tea model for the chart view.
 type Model struct {
 	// ctx is the program-lifetime ctx threaded into every Cache call
@@ -230,6 +243,16 @@ type Model struct {
 	// presses from stacking the previous animation's still-pending tick on
 	// top of the new animation's tick and accelerating it (#218).
 	springGen int
+	// springKind tags the in-flight animation (none/unit/zoom) so
+	// handleSpringTick dispatches the shared springTickMsg correctly (#373).
+	springKind springKind
+	// Zoom-squeeze animation state (#373). Single critically-damped spring
+	// driving r in [0,1]; the visible time window lerps oWin→nWin across the
+	// squeeze. Distinct from the unit-toggle per-bar springs above.
+	zoomSpring    harmonica.Spring
+	zoomSpringR   float64
+	zoomSpringVel float64
+	zoomSnap      zoomAnimSnapshot
 	// nowGen is bumped each time the live-advance tick is re-armed (zoom
 	// change). scheduleNowTick captures the current value into the scheduled
 	// nowTickMsg; the handler drops ticks whose gen doesn't match, so a zoom
@@ -487,11 +510,15 @@ func (m *Model) handleNowTick(msg nowTickMsg) tea.Cmd {
 		// rescheduling so duplicate chains can't accumulate (#311).
 		return nil
 	}
-	// Mirror RefreshMsg's intro guard: don't hard-cut the startup intro;
-	// its terminal refreshChart picks up the advance. refreshChart's
-	// wasPinned/anchorTime block does the rest — pinned advances to the
-	// new right edge, scrolled stays anchored — for all three units.
-	if !m.springIntro {
+	// Don't hard-cut an animation that owns the viewport: the startup intro
+	// (springIntro) and the zoom squeeze (springKindZoom) both freeze the right
+	// edge and repaint it themselves. We still reschedule below, so the chain
+	// stays alive and the advance resumes the instant the animation settles —
+	// the squeeze deliberately leaves the chain un-bumped so an abort can't
+	// orphan it (#373). refreshChart's wasPinned/anchorTime block does the rest
+	// — pinned advances to the new right edge, scrolled stays anchored.
+	animatingViewport := m.springIntro || (m.springActive && m.springKind == springKindZoom)
+	if !animatingViewport {
 		m.refreshChart()
 	}
 	// One log line per boundary crossing — the live-advance cadence is
@@ -551,12 +578,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		// so dismissing help returns the user to the same scroll/zoom
 		// state they left.
 	case key.Matches(msg, m.keys.Zoom):
-		m.zoomIdx = (m.zoomIdx + 1) % len(ZoomLevels)
-		m.refreshChart()
-		// Re-arm the live-advance tick on the new zoom's cadence; the
-		// bumped gen drops the previous cadence's in-flight tick (#311).
-		m.nowGen++
-		return m.scheduleNowTick()
+		return m.handleZoomKey()
 	case key.Matches(msg, m.keys.Unit):
 		return m.handleUnitKey()
 	case key.Matches(msg, m.keys.ScrollLeft):
@@ -617,39 +639,7 @@ func (m Model) View() string {
 	if m.showHelp {
 		body = m.help.FullHelpView(m.keys.FullHelp())
 	} else {
-		rawBody := m.viewport.View()
-		switch {
-		case m.springActive:
-			var maxR float64
-			for _, r := range m.springRatios {
-				maxR = max(maxR, r)
-			}
-			fade := maxR
-			labelUnit := chartUnit(m.unitIdx)
-			labelPeak := m.peak
-			// Determine whether the current rendered frame is a line chart.
-			// Exit phase shows OLD type; hold/enter shows NEW type.
-			renderingLine := false
-			switch m.springPhase {
-			case springShrinking:
-				renderingLine = m.oldIsLine
-				if !renderingLine {
-					labelUnit = chartUnit(m.oldUnitIdx)
-					labelPeak = m.oldPeak
-				}
-			default: // springHolding, springGrowing
-				renderingLine = m.newIsLine
-			}
-			if renderingLine {
-				body = overlayYTicks(rawBody, m.chartHeight(), fade)
-			} else {
-				body = overlayYLabel(rawBody, labelPeak, labelUnit, m.chartHeight(), fade, ZoomLevels[m.zoomIdx].hasInBarNumbers())
-			}
-		case chartUnit(m.unitIdx) == chartUnitRemaining:
-			body = overlayYTicks(rawBody, m.chartHeight(), 1.0)
-		default:
-			body = overlayYLabel(rawBody, m.peak, chartUnit(m.unitIdx), m.chartHeight(), 1.0, ZoomLevels[m.zoomIdx].hasInBarNumbers())
-		}
+		body = m.renderChartBody(m.viewport.View())
 	}
 	footer := m.renderFooter()
 	out := lipgloss.JoinVertical(lipgloss.Left, header, sep, body, sep, footer)
@@ -662,6 +652,54 @@ func (m Model) View() string {
 			"show_help", m.showHelp)
 	}
 	return out
+}
+
+// renderChartBody overlays the Y-axis labels/ticks onto the viewport's chart
+// body, picking the variant for the current animation/unit state:
+//   - zoom squeeze: full-fade y-ticks — only the visible window moves (#373)
+//   - unit-toggle / intro spring: fade the OLD/NEW axis by the spring envelope
+//   - steady remaining (line) mode: full y-ticks
+//   - steady bar mode: full y-label at the active unit's peak
+//
+// Split out of View() so each stays under the cyclomatic-complexity gate; the
+// switch is evaluated top-down, so the zoom case must precede the generic
+// springActive case.
+func (m Model) renderChartBody(rawBody string) string {
+	switch {
+	case m.springActive && m.springKind == springKindZoom:
+		// Zoom squeeze: the line is fully present throughout (only the
+		// visible window moves), so y-ticks render at full fade.
+		return overlayYTicks(rawBody, m.chartHeight(), 1.0)
+	case m.springActive:
+		var maxR float64
+		for _, r := range m.springRatios {
+			maxR = max(maxR, r)
+		}
+		fade := maxR
+		labelUnit := chartUnit(m.unitIdx)
+		labelPeak := m.peak
+		// Determine whether the current rendered frame is a line chart.
+		// Exit phase shows OLD type; hold/enter shows NEW type.
+		renderingLine := false
+		switch m.springPhase {
+		case springShrinking:
+			renderingLine = m.oldIsLine
+			if !renderingLine {
+				labelUnit = chartUnit(m.oldUnitIdx)
+				labelPeak = m.oldPeak
+			}
+		default: // springHolding, springGrowing
+			renderingLine = m.newIsLine
+		}
+		if renderingLine {
+			return overlayYTicks(rawBody, m.chartHeight(), fade)
+		}
+		return overlayYLabel(rawBody, labelPeak, labelUnit, m.chartHeight(), fade, ZoomLevels[m.zoomIdx].hasInBarNumbers())
+	case chartUnit(m.unitIdx) == chartUnitRemaining:
+		return overlayYTicks(rawBody, m.chartHeight(), 1.0)
+	default:
+		return overlayYLabel(rawBody, m.peak, chartUnit(m.unitIdx), m.chartHeight(), 1.0, ZoomLevels[m.zoomIdx].hasInBarNumbers())
+	}
 }
 
 // renderFooter composes the bottom line: keybinding help on the left,
