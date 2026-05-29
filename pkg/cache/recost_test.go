@@ -115,40 +115,48 @@ func TestRecost_FixesStaleVersion(t *testing.T) {
 	}
 }
 
-func TestRecost_ClearsUnknownWhenModelAdded(t *testing.T) {
+func TestRecost_FallForwardRescuesOrphanedRow(t *testing.T) {
 	c := mustOpenTempCache(t)
-	hist := twoVersionHistory(t)
-	// Insert claude-haiku-4-5 at 2026-05-09 ts — model missing from 2026-05-09 table.
+	hist := twoVersionHistory(t) // claude-haiku-4-5 exists only in the 2026-05-10 table
 	m := parse.Message{
 		SessionID: "s1", ProjectSlug: "p", Role: "assistant",
 		Model: "claude-haiku-4-5", InputTokens: 1_000_000,
 		Timestamp: time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC),
 	}
 	seedRow(t, c, hist, m)
-	var unk int
-	if err := c.DB().QueryRow(`SELECT pricing_unknown FROM messages WHERE session_id = ?`, m.SessionID).Scan(&unk); err != nil {
-		t.Fatalf("read row: %v", err)
-	}
-	if unk != 1 {
-		t.Fatalf("seed pricing_unknown = %d, want 1", unk)
+	// Simulate a pre-fall-forward orphaned stamp: the 2026-05-09 snapshot lacked
+	// haiku, so a pre-#368 build costed the row 0 / unknown=1 / date-resolved
+	// version. Recost must now rescue it via fall-forward.
+	if _, err := c.DB().Exec(
+		`UPDATE messages SET pricing_unknown = 1, cost_usd_estimate = 0, pricing_version = '2026-05-09' WHERE session_id = ?`,
+		m.SessionID); err != nil {
+		t.Fatalf("seed orphaned state: %v", err)
 	}
 
-	// Move the row's ts to 2026-05-10 so haiku is now known.
-	if _, err := c.DB().Exec(`UPDATE messages SET ts = '2026-05-10T00:00:00.000Z' WHERE session_id = ?`, m.SessionID); err != nil {
-		t.Fatalf("update ts: %v", err)
-	}
 	stats, err := c.Recost(t.Context(), hist, cache.RecostOpts{})
 	if err != nil {
 		t.Fatalf("recost: %v", err)
 	}
 	if stats.Updated != 1 {
-		t.Errorf("Updated = %d, want 1", stats.Updated)
+		t.Fatalf("Updated = %d, want 1", stats.Updated)
 	}
-	if err := c.DB().QueryRow(`SELECT pricing_unknown FROM messages WHERE session_id = ?`, m.SessionID).Scan(&unk); err != nil {
-		t.Fatalf("re-read row: %v", err)
+
+	var unk int
+	var cost float64
+	var ver string
+	if err := c.DB().QueryRow(
+		`SELECT pricing_unknown, cost_usd_estimate, pricing_version FROM messages WHERE session_id = ?`,
+		m.SessionID).Scan(&unk, &cost, &ver); err != nil {
+		t.Fatalf("read row: %v", err)
 	}
 	if unk != 0 {
-		t.Errorf("pricing_unknown after recost = %d, want 0", unk)
+		t.Errorf("pricing_unknown = %d, want 0 (rescued)", unk)
+	}
+	if cost != 1.0 { // haiku InputPerMtok=1 * 1Mtok = 1.0
+		t.Errorf("cost_usd_estimate = %v, want 1.0", cost)
+	}
+	if ver != "2026-05-10" {
+		t.Errorf("pricing_version = %q, want 2026-05-10 (fall-forward rate source)", ver)
 	}
 }
 
