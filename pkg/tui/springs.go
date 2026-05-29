@@ -569,6 +569,34 @@ func (m *Model) renderSpringFrame() {
 	m.renderSpringBarFrame(zoom, chartH)
 }
 
+// visibleWindow returns the [from, to] wall-clock window currently mapped to
+// the viewport at the active zoom and scroll offset. It is the single source
+// of truth for "what time range is on screen", shared by renderSpringLineFrame
+// (the u-toggle line frame) and the zoom squeeze's arm-time snapshot (#373).
+//
+// Reads m.lastChartFrom/To, m.lastCanvasW (via the recomputed fullCanvasW),
+// m.viewportXOffset, and m.viewport.Width — all consistent with ZoomLevels[
+// m.zoomIdx] at any call site that hasn't mutated zoomIdx without a refresh.
+func (m *Model) visibleWindow() (from, to time.Time) {
+	zoom := ZoomLevels[m.zoomIdx]
+	fullFrom, fullTo := m.lastChartFrom, m.lastChartTo
+	if fullFrom.IsZero() {
+		fullFrom = m.now().Add(-5 * time.Hour)
+	}
+	if fullTo.IsZero() {
+		fullTo = m.now()
+	}
+	fullCanvasW := max(zoom.CanvasWidth(bucketCountInRange(fullFrom, fullTo, zoom.Duration)), m.viewport.Width)
+	vpW := m.viewport.Width
+	chartXOffset := m.viewportXOffset * zoom.stride()
+	if maxOff := fullCanvasW - vpW; chartXOffset > maxOff {
+		chartXOffset = maxOff
+	}
+	from = columnToTime(chartXOffset, fullCanvasW, fullFrom, fullTo)
+	to = columnToTime(chartXOffset+vpW, fullCanvasW, fullFrom, fullTo)
+	return from, to
+}
+
 // renderSpringLineFrame renders one frame of the line-chart (remaining-mode)
 // spring transition: it interpolates the windowed utilization points toward
 // the flat 100%-headroom line via the springRatios envelope and paints the
@@ -597,36 +625,15 @@ func (m *Model) renderSpringLineFrame(zoom ZoomLevel, chartH int) {
 		pts5h, pts7d = m.oldPts5h, m.oldPts7d
 	}
 
-	fullFrom, fullTo := m.lastChartFrom, m.lastChartTo
-	if fullFrom.IsZero() {
-		fullFrom = time.Now().Add(-5 * time.Hour)
-	}
-	if fullTo.IsZero() {
-		fullTo = time.Now()
-	}
-
-	// PERF (#180): window the line chart to the visible viewport.
-	// Full-canvas rebuild at canvasW=2880 blows the 60fps frame
-	// budget (~93ms per real-binary probe). The windowed render at
-	// canvasW=viewport.Width is pixel-identical inside the visible
-	// region because timeserieslinechart's WithTimeRange maps
-	// time→col linearly — so the settle transition to refreshChart's
-	// full canvas doesn't visibly snap. Parallels the bar branch's
-	// computeSpringSlice windowing.
-	fullCanvasW := max(zoom.CanvasWidth(bucketCountInRange(fullFrom, fullTo, zoom.Duration)), m.viewport.Width)
+	// PERF (#180): window the line chart to the visible viewport via the
+	// shared visibleWindow() helper (#373). Full-canvas rebuild at
+	// canvasW=2880 blows the 60fps frame budget (~93ms per real-binary
+	// probe). The windowed render at canvasW=viewport.Width is pixel-
+	// identical inside the visible region because timeserieslinechart's
+	// WithTimeRange maps time→col linearly — so the settle transition to
+	// refreshChart's full canvas doesn't visibly snap.
 	vpW := m.viewport.Width
-	chartXOffset := m.viewportXOffset * zoom.stride()
-	// Clamp: after #207's ceil-maxX in remaining mode, chartXOffset+vpW
-	// can exceed fullCanvasW by up to stride-1 cols at 24h zoom. Without
-	// this, viewTo saturates to fullTo via columnToTime but viewFrom
-	// still advances — yielding a higher col-per-time density than the
-	// steady-state full-canvas render and a visible horizontal stretch
-	// on the spring → settle transition.
-	if maxOff := fullCanvasW - vpW; chartXOffset > maxOff {
-		chartXOffset = maxOff
-	}
-	viewFrom := columnToTime(chartXOffset, fullCanvasW, fullFrom, fullTo)
-	viewTo := columnToTime(chartXOffset+vpW, fullCanvasW, fullFrom, fullTo)
+	viewFrom, viewTo := m.visibleWindow()
 
 	slicedPts5h := slicePointsInRange(pts5h, viewFrom, viewTo)
 	slicedPts7d := slicePointsInRange(pts7d, viewFrom, viewTo)
