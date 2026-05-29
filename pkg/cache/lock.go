@@ -148,11 +148,11 @@ func snapshotPreservable(ctx context.Context, path string) rebuildSnapshot {
 // from snapshotPreservable, never user input. Any error yields an empty
 // preservedTable — preserve-all-or-nothing per table.
 func snapshotTable(ctx context.Context, db *sql.DB, table, where string) preservedTable {
+	//nolint:gosec // G202: table/where are compile-time constants from snapshotPreservable, not user input
 	q := "SELECT * FROM " + table
 	if where != "" {
 		q += " WHERE " + where
 	}
-	//nolint:gosec // G201: table/where are compile-time constants, not user input
 	rows, err := db.QueryContext(ctx, q)
 	if err != nil {
 		return preservedTable{}

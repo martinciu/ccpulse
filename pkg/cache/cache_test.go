@@ -2192,3 +2192,42 @@ func TestInsertMessages_FallbackSyntheticID(t *testing.T) {
 		t.Fatalf("row count = %d, want 2 (synthetic fallback keeps (session,ts) semantics)", n)
 	}
 }
+
+func TestInsertMessages_RegressionMultilineMessage(t *testing.T) {
+	f, err := os.Open("testdata/multiline_message.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	msgs, err := parse.Parse(f, "slug-a")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(msgs) != 4 {
+		t.Fatalf("parsed %d messages, want 4", len(msgs))
+	}
+
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	tab, _ := pricing.Load()
+	if err := c.InsertMessages(t.Context(), msgs, tab); err != nil {
+		t.Fatal(err)
+	}
+
+	var n int
+	var totalOut int64
+	if err := c.DB().QueryRowContext(t.Context(),
+		`SELECT count(*), COALESCE(SUM(output_tokens),0) FROM messages`).Scan(&n, &totalOut); err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("row count = %d, want 2 (msg_a collapsed from 3 lines, msg_b distinct)", n)
+	}
+	// msg_a contributes 64000 once (not 3x192000), msg_b contributes 1000.
+	if totalOut != 65000 {
+		t.Errorf("SUM(output_tokens) = %d, want 65000 (64000 + 1000, deduped)", totalOut)
+	}
+}
