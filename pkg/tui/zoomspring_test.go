@@ -337,3 +337,59 @@ func TestZoomSpring_AbortedByWindowSize(t *testing.T) {
 		t.Errorf("after WindowSizeMsg mid-zoom: springActive=%v springKind=%d, want hard-cut", m.springActive, m.springKind)
 	}
 }
+
+func TestZoomSpring_NowTickReArmedAtSettle(t *testing.T) {
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	m, c := armZoom(t, 60, now)
+	defer c.Close()
+	genAtArm := m.nowGen
+
+	// Mid-squeeze: a stale-cadence now-tick (gen before the arm bump) must be
+	// dropped — the arm bumped nowGen, so the old chain is dead.
+	updated, staleNow := m.Update(nowTickMsg{gen: genAtArm - 1})
+	m = updated.(Model)
+	if staleNow != nil {
+		t.Errorf("stale now-tick mid-squeeze: cmd=%v, want nil (dropped)", staleNow)
+	}
+
+	// Drive to settle; the settle tick re-arms the live-advance now-tick: it
+	// bumps nowGen and returns a non-nil cmd. Don't invoke that cmd — it's a
+	// tea.Tick fired at the next bucket boundary (up to 1h away), so invoking
+	// it would block for that real duration.
+	var lastCmd tea.Cmd
+	for i := 0; i < 600 && m.springActive; i++ {
+		updated, lastCmd = m.Update(springTickMsg{gen: m.springGen})
+		m = updated.(Model)
+	}
+	if m.springActive {
+		t.Fatalf("did not settle within 600 ticks")
+	}
+	if lastCmd == nil {
+		t.Fatalf("settle: cmd=nil, want now-tick re-arm")
+	}
+	if m.nowGen <= genAtArm {
+		t.Errorf("settle: nowGen=%d, want > %d (live-edge re-armed)", m.nowGen, genAtArm)
+	}
+}
+
+func TestZoomSpring_ViewRendersLineMidSqueeze(t *testing.T) {
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	m, c := armZoom(t, 60, now)
+	defer c.Close()
+	// Deliver one frame, then render.
+	updated, _ := m.Update(springTickMsg{gen: m.springGen})
+	m = updated.(Model)
+
+	out := m.View()
+	if out == "" {
+		t.Fatalf("View() empty mid-squeeze")
+	}
+	// The y-tick overlay (overlayYTicks) renders the 100%/50%/0% ladder; its
+	// presence confirms the springKindZoom View branch (full-fade y-ticks) ran
+	// rather than the unit-toggle fade path (which would read empty springRatios
+	// and fade to nothing).
+	body := chartBodyLines(out)
+	if len(body) == 0 {
+		t.Fatalf("chart body empty mid-squeeze")
+	}
+}
