@@ -318,12 +318,12 @@ func TestCompute_Tokens5hBreakdown_SumsCorrectly(t *testing.T) {
 
 	if _, err := db.ExecContext(t.Context(), `
 INSERT INTO messages (
-	session_id, project_slug, ts, role, model,
+	session_id, message_id, project_slug, ts, role, model,
 	input_tokens, output_tokens, cache_read_tokens,
 	cache_write_5m_tokens, cache_write_1h_tokens,
 	cost_usd_estimate, pricing_version, pricing_unknown
-) VALUES ('s', 'p', ?, 'assistant', 'claude-opus-4-7',
-	100, 50, 1000, 200, 75, 0.012345, 'v1', 0)`, ts); err != nil {
+) VALUES ('s', 'synthetic:'||?, 'p', ?, 'assistant', 'claude-opus-4-7',
+	100, 50, 1000, 200, 75, 0.012345, 'v1', 0)`, ts, ts); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 

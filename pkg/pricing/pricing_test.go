@@ -243,3 +243,65 @@ func TestHistory_CostFor_UnknownModel(t *testing.T) {
 		t.Errorf("version = %q, want 2026-05-10 (still resolves)", version)
 	}
 }
+
+func TestHistory_CostFor_FallForward(t *testing.T) {
+	v1 := Table{Version: "2026-01-01", Currency: "USD", Models: map[string]ModelRate{
+		"modelA": {InputPerMtok: 10},
+		"modelR": {InputPerMtok: 99}, // retired: present only in the earliest table
+	}}
+	v2 := Table{Version: "2026-02-01", Currency: "USD", Models: map[string]ModelRate{
+		"modelA": {InputPerMtok: 8},
+		"modelB": {InputPerMtok: 20},
+	}}
+	v3 := Table{Version: "2026-03-01", Currency: "USD", Models: map[string]ModelRate{
+		"modelA": {InputPerMtok: 6},
+		"modelB": {InputPerMtok: 18},
+		"modelC": {InputPerMtok: 30},
+	}}
+	h, err := HistoryForTest([]Table{v1, v2, v3})
+	if err != nil {
+		t.Fatalf("HistoryForTest: %v", err)
+	}
+	mustTime := func(s string) time.Time {
+		ts, err := time.Parse(time.RFC3339, s)
+		if err != nil {
+			t.Fatalf("parse %s: %v", s, err)
+		}
+		return ts
+	}
+	const Mtok = 1_000_000
+	tests := []struct {
+		name        string
+		ts          time.Time
+		model       string
+		wantVersion string
+		wantUnknown bool
+		wantCost    float64 // checked only when !wantUnknown
+	}{
+		{"model in resolved table", mustTime("2026-01-15T00:00:00Z"), "modelA", "2026-01-01", false, 10},
+		{"fall-forward one step", mustTime("2026-01-15T00:00:00Z"), "modelB", "2026-02-01", false, 20},
+		{"fall-forward earliest of several", mustTime("2026-01-15T00:00:00Z"), "modelC", "2026-03-01", false, 30},
+		{"present in resolved, no walk", mustTime("2026-02-15T00:00:00Z"), "modelB", "2026-02-01", false, 20},
+		{"unknown everywhere -> date-resolved stamp", mustTime("2026-02-15T00:00:00Z"), "modelZ", "2026-02-01", true, 0},
+		{"before earliest -> earliest table", mustTime("2025-12-01T00:00:00Z"), "modelA", "2026-01-01", false, 10},
+		{"retired (only earlier) -> not rescued backward", mustTime("2026-02-15T00:00:00Z"), "modelR", "2026-02-01", true, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := parse.Message{Timestamp: tt.ts, Model: tt.model, InputTokens: Mtok}
+			cost, version, unknown := h.CostFor(m)
+			if unknown != tt.wantUnknown {
+				t.Errorf("unknown = %v, want %v", unknown, tt.wantUnknown)
+			}
+			if version != tt.wantVersion {
+				t.Errorf("version = %q, want %q", version, tt.wantVersion)
+			}
+			if !tt.wantUnknown && cost != tt.wantCost {
+				t.Errorf("cost = %v, want %v", cost, tt.wantCost)
+			}
+			if got := h.VersionFor(tt.ts, tt.model); got != tt.wantVersion {
+				t.Errorf("VersionFor = %q, want %q", got, tt.wantVersion)
+			}
+		})
+	}
+}

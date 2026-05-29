@@ -115,40 +115,48 @@ func TestRecost_FixesStaleVersion(t *testing.T) {
 	}
 }
 
-func TestRecost_ClearsUnknownWhenModelAdded(t *testing.T) {
+func TestRecost_FallForwardRescuesOrphanedRow(t *testing.T) {
 	c := mustOpenTempCache(t)
-	hist := twoVersionHistory(t)
-	// Insert claude-haiku-4-5 at 2026-05-09 ts — model missing from 2026-05-09 table.
+	hist := twoVersionHistory(t) // claude-haiku-4-5 exists only in the 2026-05-10 table
 	m := parse.Message{
 		SessionID: "s1", ProjectSlug: "p", Role: "assistant",
 		Model: "claude-haiku-4-5", InputTokens: 1_000_000,
 		Timestamp: time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC),
 	}
 	seedRow(t, c, hist, m)
-	var unk int
-	if err := c.DB().QueryRow(`SELECT pricing_unknown FROM messages WHERE session_id = ?`, m.SessionID).Scan(&unk); err != nil {
-		t.Fatalf("read row: %v", err)
-	}
-	if unk != 1 {
-		t.Fatalf("seed pricing_unknown = %d, want 1", unk)
+	// Simulate a pre-fall-forward orphaned stamp: the 2026-05-09 snapshot lacked
+	// haiku, so a pre-#368 build costed the row 0 / unknown=1 / date-resolved
+	// version. Recost must now rescue it via fall-forward.
+	if _, err := c.DB().Exec(
+		`UPDATE messages SET pricing_unknown = 1, cost_usd_estimate = 0, pricing_version = '2026-05-09' WHERE session_id = ?`,
+		m.SessionID); err != nil {
+		t.Fatalf("seed orphaned state: %v", err)
 	}
 
-	// Move the row's ts to 2026-05-10 so haiku is now known.
-	if _, err := c.DB().Exec(`UPDATE messages SET ts = '2026-05-10T00:00:00.000Z' WHERE session_id = ?`, m.SessionID); err != nil {
-		t.Fatalf("update ts: %v", err)
-	}
 	stats, err := c.Recost(t.Context(), hist, cache.RecostOpts{})
 	if err != nil {
 		t.Fatalf("recost: %v", err)
 	}
 	if stats.Updated != 1 {
-		t.Errorf("Updated = %d, want 1", stats.Updated)
+		t.Fatalf("Updated = %d, want 1", stats.Updated)
 	}
-	if err := c.DB().QueryRow(`SELECT pricing_unknown FROM messages WHERE session_id = ?`, m.SessionID).Scan(&unk); err != nil {
-		t.Fatalf("re-read row: %v", err)
+
+	var unk int
+	var cost float64
+	var ver string
+	if err := c.DB().QueryRow(
+		`SELECT pricing_unknown, cost_usd_estimate, pricing_version FROM messages WHERE session_id = ?`,
+		m.SessionID).Scan(&unk, &cost, &ver); err != nil {
+		t.Fatalf("read row: %v", err)
 	}
 	if unk != 0 {
-		t.Errorf("pricing_unknown after recost = %d, want 0", unk)
+		t.Errorf("pricing_unknown = %d, want 0 (rescued)", unk)
+	}
+	if cost != 1.0 { // haiku InputPerMtok=1 * 1Mtok = 1.0
+		t.Errorf("cost_usd_estimate = %v, want 1.0", cost)
+	}
+	if ver != "2026-05-10" {
+		t.Errorf("pricing_version = %q, want 2026-05-10 (fall-forward rate source)", ver)
 	}
 }
 
@@ -240,6 +248,35 @@ func TestPricingVersionStats(t *testing.T) {
 	}
 }
 
+func TestPricingVersionStats_FallForwardNotStale(t *testing.T) {
+	c := mustOpenTempCache(t)
+	hist := twoVersionHistory(t)
+	// haiku@2026-05-09 falls forward to 2026-05-10 at ingest, so it is stamped
+	// 2026-05-10 even though TableAt(2026-05-09) == 2026-05-09.
+	seedRow(t, c, hist, parse.Message{
+		SessionID: "s1", ProjectSlug: "p", Role: "assistant",
+		Model: "claude-haiku-4-5", InputTokens: 1_000_000,
+		Timestamp: time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC),
+	})
+
+	got, err := c.PricingVersionStats(t.Context(), hist)
+	if err != nil {
+		t.Fatalf("PricingVersionStats: %v", err)
+	}
+	var found bool
+	for _, s := range got {
+		if s.Version == "2026-05-10" {
+			found = true
+			if s.Stale != 0 {
+				t.Errorf("fall-forward row counted stale: %+v (TableAt(2026-05-09)=2026-05-09 but VersionFor=2026-05-10)", s)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("no 2026-05-10 entry; got %+v", got)
+	}
+}
+
 func TestRecost_ContextCancellation(t *testing.T) {
 	c := mustOpenTempCache(t)
 	hist := twoVersionHistory(t)
@@ -285,7 +322,7 @@ func TestAutoRecost_SkipsWhenFingerprintMatches(t *testing.T) {
 		t.Fatalf("seed stale version: %v", err)
 	}
 	// Pre-write the matching fingerprint into meta so AutoRecost short-circuits.
-	fp := strings.Join(hist.Versions(), ",")
+	fp := "ff1:" + strings.Join(hist.Versions(), ",")
 	if _, err := c.DB().Exec(`INSERT OR REPLACE INTO meta(key,value) VALUES('last_recost_history_fingerprint',?)`, fp); err != nil {
 		t.Fatalf("seed fingerprint: %v", err)
 	}
@@ -299,6 +336,46 @@ func TestAutoRecost_SkipsWhenFingerprintMatches(t *testing.T) {
 	}
 	if ver != "1999-01-01" {
 		t.Errorf("pricing_version = %q after AutoRecost with matching fingerprint, want 1999-01-01 (skipped)", ver)
+	}
+}
+
+func TestAutoRecost_RunsAfterAlgorithmBump(t *testing.T) {
+	c := mustOpenTempCache(t)
+	hist := twoVersionHistory(t)
+	m := parse.Message{
+		SessionID: "s1", ProjectSlug: "p", Role: "assistant",
+		Model: "claude-haiku-4-5", InputTokens: 1_000_000,
+		Timestamp: time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC),
+	}
+	seedRow(t, c, hist, m)
+	// Orphaned pre-#368 state + an OLD-FORMAT fingerprint (version list, no algo
+	// tag) as a pre-#368 build would have written it.
+	if _, err := c.DB().Exec(
+		`UPDATE messages SET pricing_unknown = 1, cost_usd_estimate = 0, pricing_version = '2026-05-09' WHERE session_id = ?`,
+		m.SessionID); err != nil {
+		t.Fatalf("seed orphaned state: %v", err)
+	}
+	oldFP := strings.Join(hist.Versions(), ",") // no "ff1:" prefix
+	if _, err := c.DB().Exec(
+		`INSERT OR REPLACE INTO meta(key,value) VALUES('last_recost_history_fingerprint',?)`, oldFP); err != nil {
+		t.Fatalf("seed old fingerprint: %v", err)
+	}
+
+	c.AutoRecost(t.Context(), hist) // new tag != stored ⇒ must NOT short-circuit
+
+	var unk int
+	if err := c.DB().QueryRow(`SELECT pricing_unknown FROM messages WHERE session_id = ?`, m.SessionID).Scan(&unk); err != nil {
+		t.Fatalf("read row: %v", err)
+	}
+	if unk != 0 {
+		t.Errorf("pricing_unknown = %d after AutoRecost, want 0 (algorithm bump should trigger rescue)", unk)
+	}
+	var fp string
+	if err := c.DB().QueryRow(`SELECT value FROM meta WHERE key = 'last_recost_history_fingerprint'`).Scan(&fp); err != nil {
+		t.Fatalf("read fingerprint: %v", err)
+	}
+	if want := "ff1:" + strings.Join(hist.Versions(), ","); fp != want {
+		t.Errorf("fingerprint = %q, want %q", fp, want)
 	}
 }
 
@@ -319,7 +396,7 @@ func TestRecost_WritesFingerprintOnCommit(t *testing.T) {
 	if err := c.DB().QueryRow(`SELECT value FROM meta WHERE key = 'last_recost_history_fingerprint'`).Scan(&got); err != nil {
 		t.Fatalf("read fingerprint: %v", err)
 	}
-	want := strings.Join(hist.Versions(), ",")
+	want := "ff1:" + strings.Join(hist.Versions(), ",")
 	if got != want {
 		t.Errorf("fingerprint = %q, want %q", got, want)
 	}

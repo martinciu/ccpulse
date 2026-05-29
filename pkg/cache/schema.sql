@@ -1,6 +1,7 @@
 CREATE TABLE IF NOT EXISTS messages (
   id INTEGER PRIMARY KEY,
   session_id TEXT NOT NULL,
+  message_id TEXT NOT NULL,
   project_slug TEXT NOT NULL,
   ts TEXT NOT NULL,
   role TEXT NOT NULL,
@@ -17,7 +18,7 @@ CREATE TABLE IF NOT EXISTS messages (
   parent_session_id TEXT,
   cwd TEXT NOT NULL DEFAULT '',
   git_branch TEXT NOT NULL DEFAULT '',
-  UNIQUE(session_id, ts)
+  UNIQUE(session_id, message_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_ts ON messages(ts);
