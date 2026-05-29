@@ -116,6 +116,19 @@ const (
 	quotaSide7d
 )
 
+// springKind tags which animation is currently in flight so handleSpringTick
+// can dispatch the shared springTickMsg to the right machine. The unit toggle
+// (two-phase, per-bar) and the zoom squeeze (single-phase, single-scalar) are
+// mutually exclusive — refreshChart aborts any in-flight animation — so one
+// master springActive flag plus this tag is sufficient. See issue #373.
+type springKind int
+
+const (
+	springKindNone springKind = iota
+	springKindUnit
+	springKindZoom
+)
+
 // Model is the root Bubble Tea model for the chart view.
 type Model struct {
 	// ctx is the program-lifetime ctx threaded into every Cache call
@@ -230,6 +243,16 @@ type Model struct {
 	// presses from stacking the previous animation's still-pending tick on
 	// top of the new animation's tick and accelerating it (#218).
 	springGen int
+	// springKind tags the in-flight animation (none/unit/zoom) so
+	// handleSpringTick dispatches the shared springTickMsg correctly (#373).
+	springKind springKind
+	// Zoom-squeeze animation state (#373). Single critically-damped spring
+	// driving r in [0,1]; the visible time window lerps oWin→nWin across the
+	// squeeze. Distinct from the unit-toggle per-bar springs above.
+	zoomSpring    harmonica.Spring
+	zoomSpringR   float64
+	zoomSpringVel float64
+	zoomSnap      zoomAnimSnapshot
 	// nowGen is bumped each time the live-advance tick is re-armed (zoom
 	// change). scheduleNowTick captures the current value into the scheduled
 	// nowTickMsg; the handler drops ticks whose gen doesn't match, so a zoom
@@ -620,6 +643,12 @@ func (m Model) View() string {
 		rawBody := m.viewport.View()
 		switch {
 		case m.springActive:
+			if m.springKind == springKindZoom {
+				// Zoom squeeze: the line is fully present throughout (only
+				// the visible window moves), so y-ticks render at full fade.
+				body = overlayYTicks(rawBody, m.chartHeight(), 1.0)
+				break
+			}
 			var maxR float64
 			for _, r := range m.springRatios {
 				maxR = max(maxR, r)

@@ -32,6 +32,9 @@ func (m *Model) handleSpringTick(msg springTickMsg) tea.Cmd {
 		// drop without rescheduling so the loop doesn't perpetuate.
 		return nil
 	}
+	if m.springKind == springKindZoom {
+		return m.handleZoomSpringTick(m.springGen)
+	}
 	gen := m.springGen
 	switch m.springPhase {
 	case springShrinking:
@@ -389,6 +392,7 @@ func (m *Model) beginUnitAnimation() {
 	}
 	m.springActive = true
 	m.springPhase = springShrinking
+	m.springKind = springKindUnit
 	m.springGen++
 }
 
