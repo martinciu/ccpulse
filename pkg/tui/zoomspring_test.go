@@ -183,12 +183,18 @@ func TestZoomSpring_SettlesAndRestoresSteadyState(t *testing.T) {
 	m, c := seedRemainingModelWithSamples(t, 60, now)
 	defer c.Close()
 
+	nowGenBeforeArm := m.nowGen
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
 	m = updated.(Model)
 	if !m.springActive || m.springKind != springKindZoom {
 		t.Fatalf("arm sanity: springActive=%v springKind=%d", m.springActive, m.springKind)
 	}
-	nowGenAfterArm := m.nowGen
+	// The animated arm must NOT gen-bump the now-tick chain: a bump paired with
+	// a re-arm only at settle is what orphaned the live edge when an abort
+	// skipped the settle. Leaving the chain alone is the fix (#373).
+	if m.nowGen != nowGenBeforeArm {
+		t.Errorf("arm: nowGen=%d, want %d unchanged (chain left live, not suppressed via bump)", m.nowGen, nowGenBeforeArm)
+	}
 
 	// Drive constructed springTickMsgs (the codebase pattern — never invoke the
 	// tick Cmd, which would real-sleep 16.7ms/frame). 600 ticks (10s @ 60fps)
@@ -205,14 +211,14 @@ func TestZoomSpring_SettlesAndRestoresSteadyState(t *testing.T) {
 	if m.springKind != springKindNone {
 		t.Errorf("after settle: springKind=%d, want springKindNone(%d)", m.springKind, springKindNone)
 	}
-	// Settle re-arms the live-advance now-tick: cmd is non-nil and nowGen is
-	// bumped. We do NOT invoke lastCmd — scheduleNowTick fires at the next
-	// bucket boundary (up to 1h away), so invoking it would block that long.
-	if lastCmd == nil {
-		t.Errorf("settle tick: cmd=nil, want now-tick re-arm")
+	// Settle stops the spring loop with no follow-up tick — idle TUI is
+	// zero-animation-cost. The now-tick chain was never broken, so it keeps
+	// advancing on its own; settle neither re-arms nor bumps nowGen.
+	if lastCmd != nil {
+		t.Errorf("settle tick: cmd=%v, want nil (no follow-up; now-tick chain already live)", lastCmd)
 	}
-	if m.nowGen == nowGenAfterArm {
-		t.Errorf("settle: nowGen=%d unchanged, want bumped (now-tick re-armed)", m.nowGen)
+	if m.nowGen != nowGenBeforeArm {
+		t.Errorf("settle: nowGen=%d, want %d unchanged (no suppress/re-arm cycle)", m.nowGen, nowGenBeforeArm)
 	}
 	// refreshChart ran at settle → steady-state full-canvas restored.
 	if m.lastCanvasW == 0 {
@@ -338,37 +344,63 @@ func TestZoomSpring_AbortedByWindowSize(t *testing.T) {
 	}
 }
 
-func TestZoomSpring_NowTickReArmedAtSettle(t *testing.T) {
+func TestZoomSpring_NowTickSuppressedMidSqueeze(t *testing.T) {
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
 	m, c := armZoom(t, now)
 	defer c.Close()
-	genAtArm := m.nowGen
 
-	// Mid-squeeze: a stale-cadence now-tick (gen before the arm bump) must be
-	// dropped — the arm bumped nowGen, so the old chain is dead.
-	updated, staleNow := m.Update(nowTickMsg{gen: genAtArm - 1})
+	// A live-advance now-tick that fires mid-squeeze must NOT hard-cut the
+	// squeeze (refreshChart would trip the abort block). It is advance-
+	// suppressed but still reschedules, so the chain keeps rolling and resumes
+	// advancing once the squeeze settles (#373).
+	updated, cmd := m.Update(nowTickMsg{gen: m.nowGen})
 	m = updated.(Model)
-	if staleNow != nil {
-		t.Errorf("stale now-tick mid-squeeze: cmd=%v, want nil (dropped)", staleNow)
+	if !m.springActive || m.springKind != springKindZoom {
+		t.Fatalf("now-tick mid-squeeze tore down the squeeze: springActive=%v springKind=%d", m.springActive, m.springKind)
 	}
+	if cmd == nil {
+		t.Errorf("now-tick mid-squeeze: cmd=nil, want a reschedule keeping the chain alive")
+	}
+}
 
-	// Drive to settle; the settle tick re-arms the live-advance now-tick: it
-	// bumps nowGen and returns a non-nil cmd. Don't invoke that cmd — it's a
-	// tea.Tick fired at the next bucket boundary (up to 1h away), so invoking
-	// it would block for that real duration.
-	var lastCmd tea.Cmd
-	for i := 0; i < 600 && m.springActive; i++ {
-		updated, lastCmd = m.Update(springTickMsg{gen: m.springGen})
-		m = updated.(Model)
+func TestZoomSpring_NowTickSurvivesAbort(t *testing.T) {
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name  string
+		abort tea.Msg
+	}{
+		{"RefreshMsg", RefreshMsg{}},
+		{"WindowSizeMsg", tea.WindowSizeMsg{Width: 100, Height: 30}},
+		{"UnitKey", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}}},
 	}
-	if m.springActive {
-		t.Fatalf("did not settle within 600 ticks")
-	}
-	if lastCmd == nil {
-		t.Fatalf("settle: cmd=nil, want now-tick re-arm")
-	}
-	if m.nowGen <= genAtArm {
-		t.Errorf("settle: nowGen=%d, want > %d (live-edge re-armed)", m.nowGen, genAtArm)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, c := armZoom(t, now)
+			defer c.Close()
+			// armZoom already pressed 'z'. The chain is live at this gen; a real
+			// now-tick carrying it is in flight.
+			armNowGen := m.nowGen
+
+			updated, _ := m.Update(tc.abort)
+			m = updated.(Model)
+
+			// The squeeze must be torn down…
+			if m.springKind == springKindZoom {
+				t.Errorf("after %s mid-squeeze: springKind still zoom, want torn down", tc.name)
+			}
+			// …but the now-tick chain must NOT be orphaned. The squeeze never
+			// bumped nowGen, so the in-flight tick is still valid; an abort that
+			// bumped it away (with no paired re-arm) is the #373 regression.
+			if m.nowGen != armNowGen {
+				t.Errorf("after %s: nowGen=%d, want %d (chain must stay at its scheduled gen)", tc.name, m.nowGen, armNowGen)
+			}
+			// The in-flight now-tick (gen == nowGen) still matches and drives the
+			// live edge — the chain is alive, not dead.
+			_, after := m.Update(nowTickMsg{gen: m.nowGen})
+			if after == nil {
+				t.Errorf("after %s: now-tick at gen %d dropped, want a live reschedule", tc.name, m.nowGen)
+			}
+		})
 	}
 }
 

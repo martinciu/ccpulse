@@ -138,6 +138,12 @@ func (m *Model) advanceSpringGrowing(gen int) tea.Cmd {
 		m.springActive = false
 		m.springIntro = false
 		m.springPhase = springIdle
+		// Reset springKind too: this settle sets springActive=false BEFORE
+		// refreshChart, so refreshChart's abort reset (guarded by springActive)
+		// is skipped here. Without this the tag would linger as springKindUnit
+		// after the animation ends, violating the "springActive ⇒ springKind
+		// reliable" invariant the zoom dispatch relies on (#373).
+		m.springKind = springKindNone
 		m.refreshChart()
 		return nil
 	}
@@ -186,6 +192,9 @@ func (m *Model) kickLateArrivalQuotaIntro() tea.Cmd {
 	m.springActive = true
 	m.springIntro = true
 	m.springPhase = springGrowing
+	// Same as beginIntroAnimation: keep springKind reliable while springActive
+	// (this late-arrival quota intro reuses the two-phase grow machinery) (#373).
+	m.springKind = springKindUnit
 	m.springGen++
 	gen := m.springGen
 	return tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
@@ -479,6 +488,10 @@ func (m *Model) beginIntroAnimation() {
 	m.springActive = true
 	m.springIntro = true
 	m.springPhase = springHolding
+	// Tag the in-flight machine so springKind is never springKindNone while
+	// springActive: the intro rides the two-phase (unit) spring machinery, so
+	// it routes through the springPhase switch, not the zoom dispatch (#373).
+	m.springKind = springKindUnit
 	m.springGen++
 
 	// Render the zero-bars hold frame synchronously so the next View()

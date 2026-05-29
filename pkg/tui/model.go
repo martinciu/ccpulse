@@ -510,11 +510,15 @@ func (m *Model) handleNowTick(msg nowTickMsg) tea.Cmd {
 		// rescheduling so duplicate chains can't accumulate (#311).
 		return nil
 	}
-	// Mirror RefreshMsg's intro guard: don't hard-cut the startup intro;
-	// its terminal refreshChart picks up the advance. refreshChart's
-	// wasPinned/anchorTime block does the rest — pinned advances to the
-	// new right edge, scrolled stays anchored — for all three units.
-	if !m.springIntro {
+	// Don't hard-cut an animation that owns the viewport: the startup intro
+	// (springIntro) and the zoom squeeze (springKindZoom) both freeze the right
+	// edge and repaint it themselves. We still reschedule below, so the chain
+	// stays alive and the advance resumes the instant the animation settles —
+	// the squeeze deliberately leaves the chain un-bumped so an abort can't
+	// orphan it (#373). refreshChart's wasPinned/anchorTime block does the rest
+	// — pinned advances to the new right edge, scrolled stays anchored.
+	animatingViewport := m.springIntro || (m.springActive && m.springKind == springKindZoom)
+	if !animatingViewport {
 		m.refreshChart()
 	}
 	// One log line per boundary crossing — the live-advance cadence is
