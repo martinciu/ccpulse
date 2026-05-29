@@ -136,10 +136,11 @@ type PricingVersionStat struct {
 }
 
 // PricingVersionStats returns one entry per distinct pricing_version found in
-// messages, plus a per-version count of rows that disagree with
-// hist.TableAt(ts).Version. Entries are sorted by Version ascending.
+// messages, plus a per-version count of rows that disagree with the
+// fall-forward-resolved version (hist.VersionFor). Entries are sorted by Version
+// ascending.
 func (c *Cache) PricingVersionStats(ctx context.Context, hist pricing.History) ([]PricingVersionStat, error) {
-	rows, err := c.db.QueryContext(ctx, `SELECT pricing_version, ts FROM messages`)
+	rows, err := c.db.QueryContext(ctx, `SELECT pricing_version, ts, model FROM messages`)
 	if err != nil {
 		return nil, fmt.Errorf("pricing version stats: query: %w", err)
 	}
@@ -149,8 +150,8 @@ func (c *Cache) PricingVersionStats(ctx context.Context, hist pricing.History) (
 	totals := map[string]int{}
 	staleByVer := map[string]int{}
 	for rows.Next() {
-		var ver, tsStr string
-		if err := rows.Scan(&ver, &tsStr); err != nil {
+		var ver, tsStr, model string
+		if err := rows.Scan(&ver, &tsStr, &model); err != nil {
 			return nil, fmt.Errorf("pricing version stats: scan: %w", err)
 		}
 		totals[ver]++
@@ -158,7 +159,7 @@ func (c *Cache) PricingVersionStats(ctx context.Context, hist pricing.History) (
 		if err != nil {
 			continue
 		}
-		if hist.TableAt(ts).Version != ver {
+		if hist.VersionFor(ts, model) != ver {
 			staleByVer[ver]++
 		}
 	}

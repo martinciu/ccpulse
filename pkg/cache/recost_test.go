@@ -248,6 +248,35 @@ func TestPricingVersionStats(t *testing.T) {
 	}
 }
 
+func TestPricingVersionStats_FallForwardNotStale(t *testing.T) {
+	c := mustOpenTempCache(t)
+	hist := twoVersionHistory(t)
+	// haiku@2026-05-09 falls forward to 2026-05-10 at ingest, so it is stamped
+	// 2026-05-10 even though TableAt(2026-05-09) == 2026-05-09.
+	seedRow(t, c, hist, parse.Message{
+		SessionID: "s1", ProjectSlug: "p", Role: "assistant",
+		Model: "claude-haiku-4-5", InputTokens: 1_000_000,
+		Timestamp: time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC),
+	})
+
+	got, err := c.PricingVersionStats(t.Context(), hist)
+	if err != nil {
+		t.Fatalf("PricingVersionStats: %v", err)
+	}
+	var found bool
+	for _, s := range got {
+		if s.Version == "2026-05-10" {
+			found = true
+			if s.Stale != 0 {
+				t.Errorf("fall-forward row counted stale: %+v (TableAt(2026-05-09)=2026-05-09 but VersionFor=2026-05-10)", s)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("no 2026-05-10 entry; got %+v", got)
+	}
+}
+
 func TestRecost_ContextCancellation(t *testing.T) {
 	c := mustOpenTempCache(t)
 	hist := twoVersionHistory(t)
