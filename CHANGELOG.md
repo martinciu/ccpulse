@@ -3,14 +3,6 @@
 All notable changes to ccpulse are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
-## [0.4.0] — 2026-05-29
-
-### Fixed
-- Usage of a model dated before the snapshot that first listed its rate is now
-  costed using that earliest-known rate (fall-forward) instead of being silently
-  dropped to $0; existing caches re-cost automatically on the next launch after
-  upgrade (#368)
-
 ## [0.3.0] — 2026-05-29
 
 ### Added
