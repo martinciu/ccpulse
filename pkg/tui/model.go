@@ -635,45 +635,7 @@ func (m Model) View() string {
 	if m.showHelp {
 		body = m.help.FullHelpView(m.keys.FullHelp())
 	} else {
-		rawBody := m.viewport.View()
-		switch {
-		case m.springActive:
-			if m.springKind == springKindZoom {
-				// Zoom squeeze: the line is fully present throughout (only
-				// the visible window moves), so y-ticks render at full fade.
-				body = overlayYTicks(rawBody, m.chartHeight(), 1.0)
-				break
-			}
-			var maxR float64
-			for _, r := range m.springRatios {
-				maxR = max(maxR, r)
-			}
-			fade := maxR
-			labelUnit := chartUnit(m.unitIdx)
-			labelPeak := m.peak
-			// Determine whether the current rendered frame is a line chart.
-			// Exit phase shows OLD type; hold/enter shows NEW type.
-			renderingLine := false
-			switch m.springPhase {
-			case springShrinking:
-				renderingLine = m.oldIsLine
-				if !renderingLine {
-					labelUnit = chartUnit(m.oldUnitIdx)
-					labelPeak = m.oldPeak
-				}
-			default: // springHolding, springGrowing
-				renderingLine = m.newIsLine
-			}
-			if renderingLine {
-				body = overlayYTicks(rawBody, m.chartHeight(), fade)
-			} else {
-				body = overlayYLabel(rawBody, labelPeak, labelUnit, m.chartHeight(), fade, ZoomLevels[m.zoomIdx].hasInBarNumbers())
-			}
-		case chartUnit(m.unitIdx) == chartUnitRemaining:
-			body = overlayYTicks(rawBody, m.chartHeight(), 1.0)
-		default:
-			body = overlayYLabel(rawBody, m.peak, chartUnit(m.unitIdx), m.chartHeight(), 1.0, ZoomLevels[m.zoomIdx].hasInBarNumbers())
-		}
+		body = m.renderChartBody(m.viewport.View())
 	}
 	footer := m.renderFooter()
 	out := lipgloss.JoinVertical(lipgloss.Left, header, sep, body, sep, footer)
@@ -686,6 +648,54 @@ func (m Model) View() string {
 			"show_help", m.showHelp)
 	}
 	return out
+}
+
+// renderChartBody overlays the Y-axis labels/ticks onto the viewport's chart
+// body, picking the variant for the current animation/unit state:
+//   - zoom squeeze: full-fade y-ticks — only the visible window moves (#373)
+//   - unit-toggle / intro spring: fade the OLD/NEW axis by the spring envelope
+//   - steady remaining (line) mode: full y-ticks
+//   - steady bar mode: full y-label at the active unit's peak
+//
+// Split out of View() so each stays under the cyclomatic-complexity gate; the
+// switch is evaluated top-down, so the zoom case must precede the generic
+// springActive case.
+func (m Model) renderChartBody(rawBody string) string {
+	switch {
+	case m.springActive && m.springKind == springKindZoom:
+		// Zoom squeeze: the line is fully present throughout (only the
+		// visible window moves), so y-ticks render at full fade.
+		return overlayYTicks(rawBody, m.chartHeight(), 1.0)
+	case m.springActive:
+		var maxR float64
+		for _, r := range m.springRatios {
+			maxR = max(maxR, r)
+		}
+		fade := maxR
+		labelUnit := chartUnit(m.unitIdx)
+		labelPeak := m.peak
+		// Determine whether the current rendered frame is a line chart.
+		// Exit phase shows OLD type; hold/enter shows NEW type.
+		renderingLine := false
+		switch m.springPhase {
+		case springShrinking:
+			renderingLine = m.oldIsLine
+			if !renderingLine {
+				labelUnit = chartUnit(m.oldUnitIdx)
+				labelPeak = m.oldPeak
+			}
+		default: // springHolding, springGrowing
+			renderingLine = m.newIsLine
+		}
+		if renderingLine {
+			return overlayYTicks(rawBody, m.chartHeight(), fade)
+		}
+		return overlayYLabel(rawBody, labelPeak, labelUnit, m.chartHeight(), fade, ZoomLevels[m.zoomIdx].hasInBarNumbers())
+	case chartUnit(m.unitIdx) == chartUnitRemaining:
+		return overlayYTicks(rawBody, m.chartHeight(), 1.0)
+	default:
+		return overlayYLabel(rawBody, m.peak, chartUnit(m.unitIdx), m.chartHeight(), 1.0, ZoomLevels[m.zoomIdx].hasInBarNumbers())
+	}
 }
 
 // renderFooter composes the bottom line: keybinding help on the left,

@@ -245,12 +245,12 @@ func TestZoomSpring_WindowLerpsTowardNew(t *testing.T) {
 	}
 }
 
-// armZoom drives a freshly-seeded remaining model through one 'z' press and
-// returns the model mid-squeeze. Drive subsequent frames with
+// armZoom drives a freshly-seeded remaining model (60 samples) through one 'z'
+// press and returns the model mid-squeeze. Drive subsequent frames with
 // m.Update(springTickMsg{gen: m.springGen}) — never invoke the tick Cmd.
-func armZoom(t *testing.T, n int, now time.Time) (Model, *cache.Cache) {
+func armZoom(t *testing.T, now time.Time) (Model, *cache.Cache) {
 	t.Helper()
-	m, c := seedRemainingModelWithSamples(t, n, now)
+	m, c := seedRemainingModelWithSamples(t, 60, now)
 	// Model the settled-intro steady state. The open-path slide-in fires once
 	// at startup (first WindowSizeMsg/RefreshMsg with data) and is long
 	// settled by the time a user toggles to remaining mode and presses 'z'.
@@ -269,7 +269,7 @@ func armZoom(t *testing.T, n int, now time.Time) (Model, *cache.Cache) {
 
 func TestZoomSpring_AbortedBySecondZoom(t *testing.T) {
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
-	m, c := armZoom(t, 60, now)
+	m, c := armZoom(t, now)
 	defer c.Close()
 	gen1 := m.springGen
 	z1 := m.zoomIdx
@@ -298,7 +298,7 @@ func TestZoomSpring_AbortedBySecondZoom(t *testing.T) {
 
 func TestZoomSpring_AbortedByUnitKey(t *testing.T) {
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
-	m, c := armZoom(t, 60, now)
+	m, c := armZoom(t, now)
 	defer c.Close()
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
@@ -314,7 +314,7 @@ func TestZoomSpring_AbortedByUnitKey(t *testing.T) {
 
 func TestZoomSpring_AbortedByRefreshMsg(t *testing.T) {
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
-	m, c := armZoom(t, 60, now)
+	m, c := armZoom(t, now)
 	defer c.Close()
 
 	updated, _ := m.Update(RefreshMsg{})
@@ -327,7 +327,7 @@ func TestZoomSpring_AbortedByRefreshMsg(t *testing.T) {
 
 func TestZoomSpring_AbortedByWindowSize(t *testing.T) {
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
-	m, c := armZoom(t, 60, now)
+	m, c := armZoom(t, now)
 	defer c.Close()
 
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
@@ -340,7 +340,7 @@ func TestZoomSpring_AbortedByWindowSize(t *testing.T) {
 
 func TestZoomSpring_NowTickReArmedAtSettle(t *testing.T) {
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
-	m, c := armZoom(t, 60, now)
+	m, c := armZoom(t, now)
 	defer c.Close()
 	genAtArm := m.nowGen
 
@@ -374,7 +374,7 @@ func TestZoomSpring_NowTickReArmedAtSettle(t *testing.T) {
 
 func TestZoomSpring_ViewRendersLineMidSqueeze(t *testing.T) {
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
-	m, c := armZoom(t, 60, now)
+	m, c := armZoom(t, now)
 	defer c.Close()
 	// Deliver one frame, then render.
 	updated, _ := m.Update(springTickMsg{gen: m.springGen})
