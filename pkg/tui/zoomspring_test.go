@@ -244,3 +244,96 @@ func TestZoomSpring_WindowLerpsTowardNew(t *testing.T) {
 		}
 	}
 }
+
+// armZoom drives a freshly-seeded remaining model through one 'z' press and
+// returns the model mid-squeeze. Drive subsequent frames with
+// m.Update(springTickMsg{gen: m.springGen}) — never invoke the tick Cmd.
+func armZoom(t *testing.T, n int, now time.Time) (Model, *cache.Cache) {
+	t.Helper()
+	m, c := seedRemainingModelWithSamples(t, n, now)
+	// Model the settled-intro steady state. The open-path slide-in fires once
+	// at startup (first WindowSizeMsg/RefreshMsg with data) and is long
+	// settled by the time a user toggles to remaining mode and presses 'z'.
+	// The seed helper calls refreshChart directly (bypassing maybeArmIntro),
+	// so introPending lingers true; clearing it prevents a RefreshMsg/
+	// WindowSizeMsg abort from re-arming the intro and masking the teardown.
+	m.introPending = false
+	m.quotaIntroPending = false
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
+	m = updated.(Model)
+	if !m.springActive || m.springKind != springKindZoom {
+		t.Fatalf("armZoom sanity: springActive=%v springKind=%d", m.springActive, m.springKind)
+	}
+	return m, c
+}
+
+func TestZoomSpring_AbortedBySecondZoom(t *testing.T) {
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	m, c := armZoom(t, 60, now)
+	defer c.Close()
+	gen1 := m.springGen
+	z1 := m.zoomIdx
+
+	// Deliver one frame, then press 'z' again mid-squeeze.
+	updated, _ := m.Update(springTickMsg{gen: m.springGen})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
+	m = updated.(Model)
+
+	if m.springGen == gen1 {
+		t.Errorf("second 'z': springGen unchanged (%d) — stale tick not superseded", gen1)
+	}
+	if m.zoomIdx != (z1+1)%len(ZoomLevels) {
+		t.Errorf("second 'z': zoomIdx=%d, want %d", m.zoomIdx, (z1+1)%len(ZoomLevels))
+	}
+	if !m.springActive || m.springKind != springKindZoom {
+		t.Errorf("second 'z': springActive=%v springKind=%d, want active zoom", m.springActive, m.springKind)
+	}
+	// The first generation's still-pending tick must be dropped.
+	_, staleCmd := m.Update(springTickMsg{gen: gen1})
+	if staleCmd != nil {
+		t.Errorf("stale gen-%d tick: cmd=%v, want nil (dropped)", gen1, staleCmd)
+	}
+}
+
+func TestZoomSpring_AbortedByUnitKey(t *testing.T) {
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	m, c := armZoom(t, 60, now)
+	defer c.Close()
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	m = updated.(Model)
+
+	// 'u' from remaining wraps to cost (a bar mode). beginUnitAnimation →
+	// refreshChart aborts the zoom; the unit toggle then takes over (or snaps
+	// if its own guards bail). Either way springKind must no longer be zoom.
+	if m.springKind == springKindZoom {
+		t.Errorf("after 'u' mid-zoom: springKind still zoom, want torn down")
+	}
+}
+
+func TestZoomSpring_AbortedByRefreshMsg(t *testing.T) {
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	m, c := armZoom(t, 60, now)
+	defer c.Close()
+
+	updated, _ := m.Update(RefreshMsg{})
+	m = updated.(Model)
+
+	if m.springActive || m.springKind != springKindNone {
+		t.Errorf("after RefreshMsg mid-zoom: springActive=%v springKind=%d, want hard-cut", m.springActive, m.springKind)
+	}
+}
+
+func TestZoomSpring_AbortedByWindowSize(t *testing.T) {
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	m, c := armZoom(t, 60, now)
+	defer c.Close()
+
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = updated.(Model)
+
+	if m.springActive || m.springKind != springKindNone {
+		t.Errorf("after WindowSizeMsg mid-zoom: springActive=%v springKind=%d, want hard-cut", m.springActive, m.springKind)
+	}
+}
