@@ -67,9 +67,23 @@ func (m *Model) handleZoomKey() tea.Cmd {
 		return m.snapZoom()
 	}
 
-	// Snapshot the OLD on-screen window BEFORE advancing the zoom — reads the
-	// pre-refresh lastChart*/offset geometry at the OLD zoom.
-	oFrom, oTo := m.visibleWindow()
+	// Snapshot the OLD on-screen window BEFORE advancing the zoom. On a fresh
+	// arm that's the steady-state visible window. But on a rapid second 'z'
+	// while a squeeze is still in flight, visibleWindow() would read the FIRST
+	// press's settled target geometry — refreshChart re-pinned lastChart*/offset
+	// at the first arm, and the in-flight lerp only repaints viewport content, it
+	// never updates those shadows — snapping the new squeeze's frame 0 to the
+	// first target. Start the new squeeze from where the eye actually is (the
+	// live lerp position) so the hand-off is continuous (#373). Read it now,
+	// before refreshChart's abort block runs: that block resets springActive/
+	// springKind but deliberately leaves zoomSnap/zoomSpringR intact.
+	var oFrom, oTo time.Time
+	if m.springActive && m.springKind == springKindZoom {
+		oFrom = lerpTime(m.zoomSnap.oFrom, m.zoomSnap.nFrom, m.zoomSpringR)
+		oTo = lerpTime(m.zoomSnap.oTo, m.zoomSnap.nTo, m.zoomSpringR)
+	} else {
+		oFrom, oTo = m.visibleWindow()
+	}
 
 	m.zoomIdx = (m.zoomIdx + 1) % len(ZoomLevels)
 	m.refreshChart() // rebuild at NEW zoom; re-pins the right edge. On a first
@@ -103,24 +117,34 @@ func (m *Model) handleZoomKey() tea.Cmd {
 	m.springKind = springKindZoom
 	m.springGen++
 
-	// The live-advance now-tick chain is left intact on purpose — no nowGen
-	// bump. It stays alive throughout the squeeze and is advance-suppressed by
-	// handleNowTick's springKindZoom guard, so the frozen `now` still keeps the
-	// right edge stable. Never breaking the chain means an abort (RefreshMsg /
-	// WindowSizeMsg / 'u') can't orphan the live edge — it resumes the instant
-	// the squeeze settles, mirroring how the startup intro coexists with the
-	// now-tick. A gen bump here would have to be paired with a re-arm on EVERY
-	// teardown path; deferring the re-arm to settle alone left aborts orphaned
-	// (#373, #311).
+	// Re-arm the live-advance now-tick on the NEW zoom's cadence and bump nowGen
+	// so the old cadence's in-flight tick is dropped. Re-arming HERE (at the arm,
+	// not deferred to settle) keeps the chain both correctly-paced and
+	// un-orphanable:
+	//   - Cadence: scheduleNowTick reads ZoomLevels[m.zoomIdx] (already the new
+	//     zoom), so the chain follows the new cadence. Without it a zoom-in (e.g.
+	//     the 24h→15m cycle wrap) would leave the chain on the old, coarser
+	//     boundary and freeze the live edge on an idle TUI until that boundary
+	//     fires — up to ~24h, reintroducing the #311 stall (#373).
+	//   - No orphan: handleNowTick's springKindZoom guard advance-suppresses this
+	//     re-armed tick if it lands mid-squeeze (it reschedules without
+	//     refreshChart, so the frozen `now` keeps the right edge stable). Because
+	//     the chain is re-armed now rather than at settle, every teardown path
+	//     (settle OR abort) inherits a live, correctly-scheduled tick. The
+	//     earlier deferred-to-settle design is what left aborts orphaned (#311).
+	m.nowGen++
 
 	// Render frame 0 (= old window) synchronously so the next View() doesn't
 	// flash the refreshed full-canvas content before the first tick paints.
 	m.renderZoomFrame(oFrom, oTo)
 
 	gen := m.springGen
-	return tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
-		return springTickMsg{gen: gen}
-	})
+	return tea.Batch(
+		tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
+			return springTickMsg{gen: gen}
+		}),
+		m.scheduleNowTick(),
+	)
 }
 
 // snapZoom is the non-animated zoom path: advance the level, refresh, and
@@ -152,9 +176,10 @@ func (m *Model) renderZoomFrame(viewFrom, viewTo time.Time) {
 // toward r=1, lerp the visible window oWin→nWin, render windowed, and settle
 // when within phaseTransitionThreshold of the target. On settle it restores the
 // steady-state full canvas via refreshChart and stops the spring loop; the
-// live-advance now-tick chain (never gen-bumped by the squeeze) resumes on its
-// own (#311 coexistence). gen is the captured generation; the next tick carries
-// it so a superseding 'z'/'u' drops it.
+// live-advance now-tick chain (re-armed on the new cadence at arm time, see
+// handleZoomKey) is already live, so settle leaves it untouched (#311
+// coexistence). gen is the captured generation; the next tick carries it so a
+// superseding 'z'/'u' drops it.
 func (m *Model) handleZoomSpringTick(gen int) tea.Cmd {
 	r, vel := m.zoomSpring.Update(m.zoomSpringR, m.zoomSpringVel, 1.0)
 	m.zoomSpringR = r
@@ -165,10 +190,10 @@ func (m *Model) handleZoomSpringTick(gen int) tea.Cmd {
 		m.springActive = false
 		m.springKind = springKindNone
 		m.refreshChart() // restore the full scrollable canvas at the new zoom.
-		// The now-tick chain was never suppressed via a gen bump (see
-		// handleZoomKey), so it is still live and resumes advancing on its next
-		// fire — no re-arm here. Returning nil stops the spring loop so the idle
-		// TUI stays zero-animation-cost (#373).
+		// The now-tick chain was already re-armed on the new cadence at arm time
+		// (see handleZoomKey) and is still live, so settle neither bumps nor
+		// reschedules it — returning nil stops the spring loop, keeping the idle
+		// TUI zero-animation-cost (#373).
 		return nil
 	}
 

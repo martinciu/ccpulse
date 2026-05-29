@@ -88,6 +88,7 @@ func TestZoomKey_Remaining_Squeezes_Arms(t *testing.T) {
 		t.Fatalf("seed sanity: hasData=false, want true (samples seeded)")
 	}
 	startZoom := m.zoomIdx
+	startNowGen := m.nowGen
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
 	m = updated.(Model)
@@ -101,11 +102,26 @@ func TestZoomKey_Remaining_Squeezes_Arms(t *testing.T) {
 	if m.zoomIdx != (startZoom+1)%len(ZoomLevels) {
 		t.Errorf("after 'z': zoomIdx=%d, want %d", m.zoomIdx, (startZoom+1)%len(ZoomLevels))
 	}
-	if cmd == nil {
-		t.Fatalf("after 'z': cmd=nil, want a springTickMsg tea.Tick")
+	// The arm re-arms the live-advance now-tick on the NEW cadence (bumps nowGen)
+	// so a zoom-in doesn't leave the live edge frozen on the old, coarser
+	// boundary (#373).
+	if m.nowGen != startNowGen+1 {
+		t.Errorf("after 'z': nowGen=%d, want %d (now-tick re-armed on new cadence)", m.nowGen, startNowGen+1)
 	}
-	if _, ok := cmd().(springTickMsg); !ok {
-		t.Errorf("after 'z': cmd produced %T, want springTickMsg", cmd())
+	if cmd == nil {
+		t.Fatalf("after 'z': cmd=nil, want a tea.Batch(springTick, now-tick re-arm)")
+	}
+	// The arm batches the spring tick with the now-tick re-arm. Invoking the
+	// Batch Cmd yields a tea.BatchMsg (the child Cmds) WITHOUT running them, so
+	// this is safe — we must NOT invoke the now-tick child (scheduleNowTick blocks
+	// until the next bucket boundary). The spring tick's delivery is exercised by
+	// the drive-loop tests via constructed springTickMsg.
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("after 'z': cmd produced %T, want tea.BatchMsg", cmd())
+	}
+	if len(batch) != 2 {
+		t.Errorf("after 'z': batch has %d cmds, want 2 (spring tick + now-tick re-arm)", len(batch))
 	}
 }
 
@@ -189,11 +205,14 @@ func TestZoomSpring_SettlesAndRestoresSteadyState(t *testing.T) {
 	if !m.springActive || m.springKind != springKindZoom {
 		t.Fatalf("arm sanity: springActive=%v springKind=%d", m.springActive, m.springKind)
 	}
-	// The animated arm must NOT gen-bump the now-tick chain: a bump paired with
-	// a re-arm only at settle is what orphaned the live edge when an abort
-	// skipped the settle. Leaving the chain alone is the fix (#373).
-	if m.nowGen != nowGenBeforeArm {
-		t.Errorf("arm: nowGen=%d, want %d unchanged (chain left live, not suppressed via bump)", m.nowGen, nowGenBeforeArm)
+	// The animated arm re-arms the now-tick on the NEW cadence (bumps nowGen
+	// once) so a zoom-in doesn't strand the live edge on the old coarser
+	// boundary. The springKindZoom guard in handleNowTick advance-suppresses any
+	// mid-squeeze fire, and re-arming at arm (not settle) keeps every abort path
+	// from orphaning the chain (#373, #311).
+	nowGenAfterArm := m.nowGen
+	if nowGenAfterArm != nowGenBeforeArm+1 {
+		t.Errorf("arm: nowGen=%d, want %d (now-tick re-armed once on new cadence)", nowGenAfterArm, nowGenBeforeArm+1)
 	}
 
 	// Drive constructed springTickMsgs (the codebase pattern — never invoke the
@@ -212,13 +231,13 @@ func TestZoomSpring_SettlesAndRestoresSteadyState(t *testing.T) {
 		t.Errorf("after settle: springKind=%d, want springKindNone(%d)", m.springKind, springKindNone)
 	}
 	// Settle stops the spring loop with no follow-up tick — idle TUI is
-	// zero-animation-cost. The now-tick chain was never broken, so it keeps
-	// advancing on its own; settle neither re-arms nor bumps nowGen.
+	// zero-animation-cost. The now-tick chain was already re-armed at arm, so
+	// settle neither re-arms nor bumps nowGen again.
 	if lastCmd != nil {
-		t.Errorf("settle tick: cmd=%v, want nil (no follow-up; now-tick chain already live)", lastCmd)
+		t.Errorf("settle tick: cmd=%v, want nil (no follow-up; now-tick chain already re-armed at arm)", lastCmd)
 	}
-	if m.nowGen != nowGenBeforeArm {
-		t.Errorf("settle: nowGen=%d, want %d unchanged (no suppress/re-arm cycle)", m.nowGen, nowGenBeforeArm)
+	if m.nowGen != nowGenAfterArm {
+		t.Errorf("settle: nowGen=%d, want %d unchanged since arm (re-arm happens at arm, not settle)", m.nowGen, nowGenAfterArm)
 	}
 	// refreshChart ran at settle → steady-state full-canvas restored.
 	if m.lastCanvasW == 0 {
@@ -377,8 +396,9 @@ func TestZoomSpring_NowTickSurvivesAbort(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			m, c := armZoom(t, now)
 			defer c.Close()
-			// armZoom already pressed 'z'. The chain is live at this gen; a real
-			// now-tick carrying it is in flight.
+			// armZoom already pressed 'z'. The arm re-armed the now-tick on the
+			// new cadence and bumped nowGen, so a real now-tick carrying THIS gen
+			// is in flight.
 			armNowGen := m.nowGen
 
 			updated, _ := m.Update(tc.abort)
@@ -388,9 +408,11 @@ func TestZoomSpring_NowTickSurvivesAbort(t *testing.T) {
 			if m.springKind == springKindZoom {
 				t.Errorf("after %s mid-squeeze: springKind still zoom, want torn down", tc.name)
 			}
-			// …but the now-tick chain must NOT be orphaned. The squeeze never
-			// bumped nowGen, so the in-flight tick is still valid; an abort that
-			// bumped it away (with no paired re-arm) is the #373 regression.
+			// …but the now-tick chain must NOT be orphaned. The arm re-armed it at
+			// arm time (not deferred to settle), so an abort that skips settle
+			// still leaves a live, correctly-scheduled tick — nowGen is unchanged
+			// across the abort. Orphaning the chain here was the #373/#311
+			// regression.
 			if m.nowGen != armNowGen {
 				t.Errorf("after %s: nowGen=%d, want %d (chain must stay at its scheduled gen)", tc.name, m.nowGen, armNowGen)
 			}
@@ -401,6 +423,68 @@ func TestZoomSpring_NowTickSurvivesAbort(t *testing.T) {
 				t.Errorf("after %s: now-tick at gen %d dropped, want a live reschedule", tc.name, m.nowGen)
 			}
 		})
+	}
+}
+
+func TestZoomSpring_ReArmsNowTickOnNewCadence(t *testing.T) {
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	m, c := seedRemainingModelWithSamples(t, 60, now)
+	defer c.Close()
+	gen0 := m.nowGen
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
+	m = updated.(Model)
+	if !m.springActive || m.springKind != springKindZoom {
+		t.Fatalf("arm sanity: springActive=%v springKind=%d", m.springActive, m.springKind)
+	}
+	// The animated arm re-arms the live-advance now-tick on the NEW zoom's
+	// cadence (scheduleNowTick reads the already-advanced zoomIdx), bumping
+	// nowGen. Mirrors the snap path's TestZoom_RearmsNowTick. Without the re-arm,
+	// a zoom-in (e.g. the 24h→15m cycle wrap) leaves the chain on the old,
+	// coarser boundary and freezes the live edge on an idle TUI (#373).
+	if m.nowGen != gen0+1 {
+		t.Errorf("animated zoom did not bump nowGen: %d → %d, want +1", gen0, m.nowGen)
+	}
+	// The pre-arm tick is now stale and must be dropped so chains can't stack.
+	_, staleCmd := m.Update(nowTickMsg{gen: gen0})
+	if staleCmd != nil {
+		t.Error("pre-arm (stale-gen) nowTickMsg should be dropped after re-arm")
+	}
+}
+
+func TestZoomSpring_SecondZoomStartsFromLivePosition(t *testing.T) {
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	m, c := armZoom(t, now)
+	defer c.Close()
+
+	// Advance a few frames so the first squeeze is mid-lerp (r strictly in (0,1)).
+	for range 5 {
+		updated, _ := m.Update(springTickMsg{gen: m.springGen})
+		m = updated.(Model)
+	}
+	if m.zoomSpringR <= 0 || m.zoomSpringR >= 1 {
+		t.Fatalf("need mid-lerp r in (0,1), got %v", m.zoomSpringR)
+	}
+	snap1 := m.zoomSnap
+	livePos := lerpTime(snap1.oFrom, snap1.nFrom, m.zoomSpringR)
+
+	// Second 'z' mid-squeeze.
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
+	m = updated.(Model)
+	if !m.springActive || m.springKind != springKindZoom {
+		t.Fatalf("second 'z' sanity: springActive=%v springKind=%d", m.springActive, m.springKind)
+	}
+
+	// The new squeeze must START from the live lerp position of the aborted first
+	// squeeze — not snap to the first squeeze's settled target (snap1.nFrom),
+	// which is what visibleWindow() would return from the re-pinned lastChart*
+	// geometry. A continuous hand-off, per the review-focus note's edge case
+	// (#373).
+	if !m.zoomSnap.oFrom.Equal(livePos) {
+		t.Errorf("second 'z' oFrom = %v, want live lerp position %v", m.zoomSnap.oFrom, livePos)
+	}
+	if m.zoomSnap.oFrom.Equal(snap1.nFrom) {
+		t.Errorf("second 'z' oFrom snapped to first squeeze's settled target %v (the bug)", snap1.nFrom)
 	}
 }
 
