@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/martinciu/ccpulse/pkg/anthro"
 	"github.com/martinciu/ccpulse/pkg/parse"
 	"github.com/martinciu/ccpulse/pkg/pricing"
 )
@@ -284,5 +285,90 @@ func TestOpen_SchemaMismatch_LosesToConcurrentHolder(t *testing.T) {
 	_, err = Open(t.Context(), path)
 	if !errors.Is(err, ErrLockHeld) {
 		t.Fatalf("Open with schema mismatch + concurrent SH holder: got %v, want ErrLockHeld", err)
+	}
+}
+
+func TestLockedRebuild_PreservesUsageSamples(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.db")
+
+	c, err := Open(t.Context(), path)
+	if err != nil {
+		t.Fatalf("seed Open: %v", err)
+	}
+	u := anthro.Usage{FiveHour: &anthro.Bucket{Utilization: 42.5}}
+	when := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	if err := c.RecordUsageSample(t.Context(), u, when); err != nil {
+		t.Fatalf("seed RecordUsageSample: %v", err)
+	}
+	// Force a schema mismatch so the next Open dispatches to LockedRebuild.
+	if _, err := c.DB().ExecContext(t.Context(), `UPDATE meta SET value = '0' WHERE key = 'schema_version'`); err != nil {
+		t.Fatalf("seed UPDATE: %v", err)
+	}
+	if err := c.Close(); err != nil {
+		t.Fatalf("seed Close: %v", err)
+	}
+
+	c2, err := Open(t.Context(), path)
+	if err != nil {
+		t.Fatalf("reopen (rebuild): %v", err)
+	}
+	defer c2.Close()
+
+	var n int
+	var pct float64
+	if err := c2.DB().QueryRowContext(t.Context(),
+		`SELECT count(*), COALESCE(MAX(five_hour_pct),0) FROM usage_samples`).Scan(&n, &pct); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("usage_samples count after rebuild = %d, want 1 (preserved)", n)
+	}
+	if pct != 42.5 {
+		t.Errorf("five_hour_pct after rebuild = %v, want 42.5", pct)
+	}
+}
+
+func TestLockedRebuild_PreservesMetaExceptSchema(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.db")
+
+	c, err := Open(t.Context(), path)
+	if err != nil {
+		t.Fatalf("seed Open: %v", err)
+	}
+	if _, err := c.DB().ExecContext(t.Context(),
+		`INSERT OR REPLACE INTO meta(key,value) VALUES('last_recost_history_fingerprint','v1,v2')`); err != nil {
+		t.Fatalf("seed meta insert: %v", err)
+	}
+	if _, err := c.DB().ExecContext(t.Context(), `UPDATE meta SET value = '0' WHERE key = 'schema_version'`); err != nil {
+		t.Fatalf("seed UPDATE: %v", err)
+	}
+	if err := c.Close(); err != nil {
+		t.Fatalf("seed Close: %v", err)
+	}
+
+	c2, err := Open(t.Context(), path)
+	if err != nil {
+		t.Fatalf("reopen (rebuild): %v", err)
+	}
+	defer c2.Close()
+
+	var fp string
+	if err := c2.DB().QueryRowContext(t.Context(),
+		`SELECT value FROM meta WHERE key = 'last_recost_history_fingerprint'`).Scan(&fp); err != nil {
+		t.Fatalf("fingerprint missing after rebuild: %v", err)
+	}
+	if fp != "v1,v2" {
+		t.Errorf("fingerprint = %q, want v1,v2 (preserved)", fp)
+	}
+
+	var sv string
+	if err := c2.DB().QueryRowContext(t.Context(),
+		`SELECT value FROM meta WHERE key = 'schema_version'`).Scan(&sv); err != nil {
+		t.Fatal(err)
+	}
+	if sv != SchemaVersion {
+		t.Errorf("schema_version = %q, want %q (fresh, not the seeded 0)", sv, SchemaVersion)
 	}
 }

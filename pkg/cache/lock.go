@@ -2,10 +2,12 @@ package cache
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"syscall"
 
 	"github.com/martinciu/ccpulse/pkg/secfile"
@@ -76,6 +78,7 @@ func LockedRebuild(ctx context.Context, path string) (*Cache, error) {
 	if err != nil {
 		return nil, err
 	}
+	preserved := snapshotPreservable(ctx, path)
 	if err := removeWithSiblings(path); err != nil {
 		lockFile.Close()
 		return nil, fmt.Errorf("rebuild remove: %w", err)
@@ -84,6 +87,11 @@ func LockedRebuild(ctx context.Context, path string) (*Cache, error) {
 	if err != nil {
 		lockFile.Close()
 		return nil, err
+	}
+	if err := restorePreservable(ctx, db, preserved); err != nil {
+		// Best-effort: the messages table is the load-bearing one. Log and
+		// continue rather than failing the rebuild over quota-history.
+		slog.Warn("cache.preserveAcrossRebuild", "err", err)
 	}
 	// Atomic EX → SH downgrade. flock(2): "subsequent flock()
 	// calls on an already locked file will convert an existing
@@ -95,4 +103,116 @@ func LockedRebuild(ctx context.Context, path string) (*Cache, error) {
 		return nil, fmt.Errorf("downgrade cache lock %s: %w", path+".lock", err)
 	}
 	return &Cache{db: db, lockFile: lockFile}, nil
+}
+
+// preservedTable is the column names plus row tuples read from a table
+// that must survive a schema-bump rebuild.
+type preservedTable struct {
+	cols []string
+	rows [][]any
+}
+
+// rebuildSnapshot holds the tables/keys carried across a LockedRebuild
+// destroy+recreate — everything NOT derivable from transcripts. Today:
+// the Anthropic quota-history (usage_samples, issue #22) and meta rows
+// other than schema_version (chiefly the recost fingerprint).
+type rebuildSnapshot struct {
+	usageSamples preservedTable
+	meta         preservedTable
+}
+
+// snapshotPreservable reads the preservable tables from the existing DB at
+// path into memory, before removeWithSiblings deletes the file. Best-effort:
+// a missing file (fresh launch) or any read error yields the zero value, so
+// the rebuild proceeds with nothing preserved rather than failing.
+//
+// Takes no lock — the caller (LockedRebuild) already holds LOCK_EX on the
+// .lock sibling, and flock guards the .lock file, not the DB file.
+func snapshotPreservable(ctx context.Context, path string) rebuildSnapshot {
+	var snap rebuildSnapshot
+	if _, err := os.Stat(path); err != nil {
+		return snap // fresh path — nothing to preserve, and don't create a phantom file
+	}
+	db, err := sql.Open("sqlite", path+"?"+cachePragmas)
+	if err != nil {
+		return snap
+	}
+	defer db.Close()
+	snap.usageSamples = snapshotTable(ctx, db, "usage_samples", "")
+	snap.meta = snapshotTable(ctx, db, "meta", "key <> 'schema_version'")
+	return snap
+}
+
+// snapshotTable runs SELECT * (optionally filtered by where) and returns the
+// column names and row tuples. table and where are compile-time constants
+// from snapshotPreservable, never user input. Any error yields an empty
+// preservedTable — preserve-all-or-nothing per table.
+func snapshotTable(ctx context.Context, db *sql.DB, table, where string) preservedTable {
+	q := "SELECT * FROM " + table
+	if where != "" {
+		q += " WHERE " + where
+	}
+	//nolint:gosec // G201: table/where are compile-time constants, not user input
+	rows, err := db.QueryContext(ctx, q)
+	if err != nil {
+		return preservedTable{}
+	}
+	defer rows.Close()
+	cols, err := rows.Columns()
+	if err != nil {
+		return preservedTable{}
+	}
+	var out [][]any
+	for rows.Next() {
+		vals := make([]any, len(cols))
+		ptrs := make([]any, len(cols))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			return preservedTable{}
+		}
+		out = append(out, vals)
+	}
+	if err := rows.Err(); err != nil {
+		return preservedTable{}
+	}
+	return preservedTable{cols: cols, rows: out}
+}
+
+// restorePreservable re-inserts the snapshot into the freshly-rebuilt DB.
+// Best-effort and idempotent (INSERT OR REPLACE): a partial failure returns
+// an error for the caller to log, but never blocks the rebuild.
+func restorePreservable(ctx context.Context, db *sql.DB, snap rebuildSnapshot) error {
+	if err := restoreTable(ctx, db, "usage_samples", snap.usageSamples); err != nil {
+		return fmt.Errorf("restore usage_samples: %w", err)
+	}
+	if err := restoreTable(ctx, db, "meta", snap.meta); err != nil {
+		return fmt.Errorf("restore meta: %w", err)
+	}
+	return nil
+}
+
+// restoreTable INSERT OR REPLACEs the preserved rows back into table. A no-op
+// when there are no rows. table and pt.cols originate from snapshotTable
+// (compile-time table name + the DB's own column names), never user input.
+func restoreTable(ctx context.Context, db *sql.DB, table string, pt preservedTable) error {
+	if len(pt.rows) == 0 {
+		return nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(pt.cols)), ",")
+	//nolint:gosec // G201: table + column names come from the DB schema, not user input
+	q := fmt.Sprintf("INSERT OR REPLACE INTO %s (%s) VALUES (%s)",
+		table, strings.Join(pt.cols, ","), placeholders)
+	stmt, err := db.PrepareContext(ctx, q)
+	if err != nil {
+		return fmt.Errorf("prepare: %w", err)
+	}
+	defer stmt.Close()
+	for _, row := range pt.rows {
+		if _, err := stmt.ExecContext(ctx, row...); err != nil {
+			return fmt.Errorf("exec: %w", err)
+		}
+	}
+	return nil
 }
