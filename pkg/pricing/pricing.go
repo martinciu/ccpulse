@@ -113,12 +113,52 @@ func (h History) TableAt(ts time.Time) Table {
 	return h.entries[idx-1]
 }
 
-// CostFor resolves the historical Table for m.Timestamp and returns cost,
-// the resolved version string, and whether the model was missing.
+// resolveTable returns the Table whose rates apply to (ts, model). It starts at
+// the date-resolved table (the same entry TableAt picks) and, if that table does
+// not contain model, walks FORWARD through later entries (ascending Version),
+// returning the earliest one that does. found is false only when no entry
+// at-or-after the date-resolved one knows model; in that case the returned Table
+// is the date-resolved one, so callers stamp a sensible version.
+//
+// The walk is forward-only by design: a model present only in an entry EARLIER
+// than the date-resolved one would be a retired rate, and applying it backward
+// is unsafe (issue #368).
+func (h History) resolveTable(ts time.Time, model string) (Table, bool) {
+	key := ts.UTC().Format("2006-01-02")
+	idx := sort.Search(len(h.entries), func(i int) bool {
+		return h.entries[i].Version > key
+	})
+	if idx > 0 {
+		idx-- // date-resolved index (matches TableAt)
+	}
+	for j := idx; j < len(h.entries); j++ {
+		if _, ok := h.entries[j].Models[model]; ok {
+			return h.entries[j], true
+		}
+	}
+	return h.entries[idx], false
+}
+
+// CostFor resolves the applicable Table for m via fall-forward (see resolveTable)
+// and returns cost, the stamped version string, and whether the model was missing
+// from every snapshot at-or-after the date-resolved one. The stamped version is
+// the snapshot whose rates produced the cost — the fall-forward source when the
+// date-resolved snapshot predates the model.
 func (h History) CostFor(m parse.Message) (cost float64, version string, unknown bool) {
-	tab := h.TableAt(m.Timestamp)
-	c, u := tab.CostFor(m)
-	return c, tab.Version, u
+	tab, found := h.resolveTable(m.Timestamp, m.Model)
+	if !found {
+		return 0, tab.Version, true
+	}
+	c, _ := tab.CostFor(m) // found ⇒ inner unknown is always false
+	return c, tab.Version, false
+}
+
+// VersionFor returns the pricing_version CostFor would stamp for a message with
+// this timestamp and model, applying the same fall-forward resolution, without
+// needing token counts. Used by staleness checks (PricingVersionStats).
+func (h History) VersionFor(ts time.Time, model string) string {
+	tab, _ := h.resolveTable(ts, model)
+	return tab.Version
 }
 
 // HistoryForTest builds a History from a caller-provided slice.

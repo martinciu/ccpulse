@@ -15,6 +15,19 @@ import (
 
 const metaKeyRecostFingerprint = "last_recost_history_fingerprint"
 
+// recostAlgoTag versions the recost RESOLUTION ALGORITHM. It is prefixed onto the
+// fingerprint so an algorithm change (not just a new snapshot) forces a one-time
+// recost on the next launch after upgrade. Bump when CostFor's resolution logic
+// changes. "ff1" = fall-forward (issue #368).
+const recostAlgoTag = "ff1"
+
+// recostFingerprint is the value stored in meta to detect when a recost is
+// needed. It combines the algorithm tag with the embedded snapshot version set,
+// so either a new snapshot or an algorithm bump triggers AutoRecost.
+func recostFingerprint(hist pricing.History) string {
+	return recostAlgoTag + ":" + strings.Join(hist.Versions(), ",")
+}
+
 // RecostStats summarizes a Recost run.
 type RecostStats struct {
 	Scanned int
@@ -45,8 +58,9 @@ type recostUpdate struct {
 
 // Recost re-resolves pricing_version and cost_usd_estimate for every message
 // row against hist. A row is rewritten when the stamped pricing_version disagrees
-// with hist.TableAt(ts).Version, the row is pricing_unknown=1 and the resolved
-// Table now contains its model, or the recomputed cost differs from stored cost.
+// with the fall-forward-resolved version (hist.CostFor), the row is
+// pricing_unknown=1 and the resolved Table now contains its model, or the
+// recomputed cost differs from stored cost.
 //
 // Idempotent: re-running on an already-recosted DB reports Updated=0.
 // On context cancellation the transaction is rolled back.
@@ -74,7 +88,7 @@ func (c *Cache) Recost(ctx context.Context, hist pricing.History, opts RecostOpt
 	}
 
 	if !opts.DryRun {
-		fp := strings.Join(hist.Versions(), ",")
+		fp := recostFingerprint(hist)
 		if _, err := tx.ExecContext(ctx,
 			`INSERT OR REPLACE INTO meta(key,value) VALUES(?,?)`,
 			metaKeyRecostFingerprint, fp); err != nil {
@@ -96,7 +110,7 @@ func (c *Cache) Recost(ctx context.Context, hist pricing.History, opts RecostOpt
 // It performs a fingerprint early-out: if the meta table already holds a
 // fingerprint matching the current hist, Recost is skipped entirely (silent).
 func (c *Cache) AutoRecost(ctx context.Context, hist pricing.History) {
-	fp := strings.Join(hist.Versions(), ",")
+	fp := recostFingerprint(hist)
 	var stored string
 	_ = c.db.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = ?`, metaKeyRecostFingerprint).Scan(&stored)
 	if stored == fp {
@@ -136,10 +150,11 @@ type PricingVersionStat struct {
 }
 
 // PricingVersionStats returns one entry per distinct pricing_version found in
-// messages, plus a per-version count of rows that disagree with
-// hist.TableAt(ts).Version. Entries are sorted by Version ascending.
+// messages, plus a per-version count of rows that disagree with the
+// fall-forward-resolved version (hist.VersionFor). Entries are sorted by Version
+// ascending.
 func (c *Cache) PricingVersionStats(ctx context.Context, hist pricing.History) ([]PricingVersionStat, error) {
-	rows, err := c.db.QueryContext(ctx, `SELECT pricing_version, ts FROM messages`)
+	rows, err := c.db.QueryContext(ctx, `SELECT pricing_version, ts, model FROM messages`)
 	if err != nil {
 		return nil, fmt.Errorf("pricing version stats: query: %w", err)
 	}
@@ -149,8 +164,8 @@ func (c *Cache) PricingVersionStats(ctx context.Context, hist pricing.History) (
 	totals := map[string]int{}
 	staleByVer := map[string]int{}
 	for rows.Next() {
-		var ver, tsStr string
-		if err := rows.Scan(&ver, &tsStr); err != nil {
+		var ver, tsStr, model string
+		if err := rows.Scan(&ver, &tsStr, &model); err != nil {
 			return nil, fmt.Errorf("pricing version stats: scan: %w", err)
 		}
 		totals[ver]++
@@ -158,7 +173,7 @@ func (c *Cache) PricingVersionStats(ctx context.Context, hist pricing.History) (
 		if err != nil {
 			continue
 		}
-		if hist.TableAt(ts).Version != ver {
+		if hist.VersionFor(ts, model) != ver {
 			staleByVer[ver]++
 		}
 	}
