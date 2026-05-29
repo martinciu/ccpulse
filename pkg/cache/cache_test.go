@@ -2061,6 +2061,18 @@ func TestInsertMessages_DedupOnMessageID(t *testing.T) {
 
 	tab, _ := pricing.Load()
 	base := time.Date(2026, 5, 28, 15, 53, 58, 0, time.UTC)
+	// Use a non-monotonic ramp so that min/first/last each yield a value
+	// other than 64000, while only max yields exactly 64000.
+	// Pattern: ramp linearly from 1 up to a peak of 64000 at the midpoint
+	// (i==87), then back down to 1. This places the maximum at neither the
+	// first nor the last element.
+	outputRamp := func(i int) int64 {
+		half := 175 / 2 // 87
+		if i <= half {
+			return int64(1 + (64000-1)*i/half)
+		}
+		return int64(1 + (64000-1)*(175-1-i)/half)
+	}
 	var msgs []parse.Message
 	for i := range 175 {
 		msgs = append(msgs, parse.Message{
@@ -2070,7 +2082,7 @@ func TestInsertMessages_DedupOnMessageID(t *testing.T) {
 			Model:        "claude-opus-4-8",
 			Timestamp:    base.Add(time.Duration(i) * time.Second),
 			InputTokens:  200,
-			OutputTokens: 64000,
+			OutputTokens: outputRamp(i),
 		})
 	}
 	if err := c.InsertMessages(t.Context(), msgs, tab); err != nil {
@@ -2087,7 +2099,7 @@ func TestInsertMessages_DedupOnMessageID(t *testing.T) {
 		t.Fatalf("row count = %d, want 1 (175 content-block lines, one message)", n)
 	}
 	if out != 64000 {
-		t.Errorf("output_tokens = %d, want 64000 (cumulative, not 175x)", out)
+		t.Errorf("output_tokens = %d, want 64000 (MAX, not min/first/last)", out)
 	}
 }
 
@@ -2100,15 +2112,34 @@ func TestInsertMessages_CrossBatchUpsertMAX(t *testing.T) {
 
 	tab, _ := pricing.Load()
 	ts := time.Date(2026, 5, 28, 15, 53, 58, 0, time.UTC)
-	// Batch A: an early streaming partial line (lower cumulative usage).
+	// Batch A: an early streaming partial line (lower cumulative usage across
+	// all token columns). Strictly lower than batchB in every maxed column.
 	batchA := []parse.Message{{
-		SessionID: "sess-1", MessageID: "msg_x", ProjectSlug: "slug-a",
-		Model: "claude-opus-4-8", Timestamp: ts, InputTokens: 200, OutputTokens: 5000,
+		SessionID:          "sess-1",
+		MessageID:          "msg_x",
+		ProjectSlug:        "slug-a",
+		Model:              "claude-opus-4-8",
+		Timestamp:          ts,
+		InputTokens:        100,
+		OutputTokens:       5000,
+		CacheReadTokens:    50,
+		CacheWrite5mTokens: 10,
+		CacheWrite1hTokens: 5,
 	}}
 	// Batch B: the final line of the same message (full cumulative usage).
+	// Strictly higher than batchA in every maxed column so that only MAX
+	// semantics (not min/first/last) keeps batchB's values.
 	batchB := []parse.Message{{
-		SessionID: "sess-1", MessageID: "msg_x", ProjectSlug: "slug-a",
-		Model: "claude-opus-4-8", Timestamp: ts.Add(time.Minute), InputTokens: 200, OutputTokens: 64000,
+		SessionID:          "sess-1",
+		MessageID:          "msg_x",
+		ProjectSlug:        "slug-a",
+		Model:              "claude-opus-4-8",
+		Timestamp:          ts.Add(time.Minute),
+		InputTokens:        200,
+		OutputTokens:       64000,
+		CacheReadTokens:    300,
+		CacheWrite5mTokens: 150,
+		CacheWrite1hTokens: 75,
 	}}
 	if err := c.InsertMessages(t.Context(), batchA, tab); err != nil {
 		t.Fatal(err)
@@ -2118,16 +2149,44 @@ func TestInsertMessages_CrossBatchUpsertMAX(t *testing.T) {
 	}
 
 	var n int
-	var out int64
-	if err := c.DB().QueryRowContext(t.Context(),
-		`SELECT count(*), COALESCE(MAX(output_tokens),0) FROM messages`).Scan(&n, &out); err != nil {
+	var gotInput, gotOutput, gotCacheRead, gotCacheWrite5m, gotCacheWrite1h int64
+	var gotCost float64
+	if err := c.DB().QueryRowContext(t.Context(), `
+		SELECT count(*),
+		       input_tokens, output_tokens,
+		       cache_read_tokens, cache_write_5m_tokens, cache_write_1h_tokens,
+		       cost_usd_estimate
+		FROM messages`).Scan(
+		&n,
+		&gotInput, &gotOutput,
+		&gotCacheRead, &gotCacheWrite5m, &gotCacheWrite1h,
+		&gotCost,
+	); err != nil {
 		t.Fatal(err)
 	}
 	if n != 1 {
 		t.Fatalf("row count = %d, want 1 (same message across two batches)", n)
 	}
-	if out != 64000 {
-		t.Errorf("output_tokens = %d, want 64000 (MAX across batches)", out)
+	if gotOutput != 64000 {
+		t.Errorf("output_tokens = %d, want 64000 (MAX across batches)", gotOutput)
+	}
+	if gotInput != 200 {
+		t.Errorf("input_tokens = %d, want 200 (MAX across batches)", gotInput)
+	}
+	if gotCacheRead != 300 {
+		t.Errorf("cache_read_tokens = %d, want 300 (MAX across batches)", gotCacheRead)
+	}
+	if gotCacheWrite5m != 150 {
+		t.Errorf("cache_write_5m_tokens = %d, want 150 (MAX across batches)", gotCacheWrite5m)
+	}
+	if gotCacheWrite1h != 75 {
+		t.Errorf("cache_write_1h_tokens = %d, want 75 (MAX across batches)", gotCacheWrite1h)
+	}
+	// cost_usd_estimate must be batchB's cost (batchB has strictly higher token
+	// counts so its cost exceeds batchA's cost; the UPSERT keeps the max).
+	wantCost, _, _ := tab.CostFor(batchB[0])
+	if !approxEqual(gotCost, wantCost, 1e-9) {
+		t.Errorf("cost_usd_estimate = %v, want %v (MAX cost matches batchB)", gotCost, wantCost)
 	}
 }
 
@@ -2190,6 +2249,17 @@ func TestInsertMessages_FallbackSyntheticID(t *testing.T) {
 	}
 	if n != 2 {
 		t.Fatalf("row count = %d, want 2 (synthetic fallback keeps (session,ts) semantics)", n)
+	}
+	// The collided synthetic row (same session + ts) must have kept the MAX of
+	// the two competing output_tokens values (99 over the original 10).
+	tsStr := ts.UTC().Format(tsFormat)
+	var gotOut int64
+	if err := c.DB().QueryRowContext(t.Context(),
+		`SELECT output_tokens FROM messages WHERE ts = ?`, tsStr).Scan(&gotOut); err != nil {
+		t.Fatal(err)
+	}
+	if gotOut != 99 {
+		t.Errorf("collided row output_tokens = %d, want 99 (MAX of 10 and 99)", gotOut)
 	}
 }
 

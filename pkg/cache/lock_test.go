@@ -329,6 +329,41 @@ func TestLockedRebuild_PreservesUsageSamples(t *testing.T) {
 	}
 }
 
+// TestRestorePreservable_DegradesOnBadColumn verifies that restorePreservable
+// returns a non-nil error when a preservedTable references a column absent from
+// the real schema, and that the DB remains queryable afterward — the "fails
+// gracefully, does not block the rebuild" contract.
+func TestRestorePreservable_DegradesOnBadColumn(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.db")
+
+	c, err := Open(t.Context(), path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { c.Close() })
+
+	// Build a snapshot whose usageSamples table references a column that does
+	// not exist in the real schema. restorePreservable must return an error.
+	badSnap := rebuildSnapshot{
+		usageSamples: preservedTable{
+			cols: []string{"nonexistent_col"},
+			rows: [][]any{{int64(1)}},
+		},
+	}
+
+	restoreErr := restorePreservable(t.Context(), c.DB(), badSnap)
+	if restoreErr == nil {
+		t.Fatal("restorePreservable with bad column: expected non-nil error, got nil")
+	}
+
+	// The DB must still be usable after the failed restore.
+	var n int
+	if err := c.DB().QueryRowContext(t.Context(), `SELECT count(*) FROM messages`).Scan(&n); err != nil {
+		t.Fatalf("DB not queryable after bad restorePreservable: %v", err)
+	}
+}
+
 func TestLockedRebuild_PreservesMetaExceptSchema(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "state.db")

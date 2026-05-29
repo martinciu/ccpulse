@@ -464,9 +464,10 @@ func (c *Cache) UtilizationSince(ctx context.Context, column string, since time.
 // the multiple content-block lines of one logical assistant turn into a single
 // row keyed by (session_id, message_id). Lines without a message.id fall back
 // to a synthetic "synthetic:<ts>" key, preserving the legacy (session_id, ts)
-// identity. On conflict it keeps the MAX of every cumulative usage column (the
-// per-line usage repeats the message total, so MAX == the final total and is
-// robust to streaming partial lines) and the MIN of ts (turn start).
+// identity. The "synthetic:" prefix is RESERVED: real message.id values must
+// not begin with it. On conflict it keeps the MAX of every cumulative usage
+// column (the per-line usage repeats the message total, so MAX == the final
+// total and is robust to streaming partial lines) and the MIN of ts (turn start).
 func (c *Cache) InsertMessages(ctx context.Context, msgs []parse.Message, hist pricing.History) error {
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
