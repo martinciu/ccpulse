@@ -58,8 +58,9 @@ type recostUpdate struct {
 
 // Recost re-resolves pricing_version and cost_usd_estimate for every message
 // row against hist. A row is rewritten when the stamped pricing_version disagrees
-// with hist.TableAt(ts).Version, the row is pricing_unknown=1 and the resolved
-// Table now contains its model, or the recomputed cost differs from stored cost.
+// with the fall-forward-resolved version (hist.CostFor), the row is
+// pricing_unknown=1 and the resolved Table now contains its model, or the
+// recomputed cost differs from stored cost.
 //
 // Idempotent: re-running on an already-recosted DB reports Updated=0.
 // On context cancellation the transaction is rolled back.
