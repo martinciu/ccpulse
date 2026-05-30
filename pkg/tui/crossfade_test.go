@@ -102,3 +102,85 @@ func TestLabelCadenceEqual(t *testing.T) {
 		t.Errorf("labelCadenceEqual(15m, 1h) = true, want false")
 	}
 }
+
+func TestCrossfadeLabelRow_Phases(t *testing.T) {
+	// Asserts on distinct rendered ANSI (the r=0.25 dimmed-below-colorMuted
+	// check), so it needs a forced color profile. withForcedColor mutates the
+	// process-global renderer and is NOT safe with t.Parallel() — keep this
+	// test sequential, mirroring TestLabelFadeStyle_Quantisation.
+	withForcedColor(t)
+	withForcedDarkBackground(t, true)
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	chartW := 96
+	// Old window spans 21:00→06:00 (15m cadence: 3-hourly ticks + midnight date).
+	oFrom := time.Date(2026, 5, 19, 21, 0, 0, 0, time.UTC)
+	oTo := time.Date(2026, 5, 20, 6, 0, 0, 0, time.UTC)
+	// New (settled) window 1h cadence: midnight date only.
+	nFrom := time.Date(2026, 5, 18, 0, 0, 0, 0, time.UTC)
+	nTo := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	snap := zoomAnimSnapshot{
+		oFrom: oFrom, oTo: oTo, nFrom: nFrom, nTo: nTo,
+		oZoom: ZoomLevels[0], now: now, sameCadence: false,
+	}
+	newZoom := ZoomLevels[1]
+	order := dateOrderDayFirst
+
+	outRow := buildXLabelsRow(synthLabelStarts(oFrom, oTo, snap.oZoom), chartW, snap.oZoom, now, order)
+	inRow := buildXLabelsRow(synthLabelStarts(nFrom, nTo, newZoom), chartW, newZoom, now, order)
+	if ansi.Strip(outRow) == ansi.Strip(inRow) {
+		t.Fatalf("test setup: outgoing and incoming rows identical — pick a discriminating window")
+	}
+
+	// r=0: outgoing at full opacity (== dimStyle, the handoff-parity endpoint).
+	got0 := crossfadeLabelRow(snap, oFrom, oTo, newZoom, chartW, 0.0, order)
+	if ansi.Strip(got0) != ansi.Strip(outRow) {
+		t.Errorf("r=0 row glyphs = %q, want outgoing %q", ansi.Strip(got0), ansi.Strip(outRow))
+	}
+	if got0 != dimStyle.Render(outRow) {
+		t.Errorf("r=0 not full-opacity (colorMuted); got %q want %q", got0, dimStyle.Render(outRow))
+	}
+
+	// r=1: incoming at full opacity. viewFrom/viewTo == settled new window.
+	got1 := crossfadeLabelRow(snap, nFrom, nTo, newZoom, chartW, 1.0, order)
+	if ansi.Strip(got1) != ansi.Strip(inRow) {
+		t.Errorf("r=1 row glyphs = %q, want incoming %q", ansi.Strip(got1), ansi.Strip(inRow))
+	}
+	if got1 != dimStyle.Render(inRow) {
+		t.Errorf("r=1 not full-opacity (colorMuted); got %q want %q", got1, dimStyle.Render(inRow))
+	}
+
+	// r=0.5: blank strip of spaces (the accepted near-blank midpoint).
+	got5 := crossfadeLabelRow(snap, oFrom, oTo, newZoom, chartW, 0.5, order)
+	if ansi.Strip(got5) != strings.Repeat(" ", chartW) {
+		t.Errorf("r=0.5 row = %q, want %d spaces", ansi.Strip(got5), chartW)
+	}
+
+	// r=0.25: outgoing glyphs, but dimmed (NOT full-opacity colorMuted).
+	got25 := crossfadeLabelRow(snap, oFrom, oTo, newZoom, chartW, 0.25, order)
+	if ansi.Strip(got25) != ansi.Strip(outRow) {
+		t.Errorf("r=0.25 glyphs = %q, want outgoing %q", ansi.Strip(got25), ansi.Strip(outRow))
+	}
+	if got25 == dimStyle.Render(outRow) {
+		t.Errorf("r=0.25 should be dimmed below colorMuted, got full opacity")
+	}
+}
+
+func TestCrossfadeLabelRow_SameCadenceRides(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	chartW := 96
+	vf := now.Add(-6 * time.Hour)
+	vt := now
+	snap := zoomAnimSnapshot{
+		oFrom: vf, oTo: vt, nFrom: vf, nTo: vt,
+		oZoom: ZoomLevels[1], now: now, sameCadence: true,
+	}
+	// sameCadence ⇒ full-opacity incoming row at every r (no fade frames, no blank).
+	for _, r := range []float64{0.0, 0.25, 0.5, 0.75, 1.0} {
+		got := crossfadeLabelRow(snap, vf, vt, ZoomLevels[1], chartW, r, dateOrderDayFirst)
+		inRow := buildXLabelsRow(synthLabelStarts(vf, vt, ZoomLevels[1]), chartW, ZoomLevels[1], now, dateOrderDayFirst)
+		if got != dimStyle.Render(inRow) {
+			t.Errorf("sameCadence r=%v: got %q, want full-opacity %q", r, got, dimStyle.Render(inRow))
+		}
+	}
+}

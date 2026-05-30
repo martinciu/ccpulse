@@ -1005,6 +1005,39 @@ func labelCadenceEqual(a, b ZoomLevel, from, to time.Time, chartW int, now time.
 		buildXLabelsRow(synthLabelStarts(from, to, b), chartW, b, now, order)
 }
 
+// crossfadeLabelRow returns the x-axis label row for one frame of the line-mode
+// zoom squeeze, cross-fading the outgoing cadence out over r ∈ [0, 0.5) and the
+// incoming cadence in over r ∈ (0.5, 1]. Sequential phases: only one row is
+// ever non-hidden, so the two rows' differing columns never collide.
+//
+//   - outgoing: frozen old window [snap.oFrom, snap.oTo] at snap.oZoom — a
+//     ghost dissolving in place (it does NOT ride the squeeze).
+//   - incoming: lerped window [viewFrom, viewTo] at newZoom — tracks the bars.
+//
+// fade→1 maps to labelFadeStyle stop 1 == colorMuted == dimStyle, so the entry
+// (r→0) and exit (r→1) match the steady-state labels with no brightness pop.
+// At r == 0.5 both fades are 0 → a blank strip (the accepted near-blank frame).
+// snap.sameCadence short-circuits to the full-opacity incoming row (no cadence
+// change to animate). (#379)
+func crossfadeLabelRow(snap zoomAnimSnapshot, viewFrom, viewTo time.Time, newZoom ZoomLevel, chartW int, r float64, order dateOrder) string {
+	inRow := buildXLabelsRow(synthLabelStarts(viewFrom, viewTo, newZoom), chartW, newZoom, snap.now, order)
+	if snap.sameCadence {
+		return dimStyle.Render(inRow)
+	}
+
+	fadeOut := min(max((0.5-r)/0.5, 0), 1)
+	fadeIn := min(max((r-0.5)/0.5, 0), 1)
+	switch {
+	case fadeOut > 0: // r < 0.5 — outgoing ghost
+		outRow := buildXLabelsRow(synthLabelStarts(snap.oFrom, snap.oTo, snap.oZoom), chartW, snap.oZoom, snap.now, order)
+		return labelFadeStyle(fadeOut).Render(outRow)
+	case fadeIn > 0: // r > 0.5 — incoming
+		return labelFadeStyle(fadeIn).Render(inRow)
+	default: // r == 0.5 — blank strip
+		return strings.Repeat(" ", chartW)
+	}
+}
+
 // buildLineChart renders two remaining-quota series (5h green, 7d
 // purple) as a dotted braille trail on a timeserieslinechart canvas.
 // Time values are mapped natively by ntcharts via SetViewTimeRange.
