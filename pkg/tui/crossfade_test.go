@@ -84,6 +84,22 @@ func TestBuildLineChart_LabelRowOverride(t *testing.T) {
 	}
 }
 
+func TestBuildLineChart_LabelRowIgnoredBelowXLabelThreshold(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	from := now.Add(-6 * time.Hour)
+	to := now
+	chartW, chartH := 96, 4 // chartH < 6 → showXLabels false → labelRow must be dropped
+
+	override := "OVERRIDE-MARKER"
+	// Guard: if a future refactor splices labelRow before the showXLabels gate,
+	// the marker would appear at chartH=4 and this assertion would catch it.
+	body := buildLineChart(nil, nil, from, to, chartW, chartH, now, ZoomLevels[0], dateOrderDayFirst, "test", override)
+	if strings.Contains(body, override) {
+		t.Errorf("buildLineChart spliced labelRow at chartH=%d (below showXLabels threshold); marker must be absent; body:\n%s", chartH, body)
+	}
+}
+
 func TestLabelCadenceEqual(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
