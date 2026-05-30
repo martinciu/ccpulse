@@ -5,6 +5,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/martinciu/ccpulse/pkg/anthro"
 	"github.com/martinciu/ccpulse/pkg/cache"
@@ -526,5 +527,74 @@ func TestZoomSpring_SnapshotsOldZoom(t *testing.T) {
 	// 15m → 1h changes cadence, so the cross-fade must NOT be skipped.
 	if m.zoomSnap.sameCadence {
 		t.Errorf("zoomSnap.sameCadence = true for 15m→1h, want false")
+	}
+}
+
+func TestZoomCrossfade_ReduceMotion_NoFadeArm(t *testing.T) {
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	m, c := seedRemainingModelWithSamples(t, 40, now)
+	defer c.Close()
+	m.deps.ReduceMotion = true
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
+	m = updated.(Model)
+
+	// Snap path: no spring armed → no fade frames produced.
+	if m.springActive {
+		t.Errorf("ReduceMotion 'z': springActive=true, want false (snap, no cross-fade)")
+	}
+	// snapZoom never populates the cross-fade snapshot, so oZoom stays zero-value.
+	if m.zoomSnap.oZoom.Label != "" {
+		t.Errorf("ReduceMotion 'z': zoomSnap.oZoom=%q, want empty (cross-fade arm path skipped)", m.zoomSnap.oZoom.Label)
+	}
+}
+
+func TestZoomCrossfade_MidSqueeze_RowFaded(t *testing.T) {
+	// Asserts on rendered ANSI (faded vs full-opacity), so a forced color
+	// profile is required — go test has no TTY and lipgloss strips colors
+	// otherwise, collapsing every fade stop to identical plain output.
+	// withForcedColor mutates the process-global renderer; this test stays
+	// non-parallel (mirrors TestLabelFadeStyle_Quantisation).
+	withForcedColor(t)
+	withForcedDarkBackground(t, true)
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	m, c := armZoom(t, now) // 15m → 1h, mid-squeeze (r==0 right after arm)
+	defer c.Close()
+
+	// Drive frames until r enters the genuinely-faded outgoing band. The zoom
+	// spring (critically damped, 6.0 rad/s @ 60 FPS) crawls off 0 slowly — a
+	// few frames leave r ≈ 0.04, where the outgoing fadeOut = 1-2r ≈ 0.93 maps
+	// back to stop 1 (== colorMuted == dimStyle) and the "faded" assertion would
+	// be a false negative. Drive until r ≥ 0.2 (outgoing fadeOut ≤ 0.6 → stop
+	// ≥ 2, distinct from colorMuted) while staying in the outgoing half (r<0.5).
+	const fadeBandLo, outgoingHi = 0.2, 0.5
+	for i := 0; i < 200 && m.springActive && m.zoomSpringR < fadeBandLo; i++ {
+		updated, _ := m.Update(springTickMsg{gen: m.springGen})
+		m = updated.(Model)
+	}
+	if !m.springActive {
+		t.Fatalf("squeeze settled before reaching the fade band (r=%v)", m.zoomSpringR)
+	}
+	if m.zoomSpringR >= outgoingHi {
+		t.Skipf("frame overshot the outgoing half (r=%v); fade-band assertion N/A", m.zoomSpringR)
+	}
+
+	// The rendered label row for this frame, computed the same way
+	// renderZoomFrame does, must be a styled (faded) row — not the steady-state
+	// full-opacity row.
+	viewFrom := lerpTime(m.zoomSnap.oFrom, m.zoomSnap.nFrom, m.zoomSpringR)
+	viewTo := lerpTime(m.zoomSnap.oTo, m.zoomSnap.nTo, m.zoomSpringR)
+	row := crossfadeLabelRow(m.zoomSnap, viewFrom, viewTo, ZoomLevels[m.zoomIdx], m.viewport.Width, m.zoomSpringR, m.dateOrder)
+
+	outRow := buildXLabelsRow(
+		synthLabelStarts(m.zoomSnap.oFrom, m.zoomSnap.oTo, m.zoomSnap.oZoom),
+		m.viewport.Width, m.zoomSnap.oZoom, m.zoomSnap.now, m.dateOrder)
+	// Same glyphs as the outgoing cadence…
+	if ansi.Strip(row) != ansi.Strip(outRow) {
+		t.Errorf("mid-squeeze (r=%v) glyphs = %q, want outgoing %q", m.zoomSpringR, ansi.Strip(row), ansi.Strip(outRow))
+	}
+	// …but dimmed below full opacity (a real cross-fade, not a hard snap).
+	if row == dimStyle.Render(outRow) {
+		t.Errorf("mid-squeeze (r=%v) row at full opacity, want faded", m.zoomSpringR)
 	}
 }
