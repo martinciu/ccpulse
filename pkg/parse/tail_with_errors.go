@@ -2,6 +2,7 @@ package parse
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -54,6 +55,7 @@ func ParseFromOffsetWithErrors(path, slug string, startOffset int64, startLine i
 	line := startLine
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, scannerInitialCap()), ScannerMaxBytes)
+	sc.Split(scanCompleteLines)
 
 	for {
 		for sc.Scan() {
@@ -98,6 +100,7 @@ func ParseFromOffsetWithErrors(path, slug string, startOffset int64, startLine i
 		}
 		sc = bufio.NewScanner(f)
 		sc.Buffer(make([]byte, 0, scannerInitialCap()), ScannerMaxBytes)
+		sc.Split(scanCompleteLines)
 	}
 }
 
@@ -128,4 +131,31 @@ func skipPastNewline(f *os.File, startOff int64) (int, bool, error) {
 			return scanned, false, err
 		}
 	}
+}
+
+// scanCompleteLines is a bufio.SplitFunc identical to bufio.ScanLines
+// except it never returns a final, non-newline-terminated line. When the
+// buffer holds no '\n' it returns (0, nil, nil) regardless of EOF — that
+// dropped clause is the whole fix (issue #377):
+//   - mid-stream, Scanner reads more (growing to ScannerMaxBytes, then
+//     ErrTooLong for a genuinely oversized line);
+//   - at EOF, Scan() stops with Err() == nil and the cursor is left at
+//     the start of the in-progress line, so the next pass re-reads it from
+//     its true start once the writer appends the '\n'.
+//
+// The atEOF argument is deliberately ignored — see above.
+func scanCompleteLines(data []byte, _ bool) (advance int, token []byte, err error) {
+	if i := bytes.IndexByte(data, '\n'); i >= 0 {
+		return i + 1, dropCR(data[:i]), nil
+	}
+	return 0, nil, nil
+}
+
+// dropCR drops a terminal '\r' from data. bufio's dropCR is unexported, so
+// this preserves ScanLines' \r\n handling for a bit-for-bit behaviour match.
+func dropCR(data []byte) []byte {
+	if len(data) > 0 && data[len(data)-1] == '\r' {
+		return data[:len(data)-1]
+	}
+	return data
 }

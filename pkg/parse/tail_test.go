@@ -328,6 +328,159 @@ func TestParseFromOffsetWithErrors_BackToBackOversizedLines(t *testing.T) {
 	}
 }
 
+// partialFragment is a JSON line still being written: no closing brace,
+// no trailing '\n'. It must never be tokenized or recorded as an error.
+const partialFragment = `{"type":"assistant","message":{"role":"assi`
+
+func TestParseFromOffsetWithErrors_PartialTail_ContentTruncated(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "t.jsonl")
+
+	lineA := validAssistantLine("") // complete, ends in '\n'
+	if err := os.WriteFile(p, []byte(lineA+partialFragment), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	msgs, errs, newOff, newLine, err := ParseFromOffsetWithErrors(p, "slug", 0, 0)
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if len(msgs) != 1 {
+		t.Errorf("len(msgs) = %d, want 1 (only the complete line)", len(msgs))
+	}
+	if len(errs) != 0 {
+		t.Errorf("len(errs) = %d, want 0 (partial must not be a parse error)", len(errs))
+	}
+	if newOff != int64(len(lineA)) {
+		t.Errorf("newOff = %d, want %d (start of the partial line)", newOff, len(lineA))
+	}
+	if newLine != 1 {
+		t.Errorf("newLine = %d, want 1", newLine)
+	}
+}
+
+func TestParseFromOffsetWithErrors_PartialTail_NoNewline(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "t.jsonl")
+
+	lineA := validAssistantLine("")
+	// Content-complete but newline missing: valid JSON, no trailing '\n'.
+	// Indistinguishable from a mid-content partial from the file alone, so
+	// it must NOT be parsed until the '\n' arrives.
+	lineBNoLF := strings.TrimSuffix(validAssistantLine("B"), "\n")
+	if err := os.WriteFile(p, []byte(lineA+lineBNoLF), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	msgs, errs, newOff, newLine, err := ParseFromOffsetWithErrors(p, "slug", 0, 0)
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if len(msgs) != 1 {
+		t.Errorf("len(msgs) = %d, want 1 (newline-less final line deferred)", len(msgs))
+	}
+	if len(errs) != 0 {
+		t.Errorf("len(errs) = %d, want 0", len(errs))
+	}
+	if newOff != int64(len(lineA)) {
+		t.Errorf("newOff = %d, want %d", newOff, len(lineA))
+	}
+	if newLine != 1 {
+		t.Errorf("newLine = %d, want 1", newLine)
+	}
+}
+
+func TestParseFromOffsetWithErrors_TwoPass_CompletesTruncatedLine(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "t.jsonl")
+
+	lineA := validAssistantLine("")
+	if err := os.WriteFile(p, []byte(lineA+partialFragment), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Pass 1: lineA complete + a mid-content partial.
+	msgs1, errs1, off1, line1, err := ParseFromOffsetWithErrors(p, "slug", 0, 0)
+	if err != nil {
+		t.Fatalf("pass1 err = %v", err)
+	}
+	if len(msgs1) != 1 || len(errs1) != 0 {
+		t.Fatalf("pass1: msgs=%d errs=%d, want 1/0", len(msgs1), len(errs1))
+	}
+	if off1 != int64(len(lineA)) {
+		t.Fatalf("pass1 off = %d, want %d (must not advance past the partial)", off1, len(lineA))
+	}
+
+	// Writer finishes the partial into lineB and appends lineC.
+	lineB := validAssistantLine("B")
+	lineC := validAssistantLine("C")
+	full := lineA + lineB + lineC
+	if err := os.WriteFile(p, []byte(full), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Pass 2: resumes from pass-1 cursor; reads lineB and lineC exactly once.
+	msgs2, errs2, off2, line2, err := ParseFromOffsetWithErrors(p, "slug", off1, line1)
+	if err != nil {
+		t.Fatalf("pass2 err = %v", err)
+	}
+	if len(msgs2) != 2 {
+		t.Errorf("pass2 len(msgs) = %d, want 2 (lineB + lineC, neither dropped)", len(msgs2))
+	}
+	if len(errs2) != 0 {
+		t.Errorf("pass2 len(errs) = %d, want 0", len(errs2))
+	}
+	if off2 != int64(len(full)) {
+		t.Errorf("pass2 off = %d, want %d (file size)", off2, len(full))
+	}
+	if line2 != 3 {
+		t.Errorf("pass2 line = %d, want 3", line2)
+	}
+}
+
+func TestParseFromOffsetWithErrors_TwoPass_AddsNewline(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "t.jsonl")
+
+	lineA := validAssistantLine("")
+	lineB := validAssistantLine("B")
+	if err := os.WriteFile(p, []byte(lineA+strings.TrimSuffix(lineB, "\n")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Pass 1: lineB is content-complete but missing its '\n' — deferred.
+	msgs1, _, off1, line1, err := ParseFromOffsetWithErrors(p, "slug", 0, 0)
+	if err != nil {
+		t.Fatalf("pass1 err = %v", err)
+	}
+	if len(msgs1) != 1 {
+		t.Fatalf("pass1 len(msgs) = %d, want 1 (lineB deferred)", len(msgs1))
+	}
+	if off1 != int64(len(lineA)) {
+		t.Fatalf("pass1 off = %d, want %d", off1, len(lineA))
+	}
+
+	// Writer appends the missing '\n'.
+	if err := os.WriteFile(p, []byte(lineA+lineB), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Pass 2: lineB now complete — parsed exactly once.
+	msgs2, _, off2, line2, err := ParseFromOffsetWithErrors(p, "slug", off1, line1)
+	if err != nil {
+		t.Fatalf("pass2 err = %v", err)
+	}
+	if len(msgs2) != 1 {
+		t.Errorf("pass2 len(msgs) = %d, want 1 (lineB parsed once — not zero, not twice)", len(msgs2))
+	}
+	if off2 != int64(len(lineA)+len(lineB)) {
+		t.Errorf("pass2 off = %d, want %d", off2, len(lineA)+len(lineB))
+	}
+	if line2 != 2 {
+		t.Errorf("pass2 line = %d, want 2", line2)
+	}
+}
+
 func TestParseFromOffset(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "t.jsonl")
