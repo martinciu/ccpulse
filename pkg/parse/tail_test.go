@@ -481,6 +481,93 @@ func TestParseFromOffsetWithErrors_TwoPass_AddsNewline(t *testing.T) {
 	}
 }
 
+func TestParseFromOffset_PartialTail_ContentTruncated(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "t.jsonl")
+
+	lineA := validAssistantLine("")
+	if err := os.WriteFile(p, []byte(lineA+partialFragment), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	msgs, newOff, newLine, err := ParseFromOffset(p, "slug", 0, 0)
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if len(msgs) != 1 {
+		t.Errorf("len(msgs) = %d, want 1", len(msgs))
+	}
+	if newOff != int64(len(lineA)) {
+		t.Errorf("newOff = %d, want %d (cursor stays at start of the partial)", newOff, len(lineA))
+	}
+	if newLine != 1 {
+		t.Errorf("newLine = %d, want 1", newLine)
+	}
+}
+
+func TestParseFromOffset_SkipsOversizedLine(t *testing.T) {
+	withScannerMaxBytes(t)
+	dir := t.TempDir()
+	p := filepath.Join(dir, "t.jsonl")
+
+	var b []byte
+	for range 3 {
+		b = append(b, []byte(validAssistantLine(""))...)
+	}
+	b = append(b, []byte(validAssistantLine(strings.Repeat("x", 5000)))...)
+	for range 3 {
+		b = append(b, []byte(validAssistantLine(""))...)
+	}
+	if err := os.WriteFile(p, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	msgs, newOff, newLine, err := ParseFromOffset(p, "slug", 0, 0)
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if len(msgs) != 6 {
+		t.Errorf("len(msgs) = %d, want 6 (oversized line skipped silently)", len(msgs))
+	}
+	if newOff != int64(len(b)) {
+		t.Errorf("newOff = %d, want %d (file size)", newOff, len(b))
+	}
+	if newLine != 7 {
+		t.Errorf("newLine = %d, want 7", newLine)
+	}
+}
+
+func TestParseFromOffset_OversizedTailNoNewline(t *testing.T) {
+	withScannerMaxBytes(t)
+	dir := t.TempDir()
+	p := filepath.Join(dir, "t.jsonl")
+
+	var b []byte
+	for range 3 {
+		b = append(b, []byte(validAssistantLine(""))...)
+	}
+	preTailOff := int64(len(b))
+	b = append(b, []byte(`{"type":"assistant","padding":"`)...)
+	b = append(b, []byte(strings.Repeat("x", 5000))...) // oversized, no '\n'
+	if err := os.WriteFile(p, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	msgs, newOff, newLine, err := ParseFromOffset(p, "slug", 0, 0)
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if len(msgs) != 3 {
+		t.Errorf("len(msgs) = %d, want 3", len(msgs))
+	}
+	if newOff != preTailOff {
+		t.Errorf("newOff = %d, want %d (cursor stays before the oversized in-progress tail)", newOff, preTailOff)
+	}
+	if newLine != 3 {
+		t.Errorf("newLine = %d, want 3", newLine)
+	}
+}
+
 func TestParseFromOffset(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "t.jsonl")
