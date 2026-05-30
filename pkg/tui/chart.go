@@ -969,6 +969,22 @@ func isLineMode(u chartUnit) bool {
 	return u == chartUnitRemaining
 }
 
+// synthLabelStarts returns the bucket-start times for x-axis labels spanning
+// [from, to) at the zoom's cadence. The line chart spans [from, to)
+// continuously, but label cadence comes from the zoom Duration so it matches
+// bar-chart mode. Shared by buildLineChart's internal label row and the
+// zoom cross-fade (renderZoomFrame). max(…,1) keeps the capacity hint positive
+// for a degenerate (to <= from) window — the loop still yields an empty slice.
+func synthLabelStarts(from, to time.Time, zoom ZoomLevel) []time.Time {
+	dur := zoom.Duration
+	n := max(int(to.Sub(from)/dur)+1, 1)
+	starts := make([]time.Time, 0, n)
+	for t := from; t.Before(to); t = t.Add(dur) {
+		starts = append(starts, t)
+	}
+	return starts
+}
+
 // buildLineChart renders two remaining-quota series (5h green, 7d
 // purple) as a dotted braille trail on a timeserieslinechart canvas.
 // Time values are mapped natively by ntcharts via SetViewTimeRange.
@@ -1065,16 +1081,8 @@ func buildLineChart(pts5h, pts7d []cache.UtilizationPoint,
 	body := tslc.View()
 
 	if showXLabels {
-		// Synthesise bucket starts for x-axis labels. The line chart spans
-		// [from, to) continuously but the label cadence comes from the zoom
-		// duration so it matches bar-chart mode.
-		dur := zoom.Duration
-		n := max(int(to.Sub(from)/dur)+1, 1)
-		labelStarts := make([]time.Time, 0, n)
-		for t := from; t.Before(to); t = t.Add(dur) {
-			labelStarts = append(labelStarts, t)
-		}
-		body = lipgloss.JoinVertical(lipgloss.Left, body, renderXLabels(labelStarts, chartW, zoom, now, order))
+		body = lipgloss.JoinVertical(lipgloss.Left, body,
+			renderXLabels(synthLabelStarts(from, to, zoom), chartW, zoom, now, order))
 	}
 
 	slog.Debug("tui.buildLineChart",
