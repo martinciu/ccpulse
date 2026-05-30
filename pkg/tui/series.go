@@ -241,7 +241,7 @@ func (m *Model) refreshChart() {
 	// wide canvas after a bar→line spring left narrow content behind.
 	if series.unit == chartUnitRemaining {
 		m.peak = series.peak // 1.0, set in loadRemainingSeries
-		m.viewport.SetContent(buildLineChart(m.lastPts5h, m.lastPts7d, from, to, canvasW, chartH, m.now(), zoom, m.dateOrder, "refresh"))
+		m.viewport.SetContent(buildLineChart(m.lastPts5h, m.lastPts7d, from, to, canvasW, chartH, m.now(), zoom, m.dateOrder, "refresh", ""))
 		m.setX(m.viewportXOffset)
 	} else {
 		m.renderWindow()

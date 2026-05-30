@@ -1014,7 +1014,7 @@ func synthLabelStarts(from, to time.Time, zoom ZoomLevel) []time.Time {
 // SetStyles(line, color) would fail to compile against ntcharts v0.5.1.
 func buildLineChart(pts5h, pts7d []cache.UtilizationPoint,
 	from, to time.Time, chartW, chartH int,
-	now time.Time, zoom ZoomLevel, order dateOrder, source string,
+	now time.Time, zoom ZoomLevel, order dateOrder, source string, labelRow string,
 ) string {
 	logStart := time.Now()
 	if chartH < 1 {
@@ -1090,8 +1090,11 @@ func buildLineChart(pts5h, pts7d []cache.UtilizationPoint,
 	body := tslc.View()
 
 	if showXLabels {
-		body = lipgloss.JoinVertical(lipgloss.Left, body,
-			renderXLabels(synthLabelStarts(from, to, zoom), chartW, zoom, now, order))
+		row := labelRow
+		if row == "" {
+			row = renderXLabels(synthLabelStarts(from, to, zoom), chartW, zoom, now, order)
+		}
+		body = lipgloss.JoinVertical(lipgloss.Left, body, row)
 	}
 
 	slog.Debug("tui.buildLineChart",

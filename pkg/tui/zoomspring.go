@@ -168,7 +168,7 @@ func (m *Model) renderZoomFrame(viewFrom, viewTo time.Time) {
 	vpW := m.viewport.Width
 	sliced5h := slicePointsInRange(m.zoomSnap.pts5h, viewFrom, viewTo)
 	sliced7d := slicePointsInRange(m.zoomSnap.pts7d, viewFrom, viewTo)
-	m.viewport.SetContent(buildLineChart(sliced5h, sliced7d, viewFrom, viewTo, vpW, chartH, m.zoomSnap.now, zoom, m.dateOrder, "zoom"))
+	m.viewport.SetContent(buildLineChart(sliced5h, sliced7d, viewFrom, viewTo, vpW, chartH, m.zoomSnap.now, zoom, m.dateOrder, "zoom", ""))
 	m.viewport.SetXOffset(0)
 }
 

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -58,5 +59,27 @@ func TestRenderXLabels_WrapsBuildXLabelsRow(t *testing.T) {
 	}
 	if len([]rune(raw)) != chartW {
 		t.Errorf("raw row width = %d runes, want %d", len([]rune(raw)), chartW)
+	}
+}
+
+func TestBuildLineChart_LabelRowOverride(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	from := now.Add(-6 * time.Hour)
+	to := now
+	chartW, chartH := 96, 10 // chartH >= 6 → showXLabels true
+
+	override := "OVERRIDE-MARKER"
+	body := buildLineChart(nil, nil, from, to, chartW, chartH, now, ZoomLevels[0], dateOrderDayFirst, "test", override)
+
+	// The override string is spliced verbatim as the label row (last line).
+	if !strings.Contains(body, override) {
+		t.Errorf("buildLineChart did not splice labelRow override; body:\n%s", body)
+	}
+
+	// Empty override → internal renderXLabels path (no marker, behavior as before).
+	body0 := buildLineChart(nil, nil, from, to, chartW, chartH, now, ZoomLevels[0], dateOrderDayFirst, "test", "")
+	if strings.Contains(body0, override) {
+		t.Errorf("empty labelRow should not contain marker")
 	}
 }
