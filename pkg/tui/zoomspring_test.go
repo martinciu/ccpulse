@@ -509,3 +509,22 @@ func TestZoomSpring_ViewRendersLineMidSqueeze(t *testing.T) {
 		t.Fatalf("chart body empty mid-squeeze")
 	}
 }
+
+func TestZoomSpring_SnapshotsOldZoom(t *testing.T) {
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	m, c := seedRemainingModelWithSamples(t, 60, now)
+	defer c.Close()
+	oldZoom := ZoomLevels[m.zoomIdx]
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
+	m = updated.(Model)
+
+	if m.zoomSnap.oZoom.Label != oldZoom.Label {
+		t.Errorf("zoomSnap.oZoom = %q, want %q (outgoing cadence captured before zoomIdx++)",
+			m.zoomSnap.oZoom.Label, oldZoom.Label)
+	}
+	// 15m → 1h changes cadence, so the cross-fade must NOT be skipped.
+	if m.zoomSnap.sameCadence {
+		t.Errorf("zoomSnap.sameCadence = true for 15m→1h, want false")
+	}
+}

@@ -83,3 +83,22 @@ func TestBuildLineChart_LabelRowOverride(t *testing.T) {
 		t.Errorf("empty labelRow should not contain marker")
 	}
 }
+
+func TestLabelCadenceEqual(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	// A window spanning several 3-hour marks AND a midnight so the two real
+	// cadences diverge: 15m emits 3-hourly clock ticks that 1h omits.
+	from := time.Date(2026, 5, 19, 21, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 5, 20, 6, 0, 0, 0, time.UTC)
+	chartW := 96
+
+	// Same zoom ⇒ identical row ⇒ cadence equal.
+	if !labelCadenceEqual(ZoomLevels[1], ZoomLevels[1], from, to, chartW, now, dateOrderDayFirst) {
+		t.Errorf("labelCadenceEqual(1h, 1h) = false, want true")
+	}
+	// 15m vs 1h ⇒ different cadence over this window ⇒ not equal.
+	if labelCadenceEqual(ZoomLevels[0], ZoomLevels[1], from, to, chartW, now, dateOrderDayFirst) {
+		t.Errorf("labelCadenceEqual(15m, 1h) = true, want false")
+	}
+}

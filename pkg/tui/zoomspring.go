@@ -28,9 +28,13 @@ import (
 type zoomAnimSnapshot struct {
 	oFrom, oTo time.Time
 	nFrom, nTo time.Time
+	oZoom      ZoomLevel // OLD zoom, captured before zoomIdx advances — outgoing cadence for the cross-fade.
 	pts5h      []cache.UtilizationPoint
 	pts7d      []cache.UtilizationPoint
 	now        time.Time
+	// sameCadence is true when the outgoing and incoming zooms label the frame-0
+	// window identically — the cross-fade is skipped and labels ride the squeeze.
+	sameCadence bool
 }
 
 // lerpTime returns the linear interpolation between a and b at parameter r,
@@ -85,6 +89,8 @@ func (m *Model) handleZoomKey() tea.Cmd {
 		oFrom, oTo = m.visibleWindow()
 	}
 
+	oZoom := ZoomLevels[m.zoomIdx] // outgoing cadence — capture before zoomIdx advances.
+
 	m.zoomIdx = (m.zoomIdx + 1) % len(ZoomLevels)
 	m.refreshChart() // rebuild at NEW zoom; re-pins the right edge. On a first
 	// 'z' the abort block is a no-op (no spring in flight); a second 'z'
@@ -106,8 +112,11 @@ func (m *Model) handleZoomKey() tea.Cmd {
 	m.zoomSnap = zoomAnimSnapshot{
 		oFrom: oFrom, oTo: oTo,
 		nFrom: nFrom, nTo: nTo,
+		oZoom: oZoom,
 		pts5h: m.lastPts5h, pts7d: m.lastPts7d,
 		now: m.now(),
+		sameCadence: labelCadenceEqual(oZoom, ZoomLevels[m.zoomIdx], oFrom, oTo,
+			m.viewport.Width, m.now(), m.dateOrder),
 	}
 
 	m.zoomSpring = harmonica.NewSpring(harmonica.FPS(springFPS), phase2Frequency, phase2Damping)

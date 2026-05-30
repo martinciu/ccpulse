@@ -994,6 +994,17 @@ func synthLabelStarts(from, to time.Time, zoom ZoomLevel) []time.Time {
 	return starts
 }
 
+// labelCadenceEqual reports whether two zooms render an identical x-label row
+// over the same window — i.e. the zoom step does NOT change label cadence, so a
+// cross-fade would just blink stationary labels. Evaluated over a shared window
+// so only the cadence/format differs, not the bucket times. Currently
+// unreachable in production (15m/1h/24h all differ); kept as a forward-safe
+// guard and unit-tested directly. (#379)
+func labelCadenceEqual(a, b ZoomLevel, from, to time.Time, chartW int, now time.Time, order dateOrder) bool {
+	return buildXLabelsRow(synthLabelStarts(from, to, a), chartW, a, now, order) ==
+		buildXLabelsRow(synthLabelStarts(from, to, b), chartW, b, now, order)
+}
+
 // buildLineChart renders two remaining-quota series (5h green, 7d
 // purple) as a dotted braille trail on a timeserieslinechart canvas.
 // Time values are mapped natively by ntcharts via SetViewTimeRange.
