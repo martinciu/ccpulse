@@ -1058,7 +1058,7 @@ func crossfadeLabelRow(snap zoomAnimSnapshot, viewFrom, viewTo time.Time, newZoo
 // SetStyles(line, color) would fail to compile against ntcharts v0.5.1.
 func buildLineChart(pts5h, pts7d []cache.UtilizationPoint,
 	from, to time.Time, chartW, chartH int,
-	now time.Time, zoom ZoomLevel, order dateOrder, source string, labelRow string,
+	now time.Time, zoom ZoomLevel, order dateOrder, source, labelRow string,
 ) string {
 	logStart := time.Now()
 	if chartH < 1 {
