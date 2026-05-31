@@ -2069,7 +2069,7 @@ func TestCrossfadeLabelRow(t *testing.T) {
 	viewFrom, viewTo := oFrom, oTo // r-endpoints lerp to the same window in this unit test
 	const chartW = 80
 	snap := zoomAnimSnapshot{oFrom: oFrom, oTo: oTo, oZoom: ZoomLevels[0], now: now} // 15m outgoing
-	newZoom := ZoomLevels[1]                                                          // 1h incoming
+	newZoom := ZoomLevels[1]                                                         // 1h incoming
 
 	oldSteady := dimStyle.Render(buildXLabelsRow(synthLabelStarts(oFrom, oTo, ZoomLevels[0]), chartW, ZoomLevels[0], now, dateOrderMonthFirst))
 	newSteady := dimStyle.Render(buildXLabelsRow(synthLabelStarts(viewFrom, viewTo, newZoom), chartW, newZoom, now, dateOrderMonthFirst))
