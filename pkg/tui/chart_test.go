@@ -2005,3 +2005,27 @@ func TestSynthLabelStarts(t *testing.T) {
 		t.Errorf("degenerate window: got %d starts, want 0", len(got))
 	}
 }
+
+func TestRenderXLabels_StylesBuildXLabelsRow(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	starts := synthLabelStarts(now.Add(-6*time.Hour), now, ZoomLevels[0]) // 15m
+	const chartW = 60
+
+	raw := buildXLabelsRow(starts, chartW, ZoomLevels[0], now, dateOrderMonthFirst)
+	// Raw row is unstyled glyphs: ANSI strip is a no-op.
+	if ansi.Strip(raw) != raw {
+		t.Errorf("buildXLabelsRow returned styled output; want raw glyphs: %q", raw)
+	}
+	// renderXLabels wraps the raw row in dimStyle.
+	if got, want := renderXLabels(starts, chartW, ZoomLevels[0], now, dateOrderMonthFirst), dimStyle.Render(raw); got != want {
+		t.Errorf("renderXLabels = %q, want dimStyle.Render(raw) %q", got, want)
+	}
+	// Empty input short-circuits to "" on both.
+	if got := buildXLabelsRow(nil, chartW, ZoomLevels[0], now, dateOrderMonthFirst); got != "" {
+		t.Errorf("buildXLabelsRow(nil) = %q, want \"\"", got)
+	}
+	if got := renderXLabels(nil, chartW, ZoomLevels[0], now, dateOrderMonthFirst); got != "" {
+		t.Errorf("renderXLabels(nil) = %q, want \"\"", got)
+	}
+}

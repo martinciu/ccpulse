@@ -403,18 +403,15 @@ func overlayYLabel(body string, peak float64, unit chartUnit, chartH int, fade f
 	return strings.Join(lines, "\n")
 }
 
-// renderXLabels returns a 1-row string of width chartW containing
-// clock-aligned tick labels placed over each bucket's bar. Bar i starts
-// at column i*(BarWidth+BarGap); the label is centered inside the bar
+// buildXLabelsRow returns a 1-row string of width chartW containing
+// clock-aligned tick labels placed over each bucket's bar. The row is raw,
+// unstyled glyphs — callers apply their own styling (renderXLabels wraps it in
+// dimStyle for steady state; the zoom cross-fade applies labelFadeStyle). Bar i
+// starts at column i*(BarWidth+BarGap); the label is centered inside the bar
 // itself (gaps stay blank). For BarWidth=1 / BarGap=0 the centering
 // math falls back to col (labelW ≥ 3 > 1, so (1-labelW)/2 < 0). Labels
 // that would overflow chartW on the right are dropped. Empty starts → "".
-// colorMuted foreground throughout. As of #335 the bar-chart Y labels
-// (overlayYLabel) and the quota Y ticks (overlayYTicks) are colorMuted too,
-// so all three label rows read as one muted chrome layer; the bar-chart Y
-// labels are additionally suppressed at wide zooms (24h) where in-bar numbers
-// replace them.
-func renderXLabels(starts []time.Time, chartW int, zoom ZoomLevel, now time.Time, order dateOrder) string {
+func buildXLabelsRow(starts []time.Time, chartW int, zoom ZoomLevel, now time.Time, order dateOrder) string {
 	if chartW < 1 || len(starts) == 0 {
 		return ""
 	}
@@ -447,7 +444,19 @@ func renderXLabels(starts []time.Time, chartW int, zoom ZoomLevel, now time.Time
 		}
 	}
 
-	return dimStyle.Render(string(row))
+	return string(row)
+}
+
+// renderXLabels styles buildXLabelsRow's output as muted chrome (dimStyle ==
+// colorMuted). Steady-state callers (buildChart bar mode, buildLineChart) use
+// this; the zoom cross-fade calls buildXLabelsRow directly and applies
+// labelFadeStyle instead. dimStyle.Render("") == "" preserves the empty-row
+// short-circuit. As of #335 the bar-chart Y labels (overlayYLabel) and the
+// quota Y ticks (overlayYTicks) are colorMuted too, so all three label rows
+// read as one muted chrome layer; the bar-chart Y labels are additionally
+// suppressed at wide zooms (24h) where in-bar numbers replace them.
+func renderXLabels(starts []time.Time, chartW int, zoom ZoomLevel, now time.Time, order dateOrder) string {
+	return dimStyle.Render(buildXLabelsRow(starts, chartW, zoom, now, order))
 }
 
 const (
