@@ -667,7 +667,7 @@ func (m *Model) renderSpringLineFrame(zoom ZoomLevel, chartH int) {
 		interp7d[i] = interpPt(p)
 	}
 
-	m.viewport.SetContent(buildLineChart(interp5h, interp7d, viewFrom, viewTo, vpW, chartH, time.Now(), zoom, m.dateOrder, "spring"))
+	m.viewport.SetContent(buildLineChart(interp5h, interp7d, viewFrom, viewTo, vpW, chartH, time.Now(), zoom, m.dateOrder, "spring", ""))
 	m.viewport.SetXOffset(0)
 }
 

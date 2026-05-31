@@ -1134,7 +1134,7 @@ func TestBuildLineChart_NonEmpty(t *testing.T) {
 
 	chartW := 60
 	chartH := 12
-	body := buildLineChart(pts5h, pts7d, from, to, chartW, chartH, now, ZoomLevels[0], dateOrderMonthFirst, "test")
+	body := buildLineChart(pts5h, pts7d, from, to, chartW, chartH, now, ZoomLevels[0], dateOrderMonthFirst, "test", "")
 	if body == "" {
 		t.Fatal("buildLineChart returned empty string")
 	}
@@ -1146,7 +1146,7 @@ func TestBuildLineChart_NonEmpty(t *testing.T) {
 
 func TestBuildLineChart_EmptyPoints(t *testing.T) {
 	now := time.Now().UTC()
-	body := buildLineChart(nil, nil, now.Add(-time.Hour), now, 60, 12, now, ZoomLevels[0], dateOrderMonthFirst, "test")
+	body := buildLineChart(nil, nil, now.Add(-time.Hour), now, 60, 12, now, ZoomLevels[0], dateOrderMonthFirst, "test", "")
 	if body == "" {
 		t.Fatal("expected non-empty output for empty points (flat 100% line)")
 	}
@@ -1166,7 +1166,7 @@ func TestBuildLineChart_NoBuiltinXAxis(t *testing.T) {
 		{At: from.Add(12 * time.Hour), Pct: 50},
 		{At: from.Add(23 * time.Hour), Pct: 90},
 	}
-	body := buildLineChart(pts5h, nil, from, to, 80, 14, now, ZoomLevels[1], dateOrderMonthFirst, "test")
+	body := buildLineChart(pts5h, nil, from, to, 80, 14, now, ZoomLevels[1], dateOrderMonthFirst, "test", "")
 	stripped := ansi.Strip(body)
 
 	// A row consisting almost entirely of small integers separated by
@@ -1250,7 +1250,7 @@ func BenchmarkBuildLineChart(b *testing.B) {
 			runtime.GC()
 			b.ResetTimer()
 			for b.Loop() {
-				sinkString = buildLineChart(pts5h, pts7d, from, to, tc.canvasW, 20, now, tc.zoom, dateOrderMonthFirst, "test")
+				sinkString = buildLineChart(pts5h, pts7d, from, to, tc.canvasW, 20, now, tc.zoom, dateOrderMonthFirst, "test", "")
 			}
 		})
 	}
@@ -1434,7 +1434,7 @@ func TestBuildLineChart_5hAnd7dShareScale(t *testing.T) {
 		pts5h := makeUniformPoints(from, to, 24, 4.0)  // Y = 0.96
 		pts7d := makeUniformPoints(from, to, 24, 20.0) // Y = 0.80
 
-		body := buildLineChart(pts5h, pts7d, from, to, chartW, chartH, now, ZoomLevels[1], dateOrderMonthFirst, "test")
+		body := buildLineChart(pts5h, pts7d, from, to, chartW, chartH, now, ZoomLevels[1], dateOrderMonthFirst, "test", "")
 
 		scan := scanSeries(body, sgrOpen5h, sgrClose5h, sgrOpen7d, sgrClose7d)
 
@@ -1460,7 +1460,7 @@ func TestBuildLineChart_5hAnd7dShareScale(t *testing.T) {
 		pts5h := makeUniformPoints(from, mid, 12, 4.0)
 		pts7d := makeUniformPoints(mid, to, 12, 4.0)
 
-		body := buildLineChart(pts5h, pts7d, from, to, chartW, chartH, now, ZoomLevels[1], dateOrderMonthFirst, "test")
+		body := buildLineChart(pts5h, pts7d, from, to, chartW, chartH, now, ZoomLevels[1], dateOrderMonthFirst, "test", "")
 
 		scan := scanSeries(body, sgrOpen5h, sgrClose5h, sgrOpen7d, sgrClose7d)
 
@@ -1492,7 +1492,7 @@ func TestBuildLineChart_5hAnd7dShareScale(t *testing.T) {
 		pts5h := makeUniformPoints(from, to, 24, 12.0) // Y = 0.88
 		pts7d := makeUniformPoints(from, to, 24, 12.0) // identical
 
-		body := buildLineChart(pts5h, pts7d, from, to, chartW, chartH, now, ZoomLevels[1], dateOrderMonthFirst, "test")
+		body := buildLineChart(pts5h, pts7d, from, to, chartW, chartH, now, ZoomLevels[1], dateOrderMonthFirst, "test", "")
 
 		scan := scanSeries(body, sgrOpen5h, sgrClose5h, sgrOpen7d, sgrClose7d)
 
@@ -2027,5 +2027,35 @@ func TestRenderXLabels_StylesBuildXLabelsRow(t *testing.T) {
 	}
 	if got := renderXLabels(nil, chartW, ZoomLevels[0], now, dateOrderMonthFirst); got != "" {
 		t.Errorf("renderXLabels(nil) = %q, want \"\"", got)
+	}
+}
+
+func TestBuildLineChart_LabelRowParam(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	from, to := now.Add(-6*time.Hour), now
+	const chartW, chartH = 60, 12
+	pts := []cache.UtilizationPoint{{At: from, Pct: 20}, {At: to, Pct: 40}}
+
+	// labelRow == "" → internal row == renderXLabels(synthLabelStarts(...)).
+	body := buildLineChart(pts, nil, from, to, chartW, chartH, now, ZoomLevels[0], dateOrderMonthFirst, "test", "")
+	lines := strings.Split(body, "\n")
+	wantInternal := renderXLabels(synthLabelStarts(from, to, ZoomLevels[0]), chartW, ZoomLevels[0], now, dateOrderMonthFirst)
+	if got := lines[len(lines)-1]; got != wantInternal {
+		t.Errorf("labelRow=\"\": last line = %q, want internal row %q", got, wantInternal)
+	}
+
+	// labelRow non-empty → used verbatim as the last line.
+	custom := dimStyle.Render(strings.Repeat("X", chartW))
+	body = buildLineChart(pts, nil, from, to, chartW, chartH, now, ZoomLevels[0], dateOrderMonthFirst, "test", custom)
+	lines = strings.Split(body, "\n")
+	if got := lines[len(lines)-1]; got != custom {
+		t.Errorf("labelRow=custom: last line = %q, want %q", got, custom)
+	}
+
+	// chartH < 6 → no x-label row; the custom labelRow is ignored entirely.
+	bodyNoLabels := buildLineChart(pts, nil, from, to, chartW, 5, now, ZoomLevels[0], dateOrderMonthFirst, "test", custom)
+	if strings.Contains(bodyNoLabels, custom) {
+		t.Errorf("chartH<6: custom labelRow leaked into body:\n%q", bodyNoLabels)
 	}
 }
