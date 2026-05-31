@@ -11,12 +11,14 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/BurntSushi/toml"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/muesli/termenv"
 	"github.com/spf13/cobra"
 
 	"github.com/martinciu/ccpulse/pkg/anthro"
@@ -223,6 +225,35 @@ func watcherStartupError(projectsRoot string, err error) error {
 // for the quota poller's context and for the startup backfill, so
 // SIGINT/SIGTERM cancels in-flight work even before the user quits
 // the TUI itself.
+// backgroundQueryable reports whether the terminal can be reliably queried for
+// its background color via an OSC escape. termenv's BackgroundColor falls back
+// to ANSI black on any failure, so querying an unreliable context would
+// reintroduce the fade-to-black smudge instead of leaving labelFadeStyle's
+// muted-grey fallback in place. Reliable means a real character-device TTY that
+// is not a multiplexer (tmux/screen can be attached to several terminals and
+// can't be queried reliably) or a dumb terminal (no OSC support).
+func backgroundQueryable(charDevice bool, term string) bool {
+	if !charDevice {
+		return false // piped, redirected, or a test harness
+	}
+	return term != "dumb" &&
+		!strings.HasPrefix(term, "tmux") &&
+		!strings.HasPrefix(term, "screen")
+}
+
+// detectTerminalBackground returns the terminal's background color as a
+// "#rrggbb" hex string, or "" when it can't be queried reliably (see
+// backgroundQueryable) — the empty string leaves labelFadeStyle's muted-grey
+// fallback in place.
+func detectTerminalBackground() string {
+	fi, err := os.Stdout.Stat()
+	charDevice := err == nil && fi.Mode()&os.ModeCharDevice != 0
+	if !backgroundQueryable(charDevice, os.Getenv("TERM")) {
+		return ""
+	}
+	return termenv.ConvertToRGB(termenv.NewOutput(os.Stdout).BackgroundColor()).Hex()
+}
+
 func runTUI(ctx context.Context, errOut io.Writer) error {
 	cfg, err := config.Load(config.DefaultPath())
 	if err != nil && !os.IsNotExist(err) {
@@ -262,6 +293,15 @@ func runTUI(ctx context.Context, errOut io.Writer) error {
 	}
 
 	qs := resolveQuotaStartup(errOut, time.Now())
+
+	// Detect the terminal background once, before Bubble Tea owns the tty, so
+	// the animation label fade can dissolve into the real background instead of
+	// a fixed near-black. Unreliable contexts (non-TTY, tmux/screen) leave the
+	// muted-grey fallback in place rather than the OSC query's default-black.
+	if bg := detectTerminalBackground(); bg != "" {
+		tui.SetLabelFadeBackground(bg)
+		slog.Debug("tui.labelFadeBackground", "detected", bg)
+	}
 
 	m := tui.New(tui.Deps{
 		Ctx:          ctx,

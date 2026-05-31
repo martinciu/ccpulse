@@ -7,7 +7,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-func TestLabelFadeStyle_Quantisation(t *testing.T) {
+func TestLabelFadeStyle(t *testing.T) {
 	withForcedColor(t)
 	withForcedDarkBackground(t, true)
 
@@ -22,44 +22,63 @@ func TestLabelFadeStyle_Quantisation(t *testing.T) {
 		t.Errorf("labelFadeStyle(-0.5).Render = %q, want %q (sentinel; fade clamped)", got, plain)
 	}
 
-	// Direction binding: fade = 1.0 = full opacity = stop 1 = colorMuted (#335)
-	// so every Y-axis label reads as muted chrome matching the X-axis tick row.
+	// Direction binding: fade = 1.0 = full opacity = colorMuted (#335) so every
+	// label reads as muted chrome matching the X-axis tick row, with no
+	// brightness pop at the fade endpoints.
 	wantMuted := lipgloss.NewStyle().Foreground(colorMuted).Render(probe)
 	if got := labelFadeStyle(1.0).Render(probe); got != wantMuted {
-		t.Errorf("labelFadeStyle(1.0).Render = %q, want %q (stop 1 = colorMuted at full opacity)", got, wantMuted)
+		t.Errorf("labelFadeStyle(1.0).Render = %q, want %q (full opacity = colorMuted)", got, wantMuted)
 	}
-	// fade clamps above 1.0 still map to stop 1.
+	// fade clamps above 1.0 still map to colorMuted.
 	if got := labelFadeStyle(2.0).Render(probe); got != wantMuted {
-		t.Errorf("labelFadeStyle(2.0).Render = %q, want %q (clamped to stop 1 = colorMuted)", got, wantMuted)
+		t.Errorf("labelFadeStyle(2.0).Render = %q, want %q (clamped to colorMuted)", got, wantMuted)
 	}
 
-	// Mid and low fade values produce SGR-wrapped output (stops 2–5).
-	// With ceil((1 - fade) * 5) the inclusive upper-bound boundaries are
-	// fade=0.6 (stop 2), 0.4 (stop 3), 0.2 (stop 4), 0.001 (stop 5).
-	for _, tc := range []struct {
-		name string
-		fade float64
-	}{
-		{"stop 2 boundary (0.6)", 0.6},
-		{"stop 3 boundary (0.4)", 0.4},
-		{"stop 4 boundary (0.2)", 0.2},
-		{"stop 5 near-zero (0.001)", 0.001},
-	} {
-		got := labelFadeStyle(tc.fade).Render(probe)
+	// Sub-full fade values produce SGR-wrapped output that still contains the
+	// glyphs (the foreground is blended toward the background, not blanked).
+	for _, fade := range []float64{0.75, 0.5, 0.25, 0.001} {
+		got := labelFadeStyle(fade).Render(probe)
 		if got == plain {
-			t.Errorf("%s: labelFadeStyle(%v).Render = %q; expected SGR-wrapped output",
-				tc.name, tc.fade, got)
+			t.Errorf("labelFadeStyle(%v).Render = %q; expected SGR-wrapped output", fade, got)
 		}
 		if !strings.Contains(got, plain) {
-			t.Errorf("%s: labelFadeStyle(%v).Render = %q does not contain probe %q",
-				tc.name, tc.fade, got, plain)
+			t.Errorf("labelFadeStyle(%v).Render = %q does not contain probe %q", fade, got, plain)
 		}
 	}
+}
 
-	// Stop count constant must match the slice length so callers can
-	// rely on it as the bucket count.
-	if got := len(labelFadeStops); got != labelFadeStopCount {
-		t.Errorf("len(labelFadeStops) = %d, want %d", got, labelFadeStopCount)
+// labelFadeStyle's sub-full frames blend the muted label color toward the
+// detected terminal background, so setting a distinctive background must change
+// the rendered fade color — while the full-opacity and sentinel endpoints stay
+// fixed.
+func TestLabelFadeStyle_FollowsSetBackground(t *testing.T) {
+	withForcedColor(t)
+	withForcedDarkBackground(t, true)
+
+	// labelFadeTarget is process-global; save and restore it.
+	prev := labelFadeTarget
+	t.Cleanup(func() { labelFadeTarget = prev })
+
+	const probe = "00:00"
+
+	// Fallback (no background set) blends toward colorFaint.
+	labelFadeTarget.ok = false
+	fallback := labelFadeStyle(0.25).Render(probe)
+
+	// With a distinctive background set, the same fade renders a different color.
+	SetLabelFadeBackground("#002b36") // Solarized base03
+	withBg := labelFadeStyle(0.25).Render(probe)
+	if fallback == withBg {
+		t.Errorf("sub-full fade ignored the set background: fallback=%q withBg=%q", fallback, withBg)
+	}
+
+	// Endpoints are unaffected by the target: full opacity stays muted chrome,
+	// and the sentinel stays plain.
+	if got, want := labelFadeStyle(1.0).Render(probe), lipgloss.NewStyle().Foreground(colorMuted).Render(probe); got != want {
+		t.Errorf("fade=1.0 with background set = %q, want colorMuted %q", got, want)
+	}
+	if got := labelFadeStyle(0).Render(probe); got != probe {
+		t.Errorf("fade=0 with background set = %q, want plain sentinel %q", got, probe)
 	}
 }
 

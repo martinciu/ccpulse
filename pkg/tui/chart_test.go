@@ -1134,7 +1134,7 @@ func TestBuildLineChart_NonEmpty(t *testing.T) {
 
 	chartW := 60
 	chartH := 12
-	body := buildLineChart(pts5h, pts7d, from, to, chartW, chartH, now, ZoomLevels[0], dateOrderMonthFirst, "test")
+	body := buildLineChart(pts5h, pts7d, from, to, chartW, chartH, now, ZoomLevels[0], dateOrderMonthFirst, "test", "")
 	if body == "" {
 		t.Fatal("buildLineChart returned empty string")
 	}
@@ -1146,7 +1146,7 @@ func TestBuildLineChart_NonEmpty(t *testing.T) {
 
 func TestBuildLineChart_EmptyPoints(t *testing.T) {
 	now := time.Now().UTC()
-	body := buildLineChart(nil, nil, now.Add(-time.Hour), now, 60, 12, now, ZoomLevels[0], dateOrderMonthFirst, "test")
+	body := buildLineChart(nil, nil, now.Add(-time.Hour), now, 60, 12, now, ZoomLevels[0], dateOrderMonthFirst, "test", "")
 	if body == "" {
 		t.Fatal("expected non-empty output for empty points (flat 100% line)")
 	}
@@ -1166,7 +1166,7 @@ func TestBuildLineChart_NoBuiltinXAxis(t *testing.T) {
 		{At: from.Add(12 * time.Hour), Pct: 50},
 		{At: from.Add(23 * time.Hour), Pct: 90},
 	}
-	body := buildLineChart(pts5h, nil, from, to, 80, 14, now, ZoomLevels[1], dateOrderMonthFirst, "test")
+	body := buildLineChart(pts5h, nil, from, to, 80, 14, now, ZoomLevels[1], dateOrderMonthFirst, "test", "")
 	stripped := ansi.Strip(body)
 
 	// A row consisting almost entirely of small integers separated by
@@ -1250,7 +1250,7 @@ func BenchmarkBuildLineChart(b *testing.B) {
 			runtime.GC()
 			b.ResetTimer()
 			for b.Loop() {
-				sinkString = buildLineChart(pts5h, pts7d, from, to, tc.canvasW, 20, now, tc.zoom, dateOrderMonthFirst, "test")
+				sinkString = buildLineChart(pts5h, pts7d, from, to, tc.canvasW, 20, now, tc.zoom, dateOrderMonthFirst, "test", "")
 			}
 		})
 	}
@@ -1434,7 +1434,7 @@ func TestBuildLineChart_5hAnd7dShareScale(t *testing.T) {
 		pts5h := makeUniformPoints(from, to, 24, 4.0)  // Y = 0.96
 		pts7d := makeUniformPoints(from, to, 24, 20.0) // Y = 0.80
 
-		body := buildLineChart(pts5h, pts7d, from, to, chartW, chartH, now, ZoomLevels[1], dateOrderMonthFirst, "test")
+		body := buildLineChart(pts5h, pts7d, from, to, chartW, chartH, now, ZoomLevels[1], dateOrderMonthFirst, "test", "")
 
 		scan := scanSeries(body, sgrOpen5h, sgrClose5h, sgrOpen7d, sgrClose7d)
 
@@ -1460,7 +1460,7 @@ func TestBuildLineChart_5hAnd7dShareScale(t *testing.T) {
 		pts5h := makeUniformPoints(from, mid, 12, 4.0)
 		pts7d := makeUniformPoints(mid, to, 12, 4.0)
 
-		body := buildLineChart(pts5h, pts7d, from, to, chartW, chartH, now, ZoomLevels[1], dateOrderMonthFirst, "test")
+		body := buildLineChart(pts5h, pts7d, from, to, chartW, chartH, now, ZoomLevels[1], dateOrderMonthFirst, "test", "")
 
 		scan := scanSeries(body, sgrOpen5h, sgrClose5h, sgrOpen7d, sgrClose7d)
 
@@ -1492,7 +1492,7 @@ func TestBuildLineChart_5hAnd7dShareScale(t *testing.T) {
 		pts5h := makeUniformPoints(from, to, 24, 12.0) // Y = 0.88
 		pts7d := makeUniformPoints(from, to, 24, 12.0) // identical
 
-		body := buildLineChart(pts5h, pts7d, from, to, chartW, chartH, now, ZoomLevels[1], dateOrderMonthFirst, "test")
+		body := buildLineChart(pts5h, pts7d, from, to, chartW, chartH, now, ZoomLevels[1], dateOrderMonthFirst, "test", "")
 
 		scan := scanSeries(body, sgrOpen5h, sgrClose5h, sgrOpen7d, sgrClose7d)
 
@@ -1982,6 +1982,134 @@ func TestOverlayYTicks_TicksMuted(t *testing.T) {
 		want := lipgloss.NewStyle().Foreground(colorMuted).Render(label)
 		if !strings.Contains(result, want) {
 			t.Errorf("expected %q tick in colorMuted; want substring %q in %q", label, want, result)
+		}
+	}
+}
+
+func TestSynthLabelStarts(t *testing.T) {
+	t.Parallel()
+	from := time.Date(2026, 5, 20, 0, 0, 0, 0, time.UTC)
+	to := from.Add(6 * time.Hour)
+
+	// 6h window at 1h cadence → 6 starts (00:00..05:00); [from, to) excludes to.
+	got := synthLabelStarts(from, to, ZoomLevels[1]) // ZoomLevels[1] == 1h
+	if len(got) != 6 {
+		t.Fatalf("synthLabelStarts(6h @ 1h) = %d starts, want 6", len(got))
+	}
+	if !got[0].Equal(from) || !got[5].Equal(from.Add(5*time.Hour)) {
+		t.Errorf("starts = %v, want 00:00..05:00 hourly", got)
+	}
+
+	// Degenerate (to <= from) → empty slice, no panic.
+	if got := synthLabelStarts(to, from, ZoomLevels[1]); len(got) != 0 {
+		t.Errorf("degenerate window: got %d starts, want 0", len(got))
+	}
+}
+
+func TestRenderXLabels_StylesBuildXLabelsRow(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	starts := synthLabelStarts(now.Add(-6*time.Hour), now, ZoomLevels[0]) // 15m
+	const chartW = 60
+
+	raw := buildXLabelsRow(starts, chartW, ZoomLevels[0], now, dateOrderMonthFirst)
+	// Raw row is unstyled glyphs: ANSI strip is a no-op.
+	if ansi.Strip(raw) != raw {
+		t.Errorf("buildXLabelsRow returned styled output; want raw glyphs: %q", raw)
+	}
+	// renderXLabels wraps the raw row in dimStyle.
+	if got, want := renderXLabels(starts, chartW, ZoomLevels[0], now, dateOrderMonthFirst), dimStyle.Render(raw); got != want {
+		t.Errorf("renderXLabels = %q, want dimStyle.Render(raw) %q", got, want)
+	}
+	// Empty input short-circuits to "" on both.
+	if got := buildXLabelsRow(nil, chartW, ZoomLevels[0], now, dateOrderMonthFirst); got != "" {
+		t.Errorf("buildXLabelsRow(nil) = %q, want \"\"", got)
+	}
+	if got := renderXLabels(nil, chartW, ZoomLevels[0], now, dateOrderMonthFirst); got != "" {
+		t.Errorf("renderXLabels(nil) = %q, want \"\"", got)
+	}
+}
+
+func TestBuildLineChart_LabelRowParam(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	from, to := now.Add(-6*time.Hour), now
+	const chartW, chartH = 60, 12
+	pts := []cache.UtilizationPoint{{At: from, Pct: 20}, {At: to, Pct: 40}}
+
+	// labelRow == "" → internal row == renderXLabels(synthLabelStarts(...)).
+	body := buildLineChart(pts, nil, from, to, chartW, chartH, now, ZoomLevels[0], dateOrderMonthFirst, "test", "")
+	lines := strings.Split(body, "\n")
+	wantInternal := renderXLabels(synthLabelStarts(from, to, ZoomLevels[0]), chartW, ZoomLevels[0], now, dateOrderMonthFirst)
+	if got := lines[len(lines)-1]; got != wantInternal {
+		t.Errorf("labelRow=\"\": last line = %q, want internal row %q", got, wantInternal)
+	}
+
+	// labelRow non-empty → used verbatim as the last line.
+	custom := dimStyle.Render(strings.Repeat("X", chartW))
+	body = buildLineChart(pts, nil, from, to, chartW, chartH, now, ZoomLevels[0], dateOrderMonthFirst, "test", custom)
+	lines = strings.Split(body, "\n")
+	if got := lines[len(lines)-1]; got != custom {
+		t.Errorf("labelRow=custom: last line = %q, want %q", got, custom)
+	}
+
+	// chartH < 6 → no x-label row; the custom labelRow is ignored entirely.
+	bodyNoLabels := buildLineChart(pts, nil, from, to, chartW, 5, now, ZoomLevels[0], dateOrderMonthFirst, "test", custom)
+	if strings.Contains(bodyNoLabels, custom) {
+		t.Errorf("chartH<6: custom labelRow leaked into body:\n%q", bodyNoLabels)
+	}
+}
+
+func TestCrossfadeLabelRow(t *testing.T) {
+	t.Parallel()
+	// now just after midnight so BOTH cadences render labels: 15m shows
+	// 3-hourly clock ticks; 1h shows the midnight date stamp.
+	now := time.Date(2026, 5, 20, 2, 0, 0, 0, time.UTC)
+	oFrom, oTo := now.Add(-6*time.Hour), now
+	// NEW window spans a DIFFERENT range than the old one, so its 1h cadence
+	// lands at different columns than the old 15m row. This is the regression
+	// guard: an incoming row that tracked the lerping view window (the #382
+	// "labels move with the chart" bug) instead of the frozen new window would
+	// produce different glyphs as r advances.
+	nFrom, nTo := now.Add(-18*time.Hour), now
+	const chartW = 80
+	snap := zoomAnimSnapshot{oFrom: oFrom, oTo: oTo, nFrom: nFrom, nTo: nTo, oZoom: ZoomLevels[0], now: now} // 15m outgoing
+	newZoom := ZoomLevels[1]                                                                                 // 1h incoming
+
+	oldSteady := dimStyle.Render(buildXLabelsRow(synthLabelStarts(oFrom, oTo, ZoomLevels[0]), chartW, ZoomLevels[0], now, dateOrderMonthFirst))
+	newSteady := dimStyle.Render(buildXLabelsRow(synthLabelStarts(nFrom, nTo, newZoom), chartW, newZoom, now, dateOrderMonthFirst))
+
+	// Precondition: the two rows must differ, else the glyph assertions below
+	// are vacuous.
+	if ansi.Strip(oldSteady) == ansi.Strip(newSteady) {
+		t.Fatalf("old (15m) and new (1h) rows render identically — choose windows where they differ")
+	}
+
+	// r=0: full-opacity outgoing == old steady-state row (no brightness pop).
+	if got := crossfadeLabelRow(snap, newZoom, chartW, 0, dateOrderMonthFirst); got != oldSteady {
+		t.Errorf("r=0: got %q, want old steady-state row %q", got, oldSteady)
+	}
+	// r=1: full-opacity incoming == new steady-state row, fixed at the NEW window.
+	if got := crossfadeLabelRow(snap, newZoom, chartW, 1, dateOrderMonthFirst); got != newSteady {
+		t.Errorf("r=1: got %q, want new steady-state row %q", got, newSteady)
+	}
+	// r=0.5: blank strip exactly chartW wide.
+	if got, want := crossfadeLabelRow(snap, newZoom, chartW, 0.5, dateOrderMonthFirst), strings.Repeat(" ", chartW); got != want {
+		t.Errorf("r=0.5: got %q, want blank strip of width %d", got, chartW)
+	}
+
+	// Position stability — the heart of the #382 fix. Within a fade phase only
+	// opacity changes; the GLYPHS are frozen (outgoing at the OLD window,
+	// incoming at the NEW window). Neither phase tracks the lerping view window,
+	// so the labels fade in place rather than sliding with the bars.
+	for _, r := range []float64{0.1, 0.25, 0.4} {
+		if got := ansi.Strip(crossfadeLabelRow(snap, newZoom, chartW, r, dateOrderMonthFirst)); got != ansi.Strip(oldSteady) {
+			t.Errorf("outgoing r=%v moved: got %q, want frozen old glyphs %q", r, got, ansi.Strip(oldSteady))
+		}
+	}
+	for _, r := range []float64{0.6, 0.75, 0.9} {
+		if got := ansi.Strip(crossfadeLabelRow(snap, newZoom, chartW, r, dateOrderMonthFirst)); got != ansi.Strip(newSteady) {
+			t.Errorf("incoming r=%v moved: got %q, want fixed new glyphs %q", r, got, ansi.Strip(newSteady))
 		}
 	}
 }

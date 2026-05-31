@@ -403,18 +403,15 @@ func overlayYLabel(body string, peak float64, unit chartUnit, chartH int, fade f
 	return strings.Join(lines, "\n")
 }
 
-// renderXLabels returns a 1-row string of width chartW containing
-// clock-aligned tick labels placed over each bucket's bar. Bar i starts
-// at column i*(BarWidth+BarGap); the label is centered inside the bar
+// buildXLabelsRow returns a 1-row string of width chartW containing
+// clock-aligned tick labels placed over each bucket's bar. The row is raw,
+// unstyled glyphs — callers apply their own styling (renderXLabels wraps it in
+// dimStyle for steady state; the zoom cross-fade applies labelFadeStyle). Bar i
+// starts at column i*(BarWidth+BarGap); the label is centered inside the bar
 // itself (gaps stay blank). For BarWidth=1 / BarGap=0 the centering
 // math falls back to col (labelW ≥ 3 > 1, so (1-labelW)/2 < 0). Labels
 // that would overflow chartW on the right are dropped. Empty starts → "".
-// colorMuted foreground throughout. As of #335 the bar-chart Y labels
-// (overlayYLabel) and the quota Y ticks (overlayYTicks) are colorMuted too,
-// so all three label rows read as one muted chrome layer; the bar-chart Y
-// labels are additionally suppressed at wide zooms (24h) where in-bar numbers
-// replace them.
-func renderXLabels(starts []time.Time, chartW int, zoom ZoomLevel, now time.Time, order dateOrder) string {
+func buildXLabelsRow(starts []time.Time, chartW int, zoom ZoomLevel, now time.Time, order dateOrder) string {
 	if chartW < 1 || len(starts) == 0 {
 		return ""
 	}
@@ -447,7 +444,19 @@ func renderXLabels(starts []time.Time, chartW int, zoom ZoomLevel, now time.Time
 		}
 	}
 
-	return dimStyle.Render(string(row))
+	return string(row)
+}
+
+// renderXLabels styles buildXLabelsRow's output as muted chrome (dimStyle ==
+// colorMuted). Steady-state callers (buildChart bar mode, buildLineChart) use
+// this; the zoom cross-fade calls buildXLabelsRow directly and applies
+// labelFadeStyle instead. dimStyle.Render("") == "" preserves the empty-row
+// short-circuit. As of #335 the bar-chart Y labels (overlayYLabel) and the
+// quota Y ticks (overlayYTicks) are colorMuted too, so all three label rows
+// read as one muted chrome layer; the bar-chart Y labels are additionally
+// suppressed at wide zooms (24h) where in-bar numbers replace them.
+func renderXLabels(starts []time.Time, chartW int, zoom ZoomLevel, now time.Time, order dateOrder) string {
+	return dimStyle.Render(buildXLabelsRow(starts, chartW, zoom, now, order))
 }
 
 const (
@@ -969,6 +978,59 @@ func isLineMode(u chartUnit) bool {
 	return u == chartUnitRemaining
 }
 
+// synthLabelStarts returns the bucket-start times for x-axis labels spanning
+// [from, to) at the zoom's cadence. The line chart spans [from, to)
+// continuously, but label cadence comes from the zoom Duration so it matches
+// bar-chart mode. Shared by buildLineChart's internal label row and the zoom
+// cross-fade (crossfadeLabelRow). max(…, 1) keeps the capacity hint positive
+// for a degenerate (to <= from) window — the loop still yields an empty slice.
+func synthLabelStarts(from, to time.Time, zoom ZoomLevel) []time.Time {
+	dur := zoom.Duration
+	n := max(int(to.Sub(from)/dur)+1, 1)
+	starts := make([]time.Time, 0, n)
+	for t := from; t.Before(to); t = t.Add(dur) {
+		starts = append(starts, t)
+	}
+	return starts
+}
+
+// crossfadeLabelRow returns the x-axis label row for one frame of the line-mode
+// zoom squeeze, cross-fading the outgoing cadence out over r ∈ [0, 0.5) and the
+// incoming cadence in over r ∈ (0.5, 1]. Sequential phases — only one row is
+// ever non-hidden, so the two rows' differing columns never collide.
+//
+// BOTH rows are FROZEN for the whole transition — the labels fade in place
+// rather than sliding with the bars (#382 follow-up: the earlier version placed
+// the incoming row over the lerping view window, so the labels blinked and moved
+// with the squeezing chart):
+//
+//   - outgoing: frozen OLD window [snap.oFrom, snap.oTo] at snap.oZoom — fades
+//     out at its current position.
+//   - incoming: frozen NEW window [snap.nFrom, snap.nTo] at newZoom — fades in
+//     at its final position.
+//
+// Only the chart BODY rides the squeeze (renderZoomFrame passes the lerped
+// window to buildLineChart); the label row is decoupled from that motion.
+//
+// fade→1 maps to labelFadeStyle's colorMuted == dimStyle, so the entry (r→0)
+// and exit (r→1) match the steady-state labels with no brightness pop; the
+// in-between frames dissolve toward the terminal background (see labelFadeStyle).
+// At r == 0.5 both fades are 0 → a blank strip (the accepted near-blank frame).
+func crossfadeLabelRow(snap zoomAnimSnapshot, newZoom ZoomLevel, chartW int, r float64, order dateOrder) string {
+	fadeOut := min(max((0.5-r)/0.5, 0), 1)
+	fadeIn := min(max((r-0.5)/0.5, 0), 1)
+	switch {
+	case fadeOut > 0: // r < 0.5 — outgoing ghost, frozen at the OLD window/cadence
+		outRow := buildXLabelsRow(synthLabelStarts(snap.oFrom, snap.oTo, snap.oZoom), chartW, snap.oZoom, snap.now, order)
+		return labelFadeStyle(fadeOut).Render(outRow)
+	case fadeIn > 0: // r > 0.5 — incoming, fixed at the NEW (final) window/cadence
+		inRow := buildXLabelsRow(synthLabelStarts(snap.nFrom, snap.nTo, newZoom), chartW, newZoom, snap.now, order)
+		return labelFadeStyle(fadeIn).Render(inRow)
+	default: // r == 0.5 — blank strip
+		return strings.Repeat(" ", chartW)
+	}
+}
+
 // buildLineChart renders two remaining-quota series (5h green, 7d
 // purple) as a dotted braille trail on a timeserieslinechart canvas.
 // Time values are mapped natively by ntcharts via SetViewTimeRange.
@@ -989,7 +1051,7 @@ func isLineMode(u chartUnit) bool {
 // SetStyles(line, color) would fail to compile against ntcharts v0.5.1.
 func buildLineChart(pts5h, pts7d []cache.UtilizationPoint,
 	from, to time.Time, chartW, chartH int,
-	now time.Time, zoom ZoomLevel, order dateOrder, source string,
+	now time.Time, zoom ZoomLevel, order dateOrder, source, labelRow string,
 ) string {
 	logStart := time.Now()
 	if chartH < 1 {
@@ -1065,16 +1127,11 @@ func buildLineChart(pts5h, pts7d []cache.UtilizationPoint,
 	body := tslc.View()
 
 	if showXLabels {
-		// Synthesise bucket starts for x-axis labels. The line chart spans
-		// [from, to) continuously but the label cadence comes from the zoom
-		// duration so it matches bar-chart mode.
-		dur := zoom.Duration
-		n := max(int(to.Sub(from)/dur)+1, 1)
-		labelStarts := make([]time.Time, 0, n)
-		for t := from; t.Before(to); t = t.Add(dur) {
-			labelStarts = append(labelStarts, t)
+		row := labelRow
+		if row == "" {
+			row = renderXLabels(synthLabelStarts(from, to, zoom), chartW, zoom, now, order)
 		}
-		body = lipgloss.JoinVertical(lipgloss.Left, body, renderXLabels(labelStarts, chartW, zoom, now, order))
+		body = lipgloss.JoinVertical(lipgloss.Left, body, row)
 	}
 
 	slog.Debug("tui.buildLineChart",
