@@ -562,3 +562,54 @@ func TestZoomLabelCrossfade_GhostsOldCadenceAtFrameZero(t *testing.T) {
 		t.Errorf("after settle: lastCanvasW=0, want steady-state full canvas restored")
 	}
 }
+
+// Regression for #382 follow-up: during a line-mode zoom the x-axis labels must
+// fade in PLACE — the incoming label row must NOT slide with the squeezing bars.
+// Drives the real spring path (renderZoomFrame) and asserts every incoming-phase
+// (r > 0.5) label row is byte-identical (glyphs frozen at the new window) and
+// non-blank (the new labels actually appear).
+func TestZoomLabelCrossfade_IncomingDoesNotMove(t *testing.T) {
+	now := time.Date(2026, 5, 20, 2, 0, 0, 0, time.UTC)
+	m, c := seedRemainingModelWithSamples(t, 60, now)
+	defer c.Close()
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
+	m = updated.(Model)
+	if !m.springActive || m.springKind != springKindZoom {
+		t.Fatalf("arm sanity: springActive=%v springKind=%d", m.springActive, m.springKind)
+	}
+
+	// Drive the squeeze via constructed ticks; record the label row (last line)
+	// at each incoming-phase frame. Never the real now-tick (it real-sleeps).
+	var incoming []string
+	const maxTicks = 600
+	for i := 0; i < maxTicks && m.springActive; i++ {
+		updated, _ = m.Update(springTickMsg{gen: m.springGen})
+		m = updated.(Model)
+		if !m.springActive {
+			break // settle frame restored the full steady-state canvas — skip it
+		}
+		if m.zoomSpringR <= 0.5 {
+			continue // outgoing / midpoint phase
+		}
+		lines := strings.Split(ansi.Strip(m.viewport.View()), "\n")
+		incoming = append(incoming, lines[len(lines)-1])
+	}
+	if m.springActive {
+		t.Fatalf("zoom squeeze did not settle within %d ticks", maxTicks)
+	}
+	if len(incoming) < 2 {
+		t.Fatalf("captured %d incoming-phase frames, want >= 2 to compare for movement", len(incoming))
+	}
+
+	first := incoming[0]
+	if strings.TrimSpace(first) == "" {
+		t.Errorf("incoming label row is blank across the fade-in; the new labels never appeared")
+	}
+	for i, row := range incoming {
+		if row != first {
+			t.Errorf("incoming label row moved between frames (labels sliding with the chart):\n frame[0] = %q\n frame[%d] = %q", first, i, row)
+			break
+		}
+	}
+}

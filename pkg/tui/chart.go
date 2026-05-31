@@ -999,22 +999,31 @@ func synthLabelStarts(from, to time.Time, zoom ZoomLevel) []time.Time {
 // incoming cadence in over r ∈ (0.5, 1]. Sequential phases — only one row is
 // ever non-hidden, so the two rows' differing columns never collide.
 //
-//   - outgoing: frozen old window [snap.oFrom, snap.oTo] at snap.oZoom — a
-//     ghost dissolving in place (it does NOT ride the squeeze).
-//   - incoming: lerped window [viewFrom, viewTo] at newZoom — tracks the bars.
+// BOTH rows are FROZEN for the whole transition — the labels fade in place
+// rather than sliding with the bars (#382 follow-up: the earlier version placed
+// the incoming row over the lerping view window, so the labels blinked and moved
+// with the squeezing chart):
+//
+//   - outgoing: frozen OLD window [snap.oFrom, snap.oTo] at snap.oZoom — fades
+//     out at its current position.
+//   - incoming: frozen NEW window [snap.nFrom, snap.nTo] at newZoom — fades in
+//     at its final position.
+//
+// Only the chart BODY rides the squeeze (renderZoomFrame passes the lerped
+// window to buildLineChart); the label row is decoupled from that motion.
 //
 // fade→1 maps to labelFadeStyle stop 1 == colorMuted == dimStyle, so the entry
 // (r→0) and exit (r→1) match the steady-state labels with no brightness pop.
 // At r == 0.5 both fades are 0 → a blank strip (the accepted near-blank frame).
-func crossfadeLabelRow(snap zoomAnimSnapshot, viewFrom, viewTo time.Time, newZoom ZoomLevel, chartW int, r float64, order dateOrder) string {
+func crossfadeLabelRow(snap zoomAnimSnapshot, newZoom ZoomLevel, chartW int, r float64, order dateOrder) string {
 	fadeOut := min(max((0.5-r)/0.5, 0), 1)
 	fadeIn := min(max((r-0.5)/0.5, 0), 1)
 	switch {
-	case fadeOut > 0: // r < 0.5 — outgoing ghost over the frozen old window
+	case fadeOut > 0: // r < 0.5 — outgoing ghost, frozen at the OLD window/cadence
 		outRow := buildXLabelsRow(synthLabelStarts(snap.oFrom, snap.oTo, snap.oZoom), chartW, snap.oZoom, snap.now, order)
 		return labelFadeStyle(fadeOut).Render(outRow)
-	case fadeIn > 0: // r > 0.5 — incoming over the lerped window
-		inRow := buildXLabelsRow(synthLabelStarts(viewFrom, viewTo, newZoom), chartW, newZoom, snap.now, order)
+	case fadeIn > 0: // r > 0.5 — incoming, fixed at the NEW (final) window/cadence
+		inRow := buildXLabelsRow(synthLabelStarts(snap.nFrom, snap.nTo, newZoom), chartW, newZoom, snap.now, order)
 		return labelFadeStyle(fadeIn).Render(inRow)
 	default: // r == 0.5 — blank strip
 		return strings.Repeat(" ", chartW)

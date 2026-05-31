@@ -172,7 +172,11 @@ func (m *Model) renderZoomFrame(viewFrom, viewTo time.Time) {
 	vpW := m.viewport.Width
 	sliced5h := slicePointsInRange(m.zoomSnap.pts5h, viewFrom, viewTo)
 	sliced7d := slicePointsInRange(m.zoomSnap.pts7d, viewFrom, viewTo)
-	labelRow := crossfadeLabelRow(m.zoomSnap, viewFrom, viewTo, zoom, vpW, m.zoomSpringR, m.dateOrder)
+	// The label row is decoupled from the squeeze: it fades the OLD cadence out
+	// in place and the NEW cadence in at its final position, driven only by the
+	// spring ratio — viewFrom/viewTo (the lerped window) drive the chart BODY
+	// below, not the labels (#382 follow-up).
+	labelRow := crossfadeLabelRow(m.zoomSnap, zoom, vpW, m.zoomSpringR, m.dateOrder)
 	m.viewport.SetContent(buildLineChart(sliced5h, sliced7d, viewFrom, viewTo, vpW, chartH, m.zoomSnap.now, zoom, m.dateOrder, "zoom", labelRow))
 	m.viewport.SetXOffset(0)
 }

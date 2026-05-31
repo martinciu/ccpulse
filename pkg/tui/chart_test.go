@@ -2062,42 +2062,54 @@ func TestBuildLineChart_LabelRowParam(t *testing.T) {
 
 func TestCrossfadeLabelRow(t *testing.T) {
 	t.Parallel()
-	// now just after midnight so BOTH cadences render labels over the window:
-	// 15m shows 3-hourly clock ticks; 1h shows the midnight date stamp.
+	// now just after midnight so BOTH cadences render labels: 15m shows
+	// 3-hourly clock ticks; 1h shows the midnight date stamp.
 	now := time.Date(2026, 5, 20, 2, 0, 0, 0, time.UTC)
 	oFrom, oTo := now.Add(-6*time.Hour), now
-	viewFrom, viewTo := oFrom, oTo // r-endpoints lerp to the same window in this unit test
+	// NEW window spans a DIFFERENT range than the old one, so its 1h cadence
+	// lands at different columns than the old 15m row. This is the regression
+	// guard: an incoming row that tracked the lerping view window (the #382
+	// "labels move with the chart" bug) instead of the frozen new window would
+	// produce different glyphs as r advances.
+	nFrom, nTo := now.Add(-18*time.Hour), now
 	const chartW = 80
-	snap := zoomAnimSnapshot{oFrom: oFrom, oTo: oTo, oZoom: ZoomLevels[0], now: now} // 15m outgoing
-	newZoom := ZoomLevels[1]                                                         // 1h incoming
+	snap := zoomAnimSnapshot{oFrom: oFrom, oTo: oTo, nFrom: nFrom, nTo: nTo, oZoom: ZoomLevels[0], now: now} // 15m outgoing
+	newZoom := ZoomLevels[1]                                                                                 // 1h incoming
 
 	oldSteady := dimStyle.Render(buildXLabelsRow(synthLabelStarts(oFrom, oTo, ZoomLevels[0]), chartW, ZoomLevels[0], now, dateOrderMonthFirst))
-	newSteady := dimStyle.Render(buildXLabelsRow(synthLabelStarts(viewFrom, viewTo, newZoom), chartW, newZoom, now, dateOrderMonthFirst))
+	newSteady := dimStyle.Render(buildXLabelsRow(synthLabelStarts(nFrom, nTo, newZoom), chartW, newZoom, now, dateOrderMonthFirst))
 
-	// Precondition: the two cadences must differ over this window, else the
-	// glyph assertions below are vacuous. (15m 3-hourly vs 1h midnight-only.)
+	// Precondition: the two rows must differ, else the glyph assertions below
+	// are vacuous.
 	if ansi.Strip(oldSteady) == ansi.Strip(newSteady) {
-		t.Fatalf("test window renders 15m and 1h identically — choose a window where cadences differ")
+		t.Fatalf("old (15m) and new (1h) rows render identically — choose windows where they differ")
 	}
 
 	// r=0: full-opacity outgoing == old steady-state row (no brightness pop).
-	if got := crossfadeLabelRow(snap, viewFrom, viewTo, newZoom, chartW, 0, dateOrderMonthFirst); got != oldSteady {
+	if got := crossfadeLabelRow(snap, newZoom, chartW, 0, dateOrderMonthFirst); got != oldSteady {
 		t.Errorf("r=0: got %q, want old steady-state row %q", got, oldSteady)
 	}
-	// r=1: full-opacity incoming == new steady-state row.
-	if got := crossfadeLabelRow(snap, viewFrom, viewTo, newZoom, chartW, 1, dateOrderMonthFirst); got != newSteady {
+	// r=1: full-opacity incoming == new steady-state row, fixed at the NEW window.
+	if got := crossfadeLabelRow(snap, newZoom, chartW, 1, dateOrderMonthFirst); got != newSteady {
 		t.Errorf("r=1: got %q, want new steady-state row %q", got, newSteady)
 	}
 	// r=0.5: blank strip exactly chartW wide.
-	if got, want := crossfadeLabelRow(snap, viewFrom, viewTo, newZoom, chartW, 0.5, dateOrderMonthFirst), strings.Repeat(" ", chartW); got != want {
+	if got, want := crossfadeLabelRow(snap, newZoom, chartW, 0.5, dateOrderMonthFirst), strings.Repeat(" ", chartW); got != want {
 		t.Errorf("r=0.5: got %q, want blank strip of width %d", got, chartW)
 	}
-	// r=0.25: outgoing cadence glyphs, partially faded (style differs, glyphs match old).
-	if got, want := ansi.Strip(crossfadeLabelRow(snap, viewFrom, viewTo, newZoom, chartW, 0.25, dateOrderMonthFirst)), ansi.Strip(oldSteady); got != want {
-		t.Errorf("r=0.25 glyphs: got %q, want outgoing cadence %q", got, want)
+
+	// Position stability — the heart of the #382 fix. Within a fade phase only
+	// opacity changes; the GLYPHS are frozen (outgoing at the OLD window,
+	// incoming at the NEW window). Neither phase tracks the lerping view window,
+	// so the labels fade in place rather than sliding with the bars.
+	for _, r := range []float64{0.1, 0.25, 0.4} {
+		if got := ansi.Strip(crossfadeLabelRow(snap, newZoom, chartW, r, dateOrderMonthFirst)); got != ansi.Strip(oldSteady) {
+			t.Errorf("outgoing r=%v moved: got %q, want frozen old glyphs %q", r, got, ansi.Strip(oldSteady))
+		}
 	}
-	// r=0.75: incoming cadence glyphs.
-	if got, want := ansi.Strip(crossfadeLabelRow(snap, viewFrom, viewTo, newZoom, chartW, 0.75, dateOrderMonthFirst)), ansi.Strip(newSteady); got != want {
-		t.Errorf("r=0.75 glyphs: got %q, want incoming cadence %q", got, want)
+	for _, r := range []float64{0.6, 0.75, 0.9} {
+		if got := ansi.Strip(crossfadeLabelRow(snap, newZoom, chartW, r, dateOrderMonthFirst)); got != ansi.Strip(newSteady) {
+			t.Errorf("incoming r=%v moved: got %q, want fixed new glyphs %q", r, got, ansi.Strip(newSteady))
+		}
 	}
 }
