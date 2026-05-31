@@ -28,6 +28,7 @@ import (
 type zoomAnimSnapshot struct {
 	oFrom, oTo time.Time
 	nFrom, nTo time.Time
+	oZoom      ZoomLevel // OLD zoom, captured before zoomIdx advances — the outgoing cadence for the cross-fade.
 	pts5h      []cache.UtilizationPoint
 	pts7d      []cache.UtilizationPoint
 	now        time.Time
