@@ -86,6 +86,8 @@ func (m *Model) handleZoomKey() tea.Cmd {
 		oFrom, oTo = m.visibleWindow()
 	}
 
+	oZoom := ZoomLevels[m.zoomIdx] // outgoing cadence — capture before zoomIdx advances.
+
 	m.zoomIdx = (m.zoomIdx + 1) % len(ZoomLevels)
 	m.refreshChart() // rebuild at NEW zoom; re-pins the right edge. On a first
 	// 'z' the abort block is a no-op (no spring in flight); a second 'z'
@@ -107,6 +109,7 @@ func (m *Model) handleZoomKey() tea.Cmd {
 	m.zoomSnap = zoomAnimSnapshot{
 		oFrom: oFrom, oTo: oTo,
 		nFrom: nFrom, nTo: nTo,
+		oZoom: oZoom,
 		pts5h: m.lastPts5h, pts7d: m.lastPts7d,
 		now: m.now(),
 	}
@@ -169,7 +172,8 @@ func (m *Model) renderZoomFrame(viewFrom, viewTo time.Time) {
 	vpW := m.viewport.Width
 	sliced5h := slicePointsInRange(m.zoomSnap.pts5h, viewFrom, viewTo)
 	sliced7d := slicePointsInRange(m.zoomSnap.pts7d, viewFrom, viewTo)
-	m.viewport.SetContent(buildLineChart(sliced5h, sliced7d, viewFrom, viewTo, vpW, chartH, m.zoomSnap.now, zoom, m.dateOrder, "zoom", ""))
+	labelRow := crossfadeLabelRow(m.zoomSnap, viewFrom, viewTo, zoom, vpW, m.zoomSpringR, m.dateOrder)
+	m.viewport.SetContent(buildLineChart(sliced5h, sliced7d, viewFrom, viewTo, vpW, chartH, m.zoomSnap.now, zoom, m.dateOrder, "zoom", labelRow))
 	m.viewport.SetXOffset(0)
 }
 

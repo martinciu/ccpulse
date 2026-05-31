@@ -1,10 +1,12 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/martinciu/ccpulse/pkg/anthro"
 	"github.com/martinciu/ccpulse/pkg/cache"
@@ -507,5 +509,56 @@ func TestZoomSpring_ViewRendersLineMidSqueeze(t *testing.T) {
 	body := chartBodyLines(out)
 	if len(body) == 0 {
 		t.Fatalf("chart body empty mid-squeeze")
+	}
+}
+
+// At frame 0 of a line-mode zoom the label row must show the OLD cadence
+// (a ghost fading out), NOT the new cadence — the behavioral fix over the
+// pre-change hard snap. Then the squeeze must settle to steady state.
+func TestZoomLabelCrossfade_GhostsOldCadenceAtFrameZero(t *testing.T) {
+	// now just after midnight so the visible window spans a midnight: 15m shows
+	// 3-hourly ticks, 1h shows the date stamp — the cadences differ.
+	now := time.Date(2026, 5, 20, 2, 0, 0, 0, time.UTC)
+	m, c := seedRemainingModelWithSamples(t, 60, now)
+	defer c.Close()
+
+	nowGenBeforeArm := m.nowGen
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
+	m = updated.(Model)
+	if !m.springActive || m.springKind != springKindZoom {
+		t.Fatalf("arm sanity: springActive=%v springKind=%d", m.springActive, m.springKind)
+	}
+	if m.zoomSnap.oZoom.Label != "15m" {
+		t.Fatalf("oZoom = %q, want 15m (captured before zoomIdx advanced)", m.zoomSnap.oZoom.Label)
+	}
+	if m.nowGen != nowGenBeforeArm+1 {
+		t.Errorf("arm: nowGen=%d, want %d (now-tick re-armed once)", m.nowGen, nowGenBeforeArm+1)
+	}
+
+	// renderZoomFrame ran synchronously at arm with r=0 → outgoing ghost.
+	snap := m.zoomSnap
+	vpW := m.viewport.Width
+	oldGhost := ansi.Strip(buildXLabelsRow(synthLabelStarts(snap.oFrom, snap.oTo, snap.oZoom), vpW, snap.oZoom, snap.now, m.dateOrder))
+	newOverOldWin := ansi.Strip(buildXLabelsRow(synthLabelStarts(snap.oFrom, snap.oTo, ZoomLevels[1]), vpW, ZoomLevels[1], snap.now, m.dateOrder))
+	if oldGhost == newOverOldWin {
+		t.Fatalf("visible window renders 15m and 1h identically — widen/shift the seeded window so cadences differ")
+	}
+	lines := strings.Split(ansi.Strip(m.viewport.View()), "\n")
+	if got := lines[len(lines)-1]; got != oldGhost {
+		t.Errorf("frame 0 label row = %q, want OLD 15m cadence ghost %q (not the new-cadence hard snap)", got, oldGhost)
+	}
+
+	// Drive the spring to settle via constructed ticks (never the real now-tick —
+	// scheduleNowTick real-sleeps to the next bucket boundary, up to ~1h).
+	const maxTicks = 600
+	for i := 0; i < maxTicks && m.springActive; i++ {
+		updated, _ = m.Update(springTickMsg{gen: m.springGen})
+		m = updated.(Model)
+	}
+	if m.springActive {
+		t.Fatalf("zoom squeeze did not settle within %d ticks", maxTicks)
+	}
+	if m.lastCanvasW == 0 {
+		t.Errorf("after settle: lastCanvasW=0, want steady-state full canvas restored")
 	}
 }
