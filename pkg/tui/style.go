@@ -1,10 +1,10 @@
 package tui
 
 import (
-	"math"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/lucasb-eyer/go-colorful"
 )
 
 // Severity, chrome, and faint-stop tokens. Light/Dark stops feed
@@ -81,65 +81,86 @@ func indexFadeStyle(stop int) lipgloss.Style {
 	}
 }
 
-// Y-label fade for the two-phase unit-toggle animation (issue #136).
-// 5 stops defined as lipgloss.CompleteAdaptiveColor so termenv picks the
-// highest-fidelity rendering the terminal advertises AND picks a side
-// (Light/Dark) that fades toward the user's actual background:
-//   - Truecolor / 256-color: smooth 5-level grey fade. On dark themes the
-//     ramp descends toward near-black; on light themes it ascends toward
-//     near-white. Either way the faintest stop matches the background.
-//   - ANSI 16-color: stops collapse to default fg / ANSI 8 / ANSI 0 on
-//     dark and default fg / ANSI 8 / ANSI 7 / ANSI 15 on light.
-//
-// Stop 1 is special-cased by labelFadeStyle to colorMuted (#335) so every
-// Y-axis label (bar-chart max/mid + quota 100%/50%) reads as muted chrome
-// matching the X-axis tick row. The labelFadeStops[0] entry below stays an
-// unused sentinel.
-var labelFadeStops = []lipgloss.CompleteAdaptiveColor{
-	{}, // stop 1 — unused sentinel; labelFadeStyle special-cases stop 1 to colorMuted (#335)
-	{
-		Light: lipgloss.CompleteColor{TrueColor: "#777777", ANSI256: "244", ANSI: "8"},
-		Dark:  lipgloss.CompleteColor{TrueColor: "#888888", ANSI256: "244", ANSI: "8"},
-	},
-	{
-		Light: lipgloss.CompleteColor{TrueColor: "#aaaaaa", ANSI256: "248", ANSI: "7"},
-		Dark:  lipgloss.CompleteColor{TrueColor: "#555555", ANSI256: "240", ANSI: "8"},
-	},
-	{
-		Light: lipgloss.CompleteColor{TrueColor: "#cccccc", ANSI256: "252", ANSI: "7"},
-		Dark:  lipgloss.CompleteColor{TrueColor: "#333333", ANSI256: "236", ANSI: "0"},
-	},
-	{
-		Light: lipgloss.CompleteColor{TrueColor: "#eeeeee", ANSI256: "255", ANSI: "15"},
-		Dark:  lipgloss.CompleteColor{TrueColor: "#111111", ANSI256: "232", ANSI: "0"},
-	},
+// labelFadeTarget is the color the label fade dissolves TOWARD — ideally the
+// terminal's actual background, so the faintest step is genuinely invisible
+// instead of a fixed near-black/near-white that only matches a pure black or
+// white terminal (the earlier ramp darkened toward #111111, which reads as a
+// dark smudge on any non-black background). Set once at startup by
+// SetLabelFadeBackground, which cmd/ccpulse calls after querying the terminal
+// and before the Bubble Tea program owns the tty. When unset (tests, non-TTY,
+// terminals that don't answer the query), the fade falls back to colorFaint —
+// a muted grey that is never darker than a typical background.
+var labelFadeTarget struct {
+	c  colorful.Color
+	ok bool
 }
 
-const labelFadeStopCount = 5
+// SetLabelFadeBackground records the detected terminal background (hex
+// "#rrggbb") as the label-fade target. An empty or unparseable value leaves the
+// colorFaint fallback in place. Call once at startup, before Bubble Tea takes
+// over the terminal — it mutates process-global state read by labelFadeStyle.
+func SetLabelFadeBackground(hex string) {
+	c, err := colorful.Hex(hex)
+	if err != nil {
+		return
+	}
+	labelFadeTarget.c, labelFadeTarget.ok = c, true
+}
 
-// labelFadeStyle maps fade ∈ [0, 1] to a discrete lipgloss style.
-//   - fade <= 0 → hidden sentinel (no Foreground). Caller gates render on fade > 0.
-//   - 0 < fade  → bucket = ceil(fade * 5), clamped to [1, 5]. Stop 1 is brightest.
+// labelFadeStyle maps fade ∈ [0, 1] to the label foreground for one animation
+// frame. Used by the zoom label cross-fade (chart.go) and the two-phase
+// unit-toggle Y-label animation (issue #136).
 //
-// Stop 1 uses colorMuted (#335) so Y-axis labels read as muted chrome.
-// Stops 2–5 use CompleteColor; lipgloss/termenv downsamples per terminal
-// profile, which can collapse adjacent stops on 16-color terminals — the
-// degradation is documented in the spec.
+//   - fade <= 0 → hidden sentinel (no Foreground). Callers gate render on
+//     fade > 0 and emit a blank row themselves.
+//   - fade >= 1 → colorMuted, so a fully-opaque label reads as muted chrome
+//     matching the steady-state X-axis tick row (#335) with no brightness pop
+//     at the fade endpoints.
+//   - 0 < fade < 1 → the muted label color blended toward the terminal
+//     background (labelFadeTarget, else colorFaint) in CIE-Lab space, so the
+//     label dissolves smoothly into the background rather than darkening toward
+//     a fixed near-black. Rendered as a truecolor foreground; termenv
+//     downsamples per terminal profile.
 func labelFadeStyle(fade float64) lipgloss.Style {
 	if fade <= 0 {
 		return lipgloss.NewStyle()
 	}
-	// Invert fade so high fade (near 1.0 = full opacity at steady state)
-	// maps to stop 1 (brightest, no Foreground), and fade close to 0
-	// maps to stop 5 (faintest, near-background). The Y-label gets
-	// progressively darker as bars shrink (Phase 1) and progressively
-	// brighter as bars grow (Phase 2), matching the spec's "synced with
-	// max(springRatios)" intent.
-	stop := int(math.Ceil((1.0 - fade) * float64(labelFadeStopCount)))
-	stop = max(stop, 1)
-	stop = min(stop, labelFadeStopCount)
-	if stop == 1 {
+	if fade >= 1 {
 		return lipgloss.NewStyle().Foreground(colorMuted)
 	}
-	return lipgloss.NewStyle().Foreground(labelFadeStops[stop-1])
+	from, to := labelFadeEndpoints()
+	// BlendLab(to, t): t=0 → from, t=1 → to. fade→1 stays at the muted label,
+	// fade→0 reaches the background, so the fade dissolves out as fade drops.
+	c := from.BlendLab(to, 1.0-fade).Clamped()
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(c.Hex()))
+}
+
+// labelFadeEndpoints resolves the fade's start (the muted label color) and end
+// (the terminal background if detected, else colorFaint) to RGB for the active
+// light/dark theme. The Light/Dark side is chosen by the same
+// HasDarkBackground signal that drives every other AdaptiveColor in the UI, so
+// the fade's start matches the steady-state muted label exactly.
+func labelFadeEndpoints() (from, to colorful.Color) {
+	dark := lipgloss.HasDarkBackground()
+	from = hexColor(adaptiveSide(colorMuted, dark))
+	if labelFadeTarget.ok {
+		return from, labelFadeTarget.c
+	}
+	return from, hexColor(adaptiveSide(colorFaint, dark))
+}
+
+// adaptiveSide returns the Dark or Light hex of an AdaptiveColor token.
+func adaptiveSide(c lipgloss.AdaptiveColor, dark bool) string {
+	if dark {
+		return c.Dark
+	}
+	return c.Light
+}
+
+// hexColor parses a "#rrggbb" token to a colorful.Color. The in-package color
+// tokens are compile-time-valid 6-digit hex, so the error is ignored (a parse
+// failure yields the zero color — black — a safe fade endpoint).
+func hexColor(hex string) colorful.Color {
+	c, _ := colorful.Hex(hex)
+	return c
 }

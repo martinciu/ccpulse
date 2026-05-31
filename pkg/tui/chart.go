@@ -1012,8 +1012,9 @@ func synthLabelStarts(from, to time.Time, zoom ZoomLevel) []time.Time {
 // Only the chart BODY rides the squeeze (renderZoomFrame passes the lerped
 // window to buildLineChart); the label row is decoupled from that motion.
 //
-// fade→1 maps to labelFadeStyle stop 1 == colorMuted == dimStyle, so the entry
-// (r→0) and exit (r→1) match the steady-state labels with no brightness pop.
+// fade→1 maps to labelFadeStyle's colorMuted == dimStyle, so the entry (r→0)
+// and exit (r→1) match the steady-state labels with no brightness pop; the
+// in-between frames dissolve toward the terminal background (see labelFadeStyle).
 // At r == 0.5 both fades are 0 → a blank strip (the accepted near-blank frame).
 func crossfadeLabelRow(snap zoomAnimSnapshot, newZoom ZoomLevel, chartW int, r float64, order dateOrder) string {
 	fadeOut := min(max((0.5-r)/0.5, 0), 1)
