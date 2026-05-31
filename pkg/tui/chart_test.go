@@ -1985,3 +1985,23 @@ func TestOverlayYTicks_TicksMuted(t *testing.T) {
 		}
 	}
 }
+
+func TestSynthLabelStarts(t *testing.T) {
+	t.Parallel()
+	from := time.Date(2026, 5, 20, 0, 0, 0, 0, time.UTC)
+	to := from.Add(6 * time.Hour)
+
+	// 6h window at 1h cadence → 6 starts (00:00..05:00); [from, to) excludes to.
+	got := synthLabelStarts(from, to, ZoomLevels[1]) // ZoomLevels[1] == 1h
+	if len(got) != 6 {
+		t.Fatalf("synthLabelStarts(6h @ 1h) = %d starts, want 6", len(got))
+	}
+	if !got[0].Equal(from) || !got[5].Equal(from.Add(5*time.Hour)) {
+		t.Errorf("starts = %v, want 00:00..05:00 hourly", got)
+	}
+
+	// Degenerate (to <= from) → empty slice, no panic.
+	if got := synthLabelStarts(to, from, ZoomLevels[1]); len(got) != 0 {
+		t.Errorf("degenerate window: got %d starts, want 0", len(got))
+	}
+}
