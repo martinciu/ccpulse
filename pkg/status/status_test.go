@@ -637,3 +637,31 @@ func TestComputePeriods_SevenDayCalendarFallback(t *testing.T) {
 		})
 	}
 }
+
+// TestComputePeriods_TodayLocalMidnight guards the local-tz `today` boundary:
+// the cutoff is local midnight, not a UTC-day truncation. Two rows share the
+// same UTC calendar day (2026-05-14) but fall on different local days under a
+// UTC+5 zone; only the one past local midnight counts as today.
+func TestComputePeriods_TodayLocalMidnight(t *testing.T) {
+	orig := time.Local
+	time.Local = time.FixedZone("UTC+5", 5*3600)
+	t.Cleanup(func() { time.Local = orig })
+
+	db := freshDB(t)
+	// now = 2026-05-15 10:00 local (= 2026-05-15 05:00 UTC).
+	now := time.Date(2026, 5, 15, 10, 0, 0, 0, time.Local)
+	// DayStartLocal(now) = 2026-05-15 00:00 +05:00 = 2026-05-14 19:00 UTC.
+
+	// IN today: 2026-05-15 00:30 local = 2026-05-14 19:30 UTC (prior UTC day!).
+	insertMsg(t, db, time.Date(2026, 5, 15, 0, 30, 0, 0, time.Local), 100, 10, 0, 0, 0, 0.1)
+	// NOT today: 2026-05-14 23:30 local = 2026-05-14 18:30 UTC (same UTC day as above).
+	insertMsg(t, db, time.Date(2026, 5, 14, 23, 30, 0, 0, time.Local), 500, 50, 0, 0, 0, 0.5)
+
+	p, err := ComputePeriods(t.Context(), db, now, QuotaInput{})
+	if err != nil {
+		t.Fatalf("ComputePeriods: %v", err)
+	}
+	if got, want := p.Today.Tokens, int64(110); got != want {
+		t.Errorf("today.Tokens = %d, want %d (only the post-local-midnight row counts)", got, want)
+	}
+}
