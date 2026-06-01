@@ -7,14 +7,17 @@ import (
 	"time"
 )
 
-// throughputWindow is the rolling span over which the live token/cost rate is
-// measured. Fixed at 30 minutes — no config knob (see #387).
-const throughputWindow = 30 * time.Minute
-
-// throughputWindowMinutes is throughputWindow in minutes, emitted as the JSON
-// window_minutes field and used to derive the extrapolation factor. Kept beside
-// throughputWindow so the emitted value and the math share one source of truth.
+// throughputWindowMinutes is the rolling span (in minutes) over which the live
+// token/cost rate is measured. Fixed at 30 — no config knob (see #387). It is
+// the single source of truth: throughputWindow and throughputExtrapolate are
+// both derived from it, and it is emitted directly as the JSON window_minutes
+// field. Left untyped so throughputExtrapolate stays untyped and can scale both
+// the int64 token sum and the float64 cost.
 const throughputWindowMinutes = 30
+
+// throughputWindow is the rolling span as a Duration, derived from
+// throughputWindowMinutes so the two cannot drift.
+const throughputWindow = throughputWindowMinutes * time.Minute
 
 // throughputExtrapolate scales a window total up to a per-hour rate
 // (60 / window_minutes). For the fixed 30-minute window this is exactly 2; the
