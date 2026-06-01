@@ -105,6 +105,40 @@ func TestStatusJSONWithCachedUsage(t *testing.T) {
 	if _, ok := proj["five_hour"]; !ok {
 		t.Errorf("projection.five_hour missing: %v", proj)
 	}
+
+	// periods rollups present and structured (no messages seeded → zeroed).
+	periods, ok := parsed["periods"].(map[string]any)
+	if !ok {
+		t.Fatalf("periods missing or not an object: %v", parsed["periods"])
+	}
+	for _, k := range []string{"today", "7d", "30d"} {
+		per, ok := periods[k].(map[string]any)
+		if !ok {
+			t.Fatalf("periods[%q] missing: %v", k, periods)
+		}
+		if _, ok := per["tokens"]; !ok {
+			t.Errorf("periods[%q].tokens missing", k)
+		}
+		if _, ok := per["cost_usd"]; !ok {
+			t.Errorf("periods[%q].cost_usd missing", k)
+		}
+		bd, ok := per["tokens_breakdown"].(map[string]any)
+		if !ok {
+			t.Fatalf("periods[%q].tokens_breakdown missing", k)
+		}
+		for _, bk := range []string{"input", "output", "cache_read", "cache_write_5m", "cache_write_1h"} {
+			if _, ok := bd[bk]; !ok {
+				t.Errorf("periods[%q].tokens_breakdown.%s missing", k, bk)
+			}
+		}
+	}
+	// regression: adding periods must not drop the existing 5h fields.
+	if _, ok := parsed["tokens_5h"]; !ok {
+		t.Error("tokens_5h missing after adding periods")
+	}
+	if _, ok := parsed["cost_5h_usd"]; !ok {
+		t.Error("cost_5h_usd missing after adding periods")
+	}
 }
 
 func TestStatusJSONWithoutCredential(t *testing.T) {
@@ -133,6 +167,18 @@ func TestStatusJSONWithoutCredential(t *testing.T) {
 	}
 	if strings.Contains(out, `"projection":`) {
 		t.Errorf("projection should be omitted when no quota: %s", out)
+	}
+
+	var parsedNoCred map[string]any
+	if err := json.Unmarshal([]byte(out), &parsedNoCred); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	periodsNoCred, ok := parsedNoCred["periods"].(map[string]any)
+	if !ok {
+		t.Fatalf("periods should be present without a credential: %v", parsedNoCred["periods"])
+	}
+	if _, ok := periodsNoCred["7d"]; !ok {
+		t.Errorf("periods.7d should be present (calendar fallback) without a credential: %v", periodsNoCred)
 	}
 }
 
