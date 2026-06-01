@@ -28,6 +28,7 @@ type Window struct {
 	QuotaUpdatedAt    time.Time       `json:"quota_updated_at,omitzero"`
 	Projection        *Projections    `json:"projection,omitempty"`
 	Periods           *Periods        `json:"periods,omitempty"`
+	Throughput        *Throughput     `json:"throughput,omitempty"`
 }
 
 // Projections carries the per-bucket burn-rate predictions.
@@ -76,6 +77,21 @@ type Periods struct {
 	Today     Period `json:"today"`
 	SevenDay  Period `json:"7d"`
 	ThirtyDay Period `json:"30d"`
+}
+
+// Throughput is the live token/cost burn rate over a rolling window, emitted
+// only on `status --json`. The per-hour figures are the in-window totals scaled
+// by 60/WindowMinutes (== 2 for the fixed 30-minute window). Tokens are the
+// headline Input + Output only, matching Tokens5h / Period.Tokens. Populated
+// only on the CLI JSON path (ComputeThroughput); nil on the TUI compute path,
+// where omitempty drops it from serialization. Idle (no activity in the window)
+// is an honest zero, never null.
+type Throughput struct {
+	WindowMinutes   int     `json:"window_minutes"`
+	TokensInWindow  int64   `json:"tokens_in_window"`
+	TokensPerHour   int64   `json:"tokens_per_hour"`
+	CostInWindowUSD float64 `json:"cost_in_window_usd"`
+	CostPerHourUSD  float64 `json:"cost_per_hour_usd"`
 }
 
 // JSON serializes w to a compact JSON string for the status --json subcommand.

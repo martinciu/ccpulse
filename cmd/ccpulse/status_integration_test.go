@@ -139,6 +139,24 @@ func TestStatusJSONWithCachedUsage(t *testing.T) {
 	if _, ok := parsed["cost_5h_usd"]; !ok {
 		t.Error("cost_5h_usd missing after adding periods")
 	}
+	// throughput present and structured (no messages seeded → zeroed numbers,
+	// window_minutes still 30).
+	throughput, ok := parsed["throughput"].(map[string]any)
+	if !ok {
+		t.Fatalf("throughput missing or not an object: %v", parsed["throughput"])
+	}
+	if wm, ok := throughput["window_minutes"].(float64); !ok || int(wm) != 30 {
+		t.Errorf("throughput.window_minutes = %v, want 30", throughput["window_minutes"])
+	}
+	for _, k := range []string{"tokens_in_window", "tokens_per_hour", "cost_in_window_usd", "cost_per_hour_usd"} {
+		if _, ok := throughput[k]; !ok {
+			t.Errorf("throughput.%s missing", k)
+		}
+	}
+	// regression: adding throughput must not drop periods.
+	if _, ok := parsed["periods"]; !ok {
+		t.Error("periods missing after adding throughput")
+	}
 }
 
 func TestStatusJSONWithoutCredential(t *testing.T) {
