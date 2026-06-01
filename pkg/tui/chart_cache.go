@@ -112,7 +112,7 @@ func (s *slot[T]) resolve(
 	// mutate in place: nothing holds a reference to the old array past this
 	// refresh (single goroutine; callers copy values out immediately).
 	n := len(s.buckets)
-	merged := append(s.buckets[:n-1], tail...)
+	merged := append(s.buckets[:n-1], tail...) //nolint:gocritic // intentional in-place splice, see resolve doc
 	s.buckets, s.to, s.key = merged, to, k
 	return merged, nil
 }
