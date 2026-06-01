@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -2301,3 +2302,64 @@ func TestInsertMessages_RegressionMultilineMessage(t *testing.T) {
 		t.Errorf("SUM(output_tokens) = %d, want 65000 (64000 + 1000, deduped)", totalOut)
 	}
 }
+
+// seedHistory inserts n messages spread one per minute ending at `end`, each
+// with a distinct message_id so none collapse via the UNIQUE(session_id,
+// message_id) upsert. Shared by the bucket-query regression benchmarks (#378).
+func seedHistory(b *testing.B, c *Cache, tab pricing.History, n int, end time.Time) {
+	b.Helper()
+	msgs := make([]parse.Message, n)
+	for i := range n {
+		msgs[i] = parse.Message{
+			SessionID:   "s1",
+			MessageID:   "m" + strconv.Itoa(i),
+			ProjectSlug: "p",
+			Model:       "claude-opus-4-7",
+			Timestamp:   end.Add(-time.Duration(i) * time.Minute),
+			InputTokens: int64(1000 + i),
+		}
+	}
+	if err := c.InsertMessages(b.Context(), msgs, tab); err != nil {
+		b.Fatalf("InsertMessages: %v", err)
+	}
+}
+
+func benchBuckets(b *testing.B, cost bool) {
+	tab, err := pricing.Load()
+	if err != nil {
+		b.Fatalf("pricing.Load: %v", err)
+	}
+	end := time.Now().UTC().Truncate(15 * time.Minute)
+	for _, n := range []int{5_000, 30_000, 100_000} {
+		b.Run(strconv.Itoa(n), func(b *testing.B) {
+			c, err := Open(b.Context(), filepath.Join(b.TempDir(), "s.db"))
+			if err != nil {
+				b.Fatalf("cache.Open: %v", err)
+			}
+			defer c.Close()
+			seedHistory(b, c, tab, n, end)
+			from := end.Add(-time.Duration(n) * time.Minute)
+			to := end.Add(15 * time.Minute)
+			dur := 15 * time.Minute
+
+			b.ReportAllocs()
+			for b.Loop() {
+				if cost {
+					if _, err := c.CostBuckets(b.Context(), dur, from, to); err != nil {
+						b.Fatal(err)
+					}
+				} else {
+					if _, err := c.IOTokenBuckets(b.Context(), dur, from, to); err != nil {
+						b.Fatal(err)
+					}
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkIOTokenBuckets / BenchmarkCostBuckets guard the full-history query
+// cost (#378). Linear in total rows — the numbers the issue measured
+// (~3.5/23/76 ms at 5k/30k/100k on M1 Max).
+func BenchmarkIOTokenBuckets(b *testing.B) { benchBuckets(b, false) }
+func BenchmarkCostBuckets(b *testing.B)    { benchBuckets(b, true) }
