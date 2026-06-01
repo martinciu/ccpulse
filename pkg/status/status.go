@@ -13,20 +13,21 @@ import (
 // case (5h idle, 7d upstream glitch) round-trips faithfully through
 // `status --json` instead of collapsing to an ambiguous 0.
 type Window struct {
-	Percent           int               `json:"percent"`
-	MinutesToReset    *int              `json:"minutes_to_reset"`
-	Percent7d         int               `json:"percent_7d,omitempty"`
-	MinutesToReset7d  *int              `json:"minutes_to_reset_7d,omitempty"`
-	Has7d             bool              `json:"has_7d,omitempty"`
-	CeilingLabel      string            `json:"ceiling_label"`
-	CeilingPretty     string            `json:"ceiling_pretty"`
-	Tokens5h          int64             `json:"tokens_5h"`
-	Tokens5hBreakdown Tokens5hBreakdown `json:"tokens_5h_breakdown"`
-	Cost5hUSD         float64           `json:"cost_5h_usd"`
-	Quota             *anthro.Usage     `json:"quota,omitempty"`
-	QuotaSource       string            `json:"quota_source,omitempty"`
-	QuotaUpdatedAt    time.Time         `json:"quota_updated_at,omitzero"`
-	Projection        *Projections      `json:"projection,omitempty"`
+	Percent           int             `json:"percent"`
+	MinutesToReset    *int            `json:"minutes_to_reset"`
+	Percent7d         int             `json:"percent_7d,omitempty"`
+	MinutesToReset7d  *int            `json:"minutes_to_reset_7d,omitempty"`
+	Has7d             bool            `json:"has_7d,omitempty"`
+	CeilingLabel      string          `json:"ceiling_label"`
+	CeilingPretty     string          `json:"ceiling_pretty"`
+	Tokens5h          int64           `json:"tokens_5h"`
+	Tokens5hBreakdown TokensBreakdown `json:"tokens_5h_breakdown"`
+	Cost5hUSD         float64         `json:"cost_5h_usd"`
+	Quota             *anthro.Usage   `json:"quota,omitempty"`
+	QuotaSource       string          `json:"quota_source,omitempty"`
+	QuotaUpdatedAt    time.Time       `json:"quota_updated_at,omitzero"`
+	Projection        *Projections    `json:"projection,omitempty"`
+	Periods           *Periods        `json:"periods,omitempty"`
 }
 
 // Projections carries the per-bucket burn-rate predictions.
@@ -47,16 +48,34 @@ type Projection struct {
 	Confidence          string  `json:"confidence"`
 }
 
-// Tokens5hBreakdown carries the five-way split of `Tokens5h` across the
-// token kinds Anthropic bills separately. `Tokens5h` is `Input + Output`
-// alone — the cache fields are exposed here so `status --json` consumers
-// can still inspect the cache-vs-work ratio without re-querying.
-type Tokens5hBreakdown struct {
+// TokensBreakdown carries the five-way split of a token total across the
+// token kinds Anthropic bills separately. The headline figure (`Tokens5h`,
+// or `Period.Tokens`) is `Input + Output` alone — the cache fields are
+// exposed here so `status --json` consumers can still inspect the
+// cache-vs-work ratio without re-querying.
+type TokensBreakdown struct {
 	Input        int64 `json:"input"`
 	Output       int64 `json:"output"`
 	CacheRead    int64 `json:"cache_read"`
 	CacheWrite5m int64 `json:"cache_write_5m"`
 	CacheWrite1h int64 `json:"cache_write_1h"`
+}
+
+// Period is one trailing-window usage rollup: Tokens (== breakdown
+// Input + Output), the five-way TokensBreakdown, and CostUSD.
+type Period struct {
+	Tokens          int64           `json:"tokens"`
+	TokensBreakdown TokensBreakdown `json:"tokens_breakdown"`
+	CostUSD         float64         `json:"cost_usd"`
+}
+
+// Periods carries the today / 7d / 30d usage rollups for `status --json`.
+// Populated only on the CLI JSON path (ComputePeriods); nil on the TUI
+// compute path, where `omitempty` drops it from serialization.
+type Periods struct {
+	Today     Period `json:"today"`
+	SevenDay  Period `json:"7d"`
+	ThirtyDay Period `json:"30d"`
 }
 
 // JSON serializes w to a compact JSON string for the status --json subcommand.
