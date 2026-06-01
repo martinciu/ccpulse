@@ -147,7 +147,8 @@ Prints the current 5-hour rolling window without opening the TUI.
 ```sh
 ccpulse status            # human-readable summary
 ccpulse status --json     # JSON: 5h + 7d percent/reset, tokens_5h, cost_5h_usd,
-                          #       ceiling, optional projection, today/7d/30d periods
+                          #       ceiling, optional projection, today/7d/30d periods,
+                          #       live throughput (tokens/hr + $/hr)
 ```
 
 `--json` is useful for scripting or status bars that consume structured data
@@ -239,6 +240,14 @@ identifiers, so index them with bracket syntax:
 
 ```sh
 ccpulse status --json | jq -r '"today $\(.periods.today.cost_usd) · 7d $\(.periods["7d"].cost_usd) · 30d $\(.periods["30d"].cost_usd)"'
+```
+
+**Live burn rate.** `throughput` carries the current token/hour and cost/hour
+rate over a rolling 30-minute window (extrapolated ×2 to an hourly figure). It
+reads `0` when idle — no null-branch needed — so it drops straight into a prompt:
+
+```sh
+ccpulse status --json | jq -r '"\(.throughput.tokens_per_hour) tok/hr · $\(.throughput.cost_per_hour_usd)/hr"'
 ```
 
 ### `ccpulse config`
