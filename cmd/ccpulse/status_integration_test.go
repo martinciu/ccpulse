@@ -211,6 +211,83 @@ func countSamples(t *testing.T, dbPath string) int {
 	return n
 }
 
+// writeProjectsFixture creates a minimal JSONL transcript tree under a fresh
+// temp dir and returns the projects-root path. The single assistant turn
+// mirrors pkg/ingest's fixture so the parser ingests exactly one message.
+// Point CCPULSE_PROJECTS_ROOT at the returned path.
+func writeProjectsFixture(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	projDir := filepath.Join(root, "-Users-x-foo")
+	if err := os.MkdirAll(projDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	line := `{"type":"assistant","sessionId":"s1",` +
+		`"timestamp":"2026-05-09T10:00:00.000Z","cwd":"/Users/x/foo","gitBranch":"main",` +
+		`"message":{"role":"assistant","model":"claude-opus-4-7","usage":` +
+		`{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,` +
+		`"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}}}` + "\n"
+	if err := os.WriteFile(filepath.Join(projDir, "sess.jsonl"), []byte(line), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+// countMessages reopens state.db and returns the number of messages rows.
+func countMessages(t *testing.T, dbPath string) int {
+	t.Helper()
+	c, err := cache.Open(t.Context(), dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	var n int
+	if err := c.DB().QueryRow(`SELECT count(*) FROM messages`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func TestStatusIndexBackfillsNewJSONL(t *testing.T) {
+	cacheDir := t.TempDir()
+	credDir := t.TempDir()
+	projRoot := writeProjectsFixture(t)
+	t.Setenv("CCPULSE_CACHE_DIR", cacheDir)
+	t.Setenv("CCPULSE_PROJECTS_ROOT", projRoot)
+	t.Setenv("HOME", credDir)
+
+	cmd := newStatusCmd()
+	cmd.SetArgs([]string{"--index", "--json"})
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	if err := cmd.ExecuteContext(t.Context()); err != nil {
+		t.Fatalf("status --index: %v", err)
+	}
+	if got := countMessages(t, filepath.Join(cacheDir, "state.db")); got == 0 {
+		t.Fatalf("messages rows = 0 after --index, want > 0 (backfill did not ingest)")
+	}
+}
+
+func TestStatusWithoutIndexDoesNotBackfill(t *testing.T) {
+	cacheDir := t.TempDir()
+	credDir := t.TempDir()
+	projRoot := writeProjectsFixture(t)
+	t.Setenv("CCPULSE_CACHE_DIR", cacheDir)
+	t.Setenv("CCPULSE_PROJECTS_ROOT", projRoot)
+	t.Setenv("HOME", credDir)
+
+	cmd := newStatusCmd()
+	cmd.SetArgs([]string{"--json"}) // no --index
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	if err := cmd.ExecuteContext(t.Context()); err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if got := countMessages(t, filepath.Join(cacheDir, "state.db")); got != 0 {
+		t.Fatalf("messages rows = %d without --index, want 0 (bare status must not walk JSONL)", got)
+	}
+}
+
 func TestStatusRecordsUsageSampleOnAPIFetch(t *testing.T) {
 	cacheDir := t.TempDir()
 	credDir := t.TempDir()
