@@ -147,7 +147,7 @@ Prints the current 5-hour rolling window without opening the TUI.
 ```sh
 ccpulse status            # human-readable summary
 ccpulse status --json     # JSON: 5h + 7d percent/reset, tokens_5h, cost_5h_usd,
-                          #       ceiling, optional projection block
+                          #       ceiling, optional projection, today/7d/30d periods
 ```
 
 `--json` is useful for scripting or status bars that consume structured data
@@ -229,6 +229,16 @@ it) and `cost_5h_usd` (current 5h spend in USD, always present):
 
 ```sh
 ccpulse status --json | jq -r '"5h \((.percent // 0))% · $\(.cost_5h_usd) · " + (if .minutes_to_reset then "\(.minutes_to_reset)m left" else "idle" end)'
+```
+
+**Trailing rollups.** `periods` carries `today` / `7d` / `30d` token and cost
+totals, each with the five-way `tokens_breakdown`. The `7d` window is anchored
+to the weekly quota reset when the usage API is reachable, and falls back to
+the last 7 calendar days otherwise. Keys `7d` / `30d` aren't bare jq
+identifiers, so index them with bracket syntax:
+
+```sh
+ccpulse status --json | jq -r '"today $\(.periods.today.cost_usd) · 7d $\(.periods["7d"].cost_usd) · 30d $\(.periods["30d"].cost_usd)"'
 ```
 
 ### `ccpulse config`
