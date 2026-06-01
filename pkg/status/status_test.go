@@ -479,3 +479,103 @@ func TestResolveFiveHour(t *testing.T) {
 		}
 	})
 }
+
+// insertMsg seeds one assistant-turn row into the freshDB messages table.
+// ts is stored as its UTC tsFormat string, matching the cache writer.
+func insertMsg(t *testing.T, db *sql.DB, ts time.Time, in, out, cr, cw5, cw1 int64, cost float64) {
+	t.Helper()
+	if _, err := db.ExecContext(t.Context(),
+		`INSERT INTO messages VALUES (?,?,?,?,?,?,?)`,
+		ts.UTC().Format(tsFormat), in, out, cr, cw5, cw1, cost); err != nil {
+		t.Fatalf("insertMsg: %v", err)
+	}
+}
+
+// approxEqual compares two USD sums with float tolerance (0.1+0.2 != 0.3 in
+// IEEE-754).
+func approxEqual(a, b float64) bool {
+	d := a - b
+	if d < 0 {
+		d = -d
+	}
+	return d < 1e-9
+}
+
+// pinLocalUTC forces time.Local to UTC for the duration of the test so the
+// local-calendar boundaries (DayStartLocal) are deterministic on any host.
+// Not parallel-safe — callers must not t.Parallel().
+func pinLocalUTC(t *testing.T) {
+	t.Helper()
+	orig := time.Local
+	time.Local = time.UTC
+	t.Cleanup(func() { time.Local = orig })
+}
+
+func TestComputePeriods_SumsPerWindow(t *testing.T) {
+	pinLocalUTC(t)
+	db := freshDB(t)
+	now := time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC)
+
+	// today (also in 7d, 30d)
+	insertMsg(t, db, time.Date(2026, 5, 15, 6, 0, 0, 0, time.UTC), 100, 10, 1, 2, 3, 0.1)
+	// in 7d (calendar) + 30d, not today
+	insertMsg(t, db, time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC), 200, 20, 4, 5, 6, 0.2)
+	// in 30d only
+	insertMsg(t, db, time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC), 400, 40, 7, 8, 9, 0.4)
+	// older than 30d — excluded everywhere
+	insertMsg(t, db, time.Date(2026, 4, 10, 10, 0, 0, 0, time.UTC), 800, 80, 99, 99, 99, 0.8)
+
+	p, err := ComputePeriods(t.Context(), db, now, QuotaInput{})
+	if err != nil {
+		t.Fatalf("ComputePeriods: %v", err)
+	}
+
+	// today = msg1
+	if got, want := p.Today.Tokens, int64(110); got != want {
+		t.Errorf("today.Tokens = %d, want %d", got, want)
+	}
+	if p.Today.TokensBreakdown != (TokensBreakdown{Input: 100, Output: 10, CacheRead: 1, CacheWrite5m: 2, CacheWrite1h: 3}) {
+		t.Errorf("today.TokensBreakdown = %+v", p.Today.TokensBreakdown)
+	}
+	if !approxEqual(p.Today.CostUSD, 0.1) {
+		t.Errorf("today.CostUSD = %v, want 0.1", p.Today.CostUSD)
+	}
+
+	// 7d (calendar) = msg1 + msg2
+	if got, want := p.SevenDay.Tokens, int64(330); got != want {
+		t.Errorf("7d.Tokens = %d, want %d", got, want)
+	}
+	if p.SevenDay.TokensBreakdown != (TokensBreakdown{Input: 300, Output: 30, CacheRead: 5, CacheWrite5m: 7, CacheWrite1h: 9}) {
+		t.Errorf("7d.TokensBreakdown = %+v", p.SevenDay.TokensBreakdown)
+	}
+	if !approxEqual(p.SevenDay.CostUSD, 0.3) {
+		t.Errorf("7d.CostUSD = %v, want 0.3", p.SevenDay.CostUSD)
+	}
+
+	// 30d = msg1 + msg2 + msg3
+	if got, want := p.ThirtyDay.Tokens, int64(770); got != want {
+		t.Errorf("30d.Tokens = %d, want %d", got, want)
+	}
+	if p.ThirtyDay.TokensBreakdown != (TokensBreakdown{Input: 700, Output: 70, CacheRead: 12, CacheWrite5m: 15, CacheWrite1h: 18}) {
+		t.Errorf("30d.TokensBreakdown = %+v", p.ThirtyDay.TokensBreakdown)
+	}
+	if !approxEqual(p.ThirtyDay.CostUSD, 0.7) {
+		t.Errorf("30d.CostUSD = %v, want 0.7", p.ThirtyDay.CostUSD)
+	}
+}
+
+func TestComputePeriods_EmptyDB(t *testing.T) {
+	pinLocalUTC(t)
+	db := freshDB(t)
+	now := time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC)
+
+	p, err := ComputePeriods(t.Context(), db, now, QuotaInput{})
+	if err != nil {
+		t.Fatalf("ComputePeriods: %v", err)
+	}
+	for name, per := range map[string]Period{"today": p.Today, "7d": p.SevenDay, "30d": p.ThirtyDay} {
+		if per.Tokens != 0 || per.CostUSD != 0 || per.TokensBreakdown != (TokensBreakdown{}) {
+			t.Errorf("%s = %+v, want zeroed", name, per)
+		}
+	}
+}
