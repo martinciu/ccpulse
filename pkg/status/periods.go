@@ -95,9 +95,18 @@ func ComputePeriods(ctx context.Context, db *sql.DB, now time.Time, q QuotaInput
 	return &p, nil
 }
 
-// sevenDayStart returns the lower bound of the 7d window. Task 3 adds the
-// quota-anchored branch; for now it always returns the calendar window: the
-// last 7 calendar days in local tz (today + previous 6).
+// sevenDayStart returns the lower bound of the 7d window: quota-anchored
+// (ResetsAt - 168h) when the API reports a plausible 7-day reset — in the
+// future but within the next 7 days — else the last 7 calendar days in local
+// tz (today + previous 6). The two-sided guard rejects a stale/past anchor
+// (window wider than 7 days) and an absurd far-future one (window start past
+// now → silently zero); both fall back to the calendar window.
 func sevenDayStart(q QuotaInput, now time.Time) time.Time {
+	if q.Usage != nil && q.Usage.SevenDay != nil && q.Usage.SevenDay.ResetsAt != nil {
+		r := *q.Usage.SevenDay.ResetsAt
+		if r.After(now) && !r.After(now.Add(sevenDayWindow)) {
+			return r.Add(-sevenDayWindow)
+		}
+	}
 	return cache.DayStartLocal(now).AddDate(0, 0, -6)
 }

@@ -579,3 +579,61 @@ func TestComputePeriods_EmptyDB(t *testing.T) {
 		}
 	}
 }
+
+func TestComputePeriods_SevenDayQuotaAnchor(t *testing.T) {
+	pinLocalUTC(t)
+	db := freshDB(t)
+	now := time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC)
+
+	// Reset 48h out (in range) → 7d window starts at now-120h = 2026-05-10 12:00 UTC.
+	resetsAt := now.Add(48 * time.Hour)
+	q := QuotaInput{Usage: &anthro.Usage{SevenDay: &anthro.Bucket{Utilization: 50, ResetsAt: &resetsAt}}}
+
+	// after the quota start (2026-05-11 08:00) → counts in 7d
+	insertMsg(t, db, time.Date(2026, 5, 11, 8, 0, 0, 0, time.UTC), 100, 10, 0, 0, 0, 0.1)
+	// before the quota start but after the *calendar* start (2026-05-09 06:00,
+	// calendar-7d start = 2026-05-09 00:00) → excluded under the quota anchor
+	insertMsg(t, db, time.Date(2026, 5, 9, 6, 0, 0, 0, time.UTC), 500, 50, 0, 0, 0, 0.5)
+
+	p, err := ComputePeriods(t.Context(), db, now, q)
+	if err != nil {
+		t.Fatalf("ComputePeriods: %v", err)
+	}
+	if got, want := p.SevenDay.Tokens, int64(110); got != want {
+		t.Errorf("7d.Tokens = %d, want %d (quota anchor excludes the 05-09 row)", got, want)
+	}
+}
+
+func TestComputePeriods_SevenDayCalendarFallback(t *testing.T) {
+	pinLocalUTC(t)
+	now := time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC)
+	past := now.Add(-1 * time.Hour)
+	farFuture := now.Add(300 * time.Hour) // > 168h → implausible
+
+	cases := []struct {
+		name string
+		q    QuotaInput
+	}{
+		{"usage nil", QuotaInput{}},
+		{"seven-day nil", QuotaInput{Usage: &anthro.Usage{}}},
+		{"resets-at nil", QuotaInput{Usage: &anthro.Usage{SevenDay: &anthro.Bucket{ResetsAt: nil}}}},
+		{"resets-at past", QuotaInput{Usage: &anthro.Usage{SevenDay: &anthro.Bucket{ResetsAt: &past}}}},
+		{"resets-at far future", QuotaInput{Usage: &anthro.Usage{SevenDay: &anthro.Bucket{ResetsAt: &farFuture}}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db := freshDB(t)
+			// 2026-05-09 06:00 is inside the calendar window (start 2026-05-09 00:00)
+			// but would be outside a 48h-out quota window — so a hit here proves
+			// the calendar fallback is active.
+			insertMsg(t, db, time.Date(2026, 5, 9, 6, 0, 0, 0, time.UTC), 100, 10, 0, 0, 0, 0.1)
+			p, err := ComputePeriods(t.Context(), db, now, tc.q)
+			if err != nil {
+				t.Fatalf("ComputePeriods: %v", err)
+			}
+			if got, want := p.SevenDay.Tokens, int64(110); got != want {
+				t.Errorf("7d.Tokens = %d, want %d (calendar fallback should include 05-09)", got, want)
+			}
+		})
+	}
+}
