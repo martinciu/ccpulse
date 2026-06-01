@@ -61,8 +61,9 @@ func runStatus(cmd *cobra.Command, asJSON, quiet, doIndex bool) error {
 	// --index: tail any not-yet-indexed JSONL into the cache before computing
 	// the window, so a standalone status (prompt/hook/cron, no TUI watching)
 	// reports fresh token/cost history. Opt-in — bare status stays cheap.
+	var indexed int
 	if doIndex {
-		backfillBeforeStatus(cmd, c, hist, cfg, cacheDir)
+		indexed = backfillBeforeStatus(cmd, c, hist, cfg, cacheDir)
 	}
 
 	q := buildQuotaInput(cmd.Context(), cacheDir, time.Now(), cmd.ErrOrStderr())
@@ -88,6 +89,17 @@ func runStatus(cmd *cobra.Command, asJSON, quiet, doIndex bool) error {
 
 	if quiet {
 		return nil
+	}
+
+	// Past the quiet early-return, so quiet is already excluded. Suppress the
+	// count line under --json (it would corrupt the JSON document) and when no
+	// files were stale (warm cache → no noise on every prompt invocation).
+	if indexed > 0 && !asJSON {
+		noun := "files"
+		if indexed == 1 {
+			noun = "file"
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "indexed %d %s\n", indexed, noun)
 	}
 
 	printStatus(cmd.OutOrStdout(), w, asJSON)
