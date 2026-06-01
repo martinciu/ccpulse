@@ -12,28 +12,30 @@ import (
 	"github.com/martinciu/ccpulse/pkg/anthro"
 	"github.com/martinciu/ccpulse/pkg/cache"
 	"github.com/martinciu/ccpulse/pkg/config"
+	"github.com/martinciu/ccpulse/pkg/ingest"
 	"github.com/martinciu/ccpulse/pkg/pricing"
 	"github.com/martinciu/ccpulse/pkg/status"
 	"github.com/spf13/cobra"
 )
 
 func newStatusCmd() *cobra.Command {
-	var asJSON, quiet bool
+	var asJSON, quiet, doIndex bool
 	c := &cobra.Command{
 		Use:   "status",
 		Short: "Print 5-hour window status",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runStatus(cmd, asJSON, quiet)
+			return runStatus(cmd, asJSON, quiet, doIndex)
 		},
 	}
 	c.Flags().BoolVar(&asJSON, "json", false, "emit JSON")
 	c.Flags().BoolVar(&quiet, "quiet", false, "suppress stdout (cache still written; stderr unchanged)")
+	c.Flags().BoolVar(&doIndex, "index", false, "tail new JSONL into the cache before reporting")
 	c.MarkFlagsMutuallyExclusive("json", "quiet")
 	return c
 }
 
-func runStatus(cmd *cobra.Command, asJSON, quiet bool) error {
+func runStatus(cmd *cobra.Command, asJSON, quiet, doIndex bool) error {
 	cfg, err := config.Load(config.DefaultPath())
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("load config %s: %w", config.DefaultPath(), err)
@@ -55,6 +57,14 @@ func runStatus(cmd *cobra.Command, asJSON, quiet bool) error {
 		return err
 	}
 	c.AutoRecost(cmd.Context(), hist)
+
+	// --index: tail any not-yet-indexed JSONL into the cache before computing
+	// the window, so a standalone status (prompt/hook/cron, no TUI watching)
+	// reports fresh token/cost history. Opt-in — bare status stays cheap.
+	var indexed int
+	if doIndex {
+		indexed = backfillBeforeStatus(cmd, c, hist, cfg, cacheDir)
+	}
 
 	q := buildQuotaInput(cmd.Context(), cacheDir, time.Now(), cmd.ErrOrStderr())
 
@@ -87,8 +97,55 @@ func runStatus(cmd *cobra.Command, asJSON, quiet bool) error {
 		return nil
 	}
 
+	// Past the quiet early-return, so quiet is already excluded; the helper
+	// handles the remaining --json / warm-cache gating.
+	printIndexedCount(cmd.OutOrStdout(), indexed, asJSON)
+
 	printStatus(cmd.OutOrStdout(), w, asJSON)
 	return nil
+}
+
+// printIndexedCount writes the "indexed N file(s)" summary for --index. Gated:
+// nothing under --json (the line would corrupt the JSON document) and nothing
+// on a warm cache (indexed == 0 → no noise on every prompt invocation). Callers
+// must already have excluded --quiet.
+func printIndexedCount(out io.Writer, indexed int, asJSON bool) {
+	if indexed == 0 || asJSON {
+		return
+	}
+	noun := "files"
+	if indexed == 1 {
+		noun = "file"
+	}
+	fmt.Fprintf(out, "indexed %d %s\n", indexed, noun)
+}
+
+// backfillBeforeStatus tails any not-yet-indexed JSONL into the cache before
+// status reports. Best-effort: per-file parse errors are logged to
+// parse-errors.log by the ingester and never surface here, matching how
+// recordUsageSample and buildQuotaInput swallow their errors. Returns the
+// number of files that had new bytes (0 when the cache was already current).
+func backfillBeforeStatus(cmd *cobra.Command, c *cache.Cache, hist pricing.History, cfg config.Config, cacheDir string) int {
+	projectsRoot := envOr("CCPULSE_PROJECTS_ROOT", expand(cfg.Paths.ProjectsRoot))
+	ing := &ingest.Ingester{
+		Cache:          c,
+		Pricing:        hist,
+		ProjectsRoot:   projectsRoot,
+		ParseErrorsLog: filepath.Join(cacheDir, "parse-errors.log"),
+	}
+	bf := &ingest.Backfill{Ingester: ing}
+
+	var indexed int
+	// Backfill.Run fires the terminal Active:false tick with Done == files
+	// processed (Done:total on normal completion, Done:i on ctx-cancel). When
+	// every file is already caught up it returns early with no callback, so
+	// indexed stays 0. Errors are best-effort — discard the return.
+	_ = bf.Run(cmd.Context(), func(p ingest.Progress) {
+		if !p.Active {
+			indexed = p.Done
+		}
+	})
+	return indexed
 }
 
 // recordUsageSample persists a freshly-fetched usage sample and prunes samples

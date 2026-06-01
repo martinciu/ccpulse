@@ -229,6 +229,196 @@ func countSamples(t *testing.T, dbPath string) int {
 	return n
 }
 
+// writeProjectsFixture creates a minimal JSONL transcript tree under a fresh
+// temp dir and returns the projects-root path. The single assistant turn
+// mirrors pkg/ingest's fixture so the parser ingests exactly one message.
+// Point CCPULSE_PROJECTS_ROOT at the returned path.
+func writeProjectsFixture(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	projDir := filepath.Join(root, "-Users-x-foo")
+	if err := os.MkdirAll(projDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	line := `{"type":"assistant","sessionId":"s1",` +
+		`"timestamp":"2026-05-09T10:00:00.000Z","cwd":"/Users/x/foo","gitBranch":"main",` +
+		`"message":{"role":"assistant","model":"claude-opus-4-7","usage":` +
+		`{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,` +
+		`"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}}}` + "\n"
+	if err := os.WriteFile(filepath.Join(projDir, "sess.jsonl"), []byte(line), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+// countMessages reopens state.db and returns the number of messages rows.
+func countMessages(t *testing.T, dbPath string) int {
+	t.Helper()
+	c, err := cache.Open(t.Context(), dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	var n int
+	if err := c.DB().QueryRow(`SELECT count(*) FROM messages`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func TestStatusIndexBackfillsNewJSONL(t *testing.T) {
+	cacheDir := t.TempDir()
+	credDir := t.TempDir()
+	projRoot := writeProjectsFixture(t)
+	t.Setenv("CCPULSE_CACHE_DIR", cacheDir)
+	t.Setenv("CCPULSE_PROJECTS_ROOT", projRoot)
+	t.Setenv("HOME", credDir)
+
+	cmd := newStatusCmd()
+	cmd.SetArgs([]string{"--index", "--json"})
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	if err := cmd.ExecuteContext(t.Context()); err != nil {
+		t.Fatalf("status --index: %v", err)
+	}
+	if got := countMessages(t, filepath.Join(cacheDir, "state.db")); got == 0 {
+		t.Fatalf("messages rows = 0 after --index, want > 0 (backfill did not ingest)")
+	}
+}
+
+func TestStatusWithoutIndexDoesNotBackfill(t *testing.T) {
+	cacheDir := t.TempDir()
+	credDir := t.TempDir()
+	projRoot := writeProjectsFixture(t)
+	t.Setenv("CCPULSE_CACHE_DIR", cacheDir)
+	t.Setenv("CCPULSE_PROJECTS_ROOT", projRoot)
+	t.Setenv("HOME", credDir)
+
+	cmd := newStatusCmd()
+	cmd.SetArgs([]string{"--json"}) // no --index
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	if err := cmd.ExecuteContext(t.Context()); err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if got := countMessages(t, filepath.Join(cacheDir, "state.db")); got != 0 {
+		t.Fatalf("messages rows = %d without --index, want 0 (bare status must not walk JSONL)", got)
+	}
+}
+
+func TestStatusIndexPrintsCountInHumanMode(t *testing.T) {
+	cacheDir := t.TempDir()
+	credDir := t.TempDir()
+	projRoot := writeProjectsFixture(t)
+	t.Setenv("CCPULSE_CACHE_DIR", cacheDir)
+	t.Setenv("CCPULSE_PROJECTS_ROOT", projRoot)
+	t.Setenv("HOME", credDir)
+
+	cmd := newStatusCmd()
+	cmd.SetArgs([]string{"--index"}) // human mode
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	if err := cmd.ExecuteContext(t.Context()); err != nil {
+		t.Fatalf("status --index: %v", err)
+	}
+	out := buf.String()
+	// One .jsonl file in the fixture → "indexed 1 file" (singular).
+	if !strings.Contains(out, "indexed 1 file") {
+		t.Errorf("human-mode --index should print the count line, got: %q", out)
+	}
+	// The status line still renders below it (quota present or the no-quota notice).
+	if !strings.Contains(out, "5h window") && !strings.Contains(out, "no quota data") {
+		t.Errorf("status line missing after count line, got: %q", out)
+	}
+}
+
+func TestStatusIndexJSONSuppressesCountLine(t *testing.T) {
+	cacheDir := t.TempDir()
+	credDir := t.TempDir()
+	projRoot := writeProjectsFixture(t)
+	t.Setenv("CCPULSE_CACHE_DIR", cacheDir)
+	t.Setenv("CCPULSE_PROJECTS_ROOT", projRoot)
+	t.Setenv("HOME", credDir)
+
+	cmd := newStatusCmd()
+	cmd.SetArgs([]string{"--index", "--json"})
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	if err := cmd.ExecuteContext(t.Context()); err != nil {
+		t.Fatalf("status --index --json: %v", err)
+	}
+	out := buf.String()
+	if strings.Contains(out, "indexed") {
+		t.Errorf("--json must not print the count line (would corrupt JSON), got: %q", out)
+	}
+	// stdout must be a single valid JSON document.
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatalf("stdout is not valid JSON with --index --json: %v\n%s", err, out)
+	}
+	// …and the backfill still ran.
+	if got := countMessages(t, filepath.Join(cacheDir, "state.db")); got == 0 {
+		t.Errorf("messages rows = 0; --index --json should still ingest")
+	}
+}
+
+func TestStatusIndexQuietSuppressesCountLine(t *testing.T) {
+	cacheDir := t.TempDir()
+	credDir := t.TempDir()
+	projRoot := writeProjectsFixture(t)
+	t.Setenv("CCPULSE_CACHE_DIR", cacheDir)
+	t.Setenv("CCPULSE_PROJECTS_ROOT", projRoot)
+	t.Setenv("HOME", credDir)
+
+	cmd := newStatusCmd()
+	cmd.SetArgs([]string{"--index", "--quiet"})
+	var out, errBuf bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errBuf)
+	if err := cmd.ExecuteContext(t.Context()); err != nil {
+		t.Fatalf("status --index --quiet: %v", err)
+	}
+	if out.Len() != 0 {
+		t.Errorf("stdout should be empty with --quiet, got: %q", out.String())
+	}
+	if got := countMessages(t, filepath.Join(cacheDir, "state.db")); got == 0 {
+		t.Errorf("messages rows = 0; --index --quiet should still ingest silently")
+	}
+}
+
+func TestStatusIndexWarmCacheNoCountLine(t *testing.T) {
+	cacheDir := t.TempDir()
+	credDir := t.TempDir()
+	projRoot := writeProjectsFixture(t)
+	t.Setenv("CCPULSE_CACHE_DIR", cacheDir)
+	t.Setenv("CCPULSE_PROJECTS_ROOT", projRoot)
+	t.Setenv("HOME", credDir)
+
+	// First run: ingests the one file, prints the count line.
+	first := newStatusCmd()
+	first.SetArgs([]string{"--index"})
+	var firstBuf bytes.Buffer
+	first.SetOut(&firstBuf)
+	if err := first.ExecuteContext(t.Context()); err != nil {
+		t.Fatalf("first status --index: %v", err)
+	}
+	if !strings.Contains(firstBuf.String(), "indexed 1 file") {
+		t.Fatalf("first run should print count line, got: %q", firstBuf.String())
+	}
+
+	// Second run: cache is warm (offset == size), nothing stale → no count line.
+	second := newStatusCmd()
+	second.SetArgs([]string{"--index"})
+	var secondBuf bytes.Buffer
+	second.SetOut(&secondBuf)
+	if err := second.ExecuteContext(t.Context()); err != nil {
+		t.Fatalf("second status --index: %v", err)
+	}
+	if strings.Contains(secondBuf.String(), "indexed") {
+		t.Errorf("warm-cache --index should print no count line, got: %q", secondBuf.String())
+	}
+}
+
 func TestStatusRecordsUsageSampleOnAPIFetch(t *testing.T) {
 	cacheDir := t.TempDir()
 	credDir := t.TempDir()
