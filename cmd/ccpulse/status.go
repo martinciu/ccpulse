@@ -67,14 +67,20 @@ func runStatus(cmd *cobra.Command, asJSON, quiet bool) error {
 		return err
 	}
 
-	// Period rollups are JSON-only; the human and --quiet paths skip the extra
-	// scan, and the TUI never reaches this code.
+	// Period rollups and the live throughput rate are JSON-only; the human and
+	// --quiet paths skip the extra scans, and the TUI never reaches this code.
 	if asJSON {
 		p, err := status.ComputePeriods(cmd.Context(), c.DB(), time.Now(), q)
 		if err != nil {
 			return err
 		}
 		w.Periods = p
+
+		th, err := status.ComputeThroughput(cmd.Context(), c.DB(), time.Now())
+		if err != nil {
+			return err
+		}
+		w.Throughput = th
 	}
 
 	if quiet {
