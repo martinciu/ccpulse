@@ -124,7 +124,8 @@ func printIndexedCount(out io.Writer, indexed int, asJSON bool) {
 // status reports. Best-effort: per-file parse errors are logged to
 // parse-errors.log by the ingester and never surface here, matching how
 // recordUsageSample and buildQuotaInput swallow their errors. Returns the
-// number of files that had new bytes (0 when the cache was already current).
+// number of stale files processed — those whose stored cache offset differs
+// from the file's current size (0 when the cache was already current).
 func backfillBeforeStatus(cmd *cobra.Command, c *cache.Cache, hist pricing.History, cfg config.Config, cacheDir string) int {
 	projectsRoot := envOr("CCPULSE_PROJECTS_ROOT", expand(cfg.Paths.ProjectsRoot))
 	ing := &ingest.Ingester{
