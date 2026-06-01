@@ -91,19 +91,27 @@ func runStatus(cmd *cobra.Command, asJSON, quiet, doIndex bool) error {
 		return nil
 	}
 
-	// Past the quiet early-return, so quiet is already excluded. Suppress the
-	// count line under --json (it would corrupt the JSON document) and when no
-	// files were stale (warm cache → no noise on every prompt invocation).
-	if indexed > 0 && !asJSON {
-		noun := "files"
-		if indexed == 1 {
-			noun = "file"
-		}
-		fmt.Fprintf(cmd.OutOrStdout(), "indexed %d %s\n", indexed, noun)
-	}
+	// Past the quiet early-return, so quiet is already excluded; the helper
+	// handles the remaining --json / warm-cache gating.
+	printIndexedCount(cmd.OutOrStdout(), indexed, asJSON)
 
 	printStatus(cmd.OutOrStdout(), w, asJSON)
 	return nil
+}
+
+// printIndexedCount writes the "indexed N file(s)" summary for --index. Gated:
+// nothing under --json (the line would corrupt the JSON document) and nothing
+// on a warm cache (indexed == 0 → no noise on every prompt invocation). Callers
+// must already have excluded --quiet.
+func printIndexedCount(out io.Writer, indexed int, asJSON bool) {
+	if indexed == 0 || asJSON {
+		return
+	}
+	noun := "files"
+	if indexed == 1 {
+		noun = "file"
+	}
+	fmt.Fprintf(out, "indexed %d %s\n", indexed, noun)
 }
 
 // backfillBeforeStatus tails any not-yet-indexed JSONL into the cache before
