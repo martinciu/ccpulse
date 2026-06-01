@@ -23,19 +23,19 @@ type chartSeries struct {
 // Returns ok=false when the unit's query fails or yields no data; the caller
 // then resets via clearChart. loadRemainingSeries owns the lastPts5h/7d and
 // hasData side effects (its existing behavior).
-func (m *Model) loadSeries(zoom ZoomLevel, from, to time.Time) (chartSeries, bool) {
+func (m *Model) loadSeries(zoom ZoomLevel, from, to, earliest time.Time) (chartSeries, bool) {
 	switch chartUnit(m.unitIdx) {
 	case chartUnitCost:
-		return m.loadCostSeries(zoom, from, to)
+		return m.loadCostSeries(zoom, from, to, earliest)
 	case chartUnitRemaining:
 		return m.loadRemainingSeries(from)
 	default:
-		return m.loadTokenSeries(zoom, from, to)
+		return m.loadTokenSeries(zoom, from, to, earliest)
 	}
 }
 
-func (m *Model) loadCostSeries(zoom ZoomLevel, from, to time.Time) (chartSeries, bool) {
-	buckets, err := m.deps.Cache.CostBuckets(m.ctx, zoom.Duration, from, to)
+func (m *Model) loadCostSeries(zoom ZoomLevel, from, to, earliest time.Time) (chartSeries, bool) {
+	buckets, err := m.chartCache.cost.resolve(m.ctx, zoom.Duration, from, to, earliest, m.deps.Cache.CostBuckets)
 	if err != nil || len(buckets) == 0 {
 		return chartSeries{}, false
 	}
@@ -82,8 +82,8 @@ func (m *Model) loadRemainingSeries(from time.Time) (chartSeries, bool) {
 	return chartSeries{values: values, starts: starts, peak: 1.0, unit: chartUnitRemaining}, true
 }
 
-func (m *Model) loadTokenSeries(zoom ZoomLevel, from, to time.Time) (chartSeries, bool) {
-	buckets, err := m.deps.Cache.IOTokenBuckets(m.ctx, zoom.Duration, from, to)
+func (m *Model) loadTokenSeries(zoom ZoomLevel, from, to, earliest time.Time) (chartSeries, bool) {
+	buckets, err := m.chartCache.tokens.resolve(m.ctx, zoom.Duration, from, to, earliest, m.deps.Cache.IOTokenBuckets)
 	if err != nil || len(buckets) == 0 {
 		return chartSeries{}, false
 	}
@@ -111,6 +111,7 @@ func (m *Model) clearChart() {
 	m.lastChartFrom = time.Time{}
 	m.lastChartTo = time.Time{}
 	m.hasData = false
+	m.chartCache = chartCache{}
 	m.setX(0)
 }
 
@@ -199,7 +200,7 @@ func (m *Model) refreshChart() {
 	// remaining-mode branch overrides this with whether usage samples exist.
 	m.hasData = ok
 
-	series, loaded := m.loadSeries(zoom, from, to)
+	series, loaded := m.loadSeries(zoom, from, to, earliest)
 	if !loaded {
 		m.clearChart()
 		return

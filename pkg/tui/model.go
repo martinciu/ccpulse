@@ -202,6 +202,12 @@ type Model struct {
 	// one the viewport was last drawn against.
 	lastZoomStride int
 
+	// chartCache memoizes the bar-unit bucket arrays so refreshChart re-queries
+	// only the mutable trailing region per refresh instead of re-aggregating
+	// full history (#378). Distinct from lastChartFrom/lastValues, which serve
+	// scroll-anchor preservation. See chart_cache.go.
+	chartCache chartCache
+
 	// underfilled is true when the indexed data is narrower than the chart
 	// viewport, so refreshChart padded the [from, to) window leftward to span
 	// the full width (#300). setX reads it to lock the viewport at the flush-
