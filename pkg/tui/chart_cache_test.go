@@ -437,3 +437,50 @@ func itoa(n int) string {
 	}
 	return string(b)
 }
+
+// BenchmarkRefreshChartIncremental measures a warm-cache refreshChart — the
+// steady-state watcher path after the slot is populated. The memoized stitch
+// re-queries only the current open 15m bucket; compare ns/op here against
+// BenchmarkIOTokenBuckets (pkg/cache) to see the row-scan eliminated (#378).
+func BenchmarkRefreshChartIncremental(b *testing.B) {
+	tab, err := pricing.Load()
+	if err != nil {
+		b.Fatalf("pricing.Load: %v", err)
+	}
+	end := time.Now().UTC().Truncate(15 * time.Minute)
+	for _, n := range []int{5_000, 30_000, 100_000} {
+		b.Run(itoa(n), func(b *testing.B) {
+			c, err := cache.Open(b.Context(), filepath.Join(b.TempDir(), "s.db"))
+			if err != nil {
+				b.Fatalf("cache.Open: %v", err)
+			}
+			defer c.Close()
+			msgs := make([]parse.Message, n)
+			for i := range n {
+				msgs[i] = parse.Message{
+					SessionID: "s1", MessageID: "m" + itoa(i), ProjectSlug: "p",
+					Model:       "claude-opus-4-7",
+					Timestamp:   end.Add(-time.Duration(i) * time.Minute),
+					InputTokens: int64(1000 + i),
+				}
+			}
+			if err := c.InsertMessages(b.Context(), msgs, tab); err != nil {
+				b.Fatalf("InsertMessages: %v", err)
+			}
+
+			m := New(Deps{Cache: c})
+			m.unitIdx = int(chartUnitTokens)
+			m.zoomIdx = 0
+			m.w, m.h = 122, 40
+			m.viewport.Width = m.chartWidth()
+			m.viewport.Height = m.chartHeight()
+			m.now = func() time.Time { return end }
+			m.refreshChart() // warm the slot
+
+			b.ReportAllocs()
+			for b.Loop() {
+				m.refreshChart() // stitch path: re-query the single open bucket
+			}
+		})
+	}
+}
