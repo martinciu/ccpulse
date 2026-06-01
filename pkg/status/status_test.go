@@ -338,7 +338,7 @@ INSERT INTO messages (
 	}
 
 	// Breakdown carries all five kinds verbatim.
-	want := Tokens5hBreakdown{
+	want := TokensBreakdown{
 		Input:        100,
 		Output:       50,
 		CacheRead:    1000,
@@ -367,7 +367,7 @@ INSERT INTO messages (
 func TestJSON_IncludesTokens5hBreakdown(t *testing.T) {
 	w := Window{
 		Tokens5h: 150,
-		Tokens5hBreakdown: Tokens5hBreakdown{
+		Tokens5hBreakdown: TokensBreakdown{
 			Input:        100,
 			Output:       50,
 			CacheRead:    1000,

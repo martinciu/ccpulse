@@ -24,7 +24,7 @@ type QuotaInput struct {
 
 // Compute folds the last 5 hours of messages plus the quota input into
 // a Window. `Tokens5h` is `input + output` only — see #232 for why this
-// matches Claude Code `/usage`. `Tokens5hBreakdown` exposes all five
+// matches Claude Code `/usage`. `Tokens5hBreakdown` (a `TokensBreakdown`) exposes all five
 // token kinds for callers that still need the cache-vs-work split.
 func Compute(ctx context.Context, db *sql.DB, now time.Time, q QuotaInput) (Window, error) {
 	cutoff := now.UTC().Add(-5 * time.Hour).Format("2006-01-02T15:04:05.000Z07:00")
@@ -39,7 +39,7 @@ SELECT
   COALESCE(MIN(ts), '')
 FROM messages WHERE ts >= ?`, cutoff)
 
-	var b Tokens5hBreakdown
+	var b TokensBreakdown
 	var cost float64
 	var oldest string
 	if err := row.Scan(
