@@ -278,6 +278,12 @@ func rasterizeSkyline(values []float64, starts []time.Time, peak float64, vpWidt
 // columns wide, top-to-bottom — NO x-axis label row (the caller appends the
 // cross-faded label row). Used only by the bar-zoom morph (#393); steady-state
 // bar rendering stays on ntcharts via buildChart.
+//
+// Only bar-glyph cells carry the bar style; blank cells render plain. This
+// mirrors ntcharts' canvas.View, which renders each empty cell with the default
+// (unstyled) style and each bar cell with the bar color — styling the whole row
+// (blanks included) would flood every cell with the bar color's background and
+// fill the chart solid during the morph (#393).
 func drawSkyline(sky []float64, barsH int, unit chartUnit) string {
 	var barColor lipgloss.TerminalColor = colorChartTokens
 	if unit == chartUnitCost {
@@ -285,31 +291,58 @@ func drawSkyline(sky []float64, barsH int, unit chartUnit) string {
 	}
 	style := lipgloss.NewStyle().Foreground(barColor).Background(barColor)
 
+	cells := make([]rune, len(sky)) // reused per row; every column is reassigned below
 	var b strings.Builder
 	for row := range barsH {
 		// Row 0 is the top; a column of height h fills the bottom h rows.
 		distFromBottom := barsH - row // 1..barsH (rows from the baseline up)
-		var line strings.Builder
-		for _, h := range sky {
+		for col, h := range sky {
 			full := math.Floor(h)
 			switch {
 			case float64(distFromBottom) <= full:
-				line.WriteRune(runes.FullBlock)
+				cells[col] = runes.FullBlock
 			case float64(distFromBottom) == full+1:
 				r := runes.LowerBlockElementFromFloat64(h - full)
 				if r == runes.Null {
-					line.WriteRune(' ')
+					cells[col] = ' '
 				} else {
-					line.WriteRune(r)
+					cells[col] = r
 				}
 			default:
-				line.WriteRune(' ')
+				cells[col] = ' '
 			}
 		}
-		b.WriteString(style.Render(line.String()))
+		b.WriteString(renderSkylineRow(cells, style))
 		if row < barsH-1 {
 			b.WriteByte('\n')
 		}
+	}
+	return b.String()
+}
+
+// renderSkylineRow renders one row of skyline cells, applying style only to
+// contiguous runs of bar glyphs and leaving blank cells unstyled. Mirrors
+// ntcharts' per-cell render (canvas.View) without its per-cell escape overhead:
+// a run of bar glyphs shares one styled span, blanks pass through plain so the
+// bar color's background never bleeds onto empty cells (#393).
+func renderSkylineRow(cells []rune, style lipgloss.Style) string {
+	var b strings.Builder
+	for i := 0; i < len(cells); {
+		if cells[i] == ' ' {
+			j := i
+			for j < len(cells) && cells[j] == ' ' {
+				j++
+			}
+			b.WriteString(strings.Repeat(" ", j-i))
+			i = j
+			continue
+		}
+		j := i
+		for j < len(cells) && cells[j] != ' ' {
+			j++
+		}
+		b.WriteString(style.Render(string(cells[i:j])))
+		i = j
 	}
 	return b.String()
 }

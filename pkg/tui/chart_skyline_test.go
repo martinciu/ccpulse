@@ -3,6 +3,7 @@ package tui
 import (
 	"math"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -59,6 +60,36 @@ func TestDrawSkyline_MatchesBuildChartHeights(t *testing.T) {
 		if g, w := barHeightAtCol(got+"\n", col), barHeightAtCol(want, col); g != w {
 			t.Errorf("col %d: drawSkyline height=%d, buildChart height=%d", col, g, w)
 		}
+	}
+}
+
+// TestDrawSkyline_EmptyCellsHaveNoBackground is the regression for the #393
+// "whole chart fills yellow during the morph" bug: drawSkyline must style only
+// bar-glyph cells, leaving blank cells unstyled — matching ntcharts, which
+// renders each empty canvas cell with the default (unstyled) style and each bar
+// cell with the bar color (canvas.go View). Styling the whole row (blanks
+// included) flooded every cell with the bar color's background.
+func TestDrawSkyline_EmptyCellsHaveNoBackground(t *testing.T) {
+	withForcedColor(t) // TrueColor so a background actually emits \x1b[...m (go test has no TTY)
+	const barsH = 20
+	// max height 6.2 << 20 leaves the top rows fully empty; the 0-height columns
+	// leave empty columns interleaved with bars.
+	sky := []float64{3.5, 0, 6.2, 0, 2.0}
+	out := drawSkyline(sky, barsH, chartUnitCost)
+	rows := strings.Split(out, "\n")
+	if len(rows) != barsH {
+		t.Fatalf("drawSkyline rows=%d, want %d", len(rows), barsH)
+	}
+	// Row 0 (top) sits above every bar, so it is entirely blank and must render
+	// plain — no escape sequence at all. The bug rendered it as one styled
+	// bar-color span (the yellow flood).
+	if strings.Contains(rows[0], "\x1b[") {
+		t.Errorf("top (all-blank) row carries styling, want plain spaces:\n%q", rows[0])
+	}
+	// Sanity that the fix didn't simply drop all color: the bottom row crosses
+	// bars (cols 0,2,4) and must still be styled.
+	if !strings.Contains(rows[barsH-1], "\x1b[") {
+		t.Errorf("bottom row has no styling, want colored bar cells:\n%q", rows[barsH-1])
 	}
 }
 
