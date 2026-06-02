@@ -177,10 +177,9 @@ func projectSevenDay(
 		return linear
 	}
 
-	deltaPct := filtered[len(filtered)-1].Pct - filtered[0].Pct
-	slopePerHour := deltaPct / span.Hours()
+	slopePerHour := weightedRegressionSlope(filtered, sevenDayHalfLife)
 	if slopePerHour < 0 {
-		slopePerHour = 0
+		slopePerHour = 0 // users care about "will I overrun", not "trending down"
 	}
 
 	hoursToReset := resetsAt.Sub(now).Hours()

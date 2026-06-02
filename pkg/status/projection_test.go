@@ -403,7 +403,7 @@ func TestProjectSevenDay_SlopeCases(t *testing.T) {
 				{At: now, Pct: 50.0, ResetsAt: bucketA},
 			},
 			currentPct:       50.0,
-			wantSlopeApprox:  20.0 / 24.0,
+			wantSlopeApprox:  2.07, // recency-weighted: late +20% jump dominates (was 20/24 endpoint)
 			wantOverreach:    true,
 			wantConfidence:   "ok",
 			wantMinutesTo100: true,
@@ -414,6 +414,20 @@ func TestProjectSevenDay_SlopeCases(t *testing.T) {
 			currentPct:      30.0,
 			wantSlopeApprox: 0.0,
 			wantOverreach:   false,
+			wantConfidence:  "ok",
+		},
+		{
+			name: "dip-recover: 9→11→0→4.5→9 (issue #395) → positive recent slope",
+			samples: []cache.SevenDaySample{
+				{At: now.Add(-24 * time.Hour), Pct: 9.0, ResetsAt: bucketA},
+				{At: now.Add(-18 * time.Hour), Pct: 11.0, ResetsAt: bucketA},
+				{At: now.Add(-12 * time.Hour), Pct: 0.0, ResetsAt: bucketA},
+				{At: now.Add(-6 * time.Hour), Pct: 4.5, ResetsAt: bucketA},
+				{At: now, Pct: 9.0, ResetsAt: bucketA},
+			},
+			currentPct:      9.0,
+			wantSlopeApprox: 0.52, // endpoint-diff would give 0 (9→9); weighted ≈ 0.52
+			wantOverreach:   false, // 9 + 0.52*72 ≈ 46
 			wantConfidence:  "ok",
 		},
 		{
