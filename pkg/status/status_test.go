@@ -445,6 +445,56 @@ func TestCompute_SevenDayUsesRecencyWeightedProjection(t *testing.T) {
 	}
 }
 
+func TestCompute_SevenDayDipRecoverHasPositiveSlope(t *testing.T) {
+	dir := t.TempDir()
+	c, err := cache.Open(t.Context(), dir+"/state.db")
+	if err != nil {
+		t.Fatalf("Open cache: %v", err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+
+	now := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+	resetsAt := now.Add(72 * time.Hour)
+
+	// Dip-recover: usage climbs, resets mid-window, climbs again. Endpoints
+	// (9% then 9%) coincide so the old endpoint-diff slope read 0 — this
+	// asserts the recency-weighted estimator now reports the real climb.
+	series := []struct {
+		hoursBack int
+		pct       float64
+	}{
+		{24, 9.0}, {18, 11.0}, {12, 0.0}, {6, 4.5}, {0, 9.0},
+	}
+	for _, s := range series {
+		when := now.Add(-time.Duration(s.hoursBack) * time.Hour)
+		if err := c.RecordUsageSample(t.Context(), anthro.Usage{
+			SevenDay: &anthro.Bucket{Utilization: s.pct, ResetsAt: &resetsAt},
+		}, when); err != nil {
+			t.Fatalf("RecordUsageSample: %v", err)
+		}
+	}
+
+	q := QuotaInput{
+		Usage: &anthro.Usage{
+			SevenDay: &anthro.Bucket{Utilization: 9.0, ResetsAt: &resetsAt},
+		},
+		Source:    "api",
+		UpdatedAt: now,
+	}
+
+	w, err := Compute(t.Context(), c.DB(), now, q)
+	if err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+	if w.Projection == nil || w.Projection.SevenDay == nil {
+		t.Fatalf("Projection.SevenDay nil")
+	}
+	got := w.Projection.SevenDay
+	if got.SlopePctPerHour <= 0 {
+		t.Errorf("dip-recover SlopePctPerHour = %v, want > 0 (recency-weighted, not endpoint-diff 0)", got.SlopePctPerHour)
+	}
+}
+
 func TestResolveFiveHour(t *testing.T) {
 	now := time.Date(2026, 5, 25, 12, 0, 0, 0, time.UTC)
 	reset := now.Add(90 * time.Minute)
