@@ -75,6 +75,55 @@ func round2(f float64) float64 {
 	return math.Round(f*100) / 100
 }
 
+// sevenDayHalfLife sets how fast older samples are de-weighted in the 7d
+// slope regression: a sample Δt old contributes exp(-Δt/halfLife) weight.
+// 4h means a sample 4h back counts ~half, 12h back ~1/8, 24h back ~1.6%.
+const sevenDayHalfLife = 4 * time.Hour
+
+// weightedRegressionSlope returns the least-squares slope in pct-per-hour of
+// the (At, Pct) samples, weighting each sample w_i = exp(-(tLast-t_i)/halfLife)
+// so recent samples dominate. samples must be sorted oldest-first; tLast is the
+// last sample's At. The slope is signed — callers clamp negatives if they want
+// a non-decreasing projection. Returns 0 for fewer than 2 samples or when the
+// weighted x-variance is 0 (all samples at one instant, or degenerate weights):
+// a 0 slope produces a flat, conservative projection, the correct answer when
+// there is no usable signal.
+func weightedRegressionSlope(samples []cache.SevenDaySample, halfLife time.Duration) float64 {
+	if len(samples) < 2 {
+		return 0
+	}
+	tLast := samples[len(samples)-1].At
+	halfLifeHours := halfLife.Hours()
+
+	var sumW, sumWX, sumWY float64
+	for _, s := range samples {
+		dtHours := tLast.Sub(s.At).Hours() // >= 0, samples are oldest-first
+		w := math.Exp(-dtHours / halfLifeHours)
+		x := -dtHours // hours relative to tLast (<= 0)
+		sumW += w
+		sumWX += w * x
+		sumWY += w * s.Pct
+	}
+	if sumW == 0 {
+		return 0
+	}
+	xBar := sumWX / sumW
+	yBar := sumWY / sumW
+
+	var num, den float64
+	for _, s := range samples {
+		dtHours := tLast.Sub(s.At).Hours()
+		w := math.Exp(-dtHours / halfLifeHours)
+		dx := -dtHours - xBar
+		num += w * dx * (s.Pct - yBar)
+		den += w * dx * dx
+	}
+	if den == 0 {
+		return 0
+	}
+	return num / den
+}
+
 const (
 	sevenDayTrailingWindow = 24 * time.Hour
 	minSamplesForSlope     = 2
