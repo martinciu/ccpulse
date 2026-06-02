@@ -39,3 +39,24 @@ func TestRasterizeSkyline_ZeroPeakAllZero(t *testing.T) {
 		}
 	}
 }
+
+func TestDrawSkyline_MatchesBuildChartHeights(t *testing.T) {
+	t.Parallel()
+	// drawSkyline of a rasterized window must reproduce buildChart's per-column
+	// integer bar heights (the #393 continuity guarantee). 15m zoom, BarWidth=1.
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	values := []float64{2, 5, 10}
+	starts := []time.Time{now.Add(-30 * time.Minute), now.Add(-15 * time.Minute), now}
+	const chartH = 12 // barsH = 11 (chartH>=6 reserves 1 row for x-labels)
+	barsH := chartH - 1
+
+	want := buildChart(values, starts, 10, len(values), chartH, now, ZoomLevels[0], chartUnitCost, dateOrderMonthFirst)
+	sky := rasterizeSkyline(values, starts, 10, len(values), barsH, ZoomLevels[0])
+	got := drawSkyline(sky, barsH, chartUnitCost)
+
+	for col := range values {
+		if g, w := barHeightAtCol(got+"\n", col), barHeightAtCol(want, col); g != w {
+			t.Errorf("col %d: drawSkyline height=%d, buildChart height=%d", col, g, w)
+		}
+	}
+}

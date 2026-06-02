@@ -271,6 +271,49 @@ func rasterizeSkyline(values []float64, starts []time.Time, peak float64, vpWidt
 	return sky
 }
 
+// drawSkyline renders a per-column float-height array as a barsH-row block-rune
+// chart body, reproducing ntcharts' DrawColumnBottomToTop output: floor(h) full
+// blocks plus a top eighth-block from runes.LowerBlockElementFromFloat64. unit
+// selects the bar color (matching buildChart). Output is barsH rows tall, len(sky)
+// columns wide, top-to-bottom — NO x-axis label row (the caller appends the
+// cross-faded label row). Used only by the bar-zoom morph (#393); steady-state
+// bar rendering stays on ntcharts via buildChart.
+func drawSkyline(sky []float64, barsH int, unit chartUnit) string {
+	var barColor lipgloss.TerminalColor = colorChartTokens
+	if unit == chartUnitCost {
+		barColor = colorChartCost
+	}
+	style := lipgloss.NewStyle().Foreground(barColor).Background(barColor)
+
+	var b strings.Builder
+	for row := range barsH {
+		// Row 0 is the top; a column of height h fills the bottom h rows.
+		distFromBottom := barsH - row // 1..barsH (rows from the baseline up)
+		var line strings.Builder
+		for _, h := range sky {
+			full := math.Floor(h)
+			switch {
+			case float64(distFromBottom) <= full:
+				line.WriteRune(runes.FullBlock)
+			case float64(distFromBottom) == full+1:
+				r := runes.LowerBlockElementFromFloat64(h - full)
+				if r == runes.Null {
+					line.WriteRune(' ')
+				} else {
+					line.WriteRune(r)
+				}
+			default:
+				line.WriteRune(' ')
+			}
+		}
+		b.WriteString(style.Render(line.String()))
+		if row < barsH-1 {
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
+}
+
 // slicePointsInRange returns the sub-slice of pts that falls within
 // [from, to], padded by one point on each side if available. The
 // padding preserves cross-boundary line continuity — without it,
