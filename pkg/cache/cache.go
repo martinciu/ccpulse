@@ -325,10 +325,10 @@ func (c *Cache) PruneUsageSamples(ctx context.Context, cutoff time.Time) (int64,
 }
 
 // SevenDaySample is a single usage_samples row projected to the columns
-// needed by status.projectSevenDay. ResetsAt is normalized to second
-// precision (RFC3339, UTC) so sub-second jitter in the API response
-// doesn't fragment otherwise-equal bucket boundaries; consumers treat
-// it as an opaque equality key for bucket-membership filtering.
+// needed by status.projectSevenDay. ResetsAt is normalized to minute
+// precision (RFC3339, UTC) so sub-second jitter in the API response doesn't
+// fragment otherwise-equal bucket boundaries; consumers treat it as an
+// opaque equality key for bucket-membership filtering.
 type SevenDaySample struct {
 	At       time.Time
 	Pct      float64
@@ -369,12 +369,15 @@ ORDER BY ts ASC`, since.UTC().Unix())
 			warnOnceNullResets("seven_day_resets_at")
 			continue
 		}
-		// Normalize ResetsAt to second precision so sub-second jitter in the
-		// API response (nanoseconds differ across calls for the same logical
-		// reset boundary) doesn't create spurious distinct bucket IDs.
+		// Normalize ResetsAt to minute precision so jitter in the API response
+		// doesn't create spurious distinct bucket IDs. Truncate(second) failed
+		// when jitter straddled a whole-second boundary (08:59:59.9 vs
+		// 09:00:00.1 truncate to distinct seconds); Round(minute) merges them,
+		// and 7d resets are calendar-aligned so genuine resets never fall
+		// <30s apart. See issue #395.
 		normalizedResetsAt := resetsAt.String
 		if t, err := time.Parse(time.RFC3339Nano, resetsAt.String); err == nil {
-			normalizedResetsAt = t.UTC().Truncate(time.Second).Format(time.RFC3339)
+			normalizedResetsAt = t.UTC().Round(time.Minute).Format(time.RFC3339)
 		}
 		out = append(out, SevenDaySample{
 			At:       time.Unix(ts, 0).UTC(),

@@ -403,7 +403,7 @@ func TestProjectSevenDay_SlopeCases(t *testing.T) {
 				{At: now, Pct: 50.0, ResetsAt: bucketA},
 			},
 			currentPct:       50.0,
-			wantSlopeApprox:  20.0 / 24.0,
+			wantSlopeApprox:  2.07, // recency-weighted: late +20% jump dominates (was 20/24 endpoint)
 			wantOverreach:    true,
 			wantConfidence:   "ok",
 			wantMinutesTo100: true,
@@ -414,6 +414,20 @@ func TestProjectSevenDay_SlopeCases(t *testing.T) {
 			currentPct:      30.0,
 			wantSlopeApprox: 0.0,
 			wantOverreach:   false,
+			wantConfidence:  "ok",
+		},
+		{
+			name: "dip-recover: 9→11→0→4.5→9 (issue #395) → positive recent slope",
+			samples: []cache.SevenDaySample{
+				{At: now.Add(-24 * time.Hour), Pct: 9.0, ResetsAt: bucketA},
+				{At: now.Add(-18 * time.Hour), Pct: 11.0, ResetsAt: bucketA},
+				{At: now.Add(-12 * time.Hour), Pct: 0.0, ResetsAt: bucketA},
+				{At: now.Add(-6 * time.Hour), Pct: 4.5, ResetsAt: bucketA},
+				{At: now, Pct: 9.0, ResetsAt: bucketA},
+			},
+			currentPct:      9.0,
+			wantSlopeApprox: 0.52,  // endpoint-diff would give 0 (9→9); weighted ≈ 0.52
+			wantOverreach:   false, // 9 + 0.52*72 ≈ 46
 			wantConfidence:  "ok",
 		},
 		{
@@ -518,6 +532,78 @@ func TestFilterCurrentBucket(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestWeightedRegressionSlope(t *testing.T) {
+	now := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+	// samples at -24,-18,-12,-6,0 hours, oldest-first.
+	mk := func(pcts ...float64) []cache.SevenDaySample {
+		out := make([]cache.SevenDaySample, len(pcts))
+		startBack := time.Duration(len(pcts)-1) * 6 * time.Hour
+		for i, p := range pcts {
+			out[i] = cache.SevenDaySample{
+				At:  now.Add(-startBack + time.Duration(i)*6*time.Hour),
+				Pct: p,
+			}
+		}
+		return out
+	}
+
+	t.Run("nil returns 0", func(t *testing.T) {
+		if got := weightedRegressionSlope(nil); got != 0 {
+			t.Errorf("got %v, want 0", got)
+		}
+	})
+	t.Run("single sample returns 0", func(t *testing.T) {
+		if got := weightedRegressionSlope(mk(42)); got != 0 {
+			t.Errorf("got %v, want 0", got)
+		}
+	})
+	t.Run("zero span (all At equal) returns 0", func(t *testing.T) {
+		s := []cache.SevenDaySample{
+			{At: now, Pct: 10}, {At: now, Pct: 20},
+		}
+		if got := weightedRegressionSlope(s); got != 0 {
+			t.Errorf("got %v, want 0", got)
+		}
+	})
+	t.Run("flat series returns 0", func(t *testing.T) {
+		if got := weightedRegressionSlope(mk(50, 50, 50, 50, 50)); math.Abs(got) > 1e-9 {
+			t.Errorf("got %v, want ~0", got)
+		}
+	})
+	t.Run("perfectly linear ramp returns exact slope", func(t *testing.T) {
+		// 0..50 over 24h => 50/24 = 2.08333 %/h (exact for collinear points).
+		got := weightedRegressionSlope(mk(0, 12.5, 25, 37.5, 50))
+		if math.Abs(got-50.0/24.0) > 1e-9 {
+			t.Errorf("got %v, want %v", got, 50.0/24.0)
+		}
+	})
+	t.Run("two collinear points return endpoint slope", func(t *testing.T) {
+		s := []cache.SevenDaySample{
+			{At: now.Add(-24 * time.Hour), Pct: 10},
+			{At: now, Pct: 30},
+		}
+		got := weightedRegressionSlope(s)
+		if math.Abs(got-20.0/24.0) > 1e-9 {
+			t.Errorf("got %v, want %v", got, 20.0/24.0)
+		}
+	})
+	t.Run("negative trend is NOT clamped (caller clamps)", func(t *testing.T) {
+		// descending 50..0 => -2.08333 %/h; helper returns the signed value.
+		got := weightedRegressionSlope(mk(50, 37.5, 25, 12.5, 0))
+		if math.Abs(got-(-50.0/24.0)) > 1e-9 {
+			t.Errorf("got %v, want %v", got, -50.0/24.0)
+		}
+	})
+	t.Run("dip-recover yields positive slope (issue #395)", func(t *testing.T) {
+		// 9,11,0,4.5,9 — endpoints equal (9->9) so endpoint-diff = 0,
+		// but the recent climb dominates under recency weighting.
+		got := weightedRegressionSlope(mk(9, 11, 0, 4.5, 9))
+		if got <= 0.4 || got >= 0.7 {
+			t.Errorf("got %v, want in (0.4, 0.7) — non-zero positive recent climb", got)
+		}
+	})
 }
 
 func TestRound2(t *testing.T) {

@@ -2363,3 +2363,41 @@ func benchBuckets(b *testing.B, cost bool) {
 // (~3.5/23/76 ms at 5k/30k/100k on M1 Max).
 func BenchmarkIOTokenBuckets(b *testing.B) { benchBuckets(b, false) }
 func BenchmarkCostBuckets(b *testing.B)    { benchBuckets(b, true) }
+
+func TestSevenDaySamplesSince_BucketJitterMerged(t *testing.T) {
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	base := time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC)
+	// One logical 7d reset at 09:00:00 next-day, but the API returns it with
+	// sub-second jitter straddling the whole-second boundary on three fetches.
+	resetBoundary := time.Date(2026, 6, 3, 9, 0, 0, 0, time.UTC)
+	jitter := []time.Duration{-100 * time.Millisecond, 100 * time.Millisecond, 1300 * time.Millisecond}
+	for i, j := range jitter {
+		reset := resetBoundary.Add(j)
+		when := base.Add(time.Duration(i) * time.Minute) // distinct ts (unix seconds)
+		if err := c.RecordUsageSample(t.Context(), anthro.Usage{
+			SevenDay: &anthro.Bucket{Utilization: float64(10 + i), ResetsAt: &reset},
+		}, when); err != nil {
+			t.Fatalf("RecordUsageSample[%d]: %v", i, err)
+		}
+	}
+
+	samples, err := c.SevenDaySamplesSince(t.Context(), base.Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("SevenDaySamplesSince: %v", err)
+	}
+	if len(samples) != 3 {
+		t.Fatalf("got %d samples, want 3", len(samples))
+	}
+	keys := map[string]struct{}{}
+	for _, s := range samples {
+		keys[s.ResetsAt] = struct{}{}
+	}
+	if len(keys) != 1 {
+		t.Errorf("got %d distinct ResetsAt bucket keys, want 1 (jitter must merge): %v", len(keys), keys)
+	}
+}
