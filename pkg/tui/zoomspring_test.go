@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -154,25 +155,56 @@ func TestZoomKey_Remaining_ReduceMotion_Snaps(t *testing.T) {
 	}
 }
 
-func TestZoomKey_BarMode_HardCut(t *testing.T) {
+// seedBarModelWithMessages builds a cost/tokens bar model at the 15m zoom with
+// 60 messages spaced 15m apart ending at now, then refreshes so lastValues /
+// lastChart* / hasData reflect the seeded data. unitIdx is chartUnitCost or
+// chartUnitTokens. 60 buckets comfortably exceed visibleBuckets() so the chart
+// is data-filled (not warming up) across the seeded viewport.
+func seedBarModelWithMessages(t *testing.T, unitIdx int, now time.Time) (Model, *cache.Cache) {
+	t.Helper()
+	m, c := seedModelAt(t, unitIdx, 60, now)
+	m.introPending = false
+	m.quotaIntroPending = false
+	return m, c
+}
+
+func TestZoomKey_BarMode_Squeezes_Arms(t *testing.T) {
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
-	m, c := seedModelAt(t, int(chartUnitTokens), 40, now)
-	defer c.Close()
-	startZoom := m.zoomIdx
+	for _, unit := range []chartUnit{chartUnitCost, chartUnitTokens} {
+		t.Run(unit.String(), func(t *testing.T) {
+			m, c := seedBarModelWithMessages(t, int(unit), now)
+			defer c.Close()
+			if !m.hasData {
+				t.Fatalf("seed sanity: hasData=false, want true")
+			}
+			startZoom := m.zoomIdx
+			startNowGen := m.nowGen
 
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
-	m = updated.(Model)
+			updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
+			m = updated.(Model)
 
-	if m.springActive {
-		t.Errorf("bar-mode 'z': springActive=true, want false (hard-cut, deferred scope)")
-	}
-	if m.zoomIdx != (startZoom+1)%len(ZoomLevels) {
-		t.Errorf("bar-mode 'z': zoomIdx=%d, want %d", m.zoomIdx, (startZoom+1)%len(ZoomLevels))
-	}
-	// See ReduceMotion test: don't invoke the now-tick cmd (it blocks until the
-	// next bucket boundary). springActive=false above proves the hard-cut.
-	if cmd == nil {
-		t.Errorf("bar-mode 'z': cmd=nil, want now-tick re-arm")
+			if !m.springActive {
+				t.Errorf("bar 'z': springActive=false, want true (morph armed)")
+			}
+			if m.springKind != springKindZoom {
+				t.Errorf("bar 'z': springKind=%d, want springKindZoom(%d)", m.springKind, springKindZoom)
+			}
+			if m.zoomIdx != (startZoom+1)%len(ZoomLevels) {
+				t.Errorf("bar 'z': zoomIdx=%d, want %d", m.zoomIdx, (startZoom+1)%len(ZoomLevels))
+			}
+			if m.nowGen != startNowGen+1 {
+				t.Errorf("bar 'z': nowGen=%d, want %d (now-tick re-armed)", m.nowGen, startNowGen+1)
+			}
+			if len(m.zoomSnap.oldSky) == 0 || len(m.zoomSnap.newSky) == 0 {
+				t.Errorf("bar 'z': skylines not captured (old=%d new=%d)", len(m.zoomSnap.oldSky), len(m.zoomSnap.newSky))
+			}
+			if m.zoomSnap.unit != unit {
+				t.Errorf("bar 'z': snap.unit=%v, want %v", m.zoomSnap.unit, unit)
+			}
+			if cmd == nil {
+				t.Fatalf("bar 'z': cmd=nil, want batch")
+			}
+		})
 	}
 }
 
@@ -611,5 +643,198 @@ func TestZoomLabelCrossfade_IncomingDoesNotMove(t *testing.T) {
 			t.Errorf("incoming label row moved between frames (labels sliding with the chart):\n frame[0] = %q\n frame[%d] = %q", first, i, row)
 			break
 		}
+	}
+}
+
+// armBarZoom drives a freshly-seeded bar model (60 messages) through one 'z'
+// press and returns the model mid-morph. Drive frames with
+// m.Update(springTickMsg{gen: m.springGen}) — never invoke the tick Cmd.
+func armBarZoom(t *testing.T, unitIdx int, now time.Time) (Model, *cache.Cache) {
+	t.Helper()
+	m, c := seedBarModelWithMessages(t, unitIdx, now)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
+	m = updated.(Model)
+	if !m.springActive || m.springKind != springKindZoom {
+		t.Fatalf("armBarZoom sanity: springActive=%v springKind=%d", m.springActive, m.springKind)
+	}
+	return m, c
+}
+
+func TestZoomBar_SettlesAndRestoresSteadyState(t *testing.T) {
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	for _, unit := range []chartUnit{chartUnitCost, chartUnitTokens} {
+		t.Run(unit.String(), func(t *testing.T) {
+			m, c := armBarZoom(t, int(unit), now)
+			defer c.Close()
+			const maxTicks = 600
+			var lastCmd tea.Cmd
+			for i := 0; i < maxTicks && m.springActive; i++ {
+				updated, cmd := m.Update(springTickMsg{gen: m.springGen})
+				m = updated.(Model)
+				lastCmd = cmd
+			}
+			if m.springActive {
+				t.Fatalf("bar morph did not settle within %d ticks", maxTicks)
+			}
+			if m.springKind != springKindNone {
+				t.Errorf("after settle: springKind=%d, want springKindNone", m.springKind)
+			}
+			if lastCmd != nil {
+				t.Errorf("settle tick: cmd=%v, want nil (no follow-up)", lastCmd)
+			}
+			if m.lastCanvasW == 0 {
+				t.Errorf("after settle: lastCanvasW=0, want steady-state canvas restored")
+			}
+		})
+	}
+}
+
+func TestZoomBar_FrameLerpsBetweenSnapshots(t *testing.T) {
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	m, c := armBarZoom(t, int(chartUnitCost), now)
+	defer c.Close()
+	snap := m.zoomSnap
+
+	// One tick moves r off 0; the lerped skyline column heights must sit between
+	// oldSky and newSky for every column.
+	updated, _ := m.Update(springTickMsg{gen: m.springGen})
+	m = updated.(Model)
+	if m.zoomSpringR <= 0 {
+		t.Fatalf("after one tick: zoomSpringR=%v, want > 0", m.zoomSpringR)
+	}
+	cur := lerpSkyline(snap.oldSky, snap.newSky, m.zoomSpringR)
+	for i := range cur {
+		lo, hi := snap.oldSky[i], snap.newSky[i]
+		if lo > hi {
+			lo, hi = hi, lo
+		}
+		if cur[i] < lo-1e-9 || cur[i] > hi+1e-9 {
+			t.Errorf("col %d: lerped height %v outside [%v,%v]", i, cur[i], lo, hi)
+		}
+	}
+}
+
+// At frame 0 the bar morph must render the OLD steady-state column heights
+// (continuity guarantee, #393); after settle, the NEW steady state.
+func TestZoomBar_FrameZeroMatchesOldSteadyState(t *testing.T) {
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
+	defer c.Close()
+
+	// OLD steady-state heights (15m) from the current viewport content.
+	oldBody := chartBodyLines(m.View())
+	oldStr := strings.Join(oldBody, "\n") + "\n"
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
+	m = updated.(Model)
+	// Frame 0 was rendered synchronously at arm. Compare a few columns.
+	frame0 := chartBodyLines(m.View())
+	frame0Str := strings.Join(frame0, "\n") + "\n"
+	for _, col := range []int{0, 5, 10, 20} {
+		if g, w := barHeightAtCol(frame0Str, col), barHeightAtCol(oldStr, col); g != w {
+			t.Errorf("frame 0 col %d height=%d, OLD steady=%d (continuity flash)", col, g, w)
+		}
+	}
+}
+
+func TestZoomBar_ViewNonEmptyMidMorph(t *testing.T) {
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	m, c := armBarZoom(t, int(chartUnitTokens), now)
+	defer c.Close()
+	updated, _ := m.Update(springTickMsg{gen: m.springGen})
+	m = updated.(Model)
+	if out := m.View(); out == "" || len(chartBodyLines(out)) == 0 {
+		t.Fatalf("View() empty mid bar-morph")
+	}
+}
+
+func TestZoomBar_ReduceMotion_Snaps(t *testing.T) {
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
+	defer c.Close()
+	m.deps.ReduceMotion = true
+	startZoom := m.zoomIdx
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
+	m = updated.(Model)
+
+	if m.springActive {
+		t.Errorf("reduce_motion bar 'z': springActive=true, want false (snap)")
+	}
+	if m.zoomIdx != (startZoom+1)%len(ZoomLevels) {
+		t.Errorf("reduce_motion bar 'z': zoomIdx=%d, want %d", m.zoomIdx, (startZoom+1)%len(ZoomLevels))
+	}
+	if cmd == nil {
+		t.Errorf("reduce_motion bar 'z': cmd=nil, want now-tick re-arm")
+	}
+}
+
+func TestZoomBar_AbortedBySecondZoom_UsesLiveSkyline(t *testing.T) {
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	m, c := armBarZoom(t, int(chartUnitCost), now)
+	defer c.Close()
+
+	// Advance a few frames so the first morph is mid-lerp.
+	for range 5 {
+		updated, _ := m.Update(springTickMsg{gen: m.springGen})
+		m = updated.(Model)
+	}
+	if m.zoomSpringR <= 0 || m.zoomSpringR >= 1 {
+		t.Fatalf("need mid-lerp r in (0,1), got %v", m.zoomSpringR)
+	}
+	snap1 := m.zoomSnap
+	wantOldSky := lerpSkyline(snap1.oldSky, snap1.newSky, m.zoomSpringR)
+	gen1 := m.springGen
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
+	m = updated.(Model)
+	if m.springGen == gen1 {
+		t.Errorf("second 'z': springGen unchanged — stale tick not superseded")
+	}
+	if !m.springActive || m.springKind != springKindZoom {
+		t.Errorf("second 'z': springActive=%v springKind=%d, want active zoom", m.springActive, m.springKind)
+	}
+	// New oldSky must be the live lerp of the aborted morph, not a fresh raster.
+	for i := range wantOldSky {
+		if i < len(m.zoomSnap.oldSky) && math.Abs(m.zoomSnap.oldSky[i]-wantOldSky[i]) > 1e-9 {
+			t.Errorf("col %d: second-'z' oldSky=%v, want live %v", i, m.zoomSnap.oldSky[i], wantOldSky[i])
+			break
+		}
+	}
+}
+
+func TestZoomBar_AbortedByRefreshMsg(t *testing.T) {
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	m, c := armBarZoom(t, int(chartUnitTokens), now)
+	defer c.Close()
+	updated, _ := m.Update(RefreshMsg{})
+	m = updated.(Model)
+	if m.springActive || m.springKind != springKindNone {
+		t.Errorf("after RefreshMsg mid-morph: springActive=%v springKind=%d, want hard-cut", m.springActive, m.springKind)
+	}
+}
+
+func TestZoomBar_AbortedByWindowSize(t *testing.T) {
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	m, c := armBarZoom(t, int(chartUnitCost), now)
+	defer c.Close()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = updated.(Model)
+	if m.springActive || m.springKind != springKindNone {
+		t.Errorf("after WindowSizeMsg mid-morph: springActive=%v springKind=%d, want hard-cut", m.springActive, m.springKind)
+	}
+}
+
+func TestZoomBar_NowTickSuppressedMidMorph(t *testing.T) {
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	m, c := armBarZoom(t, int(chartUnitTokens), now)
+	defer c.Close()
+	updated, cmd := m.Update(nowTickMsg{gen: m.nowGen})
+	m = updated.(Model)
+	if !m.springActive || m.springKind != springKindZoom {
+		t.Fatalf("now-tick mid-morph tore down the morph: springActive=%v springKind=%d", m.springActive, m.springKind)
+	}
+	if cmd == nil {
+		t.Errorf("now-tick mid-morph: cmd=nil, want a reschedule keeping the chain alive")
 	}
 }

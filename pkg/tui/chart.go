@@ -219,6 +219,134 @@ func computeSpringSlice(start, vpWidth, stride, gap int) (sliceStart, springXOff
 	return start, 0
 }
 
+// rasterizeSkyline returns a vpWidth-length array of per-column float bar
+// heights for the flush-right visible window of (values, starts), reproducing
+// buildChart/renderWindow's column layout exactly so a drawSkyline render at
+// r=0 is pixel-identical to the steady-state bar chart (#393 continuity
+// guarantee). Heights are in [0, barsH]; gap columns and pre-bar-block columns
+// are 0. peak<=0 yields an all-zero skyline.
+//
+// Column math mirrors renderWindow: the visible window is the last
+// visibleBuckets() buckets, sliced flush-right via computeSpringSlice (a
+// partial leading bucket plus a stride-slack xOffset). Bar k of the slice
+// occupies canvas columns [k*stride, k*stride+BarWidth); the skyline reads the
+// canvas window [xOff, xOff+vpWidth). Height per bar =
+// value/niceCeilingFloat(peak) * barsH — ntcharts' own normalisation.
+//
+// starts is currently unused (the column placement is index-driven), kept in the
+// signature for parity with buildChart/renderWindow and a future label-aware
+// rasterizer.
+func rasterizeSkyline(values []float64, starts []time.Time, peak float64, vpWidth, barsH int, zoom ZoomLevel) []float64 {
+	_ = starts
+	sky := make([]float64, max(vpWidth, 0))
+	if vpWidth <= 0 || barsH <= 0 || len(values) == 0 {
+		return sky
+	}
+	top := niceCeilingFloat(peak)
+	if top <= 0 {
+		return sky
+	}
+
+	// Visible window: the last min(len, vpBuckets) buckets, flush-right.
+	nv := (vpWidth + max(zoom.BarGap, 0)) / zoom.stride()
+	start := max(len(values)-nv, 0)
+	end := min(start+nv, len(values))
+	if start >= end {
+		return sky
+	}
+	sliceStart, xOff := computeSpringSlice(start, vpWidth, zoom.stride(), max(zoom.BarGap, 0))
+
+	stride := zoom.stride()
+	bw := max(zoom.BarWidth, 1)
+	// Fill each visible column from the bar that covers its canvas column.
+	for col := range vpWidth {
+		canvasCol := xOff + col
+		barIdx := sliceStart + canvasCol/stride
+		// Gap columns (canvasCol%stride >= BarWidth) and out-of-range stay 0.
+		if canvasCol%stride >= bw || barIdx < 0 || barIdx >= end {
+			continue
+		}
+		sky[col] = math.Min(float64(barsH), values[barIdx]/top*float64(barsH))
+	}
+	return sky
+}
+
+// drawSkyline renders a per-column float-height array as a barsH-row block-rune
+// chart body, reproducing ntcharts' DrawColumnBottomToTop output: floor(h) full
+// blocks plus a top eighth-block from runes.LowerBlockElementFromFloat64. unit
+// selects the bar color (matching buildChart). Output is barsH rows tall, len(sky)
+// columns wide, top-to-bottom — NO x-axis label row (the caller appends the
+// cross-faded label row). Used only by the bar-zoom morph (#393); steady-state
+// bar rendering stays on ntcharts via buildChart.
+//
+// Only bar-glyph cells carry the bar style; blank cells render plain. This
+// mirrors ntcharts' canvas.View, which renders each empty cell with the default
+// (unstyled) style and each bar cell with the bar color — styling the whole row
+// (blanks included) would flood every cell with the bar color's background and
+// fill the chart solid during the morph (#393).
+func drawSkyline(sky []float64, barsH int, unit chartUnit) string {
+	var barColor lipgloss.TerminalColor = colorChartTokens
+	if unit == chartUnitCost {
+		barColor = colorChartCost
+	}
+	style := lipgloss.NewStyle().Foreground(barColor).Background(barColor)
+
+	cells := make([]rune, len(sky)) // reused per row; every column is reassigned below
+	var b strings.Builder
+	for row := range barsH {
+		// Row 0 is the top; a column of height h fills the bottom h rows.
+		distFromBottom := barsH - row // 1..barsH (rows from the baseline up)
+		for col, h := range sky {
+			full := math.Floor(h)
+			switch {
+			case float64(distFromBottom) <= full:
+				cells[col] = runes.FullBlock
+			case float64(distFromBottom) == full+1:
+				r := runes.LowerBlockElementFromFloat64(h - full)
+				if r == runes.Null {
+					cells[col] = ' '
+				} else {
+					cells[col] = r
+				}
+			default:
+				cells[col] = ' '
+			}
+		}
+		b.WriteString(renderSkylineRow(cells, style))
+		if row < barsH-1 {
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
+}
+
+// renderSkylineRow renders one row of skyline cells, applying style only to
+// contiguous runs of bar glyphs and leaving blank cells unstyled. Mirrors
+// ntcharts' per-cell render (canvas.View) without its per-cell escape overhead:
+// a run of bar glyphs shares one styled span, blanks pass through plain so the
+// bar color's background never bleeds onto empty cells (#393).
+func renderSkylineRow(cells []rune, style lipgloss.Style) string {
+	var b strings.Builder
+	for i := 0; i < len(cells); {
+		if cells[i] == ' ' {
+			j := i
+			for j < len(cells) && cells[j] == ' ' {
+				j++
+			}
+			b.WriteString(strings.Repeat(" ", j-i))
+			i = j
+			continue
+		}
+		j := i
+		for j < len(cells) && cells[j] != ' ' {
+			j++
+		}
+		b.WriteString(style.Render(string(cells[i:j])))
+		i = j
+	}
+	return b.String()
+}
+
 // slicePointsInRange returns the sub-slice of pts that falls within
 // [from, to], padded by one point on each side if available. The
 // padding preserves cross-boundary line continuity — without it,
