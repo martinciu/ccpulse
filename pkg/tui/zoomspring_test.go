@@ -154,25 +154,55 @@ func TestZoomKey_Remaining_ReduceMotion_Snaps(t *testing.T) {
 	}
 }
 
-func TestZoomKey_BarMode_HardCut(t *testing.T) {
+// seedBarModelWithMessages builds a cost/tokens bar model at the 15m zoom with
+// `n` messages spaced 15m apart ending at now, then refreshes so lastValues /
+// lastChart* / hasData reflect the seeded data. unitIdx is chartUnitCost or
+// chartUnitTokens.
+func seedBarModelWithMessages(t *testing.T, unitIdx, n int, now time.Time) (Model, *cache.Cache) {
+	t.Helper()
+	m, c := seedModelAt(t, unitIdx, n, now)
+	m.introPending = false
+	m.quotaIntroPending = false
+	return m, c
+}
+
+func TestZoomKey_BarMode_Squeezes_Arms(t *testing.T) {
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
-	m, c := seedModelAt(t, int(chartUnitTokens), 40, now)
-	defer c.Close()
-	startZoom := m.zoomIdx
+	for _, unit := range []chartUnit{chartUnitCost, chartUnitTokens} {
+		t.Run(unit.String(), func(t *testing.T) {
+			m, c := seedBarModelWithMessages(t, int(unit), 60, now)
+			defer c.Close()
+			if !m.hasData {
+				t.Fatalf("seed sanity: hasData=false, want true")
+			}
+			startZoom := m.zoomIdx
+			startNowGen := m.nowGen
 
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
-	m = updated.(Model)
+			updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
+			m = updated.(Model)
 
-	if m.springActive {
-		t.Errorf("bar-mode 'z': springActive=true, want false (hard-cut, deferred scope)")
-	}
-	if m.zoomIdx != (startZoom+1)%len(ZoomLevels) {
-		t.Errorf("bar-mode 'z': zoomIdx=%d, want %d", m.zoomIdx, (startZoom+1)%len(ZoomLevels))
-	}
-	// See ReduceMotion test: don't invoke the now-tick cmd (it blocks until the
-	// next bucket boundary). springActive=false above proves the hard-cut.
-	if cmd == nil {
-		t.Errorf("bar-mode 'z': cmd=nil, want now-tick re-arm")
+			if !m.springActive {
+				t.Errorf("bar 'z': springActive=false, want true (morph armed)")
+			}
+			if m.springKind != springKindZoom {
+				t.Errorf("bar 'z': springKind=%d, want springKindZoom(%d)", m.springKind, springKindZoom)
+			}
+			if m.zoomIdx != (startZoom+1)%len(ZoomLevels) {
+				t.Errorf("bar 'z': zoomIdx=%d, want %d", m.zoomIdx, (startZoom+1)%len(ZoomLevels))
+			}
+			if m.nowGen != startNowGen+1 {
+				t.Errorf("bar 'z': nowGen=%d, want %d (now-tick re-armed)", m.nowGen, startNowGen+1)
+			}
+			if len(m.zoomSnap.oldSky) == 0 || len(m.zoomSnap.newSky) == 0 {
+				t.Errorf("bar 'z': skylines not captured (old=%d new=%d)", len(m.zoomSnap.oldSky), len(m.zoomSnap.newSky))
+			}
+			if m.zoomSnap.unit != unit {
+				t.Errorf("bar 'z': snap.unit=%v, want %v", m.zoomSnap.unit, unit)
+			}
+			if cmd == nil {
+				t.Fatalf("bar 'z': cmd=nil, want batch")
+			}
+		})
 	}
 }
 

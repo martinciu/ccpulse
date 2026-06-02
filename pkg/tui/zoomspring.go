@@ -56,33 +56,37 @@ func lerpTime(a, b time.Time, r float64) time.Time {
 	return a.Add(time.Duration(float64(span) * r))
 }
 
-// handleZoomKey advances the zoom level and, in remaining (line) mode with
-// motion enabled and data present, arms the horizontal squeeze. All other
-// cases snap exactly as the pre-#373 handler did: advance zoomIdx, refreshChart,
-// bump nowGen, reschedule the live-advance tick.
+// handleZoomKey advances the zoom level and, with motion enabled and data
+// present, arms the zoom transition in BOTH chart families: the horizontal
+// squeeze in remaining (line) mode and the per-column skyline morph in
+// cost/tokens (bar) mode (#393). All other cases snap exactly as the pre-#373
+// handler did: advance zoomIdx, refreshChart, bump nowGen, reschedule the
+// live-advance tick.
+//
+// The animation machinery (m.zoomSpring, springKindZoom, the springGen abort,
+// the nowGen re-arm, the synchronous frame-0 paint) is shared between the two
+// families; only the snapshot fields captured and the per-frame renderer differ
+// by unit. isLine selects the branch.
 //
 // Snap gates (mirror handleUnitKey / beginUnitAnimation):
-//   - bar mode (cost/tokens) — deferred scope, keep the hard-cut
 //   - reduce_motion — the single animation opt-out (#181)
-//   - no data (warming up / empty usage_samples) — nothing to squeeze
+//   - no data (warming up / empty usage_samples) — nothing to animate
 //   - m.w == 0 — pre-init, no viewport geometry yet
 func (m *Model) handleZoomKey() tea.Cmd {
-	animate := chartUnit(m.unitIdx) == chartUnitRemaining &&
-		!m.deps.ReduceMotion &&
-		m.hasData &&
-		m.w != 0
-
+	animate := !m.deps.ReduceMotion && m.hasData && m.w != 0
 	if !animate {
 		return m.snapZoom()
 	}
 
+	isLine := chartUnit(m.unitIdx) == chartUnitRemaining
+
 	// Snapshot the OLD on-screen window BEFORE advancing the zoom. On a fresh
 	// arm that's the steady-state visible window. But on a rapid second 'z'
-	// while a squeeze is still in flight, visibleWindow() would read the FIRST
+	// while a transition is still in flight, visibleWindow() would read the FIRST
 	// press's settled target geometry — refreshChart re-pinned lastChart*/offset
 	// at the first arm, and the in-flight lerp only repaints viewport content, it
-	// never updates those shadows — snapping the new squeeze's frame 0 to the
-	// first target. Start the new squeeze from where the eye actually is (the
+	// never updates those shadows — snapping the new transition's frame 0 to the
+	// first target. Start the new transition from where the eye actually is (the
 	// live lerp position) so the hand-off is continuous (#373). Read it now,
 	// before refreshChart's abort block runs: that block resets springActive/
 	// springKind but deliberately leaves zoomSnap/zoomSpringR intact.
@@ -94,12 +98,30 @@ func (m *Model) handleZoomKey() tea.Cmd {
 		oFrom, oTo = m.visibleWindow()
 	}
 
+	// Capture the OLD skyline for bar mode BEFORE refreshChart overwrites
+	// lastValues/peak. On a live second 'z', the OLD skyline is the current
+	// lerped skyline (mirrors the line oFrom/oTo live read).
+	var oldSky []float64
+	oPeak := m.peak
+	chartH := m.chartHeight()
+	barsH := chartH
+	if chartH >= 6 {
+		barsH = chartH - 1
+	}
+	if !isLine {
+		if m.springActive && m.springKind == springKindZoom && len(m.zoomSnap.oldSky) > 0 {
+			oldSky = lerpSkyline(m.zoomSnap.oldSky, m.zoomSnap.newSky, m.zoomSpringR)
+		} else {
+			oldSky = rasterizeSkyline(m.lastValues, m.lastStarts, m.peak, m.viewport.Width, barsH, ZoomLevels[m.zoomIdx])
+		}
+	}
+
 	oZoom := ZoomLevels[m.zoomIdx] // outgoing cadence — capture before zoomIdx advances.
 
 	m.zoomIdx = (m.zoomIdx + 1) % len(ZoomLevels)
 	m.refreshChart() // rebuild at NEW zoom; re-pins the right edge. On a first
 	// 'z' the abort block is a no-op (no spring in flight); a second 'z'
-	// mid-squeeze hits it, which correctly tears down the prior squeeze.
+	// mid-transition hits it, which correctly tears down the prior transition.
 
 	// If the refresh left us without data (defensive — hasData was true at the
 	// gate), fall back to the snap's now-tick re-arm.
@@ -109,17 +131,23 @@ func (m *Model) handleZoomKey() tea.Cmd {
 	}
 
 	nFrom, nTo := m.visibleWindow()
-	// The squeeze slices the NEW (post-refresh) points across the lerped
-	// window; remaining-mode points are raw samples, so they're
-	// zoom-independent and the OLD points are never needed. The snapshot
-	// carries the post-refresh pts so a future zoom-dependent point set would
-	// still read the correct source.
+	// Line mode: the squeeze slices the NEW (post-refresh) points across the
+	// lerped window; remaining-mode points are raw samples, so they're
+	// zoom-independent. Bar mode: the morph lerps oldSky→newSky column-by-column
+	// (pts5h/7d stay nil). The snapshot carries whichever the active family reads.
 	m.zoomSnap = zoomAnimSnapshot{
 		oFrom: oFrom, oTo: oTo,
 		nFrom: nFrom, nTo: nTo,
 		oZoom: oZoom,
 		pts5h: m.lastPts5h, pts7d: m.lastPts7d,
-		now: m.now(),
+		now:  m.now(),
+		unit: chartUnit(m.unitIdx),
+	}
+	if !isLine {
+		m.zoomSnap.oldSky = oldSky
+		m.zoomSnap.oPeak = oPeak
+		m.zoomSnap.nPeak = m.peak
+		m.zoomSnap.newSky = rasterizeSkyline(m.lastValues, m.lastStarts, m.peak, m.viewport.Width, barsH, ZoomLevels[m.zoomIdx])
 	}
 
 	m.zoomSpring = harmonica.NewSpring(harmonica.FPS(springFPS), phase2Frequency, phase2Damping)
@@ -139,16 +167,21 @@ func (m *Model) handleZoomKey() tea.Cmd {
 	//     boundary and freeze the live edge on an idle TUI until that boundary
 	//     fires — up to ~24h, reintroducing the #311 stall (#373).
 	//   - No orphan: handleNowTick's springKindZoom guard advance-suppresses this
-	//     re-armed tick if it lands mid-squeeze (it reschedules without
+	//     re-armed tick if it lands mid-transition (it reschedules without
 	//     refreshChart, so the frozen `now` keeps the right edge stable). Because
 	//     the chain is re-armed now rather than at settle, every teardown path
 	//     (settle OR abort) inherits a live, correctly-scheduled tick. The
 	//     earlier deferred-to-settle design is what left aborts orphaned (#311).
 	m.nowGen++
 
-	// Render frame 0 (= old window) synchronously so the next View() doesn't
-	// flash the refreshed full-canvas content before the first tick paints.
-	m.renderZoomFrame(oFrom, oTo)
+	// Render frame 0 (= old window / old skyline) synchronously so the next
+	// View() doesn't flash the refreshed full-canvas content before the first
+	// tick paints.
+	if isLine {
+		m.renderZoomFrame(oFrom, oTo)
+	} else {
+		m.renderZoomBarFrame(0)
+	}
 
 	gen := m.springGen
 	return tea.Batch(
@@ -158,6 +191,23 @@ func (m *Model) handleZoomKey() tea.Cmd {
 		m.scheduleNowTick(),
 	)
 }
+
+// lerpSkyline returns the element-wise linear interpolation of two equal-length
+// per-column height arrays at parameter r. Used both for the per-frame morph
+// and for the live-position hand-off on a rapid second 'z' (#393). If the two
+// arrays differ in length (defensive — both come from the same viewport.Width
+// at arm) it interpolates over the shorter length.
+func lerpSkyline(a, b []float64, r float64) []float64 {
+	n := min(len(a), len(b))
+	out := make([]float64, n)
+	for i := range out {
+		out[i] = a[i] + (b[i]-a[i])*r
+	}
+	return out
+}
+
+// renderZoomBarFrame is implemented in Task 5; stub for compile.
+func (m *Model) renderZoomBarFrame(r float64) {}
 
 // snapZoom is the non-animated zoom path: advance the level, refresh, and
 // re-arm the live-advance tick on the new cadence. Identical to the pre-#373
