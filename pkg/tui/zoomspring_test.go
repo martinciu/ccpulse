@@ -643,3 +643,71 @@ func TestZoomLabelCrossfade_IncomingDoesNotMove(t *testing.T) {
 		}
 	}
 }
+
+// armBarZoom drives a freshly-seeded bar model (60 messages) through one 'z'
+// press and returns the model mid-morph. Drive frames with
+// m.Update(springTickMsg{gen: m.springGen}) — never invoke the tick Cmd.
+func armBarZoom(t *testing.T, unitIdx int, now time.Time) (Model, *cache.Cache) {
+	t.Helper()
+	m, c := seedBarModelWithMessages(t, unitIdx, 60, now)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
+	m = updated.(Model)
+	if !m.springActive || m.springKind != springKindZoom {
+		t.Fatalf("armBarZoom sanity: springActive=%v springKind=%d", m.springActive, m.springKind)
+	}
+	return m, c
+}
+
+func TestZoomBar_SettlesAndRestoresSteadyState(t *testing.T) {
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	for _, unit := range []chartUnit{chartUnitCost, chartUnitTokens} {
+		t.Run(unit.String(), func(t *testing.T) {
+			m, c := armBarZoom(t, int(unit), now)
+			defer c.Close()
+			const maxTicks = 600
+			var lastCmd tea.Cmd
+			for i := 0; i < maxTicks && m.springActive; i++ {
+				updated, cmd := m.Update(springTickMsg{gen: m.springGen})
+				m = updated.(Model)
+				lastCmd = cmd
+			}
+			if m.springActive {
+				t.Fatalf("bar morph did not settle within %d ticks", maxTicks)
+			}
+			if m.springKind != springKindNone {
+				t.Errorf("after settle: springKind=%d, want springKindNone", m.springKind)
+			}
+			if lastCmd != nil {
+				t.Errorf("settle tick: cmd=%v, want nil (no follow-up)", lastCmd)
+			}
+			if m.lastCanvasW == 0 {
+				t.Errorf("after settle: lastCanvasW=0, want steady-state canvas restored")
+			}
+		})
+	}
+}
+
+func TestZoomBar_FrameLerpsBetweenSnapshots(t *testing.T) {
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	m, c := armBarZoom(t, int(chartUnitCost), now)
+	defer c.Close()
+	snap := m.zoomSnap
+
+	// One tick moves r off 0; the lerped skyline column heights must sit between
+	// oldSky and newSky for every column.
+	updated, _ := m.Update(springTickMsg{gen: m.springGen})
+	m = updated.(Model)
+	if m.zoomSpringR <= 0 {
+		t.Fatalf("after one tick: zoomSpringR=%v, want > 0", m.zoomSpringR)
+	}
+	cur := lerpSkyline(snap.oldSky, snap.newSky, m.zoomSpringR)
+	for i := range cur {
+		lo, hi := snap.oldSky[i], snap.newSky[i]
+		if lo > hi {
+			lo, hi = hi, lo
+		}
+		if cur[i] < lo-1e-9 || cur[i] > hi+1e-9 {
+			t.Errorf("col %d: lerped height %v outside [%v,%v]", i, cur[i], lo, hi)
+		}
+	}
+}

@@ -1,14 +1,17 @@
-// Package tui — zoom-squeeze animation (issue #373).
+// Package tui — zoom transition animation (issues #373, #393).
 //
-// This file holds the single-phase horizontal-squeeze animation for the 'z'
-// zoom key in remaining (line) mode. It is a sibling of the two-phase
-// unit-toggle machine in springs.go: it reuses the master springActive flag
-// and the shared springGen counter (the two animations are mutually exclusive
-// — refreshChart aborts any in-flight animation), and is disambiguated by
-// Model.springKind.
+// This file holds the single-phase 'z' zoom transition for BOTH chart families,
+// disambiguated only at render time by the snapshot's unit:
+//   - remaining (line) mode: the horizontal squeeze, lerping the visible time
+//     window oWin→nWin and re-slicing the raw utilization points (#373).
+//   - cost/tokens (bar) mode: the per-column skyline morph, lerping two
+//     snapshotted per-column height arrays oldSky→newSky and drawing them
+//     directly with block runes — no ntcharts per frame (#393).
 //
-// Bar-mode zoom (cost/tokens) is out of scope and keeps its hard-cut; see the
-// spec's deferred-bar follow-up.
+// It is a sibling of the two-phase unit-toggle machine in springs.go: it reuses
+// the master springActive flag and the shared springGen counter (the two
+// animations are mutually exclusive — refreshChart aborts any in-flight
+// animation), and is disambiguated by Model.springKind.
 package tui
 
 import (
@@ -17,6 +20,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/harmonica"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/martinciu/ccpulse/pkg/cache"
 )
@@ -206,8 +210,31 @@ func lerpSkyline(a, b []float64, r float64) []float64 {
 	return out
 }
 
-// renderZoomBarFrame is implemented in Task 5; stub for compile.
-func (m *Model) renderZoomBarFrame(r float64) {}
+// renderZoomBarFrame paints one frame of the bar-mode zoom morph: lerp the
+// snapshotted oldSky→newSky per-column heights by the spring ratio r, draw the
+// skyline directly (no ntcharts), and append the cross-faded x-axis label row.
+// Mirrors renderZoomFrame (line mode) but for the bar body. The y-axis peak
+// label cross-fade is applied separately by renderChartBody (#393).
+func (m *Model) renderZoomBarFrame(r float64) {
+	zoom := ZoomLevels[m.zoomIdx]
+	chartH := m.chartHeight()
+	vpW := m.viewport.Width
+	barsH := chartH
+	if chartH >= 6 {
+		barsH = chartH - 1
+	}
+
+	cur := lerpSkyline(m.zoomSnap.oldSky, m.zoomSnap.newSky, r)
+	body := drawSkyline(cur, barsH, m.zoomSnap.unit)
+
+	if chartH >= 6 {
+		labelRow := crossfadeLabelRow(m.zoomSnap, zoom, vpW, m.zoomSpringR, m.dateOrder)
+		body = lipgloss.JoinVertical(lipgloss.Left, body, labelRow)
+	}
+
+	m.viewport.SetContent(body)
+	m.viewport.SetXOffset(0)
+}
 
 // snapZoom is the non-animated zoom path: advance the level, refresh, and
 // re-arm the live-advance tick on the new cadence. Identical to the pre-#373
@@ -266,7 +293,11 @@ func (m *Model) handleZoomSpringTick(gen int) tea.Cmd {
 
 	viewFrom := lerpTime(m.zoomSnap.oFrom, m.zoomSnap.nFrom, r)
 	viewTo := lerpTime(m.zoomSnap.oTo, m.zoomSnap.nTo, r)
-	m.renderZoomFrame(viewFrom, viewTo)
+	if m.zoomSnap.unit == chartUnitRemaining {
+		m.renderZoomFrame(viewFrom, viewTo)
+	} else {
+		m.renderZoomBarFrame(r)
+	}
 
 	return tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
 		return springTickMsg{gen: gen}
