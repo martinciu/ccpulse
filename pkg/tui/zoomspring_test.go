@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -743,5 +744,96 @@ func TestZoomBar_ViewNonEmptyMidMorph(t *testing.T) {
 	m = updated.(Model)
 	if out := m.View(); out == "" || len(chartBodyLines(out)) == 0 {
 		t.Fatalf("View() empty mid bar-morph")
+	}
+}
+
+func TestZoomBar_ReduceMotion_Snaps(t *testing.T) {
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	m, c := seedBarModelWithMessages(t, int(chartUnitCost), 60, now)
+	defer c.Close()
+	m.deps.ReduceMotion = true
+	startZoom := m.zoomIdx
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
+	m = updated.(Model)
+
+	if m.springActive {
+		t.Errorf("reduce_motion bar 'z': springActive=true, want false (snap)")
+	}
+	if m.zoomIdx != (startZoom+1)%len(ZoomLevels) {
+		t.Errorf("reduce_motion bar 'z': zoomIdx=%d, want %d", m.zoomIdx, (startZoom+1)%len(ZoomLevels))
+	}
+	if cmd == nil {
+		t.Errorf("reduce_motion bar 'z': cmd=nil, want now-tick re-arm")
+	}
+}
+
+func TestZoomBar_AbortedBySecondZoom_UsesLiveSkyline(t *testing.T) {
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	m, c := armBarZoom(t, int(chartUnitCost), now)
+	defer c.Close()
+
+	// Advance a few frames so the first morph is mid-lerp.
+	for range 5 {
+		updated, _ := m.Update(springTickMsg{gen: m.springGen})
+		m = updated.(Model)
+	}
+	if m.zoomSpringR <= 0 || m.zoomSpringR >= 1 {
+		t.Fatalf("need mid-lerp r in (0,1), got %v", m.zoomSpringR)
+	}
+	snap1 := m.zoomSnap
+	wantOldSky := lerpSkyline(snap1.oldSky, snap1.newSky, m.zoomSpringR)
+	gen1 := m.springGen
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
+	m = updated.(Model)
+	if m.springGen == gen1 {
+		t.Errorf("second 'z': springGen unchanged — stale tick not superseded")
+	}
+	if !m.springActive || m.springKind != springKindZoom {
+		t.Errorf("second 'z': springActive=%v springKind=%d, want active zoom", m.springActive, m.springKind)
+	}
+	// New oldSky must be the live lerp of the aborted morph, not a fresh raster.
+	for i := range wantOldSky {
+		if i < len(m.zoomSnap.oldSky) && math.Abs(m.zoomSnap.oldSky[i]-wantOldSky[i]) > 1e-9 {
+			t.Errorf("col %d: second-'z' oldSky=%v, want live %v", i, m.zoomSnap.oldSky[i], wantOldSky[i])
+			break
+		}
+	}
+}
+
+func TestZoomBar_AbortedByRefreshMsg(t *testing.T) {
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	m, c := armBarZoom(t, int(chartUnitTokens), now)
+	defer c.Close()
+	updated, _ := m.Update(RefreshMsg{})
+	m = updated.(Model)
+	if m.springActive || m.springKind != springKindNone {
+		t.Errorf("after RefreshMsg mid-morph: springActive=%v springKind=%d, want hard-cut", m.springActive, m.springKind)
+	}
+}
+
+func TestZoomBar_AbortedByWindowSize(t *testing.T) {
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	m, c := armBarZoom(t, int(chartUnitCost), now)
+	defer c.Close()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = updated.(Model)
+	if m.springActive || m.springKind != springKindNone {
+		t.Errorf("after WindowSizeMsg mid-morph: springActive=%v springKind=%d, want hard-cut", m.springActive, m.springKind)
+	}
+}
+
+func TestZoomBar_NowTickSuppressedMidMorph(t *testing.T) {
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	m, c := armBarZoom(t, int(chartUnitTokens), now)
+	defer c.Close()
+	updated, cmd := m.Update(nowTickMsg{gen: m.nowGen})
+	m = updated.(Model)
+	if !m.springActive || m.springKind != springKindZoom {
+		t.Fatalf("now-tick mid-morph tore down the morph: springActive=%v springKind=%d", m.springActive, m.springKind)
+	}
+	if cmd == nil {
+		t.Errorf("now-tick mid-morph: cmd=nil, want a reschedule keeping the chain alive")
 	}
 }
