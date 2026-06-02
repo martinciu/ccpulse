@@ -219,6 +219,58 @@ func computeSpringSlice(start, vpWidth, stride, gap int) (sliceStart, springXOff
 	return start, 0
 }
 
+// rasterizeSkyline returns a vpWidth-length array of per-column float bar
+// heights for the flush-right visible window of (values, starts), reproducing
+// buildChart/renderWindow's column layout exactly so a drawSkyline render at
+// r=0 is pixel-identical to the steady-state bar chart (#393 continuity
+// guarantee). Heights are in [0, barsH]; gap columns and pre-bar-block columns
+// are 0. peak<=0 yields an all-zero skyline.
+//
+// Column math mirrors renderWindow: the visible window is the last
+// visibleBuckets() buckets, sliced flush-right via computeSpringSlice (a
+// partial leading bucket plus a stride-slack xOffset). Bar k of the slice
+// occupies canvas columns [k*stride, k*stride+BarWidth); the skyline reads the
+// canvas window [xOff, xOff+vpWidth). Height per bar =
+// value/niceCeilingFloat(peak) * barsH — ntcharts' own normalisation.
+//
+// starts is currently unused (the column placement is index-driven), kept in the
+// signature for parity with buildChart/renderWindow and a future label-aware
+// rasterizer.
+func rasterizeSkyline(values []float64, starts []time.Time, peak float64, vpWidth, barsH int, zoom ZoomLevel) []float64 {
+	_ = starts
+	sky := make([]float64, max(vpWidth, 0))
+	if vpWidth <= 0 || barsH <= 0 || len(values) == 0 {
+		return sky
+	}
+	top := niceCeilingFloat(peak)
+	if top <= 0 {
+		return sky
+	}
+
+	// Visible window: the last min(len, vpBuckets) buckets, flush-right.
+	nv := (vpWidth + max(zoom.BarGap, 0)) / zoom.stride()
+	start := max(len(values)-nv, 0)
+	end := min(start+nv, len(values))
+	if start >= end {
+		return sky
+	}
+	sliceStart, xOff := computeSpringSlice(start, vpWidth, zoom.stride(), max(zoom.BarGap, 0))
+
+	stride := zoom.stride()
+	bw := max(zoom.BarWidth, 1)
+	// Fill each visible column from the bar that covers its canvas column.
+	for col := range vpWidth {
+		canvasCol := xOff + col
+		barIdx := sliceStart + canvasCol/stride
+		// Gap columns (canvasCol%stride >= BarWidth) and out-of-range stay 0.
+		if canvasCol%stride >= bw || barIdx < 0 || barIdx >= end {
+			continue
+		}
+		sky[col] = math.Min(float64(barsH), values[barIdx]/top*float64(barsH))
+	}
+	return sky
+}
+
 // slicePointsInRange returns the sub-slice of pts that falls within
 // [from, to], padded by one point on each side if available. The
 // padding preserves cross-boundary line continuity — without it,
