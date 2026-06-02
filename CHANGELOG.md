@@ -3,6 +3,35 @@
 All notable changes to ccpulse are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.0] — 2026-06-02
+
+### Added
+- Animated `z` zoom transitions across chart modes: right-anchored width
+  squeeze in remaining mode (#375), cross-faded x-axis labels in line mode
+  (#383), and a skyline morph in cost/output bar mode (#394)
+- `status --json`: today / 7d / 30d token + cost rollups with per-model
+  breakdowns (#386)
+- `status --json`: live throughput rate (tokens/hr + $/hr) (#388)
+- `status --index` flag to backfill new JSONL before reporting (#391)
+
+### Fixed
+- Dedupe usage by `message.id` so each assistant turn is counted once — fixes
+  an up-to-~100× token/cost over-count on Opus 4.8 turns with interleaved
+  thinking and parallel tool use. First launch after upgrade does a one-time
+  cache rebuild that preserves Anthropic quota history (#374, #376)
+- 7d `slope_pct_per_hour` now uses recency-weighted regression, so dip-recover
+  usage series no longer report a flat-zero slope (#395, #397)
+- Incremental tail defers an unterminated final line so it never drops the
+  last turn (#380)
+- Pricing falls forward to a model's earliest-known rate, so usage on a model
+  that predates its first pricing snapshot is still costed (#368, #372)
+
+### Internal
+- Memoize the immutable chart-bucket tail to cut per-frame rebuild cost
+  (#378, #390)
+- Bump `modernc.org/sqlite` in the go-deps group (#384)
+- Correct the `backfillBeforeStatus` count comment (#392)
+
 ## [0.3.0] — 2026-05-29
 
 ### Added
