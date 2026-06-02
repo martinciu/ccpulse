@@ -32,6 +32,14 @@ type zoomAnimSnapshot struct {
 	pts5h      []cache.UtilizationPoint
 	pts7d      []cache.UtilizationPoint
 	now        time.Time
+
+	// Bar-mode morph (#393). Line mode leaves these zero; bar mode leaves
+	// pts5h/7d nil. oldSky/newSky are per-column float heights captured at arm;
+	// oPeak/nPeak feed the y-label cross-fade; unit drives bar color + y-label
+	// format (constant across a zoom).
+	oldSky, newSky []float64
+	oPeak, nPeak   float64
+	unit           chartUnit
 }
 
 // lerpTime returns the linear interpolation between a and b at parameter r,
