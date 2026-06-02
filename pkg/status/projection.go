@@ -82,18 +82,18 @@ const sevenDayHalfLife = 4 * time.Hour
 
 // weightedRegressionSlope returns the least-squares slope in pct-per-hour of
 // the (At, Pct) samples, weighting each sample w_i = exp(-(tLast-t_i)/halfLife)
-// so recent samples dominate. samples must be sorted oldest-first; tLast is the
-// last sample's At. The slope is signed — callers clamp negatives if they want
-// a non-decreasing projection. Returns 0 for fewer than 2 samples or when the
-// weighted x-variance is 0 (all samples at one instant, or degenerate weights):
-// a 0 slope produces a flat, conservative projection, the correct answer when
-// there is no usable signal.
-func weightedRegressionSlope(samples []cache.SevenDaySample, halfLife time.Duration) float64 {
+// with halfLife = sevenDayHalfLife so recent samples dominate. samples must be
+// sorted oldest-first; tLast is the last sample's At. The slope is signed —
+// callers clamp negatives if they want a non-decreasing projection. Returns 0
+// for fewer than 2 samples or when the weighted x-variance is 0 (all samples
+// at one instant, or degenerate weights): a 0 slope produces a flat,
+// conservative projection, the correct answer when there is no usable signal.
+func weightedRegressionSlope(samples []cache.SevenDaySample) float64 {
 	if len(samples) < 2 {
 		return 0
 	}
 	tLast := samples[len(samples)-1].At
-	halfLifeHours := halfLife.Hours()
+	halfLifeHours := sevenDayHalfLife.Hours()
 
 	var sumW, sumWX, sumWY float64
 	for _, s := range samples {
@@ -177,7 +177,7 @@ func projectSevenDay(
 		return linear
 	}
 
-	slopePerHour := weightedRegressionSlope(filtered, sevenDayHalfLife)
+	slopePerHour := weightedRegressionSlope(filtered)
 	if slopePerHour < 0 {
 		slopePerHour = 0 // users care about "will I overrun", not "trending down"
 	}
