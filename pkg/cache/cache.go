@@ -369,12 +369,14 @@ ORDER BY ts ASC`, since.UTC().Unix())
 			warnOnceNullResets("seven_day_resets_at")
 			continue
 		}
-		// Normalize ResetsAt to second precision so sub-second jitter in the
-		// API response (nanoseconds differ across calls for the same logical
-		// reset boundary) doesn't create spurious distinct bucket IDs.
+		// Normalize ResetsAt to minute precision so sub-second and sub-minute
+		// jitter in the API response doesn't create spurious distinct bucket
+		// IDs.  Using Round (not Truncate) so that timestamps just below a
+		// minute boundary (e.g. 08:59:59.932) merge with those just above
+		// (09:00:00.000) into the same bucket.
 		normalizedResetsAt := resetsAt.String
 		if t, err := time.Parse(time.RFC3339Nano, resetsAt.String); err == nil {
-			normalizedResetsAt = t.UTC().Truncate(time.Second).Format(time.RFC3339)
+			normalizedResetsAt = t.UTC().Round(time.Minute).Format(time.RFC3339)
 		}
 		out = append(out, SevenDaySample{
 			At:       time.Unix(ts, 0).UTC(),

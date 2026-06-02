@@ -75,6 +75,40 @@ func round2(f float64) float64 {
 	return math.Round(f*100) / 100
 }
 
+// linearRegressionSlope returns the exponentially-weighted least-squares
+// slope (units per hour) for a set of (time, value) pairs.  Recent samples
+// are weighted more heavily (half-life ≈ 6 h) so that dip-recover patterns
+// and recent spikes are reflected in the slope, not washed out by flat
+// earlier history.
+func linearRegressionSlope(samples []cache.SevenDaySample) float64 {
+	n := float64(len(samples))
+	if n < 2 {
+		return 0
+	}
+	// Use the earliest sample's timestamp as the origin to keep float64
+	// precision reasonable (hours-since-epoch loses sub-second precision).
+	t0 := samples[0].At
+	const halfLifeHours = 6.0
+	const decay = math.Ln2 / halfLifeHours // ≈ 0.1155
+	var sumW, sumWX, sumWY, sumWXY, sumWX2 float64
+	for _, s := range samples {
+		ageHours := s.At.Sub(t0).Hours()
+		w := math.Exp(decay * (ageHours - samples[len(samples)-1].At.Sub(t0).Hours()))
+		x := ageHours
+		y := s.Pct
+		sumW += w
+		sumWX += w * x
+		sumWY += w * y
+		sumWXY += w * x * y
+		sumWX2 += w * x * x
+	}
+	denom := sumW*sumWX2 - sumWX*sumWX
+	if denom == 0 {
+		return 0
+	}
+	return (sumW*sumWXY - sumWX*sumWY) / denom
+}
+
 const (
 	sevenDayTrailingWindow = 24 * time.Hour
 	minSamplesForSlope     = 2
@@ -128,8 +162,10 @@ func projectSevenDay(
 		return linear
 	}
 
-	deltaPct := filtered[len(filtered)-1].Pct - filtered[0].Pct
-	slopePerHour := deltaPct / span.Hours()
+	// Use least-squares linear regression over all filtered samples instead
+	// of a two-point endpoint difference.  The endpoint approach is blind to
+	// non-monotonic series (dip-recover patterns where start == end).
+	slopePerHour := linearRegressionSlope(filtered)
 	if slopePerHour < 0 {
 		slopePerHour = 0
 	}

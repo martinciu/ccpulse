@@ -464,6 +464,43 @@ func TestSevenDaySamplesSinceSkipsNullResetsAt(t *testing.T) {
 	}
 }
 
+func TestSevenDaySamplesSince_MergesSubMinuteJitter(t *testing.T) {
+	resetNullResetsWarnedForTest()
+
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	// Insert three rows whose resets_at differ only by sub-second or
+	// sub-minute jitter around 09:00:00Z.  After the fix (Truncate to
+	// minute), all three must normalize to the same bucket ID.
+	if _, err := c.DB().ExecContext(t.Context(), `
+		INSERT INTO usage_samples(ts, source, seven_day_pct, seven_day_resets_at) VALUES
+			(1, 'api', 88, '2026-05-10T08:59:59.932Z'),
+			(2, 'api', 89, '2026-05-10T09:00:00.000Z'),
+			(3, 'api', 90, '2026-05-10T09:00:00.123Z')
+	`); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	got, err := c.SevenDaySamplesSince(t.Context(), time.Unix(0, 0))
+	if err != nil {
+		t.Fatalf("SevenDaySamplesSince: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("expected 3 samples, got %d: %+v", len(got), got)
+	}
+	// All three must have the same normalized ResetsAt (minute-precision).
+	want := "2026-05-10T09:00:00Z"
+	for i, s := range got {
+		if s.ResetsAt != want {
+			t.Errorf("sample[%d].ResetsAt = %q, want %q", i, s.ResetsAt, want)
+		}
+	}
+}
+
 func TestWarnOnceNullResets(t *testing.T) {
 	// Reset the package-level once-flags to a clean state — necessary
 	// because Go tests share package state. Use the unexported reset

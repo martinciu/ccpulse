@@ -403,7 +403,7 @@ func TestProjectSevenDay_SlopeCases(t *testing.T) {
 				{At: now, Pct: 50.0, ResetsAt: bucketA},
 			},
 			currentPct:       50.0,
-			wantSlopeApprox:  20.0 / 24.0,
+			wantSlopeApprox:  1.24, // EWLS: steeper than endpoint's 0.833 because recent samples dominate
 			wantOverreach:    true,
 			wantConfidence:   "ok",
 			wantMinutesTo100: true,
@@ -460,6 +460,23 @@ func TestProjectSevenDay_SlopeCases(t *testing.T) {
 			},
 			currentPct:      30.0,
 			wantSlopeApprox: 20.0 / 24.0,
+			wantOverreach:   false,
+			wantConfidence:  "ok",
+		},
+		{
+			// Regression: dip-recover pattern where start(9%) == end(9%).
+			// The old endpoint-only approach returned slope=0 here.
+			name: "dip-recover: 9→11→0→…→9 over 24h → slope > 0",
+			samples: []cache.SevenDaySample{
+				{At: now.Add(-24 * time.Hour), Pct: 9.0, ResetsAt: bucketA},
+				{At: now.Add(-22 * time.Hour), Pct: 11.0, ResetsAt: bucketA},
+				{At: now.Add(-18 * time.Hour), Pct: 0.0, ResetsAt: bucketA},
+				{At: now.Add(-12 * time.Hour), Pct: 3.0, ResetsAt: bucketA},
+				{At: now.Add(-6 * time.Hour), Pct: 6.0, ResetsAt: bucketA},
+				{At: now, Pct: 9.0, ResetsAt: bucketA},
+			},
+			currentPct:      9.0,
+			wantSlopeApprox: 0.21, // EWLS > 0 (old endpoint approach returned 0)
 			wantOverreach:   false,
 			wantConfidence:  "ok",
 		},
