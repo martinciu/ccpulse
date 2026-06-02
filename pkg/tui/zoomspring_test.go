@@ -156,12 +156,13 @@ func TestZoomKey_Remaining_ReduceMotion_Snaps(t *testing.T) {
 }
 
 // seedBarModelWithMessages builds a cost/tokens bar model at the 15m zoom with
-// `n` messages spaced 15m apart ending at now, then refreshes so lastValues /
+// 60 messages spaced 15m apart ending at now, then refreshes so lastValues /
 // lastChart* / hasData reflect the seeded data. unitIdx is chartUnitCost or
-// chartUnitTokens.
-func seedBarModelWithMessages(t *testing.T, unitIdx, n int, now time.Time) (Model, *cache.Cache) {
+// chartUnitTokens. 60 buckets comfortably exceed visibleBuckets() so the chart
+// is data-filled (not warming up) across the seeded viewport.
+func seedBarModelWithMessages(t *testing.T, unitIdx int, now time.Time) (Model, *cache.Cache) {
 	t.Helper()
-	m, c := seedModelAt(t, unitIdx, n, now)
+	m, c := seedModelAt(t, unitIdx, 60, now)
 	m.introPending = false
 	m.quotaIntroPending = false
 	return m, c
@@ -171,7 +172,7 @@ func TestZoomKey_BarMode_Squeezes_Arms(t *testing.T) {
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
 	for _, unit := range []chartUnit{chartUnitCost, chartUnitTokens} {
 		t.Run(unit.String(), func(t *testing.T) {
-			m, c := seedBarModelWithMessages(t, int(unit), 60, now)
+			m, c := seedBarModelWithMessages(t, int(unit), now)
 			defer c.Close()
 			if !m.hasData {
 				t.Fatalf("seed sanity: hasData=false, want true")
@@ -650,7 +651,7 @@ func TestZoomLabelCrossfade_IncomingDoesNotMove(t *testing.T) {
 // m.Update(springTickMsg{gen: m.springGen}) — never invoke the tick Cmd.
 func armBarZoom(t *testing.T, unitIdx int, now time.Time) (Model, *cache.Cache) {
 	t.Helper()
-	m, c := seedBarModelWithMessages(t, unitIdx, 60, now)
+	m, c := seedBarModelWithMessages(t, unitIdx, now)
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
 	m = updated.(Model)
 	if !m.springActive || m.springKind != springKindZoom {
@@ -717,7 +718,7 @@ func TestZoomBar_FrameLerpsBetweenSnapshots(t *testing.T) {
 // (continuity guarantee, #393); after settle, the NEW steady state.
 func TestZoomBar_FrameZeroMatchesOldSteadyState(t *testing.T) {
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
-	m, c := seedBarModelWithMessages(t, int(chartUnitCost), 60, now)
+	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
 	defer c.Close()
 
 	// OLD steady-state heights (15m) from the current viewport content.
@@ -749,7 +750,7 @@ func TestZoomBar_ViewNonEmptyMidMorph(t *testing.T) {
 
 func TestZoomBar_ReduceMotion_Snaps(t *testing.T) {
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
-	m, c := seedBarModelWithMessages(t, int(chartUnitCost), 60, now)
+	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
 	defer c.Close()
 	m.deps.ReduceMotion = true
 	startZoom := m.zoomIdx

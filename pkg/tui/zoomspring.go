@@ -113,11 +113,7 @@ func (m *Model) handleZoomKey() tea.Cmd {
 		barsH = chartH - 1
 	}
 	if !isLine {
-		if m.springActive && m.springKind == springKindZoom && len(m.zoomSnap.oldSky) > 0 {
-			oldSky = lerpSkyline(m.zoomSnap.oldSky, m.zoomSnap.newSky, m.zoomSpringR)
-		} else {
-			oldSky = rasterizeSkyline(m.lastValues, m.lastStarts, m.peak, m.viewport.Width, barsH, ZoomLevels[m.zoomIdx])
-		}
+		oldSky = m.captureOldSkyline(barsH)
 	}
 
 	oZoom := ZoomLevels[m.zoomIdx] // outgoing cadence — capture before zoomIdx advances.
@@ -194,6 +190,19 @@ func (m *Model) handleZoomKey() tea.Cmd {
 		}),
 		m.scheduleNowTick(),
 	)
+}
+
+// captureOldSkyline returns the OLD on-screen bar skyline for a bar-mode zoom
+// arm: the live lerped skyline if a morph is already in flight (a continuous
+// hand-off on a rapid second 'z', mirroring the line-mode live oFrom/oTo read),
+// else a fresh raster of the current steady state. barsH is the bar-row count
+// (chartHeight minus the x-label row). Called before refreshChart overwrites
+// lastValues/peak (#393).
+func (m *Model) captureOldSkyline(barsH int) []float64 {
+	if m.springActive && m.springKind == springKindZoom && len(m.zoomSnap.oldSky) > 0 {
+		return lerpSkyline(m.zoomSnap.oldSky, m.zoomSnap.newSky, m.zoomSpringR)
+	}
+	return rasterizeSkyline(m.lastValues, m.lastStarts, m.peak, m.viewport.Width, barsH, ZoomLevels[m.zoomIdx])
 }
 
 // lerpSkyline returns the element-wise linear interpolation of two equal-length
