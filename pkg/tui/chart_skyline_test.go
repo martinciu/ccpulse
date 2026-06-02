@@ -2,6 +2,7 @@ package tui
 
 import (
 	"math"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -58,5 +59,27 @@ func TestDrawSkyline_MatchesBuildChartHeights(t *testing.T) {
 		if g, w := barHeightAtCol(got+"\n", col), barHeightAtCol(want, col); g != w {
 			t.Errorf("col %d: drawSkyline height=%d, buildChart height=%d", col, g, w)
 		}
+	}
+}
+
+// BenchmarkZoomBarFrame measures one bar-morph frame (lerp + draw) at the chart
+// widths the 15m canvas can reach. The morph bypasses ntcharts, so this should
+// be µs-scale and comfortably inside the 16.7ms/60fps budget (#393). The draw
+// is O(W*barsH); barsH fixed at 20 (a typical chart height).
+func BenchmarkZoomBarFrame(b *testing.B) {
+	for _, n := range []int{100, 1000, 5000} {
+		values, starts, peak := syntheticChartInput(n)
+		old := rasterizeSkyline(values, starts, peak, n, 20, ZoomLevels[0])
+		// A second skyline at a different peak stands in for the NEW snapshot.
+		neu := rasterizeSkyline(values, starts, peak*1.5, n, 20, ZoomLevels[0])
+		b.Run(formatN(n), func(b *testing.B) {
+			b.ReportAllocs()
+			runtime.GC()
+			b.ResetTimer()
+			for b.Loop() {
+				cur := lerpSkyline(old, neu, 0.5)
+				sinkString = drawSkyline(cur, 20, chartUnitTokens)
+			}
+		})
 	}
 }
