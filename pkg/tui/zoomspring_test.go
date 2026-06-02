@@ -711,3 +711,37 @@ func TestZoomBar_FrameLerpsBetweenSnapshots(t *testing.T) {
 		}
 	}
 }
+
+// At frame 0 the bar morph must render the OLD steady-state column heights
+// (continuity guarantee, #393); after settle, the NEW steady state.
+func TestZoomBar_FrameZeroMatchesOldSteadyState(t *testing.T) {
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	m, c := seedBarModelWithMessages(t, int(chartUnitCost), 60, now)
+	defer c.Close()
+
+	// OLD steady-state heights (15m) from the current viewport content.
+	oldBody := chartBodyLines(m.View())
+	oldStr := strings.Join(oldBody, "\n") + "\n"
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
+	m = updated.(Model)
+	// Frame 0 was rendered synchronously at arm. Compare a few columns.
+	frame0 := chartBodyLines(m.View())
+	frame0Str := strings.Join(frame0, "\n") + "\n"
+	for _, col := range []int{0, 5, 10, 20} {
+		if g, w := barHeightAtCol(frame0Str, col), barHeightAtCol(oldStr, col); g != w {
+			t.Errorf("frame 0 col %d height=%d, OLD steady=%d (continuity flash)", col, g, w)
+		}
+	}
+}
+
+func TestZoomBar_ViewNonEmptyMidMorph(t *testing.T) {
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	m, c := armBarZoom(t, int(chartUnitTokens), now)
+	defer c.Close()
+	updated, _ := m.Update(springTickMsg{gen: m.springGen})
+	m = updated.(Model)
+	if out := m.View(); out == "" || len(chartBodyLines(out)) == 0 {
+		t.Fatalf("View() empty mid bar-morph")
+	}
+}

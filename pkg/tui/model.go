@@ -673,9 +673,15 @@ func (m Model) View() string {
 func (m Model) renderChartBody(rawBody string) string {
 	switch {
 	case m.springActive && m.springKind == springKindZoom:
-		// Zoom squeeze: the line is fully present throughout (only the
-		// visible window moves), so y-ticks render at full fade.
-		return overlayYTicks(rawBody, m.chartHeight(), 1.0)
+		// Line mode: the line is fully present throughout (only the visible
+		// window moves), so y-ticks render at full fade. Bar mode: cross-fade
+		// the peak y-label across the morph — outgoing oPeak over r<0.5, blank
+		// at the midpoint, incoming nPeak over r>0.5, each side gated on its
+		// own zoom's in-bar-numbers (24h suppresses the label) (#393).
+		if m.zoomSnap.unit == chartUnitRemaining {
+			return overlayYTicks(rawBody, m.chartHeight(), 1.0)
+		}
+		return barZoomYLabel(rawBody, m.zoomSnap, ZoomLevels[m.zoomIdx], m.chartHeight(), m.zoomSpringR)
 	case m.springActive:
 		var maxR float64
 		for _, r := range m.springRatios {
@@ -705,6 +711,29 @@ func (m Model) renderChartBody(rawBody string) string {
 		return overlayYTicks(rawBody, m.chartHeight(), 1.0)
 	default:
 		return overlayYLabel(rawBody, m.peak, chartUnit(m.unitIdx), m.chartHeight(), 1.0, ZoomLevels[m.zoomIdx].hasInBarNumbers())
+	}
+}
+
+// barZoomYLabel cross-fades the bar-chart peak y-label across one 'z' zoom
+// morph: the outgoing peak (oPeak at the OLD zoom's in-bar-numbers gate) fades
+// out over r<0.5, blank at the midpoint, the incoming peak (nPeak at the NEW
+// zoom) fades in over r>0.5. The line-mode counterpart is overlayYTicks at full
+// fade; this is the bar-mode treatment, mirroring renderZoomFrame's x-label
+// cross-fade for the y-axis (#393). overlayYLabel is a no-op at fade<=0 (so the
+// midpoint frame is blank) and when the gated zoom shows in-bar numbers (24h),
+// so a side morphing to/from 24h suppresses its y-label exactly as steady state
+// does. Extracted from renderChartBody to keep that switch under the
+// cyclomatic-complexity gate.
+func barZoomYLabel(rawBody string, snap zoomAnimSnapshot, newZoom ZoomLevel, chartH int, r float64) string {
+	switch {
+	case r < 0.5:
+		fade := (0.5 - r) / 0.5
+		return overlayYLabel(rawBody, snap.oPeak, snap.unit, chartH, fade, snap.oZoom.hasInBarNumbers())
+	case r > 0.5:
+		fade := (r - 0.5) / 0.5
+		return overlayYLabel(rawBody, snap.nPeak, snap.unit, chartH, fade, newZoom.hasInBarNumbers())
+	default:
+		return rawBody // r == 0.5: blank midpoint (overlayYLabel fade<=0 is a no-op anyway)
 	}
 }
 
