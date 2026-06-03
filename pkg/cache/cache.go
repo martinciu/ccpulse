@@ -463,22 +463,18 @@ func (c *Cache) UtilizationSince(ctx context.Context, column string, since time.
 	return out, nil
 }
 
-// InsertMessages upserts parsed messages into the messages table, collapsing
-// the multiple content-block lines of one logical assistant turn into a single
-// row keyed by (session_id, message_id). Lines without a message.id fall back
-// to a synthetic "synthetic:<ts>" key, preserving the legacy (session_id, ts)
-// identity. The "synthetic:" prefix is RESERVED: real message.id values must
-// not begin with it. On conflict it keeps the MAX of every cumulative usage
-// column (the per-line usage repeats the message total, so MAX == the final
-// total and is robust to streaming partial lines) and the MIN of ts (turn start).
-func (c *Cache) InsertMessages(ctx context.Context, msgs []parse.Message, hist pricing.History) error {
-	tx, err := c.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("insert messages: begin tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
+// sqlExecutor is the subset of *sql.DB / *sql.Tx used by the row-insert and
+// file-cursor helpers, so each can run either standalone (auto-commit on
+// *sql.DB) or inside a shared transaction (*sql.Tx).
+type sqlExecutor interface {
+	PrepareContext(ctx context.Context, query string) (*sql.Stmt, error)
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
 
-	stmt, err := tx.PrepareContext(ctx, `
+// insertMessagesTx upserts msgs using q (a *sql.DB or an in-flight *sql.Tx).
+// It performs no transaction control of its own; the caller owns begin/commit.
+func insertMessagesTx(ctx context.Context, q sqlExecutor, msgs []parse.Message, hist pricing.History) error {
+	stmt, err := q.PrepareContext(ctx, `
 INSERT INTO messages
 (session_id, message_id, project_slug, ts, role, model,
  input_tokens, output_tokens, cache_read_tokens,
@@ -524,6 +520,43 @@ ON CONFLICT(session_id, message_id) DO UPDATE SET
 			return fmt.Errorf("insert messages: exec: %w", err)
 		}
 	}
+	return nil
+}
+
+// recordFileTx upserts the byte-offset cursor for path using q (a *sql.DB or an
+// in-flight *sql.Tx). No transaction control of its own.
+func recordFileTx(ctx context.Context, q sqlExecutor, path string, mtimeNs, offset, lastLine int64) error {
+	if _, err := q.ExecContext(ctx, `
+INSERT INTO files(path, mtime_ns, last_offset_bytes, last_line)
+VALUES (?, ?, ?, ?)
+ON CONFLICT(path) DO UPDATE SET
+  mtime_ns = excluded.mtime_ns,
+  last_offset_bytes = excluded.last_offset_bytes,
+  last_line = excluded.last_line
+`, path, mtimeNs, offset, lastLine); err != nil {
+		return fmt.Errorf("record file: %w", err)
+	}
+	return nil
+}
+
+// InsertMessages upserts parsed messages into the messages table, collapsing
+// the multiple content-block lines of one logical assistant turn into a single
+// row keyed by (session_id, message_id). Lines without a message.id fall back
+// to a synthetic "synthetic:<ts>" key, preserving the legacy (session_id, ts)
+// identity. The "synthetic:" prefix is RESERVED: real message.id values must
+// not begin with it. On conflict it keeps the MAX of every cumulative usage
+// column (the per-line usage repeats the message total, so MAX == the final
+// total and is robust to streaming partial lines) and the MIN of ts (turn start).
+func (c *Cache) InsertMessages(ctx context.Context, msgs []parse.Message, hist pricing.History) error {
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("insert messages: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if err := insertMessagesTx(ctx, tx, msgs, hist); err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("insert messages: commit: %w", err)
 	}
@@ -532,15 +565,39 @@ ON CONFLICT(session_id, message_id) DO UPDATE SET
 
 // RecordFile upserts the byte-offset cursor and mtime for path into the files table.
 func (c *Cache) RecordFile(ctx context.Context, path string, mtimeNs, offset, lastLine int64) error {
-	_, err := c.db.ExecContext(ctx, `
-INSERT INTO files(path, mtime_ns, last_offset_bytes, last_line)
-VALUES (?, ?, ?, ?)
-ON CONFLICT(path) DO UPDATE SET
-  mtime_ns = excluded.mtime_ns,
-  last_offset_bytes = excluded.last_offset_bytes,
-  last_line = excluded.last_line
-`, path, mtimeNs, offset, lastLine)
-	return err
+	return recordFileTx(ctx, c.db, path, mtimeNs, offset, lastLine)
+}
+
+// InsertMessagesAndRecordFile upserts msgs and advances the file cursor for
+// path inside a single transaction: either both land or neither does. This
+// closes the window where a crash between two separate commits would persist
+// rows without advancing the cursor (forcing a redundant re-parse next run),
+// and the synthetic-key edge where two content-block lines sharing a timestamp
+// collapse on re-parse. msgs may be empty, in which case only the cursor is
+// advanced — still transactionally.
+func (c *Cache) InsertMessagesAndRecordFile(
+	ctx context.Context,
+	msgs []parse.Message, hist pricing.History,
+	path string, mtimeNs, offset, lastLine int64,
+) error {
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("ingest file: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if len(msgs) > 0 {
+		if err := insertMessagesTx(ctx, tx, msgs, hist); err != nil {
+			return err
+		}
+	}
+	if err := recordFileTx(ctx, tx, path, mtimeNs, offset, lastLine); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("ingest file: commit: %w", err)
+	}
+	return nil
 }
 
 // GetFile looks up the stored byte-offset cursor for path; found is false when the file has not been indexed yet.

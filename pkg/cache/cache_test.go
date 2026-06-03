@@ -2401,3 +2401,109 @@ func TestSevenDaySamplesSince_BucketJitterMerged(t *testing.T) {
 		t.Errorf("got %d distinct ResetsAt bucket keys, want 1 (jitter must merge): %v", len(keys), keys)
 	}
 }
+
+func TestInsertMessagesAndRecordFile_Atomic(t *testing.T) {
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	tab, _ := pricing.Load()
+	msgs := []parse.Message{{
+		SessionID:   "s1",
+		ProjectSlug: "slug-a",
+		Model:       "claude-opus-4-7",
+		Timestamp:   time.Now(),
+		InputTokens: 10,
+	}}
+
+	if err := c.InsertMessagesAndRecordFile(t.Context(), msgs, tab, "/tmp/x.jsonl", 7, 200, 9); err != nil {
+		t.Fatalf("InsertMessagesAndRecordFile: %v", err)
+	}
+
+	var n int
+	if err := c.DB().QueryRowContext(t.Context(), `SELECT count(*) FROM messages`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("messages count = %d, want 1", n)
+	}
+
+	mtime, off, line, found, err := c.GetFile(t.Context(), "/tmp/x.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found || mtime != 7 || off != 200 || line != 9 {
+		t.Errorf("cursor: mtime=%d off=%d line=%d found=%v; want 7/200/9/true", mtime, off, line, found)
+	}
+}
+
+func TestInsertMessagesAndRecordFile_EmptyMsgs(t *testing.T) {
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	tab, _ := pricing.Load()
+
+	// Zero messages: the cursor must still advance, transactionally.
+	if err := c.InsertMessagesAndRecordFile(t.Context(), nil, tab, "/tmp/x.jsonl", 3, 50, 2); err != nil {
+		t.Fatalf("InsertMessagesAndRecordFile: %v", err)
+	}
+
+	var n int
+	if err := c.DB().QueryRowContext(t.Context(), `SELECT count(*) FROM messages`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("messages count = %d, want 0", n)
+	}
+
+	_, off, line, found, err := c.GetFile(t.Context(), "/tmp/x.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found || off != 50 || line != 2 {
+		t.Errorf("cursor: off=%d line=%d found=%v; want 50/2/true", off, line, found)
+	}
+}
+
+func TestInsertMessagesAndRecordFile_RollbackOnFailure(t *testing.T) {
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	tab, _ := pricing.Load()
+	msgs := []parse.Message{{
+		SessionID:   "s1",
+		ProjectSlug: "slug-a",
+		Model:       "claude-opus-4-7",
+		Timestamp:   time.Now(),
+		InputTokens: 10,
+	}}
+
+	// Force the cursor write to fail mid-transaction: drop the files table so
+	// the message insert succeeds but recordFileTx errors ("no such table:
+	// files"). A correct atomic method rolls the whole tx back, discarding the
+	// already-inserted message rows.
+	if _, err := c.DB().ExecContext(t.Context(), `DROP TABLE files`); err != nil {
+		t.Fatalf("drop files table: %v", err)
+	}
+
+	err = c.InsertMessagesAndRecordFile(t.Context(), msgs, tab, "/tmp/x.jsonl", 1, 100, 5)
+	if err == nil {
+		t.Fatal("expected error when files table is missing, got nil")
+	}
+
+	var n int
+	if err := c.DB().QueryRowContext(t.Context(), `SELECT count(*) FROM messages`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("messages count = %d, want 0 (insert must roll back with the failed cursor write)", n)
+	}
+}
