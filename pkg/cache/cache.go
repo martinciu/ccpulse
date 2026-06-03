@@ -131,6 +131,13 @@ func openDB(ctx context.Context, path string) (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
+	// SQLite permits one writer at a time; WAL gives readers concurrency but
+	// not writers. Serialize all in-process access through one connection so
+	// the watcher / backfill / quota-poller writers can never race into
+	// SQLITE_BUSY. WAL still gives cross-process reader concurrency for the
+	// `status` / `doctor` subcommands (separate process, separate *sql.DB).
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1) // retain the warmed, pragma-applied connection
 	if _, err := db.ExecContext(ctx, schemaSQL); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)

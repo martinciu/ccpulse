@@ -968,38 +968,30 @@ func TestOpenSetsWALAndBusyTimeout(t *testing.T) {
 	}
 	defer c.Close()
 
-	// busy_timeout, synchronous, and temp_store are per-connection. Holding
-	// one Conn open forces sql.DB to hand us a second, distinct connection —
-	// proving the DSN pragmas hit every conn, not just the one db.Exec
-	// happened to grab. Without the DSN, conn2 would report busy_timeout=0.
+	// busy_timeout, synchronous, and journal_mode are applied via DSN pragmas
+	// so they take effect on every new connection. With MaxOpenConns(1) the
+	// pool holds exactly one connection; verify pragmas landed on it.
 	ctx := t.Context()
-	conn1, err := c.DB().Conn(ctx)
+	conn, err := c.DB().Conn(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn1.Close()
-	conn2, err := c.DB().Conn(ctx)
-	if err != nil {
-		t.Fatal(err)
+	defer conn.Close()
+
+	var mode string
+	if err := conn.QueryRowContext(ctx, `PRAGMA journal_mode`).Scan(&mode); err != nil {
+		t.Fatalf("journal_mode: %v", err)
 	}
-	defer conn2.Close()
+	if mode != "wal" {
+		t.Errorf("journal_mode = %q, want wal", mode)
+	}
 
-	for i, conn := range []*sql.Conn{conn1, conn2} {
-		var mode string
-		if err := conn.QueryRowContext(ctx, `PRAGMA journal_mode`).Scan(&mode); err != nil {
-			t.Fatalf("conn[%d] journal_mode: %v", i, err)
-		}
-		if mode != "wal" {
-			t.Errorf("conn[%d] journal_mode = %q, want wal", i, mode)
-		}
-
-		var timeout int
-		if err := conn.QueryRowContext(ctx, `PRAGMA busy_timeout`).Scan(&timeout); err != nil {
-			t.Fatalf("conn[%d] busy_timeout: %v", i, err)
-		}
-		if timeout != 5000 {
-			t.Errorf("conn[%d] busy_timeout = %d, want 5000", i, timeout)
-		}
+	var timeout int
+	if err := conn.QueryRowContext(ctx, `PRAGMA busy_timeout`).Scan(&timeout); err != nil {
+		t.Fatalf("busy_timeout: %v", err)
+	}
+	if timeout != 5000 {
+		t.Errorf("busy_timeout = %d, want 5000", timeout)
 	}
 }
 
