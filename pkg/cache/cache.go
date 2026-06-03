@@ -568,6 +568,38 @@ func (c *Cache) RecordFile(ctx context.Context, path string, mtimeNs, offset, la
 	return recordFileTx(ctx, c.db, path, mtimeNs, offset, lastLine)
 }
 
+// InsertMessagesAndRecordFile upserts msgs and advances the file cursor for
+// path inside a single transaction: either both land or neither does. This
+// closes the window where a crash between two separate commits would persist
+// rows without advancing the cursor (forcing a redundant re-parse next run),
+// and the synthetic-key edge where two content-block lines sharing a timestamp
+// collapse on re-parse. msgs may be empty, in which case only the cursor is
+// advanced — still transactionally.
+func (c *Cache) InsertMessagesAndRecordFile(
+	ctx context.Context,
+	msgs []parse.Message, hist pricing.History,
+	path string, mtimeNs, offset, lastLine int64,
+) error {
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("ingest file: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if len(msgs) > 0 {
+		if err := insertMessagesTx(ctx, tx, msgs, hist); err != nil {
+			return err
+		}
+	}
+	if err := recordFileTx(ctx, tx, path, mtimeNs, offset, lastLine); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("ingest file: commit: %w", err)
+	}
+	return nil
+}
+
 // GetFile looks up the stored byte-offset cursor for path; found is false when the file has not been indexed yet.
 func (c *Cache) GetFile(ctx context.Context, path string) (mtime, offset, line int64, found bool, err error) {
 	row := c.db.QueryRowContext(ctx, `SELECT mtime_ns, last_offset_bytes, last_line FROM files WHERE path = ?`, path)
