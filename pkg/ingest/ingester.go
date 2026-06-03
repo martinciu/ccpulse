@@ -24,9 +24,11 @@ type Ingester struct {
 
 // ProcessFile catches one .jsonl up to current EOF.
 // Returns the count of newly inserted messages and a non-nil error
-// only when InsertMessages itself fails. Stat / open / parse /
-// RecordFile failures are logged to ParseErrorsLog and swallowed
-// so the backfill loop never aborts on a single bad file.
+// only when the atomic message+cursor write itself fails. Stat /
+// GetFile / parse failures are logged to ParseErrorsLog and the file
+// is skipped (0, nil) so the backfill loop never aborts on a single
+// bad file. The write commits rows and the file cursor in one
+// transaction, so on a write error nothing landed and the count is 0.
 func (i *Ingester) ProcessFile(ctx context.Context, path string) (inserted int, err error) {
 	st, err := os.Stat(path)
 	if err != nil {
@@ -34,7 +36,18 @@ func (i *Ingester) ProcessFile(ctx context.Context, path string) (inserted int, 
 		return 0, nil
 	}
 
-	_, offset, line, found, _ := i.Cache.GetFile(ctx, path)
+	// mtime stays discarded (unused here); only the error is newly captured.
+	// := assigns to the named err return (same scope as the os.Stat line
+	// above), so found/offset/line are the only newly declared names.
+	_, offset, line, found, err := i.Cache.GetFile(ctx, path)
+	if err != nil {
+		// Real driver error (sql.ErrNoRows → err==nil, found==false, handled
+		// below). Surface it and skip this pass — re-parsing a large file into
+		// a broken DB just amplifies I/O. The next watcher event / backfill
+		// retries, preserving the file's last good cursor.
+		LogFileError(i.ParseErrorsLog, path, err)
+		return 0, nil
+	}
 
 	// Skip optimisation: file recorded and size unchanged → nothing new.
 	if found && offset == st.Size() {
@@ -68,17 +81,15 @@ func (i *Ingester) ProcessFile(ctx context.Context, path string) (inserted int, 
 		msgs[k].ParentSessionID = parentSID
 	}
 
-	if len(msgs) > 0 {
-		if err := i.Cache.InsertMessages(ctx, msgs, i.Pricing); err != nil {
-			LogFileError(i.ParseErrorsLog, path, err)
-			return 0, err
-		}
-	}
-
-	if err := i.Cache.RecordFile(ctx, path, st.ModTime().UnixNano(), newOff, int64(newLine)); err != nil {
+	// Rows and cursor commit together: either both land or neither does,
+	// eliminating the re-parse window if the process dies mid-write. Called
+	// regardless of len(msgs) so a content-free tail still advances the cursor
+	// transactionally. On failure the tx rolled back, so zero rows landed.
+	if err := i.Cache.InsertMessagesAndRecordFile(
+		ctx, msgs, i.Pricing, path, st.ModTime().UnixNano(), newOff, int64(newLine),
+	); err != nil {
 		LogFileError(i.ParseErrorsLog, path, err)
-		// Do not return the error: idempotent re-parse will recover
-		// next time. Caller treats this file as successfully ingested.
+		return 0, err
 	}
 	return len(msgs), nil
 }

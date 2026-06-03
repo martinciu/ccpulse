@@ -306,6 +306,32 @@ func TestProcessFile_MalformedLineLoggedValidLinesInserted(t *testing.T) {
 	}
 }
 
+func TestProcessFile_GetFileErrorSkips(t *testing.T) {
+	ing, _, path := newIngesterFixture(t)
+
+	// Close the cache DB so GetFile returns a real driver error (not
+	// sql.ErrNoRows). ProcessFile must surface it to the parse-errors log and
+	// skip the file — returning (0, nil) — rather than silently re-parsing from
+	// offset 0. The fixture's t.Cleanup re-closes; database/sql Close is
+	// idempotent, so the double close is safe.
+	if err := ing.Cache.Close(); err != nil {
+		t.Fatalf("close cache: %v", err)
+	}
+
+	n, err := ing.ProcessFile(t.Context(), path)
+	if err != nil {
+		t.Fatalf("ProcessFile returned err = %v; the GetFile-skip path must return nil", err)
+	}
+	if n != 0 {
+		t.Fatalf("inserted = %d, want 0 (file skipped on GetFile error)", n)
+	}
+
+	logBytes, _ := os.ReadFile(ing.ParseErrorsLog)
+	if !strings.Contains(string(logBytes), "sess.jsonl") {
+		t.Errorf("expected parse-errors log to mention skipped file sess.jsonl, got: %s", logBytes)
+	}
+}
+
 // helpers shared with backfill_test.go
 
 func openTestCache(t *testing.T, cacheDir string) (*cache.Cache, error) {
