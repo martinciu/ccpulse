@@ -131,20 +131,27 @@ func openDB(ctx context.Context, path string) (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// Read the on-disk version BEFORE applying schemaSQL. A version mismatch
+	// must dispatch to rebuild rather than apply the new schema over the old
+	// tables: CREATE TABLE IF NOT EXISTS is a no-op on an existing table, so a
+	// newly-added column never lands, and any new index referencing that column
+	// (e.g. idx_messages_ts_repo_root in v8) would fail here with "no such
+	// column" before the mismatch could be detected. A successful read of a
+	// DIFFERENT version is the only "existing old DB" signal; a read error
+	// (no meta table on a fresh/just-rebuilt file, or an empty meta row) falls
+	// through to apply the idempotent schema.
+	var version string
+	if verr := db.QueryRowContext(ctx,
+		`SELECT value FROM meta WHERE key = 'schema_version'`).Scan(&version); verr == nil &&
+		version != SchemaVersion {
+		db.Close()
+		return nil, errSchemaMismatch
+	}
+
 	if _, err := db.ExecContext(ctx, schemaSQL); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
-	}
-
-	var version string
-	err = db.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = 'schema_version'`).Scan(&version)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		db.Close()
-		return nil, err
-	}
-	if err == nil && version != SchemaVersion {
-		db.Close()
-		return nil, errSchemaMismatch
 	}
 	if _, err := db.ExecContext(ctx, `INSERT OR IGNORE INTO meta(key,value) VALUES('schema_version',?)`, SchemaVersion); err != nil {
 		db.Close()
