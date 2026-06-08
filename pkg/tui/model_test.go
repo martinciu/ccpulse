@@ -5496,3 +5496,37 @@ func TestView_ShowsProjectsBox(t *testing.T) {
 		t.Errorf("projectAggs should be populated after refreshChart")
 	}
 }
+
+func TestProjectsDebounce_StaleTickDropped(t *testing.T) {
+	// Per reference_tui_tick_cmd_test_pattern: never invoke the real tea.Tick
+	// Cmd (it sleeps to the settle deadline). Assert the scheduler bumps gen +
+	// returns a Cmd, and drive the handler directly with constructed messages.
+	m, cleanup := seedScrollTestModel(t, 200)
+	defer cleanup()
+
+	// Two scrolls in quick succession → gen advanced twice.
+	cmd1 := m.scheduleProjectsTick()
+	gen1 := m.projectsGen
+	cmd2 := m.scheduleProjectsTick()
+	if cmd1 == nil || cmd2 == nil {
+		t.Fatal("scheduleProjectsTick must return a Cmd")
+	}
+	if m.projectsGen == gen1 {
+		t.Fatal("second schedule must bump gen")
+	}
+
+	// Stale tick (gen1) is superseded: returns nil and does not recompute.
+	m.projectAggs = nil
+	if cmd := m.handleProjectsTick(projectsTickMsg{gen: gen1}); cmd != nil {
+		t.Errorf("stale tick should return nil cmd")
+	}
+	if m.projectAggs != nil {
+		t.Errorf("stale tick must not recompute the box")
+	}
+
+	// Current tick (latest gen) recomputes the visible-window rollup.
+	_ = m.handleProjectsTick(projectsTickMsg{gen: m.projectsGen})
+	if len(m.projectAggs) == 0 {
+		t.Errorf("current-gen tick should have repopulated projectAggs")
+	}
+}

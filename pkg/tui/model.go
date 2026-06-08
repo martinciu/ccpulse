@@ -77,6 +77,15 @@ type springTickMsg struct{ gen int }
 // (mirrors springTickMsg / springGen).
 type nowTickMsg struct{ gen int }
 
+// projectsTickMsg fires after scroll settles; the projects box recomputes
+// only if gen still matches m.projectsGen (i.e. no later scroll superseded
+// it). Mirrors the nowTickMsg generation guard (#311).
+type projectsTickMsg struct{ gen int }
+
+// projectsDebounce is the scroll-settle delay before the projects box
+// re-queries. The chart itself scrolls live; only the box is debounced.
+const projectsDebounce = 120 * time.Millisecond
+
 // QuotaMsg is sent when fresh usage data is available.
 type QuotaMsg struct {
 	Usage     *anthro.Usage
@@ -264,6 +273,10 @@ type Model struct {
 	// nowTickMsg; the handler drops ticks whose gen doesn't match, so a zoom
 	// switch can't leave a previous cadence's tick chain running (#311).
 	nowGen int
+	// projectsGen is bumped on every scroll; scheduleProjectsTick captures
+	// it so a settled tick runs refreshProjects only when not superseded by
+	// a later scroll (#311 generation-guard pattern).
+	projectsGen int
 	// springXOffset is the leftmost bucket index visible in the viewport
 	// when animation started. The spring runs over all bucket ratios but
 	// only the visible window is re-rendered each tick — full-canvas
@@ -413,6 +426,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.handleRefresh()
 	case nowTickMsg:
 		return m, m.handleNowTick(msg)
+	case projectsTickMsg:
+		return m, m.handleProjectsTick(msg)
 	case tea.KeyMsg:
 		return m, m.handleKey(msg)
 	}
@@ -539,6 +554,30 @@ func (m *Model) handleNowTick(msg nowTickMsg) tea.Cmd {
 	return m.scheduleNowTick()
 }
 
+// scheduleProjectsTick bumps the generation and arms a settle tick. The
+// pointer receiver makes the bump persist after Update returns, so the
+// captured gen identifies this scroll burst; a later scroll bumps the gen
+// again and supersedes this tick. The chart scrolls live — only the
+// projects box recompute is debounced.
+func (m *Model) scheduleProjectsTick() tea.Cmd {
+	m.projectsGen++
+	gen := m.projectsGen
+	return tea.Tick(projectsDebounce, func(time.Time) tea.Msg {
+		return projectsTickMsg{gen: gen}
+	})
+}
+
+// handleProjectsTick recomputes the projects box if this tick is the latest
+// scheduled (gen matches); otherwise it was superseded by a later scroll and
+// is dropped.
+func (m *Model) handleProjectsTick(msg projectsTickMsg) tea.Cmd {
+	if msg.gen != m.projectsGen {
+		return nil
+	}
+	m.refreshProjects()
+	return nil
+}
+
 // handleQuotaMsg records fresh usage, recomputes the window, and resolves the
 // open-path quota intro: re-snapshot targets while the intro is in flight, or
 // kick a late-arrival quota-only slide-in if it already settled (#192).
@@ -594,10 +633,10 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		return m.handleUnitKey()
 	case key.Matches(msg, m.keys.ScrollLeft):
 		m.scrollLeft(ZoomLevels[m.zoomIdx].ScrollStep)
-		return nil
+		return m.scheduleProjectsTick()
 	case key.Matches(msg, m.keys.ScrollRight):
 		m.scrollRight(ZoomLevels[m.zoomIdx].ScrollStep)
-		return nil
+		return m.scheduleProjectsTick()
 	}
 	return nil
 }
