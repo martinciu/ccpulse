@@ -393,7 +393,9 @@ func openCacheWithRebuild(ctx context.Context, dbPath string, errOut io.Writer) 
 	if err != nil {
 		if errors.Is(err, cache.ErrLockHeld) {
 			fmt.Fprintln(errOut,
-				"ccpulse: cache locked by another ccpulse process (likely `index --rebuild`). Retry shortly.")
+				"ccpulse: cache locked by another ccpulse process. Close any other running ccpulse"+
+					" (a TUI in another terminal, or `ccpulse index --rebuild`) and retry. On first launch"+
+					" after a schema upgrade, an older still-running ccpulse blocks the one-time cache rebuild.")
 		}
 		return nil, err
 	}
