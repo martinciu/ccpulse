@@ -74,7 +74,7 @@ func init() {
 var schemaSQL string
 
 // SchemaVersion is the expected on-disk schema version; a mismatch triggers an auto-rebuild.
-const SchemaVersion = "7"
+const SchemaVersion = "8"
 
 // normalizeResetsAtSQL flips legacy `0001-01-01T00:00:00Z` sentinels
 // (written before issue #189 landed) to SQL NULL across every
@@ -480,8 +480,8 @@ INSERT INTO messages
  input_tokens, output_tokens, cache_read_tokens,
  cache_write_5m_tokens, cache_write_1h_tokens,
  cost_usd_estimate, pricing_version, pricing_unknown,
- is_subagent, parent_session_id, cwd, git_branch)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+ is_subagent, parent_session_id, cwd, git_branch, repo_root)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(session_id, message_id) DO UPDATE SET
   ts                    = min(excluded.ts, ts),
   input_tokens          = max(excluded.input_tokens, input_tokens),
@@ -515,7 +515,7 @@ ON CONFLICT(session_id, message_id) DO UPDATE SET
 			m.Role, m.Model,
 			m.InputTokens, m.OutputTokens, m.CacheReadTokens,
 			m.CacheWrite5mTokens, m.CacheWrite1hTokens,
-			cost, version, unk, sub, m.ParentSessionID, m.Cwd, m.GitBranch,
+			cost, version, unk, sub, m.ParentSessionID, m.Cwd, m.GitBranch, m.RepoRoot,
 		); err != nil {
 			return fmt.Errorf("insert messages: exec: %w", err)
 		}

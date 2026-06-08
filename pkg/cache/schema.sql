@@ -18,11 +18,13 @@ CREATE TABLE IF NOT EXISTS messages (
   parent_session_id TEXT,
   cwd TEXT NOT NULL DEFAULT '',
   git_branch TEXT NOT NULL DEFAULT '',
+  repo_root TEXT NOT NULL DEFAULT '',
   UNIQUE(session_id, message_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_ts ON messages(ts);
 CREATE INDEX IF NOT EXISTS idx_messages_session_ts ON messages(session_id, ts);
+CREATE INDEX IF NOT EXISTS idx_messages_ts_repo_root ON messages(ts, repo_root);
 
 CREATE TABLE IF NOT EXISTS files (
   path TEXT PRIMARY KEY,
