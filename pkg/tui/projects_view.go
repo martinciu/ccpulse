@@ -94,16 +94,37 @@ func renderProjectsBox(aggs []cache.ProjectAggregate, width, height int) string 
 	return box.Render(lipgloss.JoinVertical(lipgloss.Left, title, body))
 }
 
+// Slot widths for the fixed right-hand columns. Each value is right-aligned
+// in its own slot so the columns line up vertically across stacked cells.
+//
+//	costSlotW  — wide enough for the widest realistic cost label from
+//	             formatBarValue (e.g. "$1,234" = 6 cols, "$1.23M" = 7 cols).
+//	             Using 7 to leave a comfortable margin.
+//	tokenSlotW — widest compact value from formatTokenCount: "999k" / "9.9M"
+//	             are 4 cols; using 4.
+//	pctSlotW   — widest pct label is "100%" = 4 cols; using 4.
+const (
+	costSlotW  = 7
+	tokenSlotW = 4
+	pctSlotW   = 4
+)
+
 // projectCell renders one project's row into a fixed-width cell: label
 // (left, truncated) + cost + tokens + pct (right-aligned, in that order).
+// The cost/tokens/pct values each sit in a fixed-width right-aligned slot
+// so they line up vertically across stacked cells.
 func projectCell(a cache.ProjectAggregate, w int) string {
 	if w < 8 {
 		w = 8
 	}
-	right := fmt.Sprintf("%s  %s  %s",
-		formatBarValue(a.CostUSD, chartUnitCost),
-		formatBarValue(float64(a.Tokens), chartUnitTokens),
+	slotStyle := lipgloss.NewStyle()
+	cost := slotStyle.Width(costSlotW).Align(lipgloss.Right).Render(
+		formatBarValue(a.CostUSD, chartUnitCost))
+	tokens := slotStyle.Width(tokenSlotW).Align(lipgloss.Right).Render(
+		formatTokenCount(a.Tokens))
+	pct := slotStyle.Width(pctSlotW).Align(lipgloss.Right).Render(
 		fmt.Sprintf("%d%%", int(math.Round(a.CostPct))))
+	right := cost + "  " + tokens + "  " + pct
 	rw := lipgloss.Width(right)
 	labelW := max(w-rw-1, 3)
 	label := lipgloss.NewStyle().Width(labelW).MaxWidth(labelW).Render(a.Label)
