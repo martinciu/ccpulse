@@ -28,6 +28,7 @@ import (
 	"github.com/martinciu/ccpulse/pkg/devlog"
 	"github.com/martinciu/ccpulse/pkg/ingest"
 	"github.com/martinciu/ccpulse/pkg/pricing"
+	"github.com/martinciu/ccpulse/pkg/projects"
 	"github.com/martinciu/ccpulse/pkg/secfile"
 	"github.com/martinciu/ccpulse/pkg/tui"
 	"github.com/martinciu/ccpulse/pkg/watcher"
@@ -285,6 +286,7 @@ func runTUI(ctx context.Context, errOut io.Writer) error {
 		Pricing:        hist,
 		ProjectsRoot:   projectsRoot,
 		ParseErrorsLog: filepath.Join(cacheDir, "parse-errors.log"),
+		Resolver:       projects.New(),
 	}
 
 	w, err := watcher.New(projectsRoot)

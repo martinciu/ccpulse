@@ -27,6 +27,7 @@ type Message struct {
 	ParentSessionID    string
 	Cwd                string
 	GitBranch          string
+	RepoRoot           string
 }
 
 type rawLine struct {

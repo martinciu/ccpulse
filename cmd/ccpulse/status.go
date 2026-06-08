@@ -14,6 +14,7 @@ import (
 	"github.com/martinciu/ccpulse/pkg/config"
 	"github.com/martinciu/ccpulse/pkg/ingest"
 	"github.com/martinciu/ccpulse/pkg/pricing"
+	"github.com/martinciu/ccpulse/pkg/projects"
 	"github.com/martinciu/ccpulse/pkg/status"
 	"github.com/spf13/cobra"
 )
@@ -133,6 +134,7 @@ func backfillBeforeStatus(cmd *cobra.Command, c *cache.Cache, hist pricing.Histo
 		Pricing:        hist,
 		ProjectsRoot:   projectsRoot,
 		ParseErrorsLog: filepath.Join(cacheDir, "parse-errors.log"),
+		Resolver:       projects.New(),
 	}
 	bf := &ingest.Backfill{Ingester: ing}
 
