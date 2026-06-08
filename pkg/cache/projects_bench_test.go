@@ -8,8 +8,8 @@ import (
 	"time"
 )
 
-// BenchmarkProjectAggregates measures the query at a wide visible window
-// over a large seeded DB — the worst case for the live/debounced refresh.
+// BenchmarkProjectAggregates measures ProjectAggregates across two scenarios:
+// the realistic on-screen window (hot path) and the full-table worst case.
 func BenchmarkProjectAggregates(b *testing.B) {
 	c, err := Open(context.Background(), filepath.Join(b.TempDir(), "state.db"))
 	if err != nil {
@@ -49,12 +49,27 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 		b.Fatal(err)
 	}
 
-	from := base
-	to := base.Add(50_000 * time.Minute)
-	b.ReportAllocs()
-	for b.Loop() {
-		if _, err := c.ProjectAggregates(ctx, from, to); err != nil {
-			b.Fatal(err)
+	b.Run("full_table", func(b *testing.B) {
+		from := base
+		to := base.Add(50_000 * time.Minute)
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, err := c.ProjectAggregates(ctx, from, to); err != nil {
+				b.Fatal(err)
+			}
 		}
-	}
+	})
+
+	// on_screen_32h approximates the visibleBuckets()-bounded window the
+	// TUI actually queries on every refresh/scroll-settle — the hot path.
+	b.Run("on_screen_32h", func(b *testing.B) {
+		from := base
+		to := base.Add(32 * time.Hour)
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, err := c.ProjectAggregates(ctx, from, to); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
 }
