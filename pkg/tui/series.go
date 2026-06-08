@@ -112,6 +112,7 @@ func (m *Model) clearChart() {
 	m.lastChartTo = time.Time{}
 	m.hasData = false
 	m.chartCache = chartCache{}
+	m.projectAggs = nil
 	m.setX(0)
 }
 
@@ -247,6 +248,10 @@ func (m *Model) refreshChart() {
 	} else {
 		m.renderWindow()
 	}
+
+	// Recompute the per-project rollup for the freshly-set visible window
+	// (lastStarts/viewportXOffset/lastChartTo are all current here).
+	m.refreshProjects()
 }
 
 // renderWindow renders the bar-chart viewport from the visible window of

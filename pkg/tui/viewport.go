@@ -190,12 +190,31 @@ func (m Model) visibleBuckets() int {
 	return v
 }
 
+// projectsMaxRows caps the projects box outer height so it never crowds the
+// chart on tall terminals.
+const projectsMaxRows = 12
+
+// projectsHeight returns the OUTER height (incl. border) reserved for the
+// projects box: roughly half the post-header area, capped, and 0 when the
+// terminal is too short to host both the chart's 5-row floor and a usable
+// box. Deliberately independent of the project count so chartHeight stays
+// stable across scroll/zoom (no circular dependency).
+func (m Model) projectsHeight() int {
+	avail := m.h - 7 // shared by chart + projects box (same overhead as chartHeight)
+	// Need the chart's 5-row floor + a minimum 4-row box (border+title+1 row).
+	if avail < 5+4 {
+		return 0
+	}
+	return min(avail/2, projectsMaxRows)
+}
+
 // chartHeight returns the available rows for the chart, leaving room for
 // the bordered header box (4 rows: top border, bars row, burn-rate row,
-// bottom border), two separators (2 rows), and the help footer (1 row).
-// Total non-body overhead = 7 rows.
+// bottom border), two separators (2 rows), the help footer (1 row), and the
+// projects box (projectsHeight, 0 when the terminal is too short). Total
+// non-body overhead = 7 rows + the projects box.
 func (m Model) chartHeight() int {
-	h := m.h - 7
+	h := m.h - 7 - m.projectsHeight()
 	if h < 5 {
 		return 5
 	}

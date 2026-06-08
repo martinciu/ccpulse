@@ -2503,18 +2503,24 @@ func TestView_CostModeRendersDollarPrefix(t *testing.T) {
 	m.viewport.Width = m.chartWidth()
 	m.viewport.Height = m.chartHeight()
 
-	// Token mode (explicit — default is cost per issue #209): View() must NOT contain a "$" Y label.
+	// Scope the assertion to the chart body (the Y-axis overlay): the
+	// projects box below the chart always renders a cost column ("$…")
+	// regardless of unit, so a full-View "$" check no longer isolates the
+	// Y-label routing this test guards.
+	chartBody := func() string { return m.renderChartBody(m.viewport.View()) }
+
+	// Token mode (explicit — default is cost per issue #209): the chart body must NOT contain a "$" Y label.
 	m.unitIdx = int(chartUnitTokens)
 	m.refreshChart()
-	if strings.Contains(m.View(), "$") {
-		t.Errorf("token-mode View contains '$' unexpectedly:\n%s", m.View())
+	if strings.Contains(chartBody(), "$") {
+		t.Errorf("token-mode chart body contains '$' unexpectedly:\n%s", chartBody())
 	}
 
-	// Cost mode: View() must contain a "$" Y label.
+	// Cost mode: the chart body must contain a "$" Y label.
 	m.unitIdx = int(chartUnitCost)
 	m.refreshChart()
-	if !strings.Contains(m.View(), "$") {
-		t.Errorf("cost-mode View missing '$' Y label:\n%s", m.View())
+	if !strings.Contains(chartBody(), "$") {
+		t.Errorf("cost-mode chart body missing '$' Y label:\n%s", chartBody())
 	}
 }
 
@@ -3746,35 +3752,38 @@ func TestFullUnitCycle_CostTokensRemaining(t *testing.T) {
 		m.refreshChart()
 	}
 
-	// Press 1: cost (0) → tokens (1). Tokens-mode view has the bare
+	// Assert against the chart body (Y-axis overlay), not the full View: the
+	// projects box below the chart always renders a cost column ("$…") and a
+	// "100%" share regardless of unit, which would mask the Y-label routing
+	// this test guards.
+	chartBody := func() string { return m.renderChartBody(m.viewport.View()) }
+
+	// Press 1: cost (0) → tokens (1). Tokens-mode chart body has the bare
 	// k/M-formatted Y-overlay (no '$', no '100%').
 	pressU()
 	if m.unitIdx != int(chartUnitTokens) {
 		t.Fatalf("after 1st press: want unitIdx=%d (tokens), got %d", int(chartUnitTokens), m.unitIdx)
 	}
-	view1 := m.View()
-	if strings.Contains(view1, "$") {
-		t.Errorf("tokens mode view must not contain '$':\n%s", view1)
+	if body := chartBody(); strings.Contains(body, "$") {
+		t.Errorf("tokens mode chart body must not contain '$':\n%s", body)
 	}
 
-	// Press 2: tokens (1) → remaining (2). Remaining view is a 0-100% line chart.
+	// Press 2: tokens (1) → remaining (2). Remaining body is a 0-100% line chart.
 	pressU()
 	if m.unitIdx != int(chartUnitRemaining) {
 		t.Fatalf("after 2nd press: want unitIdx=%d (remaining), got %d", int(chartUnitRemaining), m.unitIdx)
 	}
-	view2 := m.View()
-	if !strings.Contains(view2, "100%") {
-		t.Errorf("remaining mode view should contain '100%%':\n%s", view2)
+	if body := chartBody(); !strings.Contains(body, "100%") {
+		t.Errorf("remaining mode chart body should contain '100%%':\n%s", body)
 	}
 
-	// Press 3: remaining (2) → cost (0). Back to start; cost view contains '$'.
+	// Press 3: remaining (2) → cost (0). Back to start; cost body contains '$'.
 	pressU()
 	if m.unitIdx != int(chartUnitCost) {
 		t.Fatalf("after 3rd press: want unitIdx=%d (cost), got %d", int(chartUnitCost), m.unitIdx)
 	}
-	view3 := m.View()
-	if !strings.Contains(view3, "$") {
-		t.Errorf("cost mode view should contain '$':\n%s", view3)
+	if body := chartBody(); !strings.Contains(body, "$") {
+		t.Errorf("cost mode chart body should contain '$':\n%s", body)
 	}
 }
 
@@ -5464,5 +5473,26 @@ func TestRefresh_RestoresRightEdgeAfterNarrowContent(t *testing.T) {
 			"The real viewport offset was clamped against stale narrow "+
 			"content, so the chart jumped to the earliest bucket "+
 			"(#230 spring-settle regression).", got)
+	}
+}
+
+func TestView_ShowsProjectsBox(t *testing.T) {
+	// seedScrollTestModel builds a 120×40 model and calls refreshChart, so
+	// projectsHeight() > 0 and refreshProjects has already run. The seeded
+	// messages carry no cwd, so they roll up into the "(no project)" bucket.
+	m, cleanup := seedScrollTestModel(t, 200)
+	defer cleanup()
+
+	if m.projectsHeight() <= 0 {
+		t.Fatal("projectsHeight should be > 0 at h=40")
+	}
+	if got := m.chartHeight(); got >= m.h-7 {
+		t.Errorf("chartHeight %d should be reduced below m.h-7 (=%d) by projectsHeight", got, m.h-7)
+	}
+	if !strings.Contains(m.View(), projectsTitle) {
+		t.Errorf("View should contain the projects box title %q", projectsTitle)
+	}
+	if len(m.projectAggs) == 0 {
+		t.Errorf("projectAggs should be populated after refreshChart")
 	}
 }

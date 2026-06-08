@@ -352,6 +352,11 @@ type Model struct {
 	// drives the Y label column rendered outside the scrollable viewport.
 	peak float64
 
+	// projectAggs is the last per-project rollup for the visible window,
+	// rendered in the projects box below the chart. Recomputed by
+	// refreshProjects on refresh/zoom and on the debounced scroll-settle.
+	projectAggs []cache.ProjectAggregate
+
 	w, h int
 
 	// dateOrder is detected once at New() from LC_TIME / LC_ALL / LANG
@@ -648,7 +653,18 @@ func (m Model) View() string {
 		body = m.renderChartBody(m.viewport.View())
 	}
 	footer := m.renderFooter()
-	out := lipgloss.JoinVertical(lipgloss.Left, header, sep, body, sep, footer)
+
+	parts := []string{header, sep, body}
+	// The projects box sits between chart and footer, suppressed while the
+	// help overlay is up (help replaces the chart body, so the box would be
+	// out of place).
+	if !m.showHelp {
+		if ph := m.projectsHeight(); ph > 0 {
+			parts = append(parts, renderProjectsBox(m.projectAggs, m.w, ph))
+		}
+	}
+	parts = append(parts, sep, footer)
+	out := lipgloss.JoinVertical(lipgloss.Left, parts...)
 	if d := time.Since(start); d >= viewLogThreshold {
 		slog.Debug("tui.View",
 			"dur_ms", d.Milliseconds(),
@@ -905,6 +921,36 @@ func (m *Model) recomputeWindow() {
 	}
 	m.progress = newProgressBar(m.progressWidth())
 	m.progress7d = newProgressBar(m.progressWidth())
+}
+
+// refreshProjects recomputes the per-project rollup for the chart's
+// currently-visible window and stores it in m.projectAggs. Cheap: the
+// window is bounded by what's on screen. Safe when the cache is nil or the
+// chart has no data (clears to empty → placeholder). The [from, to) window
+// is derived from the same lastStarts/viewportXOffset/visibleBuckets the
+// bar chart renders, so the box reconciles with the visible bars.
+func (m *Model) refreshProjects() {
+	if m.deps.Cache == nil || len(m.lastStarts) == 0 {
+		m.projectAggs = nil
+		return
+	}
+	start := max(0, m.viewportXOffset)
+	if start >= len(m.lastStarts) {
+		start = len(m.lastStarts) - 1
+	}
+	end := min(start+m.visibleBuckets(), len(m.lastStarts))
+	from := m.lastStarts[start]
+	to := m.lastChartTo
+	if end < len(m.lastStarts) {
+		to = m.lastStarts[end]
+	}
+	aggs, err := m.deps.Cache.ProjectAggregates(m.ctx, from, to)
+	if err != nil {
+		slog.Debug("tui.refreshProjects", "err", err)
+		m.projectAggs = nil
+		return
+	}
+	m.projectAggs = aggs
 }
 
 // minBarWidth is the smallest a quota bar may shrink to. Lowered from the
