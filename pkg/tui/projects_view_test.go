@@ -17,7 +17,7 @@ func stripANSI(s string) string {
 		if s[i] == '\x1b' && i+1 < len(s) && s[i+1] == '[' {
 			// consume until 'm' (or any final byte 0x40–0x7e)
 			i += 2
-			for i < len(s) && !(s[i] >= 0x40 && s[i] <= 0x7e) {
+			for i < len(s) && (s[i] < 0x40 || s[i] > 0x7e) {
 				i++
 			}
 			if i < len(s) {
