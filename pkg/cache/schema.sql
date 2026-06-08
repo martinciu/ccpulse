@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS messages (
   parent_session_id TEXT,
   cwd TEXT NOT NULL DEFAULT '',
   git_branch TEXT NOT NULL DEFAULT '',
+  repo_root TEXT NOT NULL DEFAULT '',
   UNIQUE(session_id, message_id)
 );
 

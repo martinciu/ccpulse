@@ -3,6 +3,17 @@
 All notable changes to ccpulse are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Added
+- Per-project cost & token breakdown in the TUI: a multi-column table below
+  the chart, aggregated over the chart's currently-visible time window, with
+  each repo's worktrees and subdirectories rolled up to the parent repo (#408)
+
+### Changed
+- Cache schema bumped to v8 (new `repo_root` column). Existing caches rebuild
+  automatically on first launch to backfill it (#408)
+
 ## [0.4.0] — 2026-06-02
 
 ### Added

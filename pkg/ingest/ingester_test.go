@@ -8,6 +8,7 @@ import (
 
 	"github.com/martinciu/ccpulse/pkg/cache"
 	"github.com/martinciu/ccpulse/pkg/pricing"
+	"github.com/martinciu/ccpulse/pkg/projects"
 )
 
 // jsonl returns a single assistant-line transcript with the given
@@ -329,6 +330,55 @@ func TestProcessFile_GetFileErrorSkips(t *testing.T) {
 	logBytes, _ := os.ReadFile(ing.ParseErrorsLog)
 	if !strings.Contains(string(logBytes), "sess.jsonl") {
 		t.Errorf("expected parse-errors log to mention skipped file sess.jsonl, got: %s", logBytes)
+	}
+}
+
+func TestProcessFile_StampsRepoRoot(t *testing.T) {
+	dir := t.TempDir()
+	repo := filepath.Join(dir, "myrepo")
+	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cacheDir := filepath.Join(dir, "cache")
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	c, err := openTestCache(t, cacheDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A one-line transcript whose envelope cwd is the repo dir, so the
+	// resolver walks up to the .git dir and stamps repo_root = repo.
+	line := `{"type":"assistant","sessionId":"rr1",` +
+		`"timestamp":"2026-05-09T10:00:00.000Z","cwd":"` + repo + `","gitBranch":"main",` +
+		`"message":{"role":"assistant","model":"claude-opus-4-7","usage":` +
+		`{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,` +
+		`"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}}}` + "\n"
+	jsonlPath := filepath.Join(dir, "rr.jsonl")
+	if err := os.WriteFile(jsonlPath, []byte(line), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ing := &Ingester{
+		Cache:          c,
+		Pricing:        mustPricing(t),
+		ProjectsRoot:   dir,
+		ParseErrorsLog: filepath.Join(cacheDir, "parse-errors.log"),
+		Resolver:       projects.New(),
+	}
+	if _, err := ing.ProcessFile(t.Context(), jsonlPath); err != nil {
+		t.Fatalf("ProcessFile: %v", err)
+	}
+
+	var got string
+	if err := ing.Cache.DB().QueryRowContext(t.Context(),
+		`SELECT repo_root FROM messages WHERE session_id = 'rr1'`).Scan(&got); err != nil {
+		t.Fatalf("scan repo_root: %v", err)
+	}
+	if got != repo {
+		t.Errorf("repo_root = %q, want %q", got, repo)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"github.com/martinciu/ccpulse/pkg/cache"
 	"github.com/martinciu/ccpulse/pkg/parse"
 	"github.com/martinciu/ccpulse/pkg/pricing"
+	"github.com/martinciu/ccpulse/pkg/projects"
 )
 
 var errTruncated = errors.New("recorded offset past EOF; resetting and re-parsing")
@@ -20,6 +21,10 @@ type Ingester struct {
 	Pricing        pricing.History
 	ProjectsRoot   string
 	ParseErrorsLog string
+	// Resolver maps each message's cwd to a stable repo root. If nil, a
+	// default stateless resolver is used (so zero-value Ingesters in tests
+	// still populate repo_root deterministically).
+	Resolver *projects.Resolver
 }
 
 // ProcessFile catches one .jsonl up to current EOF.
@@ -76,9 +81,18 @@ func (i *Ingester) ProcessFile(ctx context.Context, path string) (inserted int, 
 		return 0, nil
 	}
 
+	res := i.Resolver
+	if res == nil {
+		res = projects.New()
+	}
 	for k := range msgs {
 		msgs[k].IsSubagent = isSub
 		msgs[k].ParentSessionID = parentSID
+		root := res.Resolve(msgs[k].Cwd)
+		if root == "" {
+			root = projects.HeuristicFallback(msgs[k].Cwd)
+		}
+		msgs[k].RepoRoot = root
 	}
 
 	// Rows and cursor commit together: either both land or neither does,

@@ -12,6 +12,7 @@ import (
 	"github.com/martinciu/ccpulse/pkg/devlog"
 	"github.com/martinciu/ccpulse/pkg/ingest"
 	"github.com/martinciu/ccpulse/pkg/pricing"
+	"github.com/martinciu/ccpulse/pkg/projects"
 	"github.com/martinciu/ccpulse/pkg/secfile"
 	"github.com/spf13/cobra"
 )
@@ -75,6 +76,7 @@ func runIndex(cmd *cobra.Command, rebuild bool) error {
 		Pricing:        hist,
 		ProjectsRoot:   projectsRoot,
 		ParseErrorsLog: filepath.Join(cacheDir, "parse-errors.log"),
+		Resolver:       projects.New(),
 	}
 	bf := &ingest.Backfill{Ingester: ing}
 

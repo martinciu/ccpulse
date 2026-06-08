@@ -28,6 +28,7 @@ import (
 	"github.com/martinciu/ccpulse/pkg/devlog"
 	"github.com/martinciu/ccpulse/pkg/ingest"
 	"github.com/martinciu/ccpulse/pkg/pricing"
+	"github.com/martinciu/ccpulse/pkg/projects"
 	"github.com/martinciu/ccpulse/pkg/secfile"
 	"github.com/martinciu/ccpulse/pkg/tui"
 	"github.com/martinciu/ccpulse/pkg/watcher"
@@ -285,6 +286,7 @@ func runTUI(ctx context.Context, errOut io.Writer) error {
 		Pricing:        hist,
 		ProjectsRoot:   projectsRoot,
 		ParseErrorsLog: filepath.Join(cacheDir, "parse-errors.log"),
+		Resolver:       projects.New(),
 	}
 
 	w, err := watcher.New(projectsRoot)
@@ -391,7 +393,9 @@ func openCacheWithRebuild(ctx context.Context, dbPath string, errOut io.Writer) 
 	if err != nil {
 		if errors.Is(err, cache.ErrLockHeld) {
 			fmt.Fprintln(errOut,
-				"ccpulse: cache locked by another ccpulse process (likely `index --rebuild`). Retry shortly.")
+				"ccpulse: cache locked by another ccpulse process. Close any other running ccpulse"+
+					" (a TUI in another terminal, or `ccpulse index --rebuild`) and retry. On first launch"+
+					" after a schema upgrade, an older still-running ccpulse blocks the one-time cache rebuild.")
 		}
 		return nil, err
 	}
