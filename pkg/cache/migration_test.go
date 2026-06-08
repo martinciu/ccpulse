@@ -70,15 +70,6 @@ func TestOpen_UpgradesFromV7_RebuildsWithRepoRoot(t *testing.T) {
 		t.Fatalf("messages.repo_root column count = %d, want 1 after upgrade", n)
 	}
 
-	var idx int
-	if err := c.DB().QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_messages_ts_repo_root'`).Scan(&idx); err != nil {
-		t.Fatal(err)
-	}
-	if idx != 1 {
-		t.Fatalf("idx_messages_ts_repo_root count = %d, want 1 after upgrade", idx)
-	}
-
 	var ver string
 	if err := c.DB().QueryRowContext(ctx,
 		`SELECT value FROM meta WHERE key='schema_version'`).Scan(&ver); err != nil {

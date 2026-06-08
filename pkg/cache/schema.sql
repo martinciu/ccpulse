@@ -24,7 +24,6 @@ CREATE TABLE IF NOT EXISTS messages (
 
 CREATE INDEX IF NOT EXISTS idx_messages_ts ON messages(ts);
 CREATE INDEX IF NOT EXISTS idx_messages_session_ts ON messages(session_id, ts);
-CREATE INDEX IF NOT EXISTS idx_messages_ts_repo_root ON messages(ts, repo_root);
 
 CREATE TABLE IF NOT EXISTS files (
   path TEXT PRIMARY KEY,

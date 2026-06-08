@@ -24,16 +24,6 @@ func TestSchema_HasRepoRoot(t *testing.T) {
 		t.Fatalf("messages.repo_root column count = %d, want 1", n)
 	}
 
-	var idx int
-	if err := c.DB().QueryRowContext(context.Background(),
-		`SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_messages_ts_repo_root'`).
-		Scan(&idx); err != nil {
-		t.Fatal(err)
-	}
-	if idx != 1 {
-		t.Fatalf("idx_messages_ts_repo_root count = %d, want 1", idx)
-	}
-
 	if SchemaVersion != "8" {
 		t.Fatalf("SchemaVersion = %q, want 8", SchemaVersion)
 	}
