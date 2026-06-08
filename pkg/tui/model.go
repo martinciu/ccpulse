@@ -427,7 +427,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case nowTickMsg:
 		return m, m.handleNowTick(msg)
 	case projectsTickMsg:
-		return m, m.handleProjectsTick(msg)
+		m.handleProjectsTick(msg)
+		return m, nil
 	case tea.KeyMsg:
 		return m, m.handleKey(msg)
 	}
@@ -569,13 +570,12 @@ func (m *Model) scheduleProjectsTick() tea.Cmd {
 
 // handleProjectsTick recomputes the projects box if this tick is the latest
 // scheduled (gen matches); otherwise it was superseded by a later scroll and
-// is dropped.
-func (m *Model) handleProjectsTick(msg projectsTickMsg) tea.Cmd {
+// is dropped. No Cmd to return — the settle chain ends here.
+func (m *Model) handleProjectsTick(msg projectsTickMsg) {
 	if msg.gen != m.projectsGen {
-		return nil
+		return
 	}
 	m.refreshProjects()
-	return nil
 }
 
 // handleQuotaMsg records fresh usage, recomputes the window, and resolves the

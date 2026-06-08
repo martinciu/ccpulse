@@ -5515,17 +5515,15 @@ func TestProjectsDebounce_StaleTickDropped(t *testing.T) {
 		t.Fatal("second schedule must bump gen")
 	}
 
-	// Stale tick (gen1) is superseded: returns nil and does not recompute.
+	// Stale tick (gen1) is superseded: it must not recompute the box.
 	m.projectAggs = nil
-	if cmd := m.handleProjectsTick(projectsTickMsg{gen: gen1}); cmd != nil {
-		t.Errorf("stale tick should return nil cmd")
-	}
+	m.handleProjectsTick(projectsTickMsg{gen: gen1})
 	if m.projectAggs != nil {
 		t.Errorf("stale tick must not recompute the box")
 	}
 
 	// Current tick (latest gen) recomputes the visible-window rollup.
-	_ = m.handleProjectsTick(projectsTickMsg{gen: m.projectsGen})
+	m.handleProjectsTick(projectsTickMsg{gen: m.projectsGen})
 	if len(m.projectAggs) == 0 {
 		t.Errorf("current-gen tick should have repopulated projectAggs")
 	}
