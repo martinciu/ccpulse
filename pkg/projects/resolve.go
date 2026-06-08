@@ -5,6 +5,7 @@
 package projects
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -60,11 +61,20 @@ func (r *Resolver) Resolve(cwd string) string {
 	}
 }
 
+// maxGitFileBytes caps the read of a linked-worktree .git pointer file.
+// A real "gitdir: <path>" pointer is always ~50 bytes; 4 KiB is generous.
+const maxGitFileBytes = 4096
+
 // mainRootFromGitFile reads a worktree .git file ("gitdir: <path>") and
 // returns the MAIN repo root — the prefix before "/.git/worktrees/".
 // Returns "" on any read/parse miss.
 func mainRootFromGitFile(gitFile string) string {
-	b, err := os.ReadFile(gitFile)
+	f, err := os.Open(gitFile)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, maxGitFileBytes))
 	if err != nil {
 		return ""
 	}
