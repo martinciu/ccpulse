@@ -637,6 +637,17 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		return m.handleZoomKey()
 	case key.Matches(msg, m.keys.Unit):
 		return m.handleUnitKey()
+	case key.Matches(msg, m.keys.Projects):
+		// Hard layout cut (not a spring): toggling the box changes
+		// chartHeight, so resize the viewport widget and rebuild content
+		// at the new height — the same subset of handleWindowSize that
+		// matters when only the chart's available height changes.
+		// refreshChart chains refreshProjects, so an on-show requery for
+		// the current window falls out for free.
+		m.showProjects = !m.showProjects
+		m.viewport.Height = m.chartHeight()
+		m.refreshChart()
+		return nil
 	case key.Matches(msg, m.keys.ScrollLeft):
 		m.scrollLeft(ZoomLevels[m.zoomIdx].ScrollStep)
 		return m.scheduleProjectsTick()
