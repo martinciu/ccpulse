@@ -397,7 +397,7 @@ func New(d Deps) Model {
 		zoomIdx:      0, // default: 15m
 		dateOrder:    detectDateOrder(),
 		now:          time.Now,
-		showProjects: true,
+		showProjects: false,
 	}
 	m.progress = newProgressBar(40)
 	m.progress7d = newProgressBar(40)
