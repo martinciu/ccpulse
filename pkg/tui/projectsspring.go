@@ -14,7 +14,10 @@ package tui
 
 import (
 	"math"
+	"strings"
 	"time"
+
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/martinciu/ccpulse/pkg/cache"
 )
@@ -44,4 +47,63 @@ type projectsAnimSnapshot struct {
 // rounding to the nearest row. r is clamped to [0,1] by the caller's spring.
 func lerpInt(a, b int, r float64) int {
 	return int(math.Round(float64(a) + (float64(b)-float64(a))*r))
+}
+
+// projectsTopBorder renders a phantom rounded top-border line `width` cols wide,
+// matching renderProjectsBox's RoundedBorder + colorMuted, so the sliced box
+// reads as a complete bordered box at the cut throughout the slide.
+func projectsTopBorder(width int) string {
+	b := lipgloss.RoundedBorder()
+	inner := max(width-2, 0)
+	line := b.TopLeft + strings.Repeat(b.Top, inner) + b.TopRight
+	return lipgloss.NewStyle().Foreground(colorMuted).Render(line)
+}
+
+// projectsBandRows returns the bottom `animH` rows of the once-rendered box
+// `rows`, with the topmost visible row replaced by a phantom top border. animH<=0
+// → nil (nothing to show); animH>=len → the full box verbatim (settle frame).
+func projectsBandRows(rows []string, width, animH int) []string {
+	if animH <= 0 || len(rows) == 0 {
+		return nil
+	}
+	if animH >= len(rows) {
+		return rows
+	}
+	band := make([]string, 0, animH)
+	band = append(band, projectsTopBorder(width))
+	band = append(band, rows[len(rows)-(animH-1):]...) // bottom (animH-1) rows incl. real bottom border
+	return band
+}
+
+// renderProjectsAnimFrame rebuilds the viewport chart body at the frame's
+// (animated) height from in-memory snapshot state — bar mode re-rasterizes the
+// skyline so bars rescale into the new row count; line mode re-builds the
+// windowed line chart. No DB, no ntcharts rebuild beyond the windowed line
+// canvas. The box band is composed separately by View.
+func (m *Model) renderProjectsAnimFrame() {
+	chartH := m.chartHeight() // derives from projectsAnimH via the projectsHeight lever
+	m.viewport.Height = chartH
+	snap := m.projectsSnap
+
+	if snap.isLine {
+		body := buildLineChart(snap.pts5h, snap.pts7d, snap.viewFrom, snap.viewTo,
+			snap.vpWidth, chartH, m.now(), snap.zoom, m.dateOrder, "projects", "")
+		m.viewport.SetContent(body)
+		m.viewport.SetXOffset(0)
+		return
+	}
+
+	barsH := chartH
+	if chartH >= 6 {
+		barsH = chartH - 1
+	}
+	sky := rasterizeSkyline(snap.values, snap.starts, snap.peak, snap.vpWidth, barsH, snap.zoom)
+	body := drawSkyline(sky, barsH, snap.unit)
+	if chartH >= 6 {
+		labelRow := buildXLabelsRow(synthLabelStarts(snap.viewFrom, snap.viewTo, snap.zoom),
+			snap.vpWidth, snap.zoom, m.now(), m.dateOrder)
+		body = lipgloss.JoinVertical(lipgloss.Left, body, labelRow)
+	}
+	m.viewport.SetContent(body)
+	m.viewport.SetXOffset(0)
 }

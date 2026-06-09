@@ -729,8 +729,15 @@ func (m Model) View() string {
 	// help overlay is up (help replaces the chart body, so the box would be
 	// out of place).
 	if !m.showHelp {
-		if ph := m.projectsHeight(); ph > 0 {
-			parts = append(parts, renderProjectsBox(m.projectAggs, m.w, ph))
+		switch {
+		case m.springActive && m.springKind == springKindProjects:
+			if band := projectsBandRows(m.projectsSnap.boxRows, m.w, m.projectsAnimH); len(band) > 0 {
+				parts = append(parts, strings.Join(band, "\n"))
+			}
+		default:
+			if ph := m.projectsHeight(); ph > 0 {
+				parts = append(parts, renderProjectsBox(m.projectAggs, m.w, ph))
+			}
 		}
 	}
 	parts = append(parts, sep, footer)
@@ -768,6 +775,16 @@ func (m Model) renderChartBody(rawBody string) string {
 			return overlayYTicks(rawBody, m.chartHeight(), 1.0)
 		}
 		return barZoomYLabel(rawBody, m.zoomSnap, ZoomLevels[m.zoomIdx], m.chartHeight(), m.zoomSpringR)
+	case m.springActive && m.springKind == springKindProjects:
+		// The chart isn't morphing data, only height — render the steady-state
+		// y-axis at the frame's (animated) chartHeight, from frozen snapshot
+		// unit/peak/zoom. MUST precede the generic springActive case, which reads
+		// m.springRatios (the unit-toggle state, unset here).
+		if m.projectsSnap.isLine {
+			return overlayYTicks(rawBody, m.chartHeight(), 1.0)
+		}
+		return overlayYLabel(rawBody, m.projectsSnap.peak, m.projectsSnap.unit,
+			m.chartHeight(), 1.0, m.projectsSnap.zoom.hasInBarNumbers())
 	case m.springActive:
 		var maxR float64
 		for _, r := range m.springRatios {
