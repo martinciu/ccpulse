@@ -195,14 +195,24 @@ func (m Model) visibleBuckets() int {
 const projectsMaxRows = 12
 
 // projectsHeight returns the OUTER height (incl. border) reserved for the
-// projects box: roughly half the post-header area, capped, and 0 when the
-// terminal is too short to host both the chart's 5-row floor and a usable
-// box. Deliberately independent of the project count so chartHeight stays
-// stable across scroll/zoom (no circular dependency).
+// projects box. While a slide is in flight it returns the animated value so the
+// chart cedes/reclaims rows in lockstep (#416); otherwise 0 when hidden, else
+// the steady target.
 func (m Model) projectsHeight() int {
+	if m.springActive && m.springKind == springKindProjects {
+		return m.projectsAnimH
+	}
 	if !m.showProjects {
 		return 0
 	}
+	return m.projectsTargetHeight()
+}
+
+// projectsTargetHeight is the steady-state outer box height: roughly half the
+// post-header area, capped, and 0 when the terminal is too short to host both
+// the chart's 5-row floor and a usable box. Independent of project count so
+// chartHeight stays stable across scroll/zoom (no circular dependency).
+func (m Model) projectsTargetHeight() int {
 	avail := m.h - 7 // shared by chart + projects box (same overhead as chartHeight)
 	// Need the chart's 5-row floor + a minimum 4-row box (border+title+1 row).
 	if avail < 5+4 {

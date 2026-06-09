@@ -136,6 +136,7 @@ const (
 	springKindNone springKind = iota
 	springKindUnit
 	springKindZoom
+	springKindProjects
 )
 
 // Model is the root Bubble Tea model for the chart view.
@@ -268,6 +269,16 @@ type Model struct {
 	zoomSpringR   float64
 	zoomSpringVel float64
 	zoomSnap      zoomAnimSnapshot
+	// Projects-box slide (#416). Single-phase spring on a 0→1 ratio driving
+	// projectsAnimH (the animated OUTER box height). projectsSnap freezes
+	// everything the per-frame tick reads so no frame touches the DB. Mutually
+	// exclusive with the unit/zoom springs via the shared springActive flag +
+	// springKind tag.
+	projectsSpring    harmonica.Spring
+	projectsSpringR   float64
+	projectsSpringVel float64
+	projectsAnimH     int
+	projectsSnap      projectsAnimSnapshot
 	// nowGen is bumped each time the live-advance tick is re-armed (zoom
 	// change). scheduleNowTick captures the current value into the scheduled
 	// nowTickMsg; the handler drops ticks whose gen doesn't match, so a zoom
