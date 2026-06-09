@@ -5528,3 +5528,29 @@ func TestProjectsDebounce_StaleTickDropped(t *testing.T) {
 		t.Errorf("current-gen tick should have repopulated projectAggs")
 	}
 }
+
+func TestProjectsHeight_HiddenWhenToggledOff(t *testing.T) {
+	m, cleanup := seedScrollTestModel(t, 200)
+	defer cleanup()
+
+	// Default on: box reserves rows, chart is shorter than the full m.h-7.
+	if !m.showProjects {
+		t.Fatal("showProjects should default to true")
+	}
+	if m.projectsHeight() <= 0 {
+		t.Fatal("projectsHeight should be > 0 by default at h=40")
+	}
+	full := m.h - 7 // chartHeight when the box reserves nothing
+	if m.chartHeight() >= full {
+		t.Fatalf("chartHeight %d should be < %d while box shown", m.chartHeight(), full)
+	}
+
+	// Toggle the field directly (handler wiring is Task 3).
+	m.showProjects = false
+	if got := m.projectsHeight(); got != 0 {
+		t.Errorf("projectsHeight = %d while hidden, want 0", got)
+	}
+	if got := m.chartHeight(); got != full {
+		t.Errorf("chartHeight = %d while hidden, want reclaimed %d", got, full)
+	}
+}

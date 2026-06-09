@@ -365,6 +365,11 @@ type Model struct {
 	// drives the Y label column rendered outside the scrollable viewport.
 	peak float64
 
+	// showProjects toggles the projects breakdown box (the `p` key). Default
+	// true. When false, projectsHeight() returns 0 — the box is not rendered
+	// and the chart reclaims its rows. Session-only; not persisted.
+	showProjects bool
+
 	// projectAggs is the last per-project rollup for the visible window,
 	// rendered in the projects box below the chart. Recomputed by
 	// refreshProjects on refresh/zoom and on the debounced scroll-settle.
@@ -385,13 +390,14 @@ func New(d Deps) Model {
 		d.Ctx = context.Background()
 	}
 	m := Model{
-		ctx:       d.Ctx,
-		deps:      d,
-		keys:      defaultKeyMap(),
-		help:      help.New(),
-		zoomIdx:   0, // default: 15m
-		dateOrder: detectDateOrder(),
-		now:       time.Now,
+		ctx:          d.Ctx,
+		deps:         d,
+		keys:         defaultKeyMap(),
+		help:         help.New(),
+		zoomIdx:      0, // default: 15m
+		dateOrder:    detectDateOrder(),
+		now:          time.Now,
+		showProjects: true,
 	}
 	m.progress = newProgressBar(40)
 	m.progress7d = newProgressBar(40)

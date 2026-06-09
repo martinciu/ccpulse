@@ -200,6 +200,9 @@ const projectsMaxRows = 12
 // box. Deliberately independent of the project count so chartHeight stays
 // stable across scroll/zoom (no circular dependency).
 func (m Model) projectsHeight() int {
+	if !m.showProjects {
+		return 0
+	}
 	avail := m.h - 7 // shared by chart + projects box (same overhead as chartHeight)
 	// Need the chart's 5-row floor + a minimum 4-row box (border+title+1 row).
 	if avail < 5+4 {
