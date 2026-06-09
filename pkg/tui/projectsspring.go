@@ -18,6 +18,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/harmonica"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/martinciu/ccpulse/pkg/cache"
@@ -133,4 +134,50 @@ func (m *Model) handleProjectsSpringTick(gen int) tea.Cmd {
 	return tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
 		return springTickMsg{gen: gen}
 	})
+}
+
+// beginProjectsAnimation arms the box slide. Aborts any in-flight u/z FIRST (only
+// when one is running — calling refreshChart unconditionally would fire a wasted
+// refreshProjects query on the hide path). Commits showProjects to its terminal
+// value at arm so a later u/z abort reads the correct chartHeight with no extra
+// wiring (see series.go abort block). Snapshots the box (one requery on show; the
+// in-memory aggs on hide) and the chart inputs, seeds the spring, paints frame 0.
+func (m *Model) beginProjectsAnimation() {
+	if m.springActive {
+		m.refreshChart() // abort in-flight u/z; restore steady chart inputs to snapshot
+	}
+
+	show := !m.showProjects
+	m.showProjects = show // committed terminal state (the invariant that makes abort free)
+
+	target := m.projectsTargetHeight()
+	if show {
+		m.refreshProjects() // THE one arm-time query: box was hidden (#414) → repopulate
+		m.projectsSnap.startH, m.projectsSnap.targetH = 0, target
+	} else {
+		// projectAggs already populated (box was showing) — no query.
+		m.projectsSnap.startH, m.projectsSnap.targetH = target, 0
+	}
+
+	m.projectsSnap.boxRows = strings.Split(renderProjectsBox(m.projectAggs, m.w, target), "\n")
+	m.projectsSnap.values = m.lastValues
+	m.projectsSnap.starts = m.lastStarts
+	m.projectsSnap.peak = m.peak
+	m.projectsSnap.pts5h = m.lastPts5h
+	m.projectsSnap.pts7d = m.lastPts7d
+	m.projectsSnap.unit = chartUnit(m.unitIdx)
+	m.projectsSnap.isLine = isLineMode(chartUnit(m.unitIdx))
+	m.projectsSnap.vpWidth = m.viewport.Width
+	m.projectsSnap.zoom = ZoomLevels[m.zoomIdx]
+	m.projectsSnap.viewFrom, m.projectsSnap.viewTo = m.visibleWindow()
+
+	m.projectsSpring = harmonica.NewSpring(harmonica.FPS(springFPS), phase2Frequency, phase2Damping)
+	m.projectsSpringR, m.projectsSpringVel = 0, 0
+	m.projectsAnimH = m.projectsSnap.startH
+	m.springActive = true
+	m.springKind = springKindProjects
+	m.springGen++
+
+	// Paint frame 0 synchronously so the next View doesn't flash the target layout.
+	m.renderProjectsAnimFrame()
 }

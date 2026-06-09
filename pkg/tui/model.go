@@ -652,16 +652,23 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 	case key.Matches(msg, m.keys.Unit):
 		return m.handleUnitKey()
 	case key.Matches(msg, m.keys.Projects):
-		// Hard layout cut (not a spring): toggling the box changes
-		// chartHeight, so resize the viewport widget and rebuild content
-		// at the new height — the same subset of handleWindowSize that
-		// matters when only the chart's available height changes.
-		// refreshChart chains refreshProjects, so an on-show requery for
-		// the current window falls out for free.
-		m.showProjects = !m.showProjects
-		m.viewport.Height = m.chartHeight()
-		m.refreshChart()
-		return nil
+		// Slide the box up (show) / down (hide) via a harmonica spring (#416).
+		// reduce_motion or a too-short terminal (no room for a box) → snap, the
+		// pre-#416 hard cut.
+		if m.deps.ReduceMotion || m.projectsTargetHeight() == 0 {
+			m.showProjects = !m.showProjects
+			m.viewport.Height = m.chartHeight()
+			m.refreshChart()
+			return nil
+		}
+		m.beginProjectsAnimation()
+		if !m.springActive {
+			return nil
+		}
+		gen := m.springGen
+		return tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
+			return springTickMsg{gen: gen}
+		})
 	case key.Matches(msg, m.keys.ScrollLeft):
 		m.scrollLeft(ZoomLevels[m.zoomIdx].ScrollStep)
 		return m.scheduleProjectsTick()

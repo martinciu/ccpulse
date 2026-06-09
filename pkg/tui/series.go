@@ -141,6 +141,10 @@ func (m *Model) refreshChart() {
 		// remain populated but unread — guarded by springActive=false.
 		// Next beginUnitAnimation re-makes the slices. Zoom scalars
 		// (zoomSpringR/Vel/zoomSnap) likewise stay set but unread (#373).
+		// The projects slide (#416) rides this same abort: springActive=false +
+		// springKind=springKindNone drops it; projectsAnimH/projectsSnap stay set
+		// but unread, and showProjects was already committed at arm so the chart
+		// rebuild below reads the correct chartHeight.
 	}
 
 	// Snapshot the wall-clock scroll anchor BEFORE the rebuild overwrites

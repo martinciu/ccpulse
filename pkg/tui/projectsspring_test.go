@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -8,6 +9,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/harmonica"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/martinciu/ccpulse/pkg/cache"
 )
 
 func TestLerpInt(t *testing.T) {
@@ -243,4 +246,173 @@ func TestProjectsSpringTick_StaleGenDropped(t *testing.T) {
 	if !m.springActive {
 		t.Error("stale-gen tick must not settle the live animation")
 	}
+}
+
+func TestProjectsKey_ShowFromIdle_ArmsAndQueriesOnce(t *testing.T) {
+	withForcedColor(t)
+	now := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
+	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
+	defer c.Close()
+	m.showProjects = false // hidden by default (#414) → first 'p' is a show
+	m.refreshChart()       // ensure steady chart inputs present; projectAggs stays nil (hidden)
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	m = updated.(Model)
+
+	if !m.springActive || m.springKind != springKindProjects {
+		t.Fatalf("show 'p': springActive=%v springKind=%d, want true/projects", m.springActive, m.springKind)
+	}
+	if !m.showProjects {
+		t.Error("show 'p': showProjects=false, want true (committed at arm)")
+	}
+	if m.projectsSnap.startH != 0 || m.projectsSnap.targetH != m.projectsTargetHeight() {
+		t.Errorf("show snap heights = (%d,%d), want (0,%d)", m.projectsSnap.startH, m.projectsSnap.targetH, m.projectsTargetHeight())
+	}
+	if len(m.projectsSnap.boxRows) == 0 {
+		t.Error("show 'p': boxRows not snapshotted (arm requery missing)")
+	}
+	if cmd == nil {
+		t.Error("show 'p': cmd=nil, want first tick scheduled")
+	}
+
+	// Zero-DB-per-frame contract: the arm query repopulated projectAggs once;
+	// driving mid-flight ticks must NOT reissue ProjectAggregates (the slice's
+	// backing array is untouched), and settle reissues exactly once (new array).
+	armPtr := projectAggsBackingPtr(m.projectAggs)
+	for range 3 { // safely mid-flight (critically-damped spring needs ~15+ ticks)
+		updated, _ = m.Update(springTickMsg{gen: m.springGen})
+		m = updated.(Model)
+	}
+	if !m.springActive {
+		t.Fatal("3 ticks settled the slide unexpectedly; can't probe mid-flight")
+	}
+	if projectAggsBackingPtr(m.projectAggs) != armPtr {
+		t.Error("projectAggs reassigned mid-slide → a per-tick refreshProjects ran (want zero DB per frame)")
+	}
+}
+
+func TestProjectsKey_HideFromIdle_NoArmQuery(t *testing.T) {
+	withForcedColor(t)
+	now := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
+	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
+	defer c.Close()
+	m.showProjects = true
+	m.refreshChart() // box shown → projectAggs populated
+	if len(m.projectAggs) == 0 {
+		t.Fatal("seed: projectAggs empty, want populated before hide")
+	}
+	beforePtr := projectAggsBackingPtr(m.projectAggs)
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	m = updated.(Model)
+
+	if !m.springActive || m.springKind != springKindProjects {
+		t.Fatalf("hide 'p': springActive=%v springKind=%d", m.springActive, m.springKind)
+	}
+	if m.showProjects {
+		t.Error("hide 'p': showProjects=true, want false (committed at arm)")
+	}
+	if m.projectsSnap.startH != m.projectsTargetHeight() || m.projectsSnap.targetH != 0 {
+		t.Errorf("hide snap heights=(%d,%d), want (%d,0)", m.projectsSnap.startH, m.projectsSnap.targetH, m.projectsTargetHeight())
+	}
+	// No arm requery on hide: the snapshot reused the already-populated aggs.
+	if projectAggsBackingPtr(m.projectAggs) != beforePtr {
+		t.Error("hide 'p' reissued ProjectAggregates at arm, want 0 queries (reuse in-memory aggs)")
+	}
+}
+
+func TestProjectsKey_ReduceMotion_Snaps(t *testing.T) {
+	now := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
+	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
+	defer c.Close()
+	m.deps.ReduceMotion = true
+	m.showProjects = false
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	m = updated.(Model)
+
+	if m.springActive {
+		t.Error("reduce_motion 'p': springActive=true, want snap")
+	}
+	if !m.showProjects {
+		t.Error("reduce_motion 'p': showProjects=false, want toggled on")
+	}
+	if cmd != nil {
+		t.Errorf("reduce_motion 'p': cmd=%v, want nil (synchronous cut)", cmd)
+	}
+	if m.viewport.Height != m.chartHeight() {
+		t.Errorf("reduce_motion 'p': viewport.Height=%d, want chartHeight=%d", m.viewport.Height, m.chartHeight())
+	}
+}
+
+func TestProjectsKey_TooShort_Snaps(t *testing.T) {
+	now := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
+	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
+	defer c.Close()
+	m.h = 12 // m.h-7=5 < 9 → projectsTargetHeight()==0
+	m.viewport.Height = m.chartHeight()
+	m.showProjects = false
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	m = updated.(Model)
+
+	if m.springActive {
+		t.Error("too-short 'p': springActive=true, want snap")
+	}
+	if cmd != nil {
+		t.Errorf("too-short 'p': cmd=%v, want nil", cmd)
+	}
+}
+
+func TestProjectsKey_AbortsInflightZoom(t *testing.T) {
+	now := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
+	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
+	defer c.Close()
+	m.showProjects = false
+
+	// Arm a zoom, then press 'p' mid-flight.
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
+	m = updated.(Model)
+	if m.springKind != springKindZoom {
+		t.Fatalf("setup: springKind=%d, want zoom", m.springKind)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	m = updated.(Model)
+
+	if m.springKind != springKindProjects || !m.springActive {
+		t.Errorf("'p' during zoom: springKind=%d active=%v, want projects/true (zoom aborted, slide armed)", m.springKind, m.springActive)
+	}
+}
+
+func TestZoomKey_AbortsInflightProjectsSlide(t *testing.T) {
+	now := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
+	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
+	defer c.Close()
+	m.showProjects = false
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}}) // arm show slide
+	m = updated.(Model)
+	if m.springKind != springKindProjects {
+		t.Fatalf("setup: springKind=%d, want projects", m.springKind)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
+	m = updated.(Model)
+
+	if m.springKind != springKindZoom || !m.springActive {
+		t.Errorf("'z' during slide: springKind=%d active=%v, want zoom/true", m.springKind, m.springActive)
+	}
+	if !m.showProjects {
+		t.Error("'z' during show-slide: showProjects=false, want true (slide's committed terminal state)")
+	}
+}
+
+// projectAggsBackingPtr returns the backing-array address of a ProjectAggregate
+// slice, or 0 if empty. refreshProjects reassigns m.projectAggs to a fresh slice
+// from ProjectAggregates, so a changed pointer ⇒ a query ran. Used to prove the
+// zero-DB-per-frame contract without a cache interface seam.
+func projectAggsBackingPtr(a []cache.ProjectAggregate) uintptr {
+	if len(a) == 0 {
+		return 0
+	}
+	return reflect.ValueOf(a).Pointer()
 }

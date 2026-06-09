@@ -5565,6 +5565,10 @@ func TestProjectsHeight_HiddenWhenToggledOff(t *testing.T) {
 func TestProjectsToggle_Key(t *testing.T) {
 	m, cleanup := seedScrollTestModel(t, 200)
 	defer cleanup()
+	// #416 added the slide animation on the 'p' key; this test asserts the
+	// pre-#416 synchronous hard-cut contract (chartHeight/viewport resize land
+	// immediately), which now lives on the reduce-motion snap path.
+	m.deps.ReduceMotion = true
 
 	full := m.h - 7 // chartHeight when the box is hidden
 
@@ -5602,6 +5606,10 @@ func TestProjectsToggle_Key(t *testing.T) {
 func TestProjectsToggle_AddsBoxToFrame(t *testing.T) {
 	m, cleanup := seedScrollTestModel(t, 200)
 	defer cleanup()
+	// Snap path (#416): the animated path reveals the box over the slide, so
+	// the full box title only appears at settle. This test asserts the
+	// immediate-appearance snap contract.
+	m.deps.ReduceMotion = true
 
 	// Box is absent by default.
 	if strings.Contains(m.View(), projectsTitle) {
@@ -5629,6 +5637,10 @@ func TestProjectsToggle_InertUnderHelp(t *testing.T) {
 func TestProjectsToggle_ClearsAndRequeries(t *testing.T) {
 	m, cleanup := seedScrollTestModel(t, 200)
 	defer cleanup()
+	// Snap path (#416): on the animated hide path projectAggs is retained for
+	// the slide-down and only cleared at settle. This test asserts the
+	// immediate clear-on-hide snap contract.
+	m.deps.ReduceMotion = true
 
 	// Show → requeried for the visible window.
 	m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
