@@ -5610,3 +5610,30 @@ func TestProjectsToggle_InertUnderHelp(t *testing.T) {
 		t.Errorf("'p' must be inert while the help overlay is open")
 	}
 }
+
+func TestProjectsToggle_ClearsAndRequeries(t *testing.T) {
+	m, cleanup := seedScrollTestModel(t, 200)
+	defer cleanup()
+
+	// Hide → the rollup is cleared (no stale aggs held while invisible).
+	m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	if m.projectAggs != nil {
+		t.Errorf("projectAggs should be nil while hidden, got %d entries", len(m.projectAggs))
+	}
+
+	// Show → requeried for the visible window.
+	m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	if len(m.projectAggs) == 0 {
+		t.Error("projectAggs should repopulate after toggling on")
+	}
+}
+
+func TestProjectsTick_NotScheduledWhenHidden(t *testing.T) {
+	m, cleanup := seedScrollTestModel(t, 200)
+	defer cleanup()
+
+	m.showProjects = false
+	if cmd := m.scheduleProjectsTick(); cmd != nil {
+		t.Error("scheduleProjectsTick should return nil while hidden")
+	}
+}

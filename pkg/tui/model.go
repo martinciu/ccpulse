@@ -567,6 +567,9 @@ func (m *Model) handleNowTick(msg nowTickMsg) tea.Cmd {
 // again and supersedes this tick. The chart scrolls live — only the
 // projects box recompute is debounced.
 func (m *Model) scheduleProjectsTick() tea.Cmd {
+	if !m.showProjects {
+		return nil
+	}
 	m.projectsGen++
 	gen := m.projectsGen
 	return tea.Tick(projectsDebounce, func(time.Time) tea.Msg {
@@ -986,6 +989,10 @@ func (m *Model) recomputeWindow() {
 // is derived from the same lastStarts/viewportXOffset/visibleBuckets the
 // bar chart renders, so the box reconciles with the visible bars.
 func (m *Model) refreshProjects() {
+	if !m.showProjects {
+		m.projectAggs = nil
+		return
+	}
 	if m.deps.Cache == nil || len(m.lastStarts) == 0 {
 		m.projectAggs = nil
 		return
