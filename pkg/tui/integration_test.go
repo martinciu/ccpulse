@@ -468,3 +468,35 @@ func TestProgram_EmptyToFirstChart(t *testing.T) {
 		t.Errorf("final frame missing footer text 'z zoom' — program may not have rendered:\n%s", final)
 	}
 }
+
+// TestProgram_ProjectsSlide_NoDeadlock drives the slide through a real program
+// loop (teatest PTY) to catch bubbletea ordering races the in-process Update
+// tests can't: press 'p', wait for a frame showing the projects title, quit
+// cleanly. Asserts showProjects committed via FinalModel.
+func TestProgram_ProjectsSlide_NoDeadlock(t *testing.T) {
+	c := newSeededCache(t)
+	m := New(Deps{Cache: c})
+	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(120, 40))
+	t.Cleanup(func() { _ = tm.Quit() })
+
+	tm.Send(tea.WindowSizeMsg{Width: 120, Height: 40})
+	tm.Send(RefreshMsg{})
+	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}}) // show slide (hidden by default)
+
+	teatest.WaitFor(t, tm.Output(),
+		func(bts []byte) bool { return bytes.Contains(bts, []byte("Projects")) },
+		teatest.WithDuration(2*time.Second),
+	)
+
+	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	tm.WaitFinished(t, teatest.WithFinalTimeout(2*time.Second))
+
+	final := tm.FinalModel(t, teatest.WithFinalTimeout(1*time.Second))
+	fm, ok := final.(Model)
+	if !ok {
+		t.Fatalf("FinalModel: got %T", final)
+	}
+	if !fm.showProjects {
+		t.Error("after show slide: showProjects=false, want true")
+	}
+}

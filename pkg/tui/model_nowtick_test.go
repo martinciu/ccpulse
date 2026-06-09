@@ -57,7 +57,7 @@ func TestNextBoundary_24hLocalMidnight(t *testing.T) {
 // unitIdx selects the chart unit (e.g. int(chartUnitTokens), int(chartUnitRemaining));
 // the zoom is fixed at the 15m level (zoomIdx 0).
 // Mirrors seedBarModel but injects the #311 clock seam.
-func seedModelAt(t *testing.T, unitIdx, nBuckets int, now time.Time) (Model, *cache.Cache) {
+func seedModelAt(t testing.TB, unitIdx, nBuckets int, now time.Time) (Model, *cache.Cache) {
 	t.Helper()
 	c, err := cache.Open(t.Context(), filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {

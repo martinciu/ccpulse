@@ -62,6 +62,7 @@ func TestProjectsHeight_SpringBranchOverridesTarget(t *testing.T) {
 }
 
 func TestProjectsTopBorder_WidthAndCorners(t *testing.T) {
+	withForcedColor(t) // assert on the real painted ANSI, not stripped output
 	b := projectsTopBorder(80)
 	if w := lipgloss.Width(b); w != 80 {
 		t.Errorf("projectsTopBorder width=%d, want 80", w)
@@ -69,6 +70,18 @@ func TestProjectsTopBorder_WidthAndCorners(t *testing.T) {
 	// Rounded border corners (strip styling via lipgloss.Width-agnostic contains).
 	if !strings.Contains(b, "╭") || !strings.Contains(b, "╮") {
 		t.Errorf("projectsTopBorder missing rounded corners: %q", b)
+	}
+	// The phantom border must carry the same colorMuted foreground as
+	// renderProjectsBox's real border (BorderForeground(colorMuted)); a colour
+	// mismatch would read as a visible seam at the slide cut. Fingerprint the
+	// envelope rather than hard-coding escape bytes.
+	muted := lipgloss.NewStyle().Foreground(colorMuted).Render(probeMarker)
+	open, _, ok := splitANSIEnvelope(muted)
+	if !ok {
+		t.Fatal("could not fingerprint colorMuted ANSI envelope")
+	}
+	if !strings.Contains(b, open) {
+		t.Errorf("phantom top border missing colorMuted foreground envelope %q in %q", open, b)
 	}
 }
 
@@ -164,7 +177,7 @@ func TestView_DuringSlide_HeightConservedAndPhantomBorder(t *testing.T) {
 // armProjectsShowForTest hand-builds a fully-armed SHOW slide (no key handler,
 // so this task is testable before Task 4). Mirrors what beginProjectsAnimation
 // will set up.
-func armProjectsShowForTest(t *testing.T, m *Model) {
+func armProjectsShowForTest(t testing.TB, m *Model) {
 	t.Helper()
 	m.showProjects = true
 	m.refreshProjects()
@@ -415,4 +428,58 @@ func projectAggsBackingPtr(a []cache.ProjectAggregate) uintptr {
 		return 0
 	}
 	return reflect.ValueOf(a).Pointer()
+}
+
+// TestProjectsSlide_RealFrame_BoundaryMovesMonotonically drives a real show
+// slide tick-by-tick and asserts on the actual painted frame (withForcedColor →
+// real ANSI): the box band grows monotonically, the phantom top border is
+// present every mid-slide frame, the true top border lands only at settle, and
+// total height is conserved. Per the project's real-binary-verification rule,
+// the assertion is on View() output (the painted frame), not internal counters.
+func TestProjectsSlide_RealFrame_BoundaryMovesMonotonically(t *testing.T) {
+	withForcedColor(t)
+	now := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
+	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
+	defer c.Close()
+	m.showProjects = false
+	m.refreshChart()
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	m = updated.(Model)
+
+	roundedTop := lipgloss.RoundedBorder().TopLeft // "╭"
+	prevBand := -1
+	const maxTicks = 600
+	for i := range maxTicks {
+		frame := m.View()
+		if h := lipgloss.Height(frame); h != m.h {
+			t.Fatalf("tick %d: frame height=%d, want %d (conserved)", i, h, m.h)
+		}
+		band := m.projectsAnimH
+		if band > 0 && band < m.projectsSnap.targetH { // mid-slide
+			if !strings.Contains(frame, roundedTop) {
+				t.Errorf("tick %d (band=%d): phantom top border absent", i, band)
+			}
+			if band < prevBand {
+				t.Errorf("tick %d: band=%d < prev=%d (non-monotonic)", i, band, prevBand)
+			}
+		}
+		prevBand = band
+		if !m.springActive {
+			break
+		}
+		updated, _ = m.Update(springTickMsg{gen: m.springGen})
+		m = updated.(Model)
+	}
+	if m.springActive {
+		t.Fatalf("slide did not settle within %d ticks", maxTicks)
+	}
+	// Settle frame: full box present (title visible), at the steady target height.
+	final := m.View()
+	if !strings.Contains(final, projectsTitle) {
+		t.Error("settle frame missing the projects box title (full box not restored)")
+	}
+	if m.projectsAnimH != m.projectsSnap.targetH {
+		t.Errorf("settle animH=%d, want target %d", m.projectsAnimH, m.projectsSnap.targetH)
+	}
 }

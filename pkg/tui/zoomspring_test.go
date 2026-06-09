@@ -160,7 +160,7 @@ func TestZoomKey_Remaining_ReduceMotion_Snaps(t *testing.T) {
 // lastChart* / hasData reflect the seeded data. unitIdx is chartUnitCost or
 // chartUnitTokens. 60 buckets comfortably exceed visibleBuckets() so the chart
 // is data-filled (not warming up) across the seeded viewport.
-func seedBarModelWithMessages(t *testing.T, unitIdx int, now time.Time) (Model, *cache.Cache) {
+func seedBarModelWithMessages(t testing.TB, unitIdx int, now time.Time) (Model, *cache.Cache) {
 	t.Helper()
 	m, c := seedModelAt(t, unitIdx, 60, now)
 	m.introPending = false
