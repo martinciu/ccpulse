@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/harmonica"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -153,5 +155,92 @@ func TestView_DuringSlide_HeightConservedAndPhantomBorder(t *testing.T) {
 	}
 	if !strings.Contains(frame, "╭") {
 		t.Error("mid-slide frame missing phantom top border")
+	}
+}
+
+// armProjectsShowForTest hand-builds a fully-armed SHOW slide (no key handler,
+// so this task is testable before Task 4). Mirrors what beginProjectsAnimation
+// will set up.
+func armProjectsShowForTest(t *testing.T, m *Model) {
+	t.Helper()
+	m.showProjects = true
+	m.refreshProjects()
+	target := m.projectsTargetHeight()
+	m.projectsSnap = projectsAnimSnapshot{
+		boxRows: strings.Split(renderProjectsBox(m.projectAggs, m.w, target), "\n"),
+		startH:  0, targetH: target,
+		values: m.lastValues, starts: m.lastStarts, peak: m.peak,
+		unit: chartUnitCost, isLine: false, vpWidth: m.viewport.Width,
+		zoom: ZoomLevels[m.zoomIdx], viewFrom: m.lastChartFrom, viewTo: m.lastChartTo,
+	}
+	m.projectsSpring = harmonica.NewSpring(harmonica.FPS(springFPS), phase2Frequency, phase2Damping)
+	m.projectsSpringR, m.projectsSpringVel = 0, 0
+	m.projectsAnimH = 0
+	m.springActive = true
+	m.springKind = springKindProjects
+	m.springGen++
+}
+
+func TestProjectsSpringTick_AdvancesThenSettles(t *testing.T) {
+	withForcedColor(t)
+	now := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
+	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
+	defer c.Close()
+	armProjectsShowForTest(t, &m)
+	target := m.projectsSnap.targetH
+
+	// One tick: ratio moves off 0, animH advances toward target.
+	updated, cmd := m.Update(springTickMsg{gen: m.springGen})
+	m = updated.(Model)
+	if m.projectsSpringR <= 0 {
+		t.Errorf("after one tick: projectsSpringR=%g, want >0", m.projectsSpringR)
+	}
+	if cmd == nil {
+		t.Error("mid-slide tick returned nil cmd, want next tick scheduled")
+	}
+	if m.projectsAnimH < 0 || m.projectsAnimH > target {
+		t.Errorf("projectsAnimH=%d out of [0,%d]", m.projectsAnimH, target)
+	}
+
+	// Drive to settle (never invoke the tick Cmd — it real-sleeps; construct msgs).
+	const maxTicks = 600
+	var lastCmd tea.Cmd
+	for i := 0; i < maxTicks && m.springActive; i++ {
+		updated, lastCmd = m.Update(springTickMsg{gen: m.springGen})
+		m = updated.(Model)
+	}
+	if m.springActive {
+		t.Fatalf("projects slide did not settle within %d ticks", maxTicks)
+	}
+	if m.springKind != springKindNone {
+		t.Errorf("after settle: springKind=%d, want springKindNone", m.springKind)
+	}
+	if lastCmd != nil {
+		t.Errorf("settle: cmd=%v, want nil (loop stops — idle TUI zero-cost)", lastCmd)
+	}
+	if m.projectsAnimH != target {
+		t.Errorf("after settle: projectsAnimH=%d, want target %d", m.projectsAnimH, target)
+	}
+	if !m.showProjects {
+		t.Error("after show settle: showProjects=false, want true (committed)")
+	}
+	if m.viewport.Height != m.chartHeight() {
+		t.Errorf("after settle: viewport.Height=%d, want chartHeight=%d", m.viewport.Height, m.chartHeight())
+	}
+}
+
+func TestProjectsSpringTick_StaleGenDropped(t *testing.T) {
+	now := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
+	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
+	defer c.Close()
+	armProjectsShowForTest(t, &m)
+
+	updated, cmd := m.Update(springTickMsg{gen: m.springGen - 1}) // superseded
+	m = updated.(Model)
+	if cmd != nil {
+		t.Errorf("stale-gen tick: cmd=%v, want nil (dropped)", cmd)
+	}
+	if !m.springActive {
+		t.Error("stale-gen tick must not settle the live animation")
 	}
 }

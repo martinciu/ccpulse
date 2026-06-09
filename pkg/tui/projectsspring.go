@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/martinciu/ccpulse/pkg/cache"
@@ -106,4 +107,30 @@ func (m *Model) renderProjectsAnimFrame() {
 	}
 	m.viewport.SetContent(body)
 	m.viewport.SetXOffset(0)
+}
+
+// handleProjectsSpringTick advances one frame of the box slide: step the spring
+// toward r=1, lerp the outer box height startH→targetH, re-render the frame, and
+// settle when within phaseTransitionThreshold. On settle it commits the height,
+// clears the spring, and restores steady state via refreshChart (which chains
+// refreshProjects — the 1 settle query on show; a no-op on hide since
+// showProjects was committed to false at arm). Returns nil to stop the loop.
+func (m *Model) handleProjectsSpringTick(gen int) tea.Cmd {
+	r, vel := m.projectsSpring.Update(m.projectsSpringR, m.projectsSpringVel, 1.0)
+	m.projectsSpringR, m.projectsSpringVel = r, vel
+	m.projectsAnimH = lerpInt(m.projectsSnap.startH, m.projectsSnap.targetH, r)
+
+	if math.Abs(1.0-r) < phaseTransitionThreshold {
+		m.projectsAnimH = m.projectsSnap.targetH
+		m.springActive = false
+		m.springKind = springKindNone
+		m.viewport.Height = m.chartHeight()
+		m.refreshChart() // steady-state restore (chart + chained refreshProjects)
+		return nil       // stop the loop — idle TUI is zero-animation-cost
+	}
+
+	m.renderProjectsAnimFrame()
+	return tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
+		return springTickMsg{gen: gen}
+	})
 }
