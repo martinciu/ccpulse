@@ -365,6 +365,11 @@ type Model struct {
 	// drives the Y label column rendered outside the scrollable viewport.
 	peak float64
 
+	// showProjects toggles the projects breakdown box (the `p` key). Default
+	// true. When false, projectsHeight() returns 0 — the box is not rendered
+	// and the chart reclaims its rows. Session-only; not persisted.
+	showProjects bool
+
 	// projectAggs is the last per-project rollup for the visible window,
 	// rendered in the projects box below the chart. Recomputed by
 	// refreshProjects on refresh/zoom and on the debounced scroll-settle.
@@ -385,13 +390,14 @@ func New(d Deps) Model {
 		d.Ctx = context.Background()
 	}
 	m := Model{
-		ctx:       d.Ctx,
-		deps:      d,
-		keys:      defaultKeyMap(),
-		help:      help.New(),
-		zoomIdx:   0, // default: 15m
-		dateOrder: detectDateOrder(),
-		now:       time.Now,
+		ctx:          d.Ctx,
+		deps:         d,
+		keys:         defaultKeyMap(),
+		help:         help.New(),
+		zoomIdx:      0, // default: 15m
+		dateOrder:    detectDateOrder(),
+		now:          time.Now,
+		showProjects: true,
 	}
 	m.progress = newProgressBar(40)
 	m.progress7d = newProgressBar(40)
@@ -561,6 +567,9 @@ func (m *Model) handleNowTick(msg nowTickMsg) tea.Cmd {
 // again and supersedes this tick. The chart scrolls live — only the
 // projects box recompute is debounced.
 func (m *Model) scheduleProjectsTick() tea.Cmd {
+	if !m.showProjects {
+		return nil
+	}
 	m.projectsGen++
 	gen := m.projectsGen
 	return tea.Tick(projectsDebounce, func(time.Time) tea.Msg {
@@ -631,6 +640,17 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		return m.handleZoomKey()
 	case key.Matches(msg, m.keys.Unit):
 		return m.handleUnitKey()
+	case key.Matches(msg, m.keys.Projects):
+		// Hard layout cut (not a spring): toggling the box changes
+		// chartHeight, so resize the viewport widget and rebuild content
+		// at the new height — the same subset of handleWindowSize that
+		// matters when only the chart's available height changes.
+		// refreshChart chains refreshProjects, so an on-show requery for
+		// the current window falls out for free.
+		m.showProjects = !m.showProjects
+		m.viewport.Height = m.chartHeight()
+		m.refreshChart()
+		return nil
 	case key.Matches(msg, m.keys.ScrollLeft):
 		m.scrollLeft(ZoomLevels[m.zoomIdx].ScrollStep)
 		return m.scheduleProjectsTick()
@@ -969,6 +989,10 @@ func (m *Model) recomputeWindow() {
 // is derived from the same lastStarts/viewportXOffset/visibleBuckets the
 // bar chart renders, so the box reconciles with the visible bars.
 func (m *Model) refreshProjects() {
+	if !m.showProjects {
+		m.projectAggs = nil
+		return
+	}
 	if m.deps.Cache == nil || len(m.lastStarts) == 0 {
 		m.projectAggs = nil
 		return

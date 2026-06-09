@@ -8,6 +8,7 @@ type KeyMap struct {
 	ScrollRight key.Binding
 	Zoom        key.Binding
 	Unit        key.Binding
+	Projects    key.Binding
 	Help        key.Binding
 	Quit        key.Binding
 }
@@ -30,6 +31,10 @@ func defaultKeyMap() KeyMap {
 			key.WithKeys("u"),
 			key.WithHelp("u", "cost/output/usage"),
 		),
+		Projects: key.NewBinding(
+			key.WithKeys("p"),
+			key.WithHelp("p", "projects"),
+		),
 		Help: key.NewBinding(
 			key.WithKeys("?"),
 			key.WithHelp("?", "help"),
@@ -41,17 +46,17 @@ func defaultKeyMap() KeyMap {
 	}
 }
 
-// ShortHelp implements help.KeyMap. Order: scroll, zoom, unit, help, quit.
+// ShortHelp implements help.KeyMap. Order: scroll, zoom, unit, projects, help, quit.
 func (k KeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.ScrollLeft, k.ScrollRight, k.Zoom, k.Unit, k.Help, k.Quit}
+	return []key.Binding{k.ScrollLeft, k.ScrollRight, k.Zoom, k.Unit, k.Projects, k.Help, k.Quit}
 }
 
-// FullHelp implements help.KeyMap. Unit shares a row with Zoom — they're
-// both "what the chart shows" toggles, distinct from "how the chart is
+// FullHelp implements help.KeyMap. Unit and Projects share a row with Zoom —
+// they're all "what the chart shows" toggles, distinct from "how the chart is
 // scrolled" (top row).
 func (k KeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.ScrollLeft, k.ScrollRight},
-		{k.Zoom, k.Unit, k.Help, k.Quit},
+		{k.Zoom, k.Unit, k.Projects, k.Help, k.Quit},
 	}
 }

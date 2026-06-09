@@ -5528,3 +5528,112 @@ func TestProjectsDebounce_StaleTickDropped(t *testing.T) {
 		t.Errorf("current-gen tick should have repopulated projectAggs")
 	}
 }
+
+func TestProjectsHeight_HiddenWhenToggledOff(t *testing.T) {
+	m, cleanup := seedScrollTestModel(t, 200)
+	defer cleanup()
+
+	// Default on: box reserves rows, chart is shorter than the full m.h-7.
+	if !m.showProjects {
+		t.Fatal("showProjects should default to true")
+	}
+	if m.projectsHeight() <= 0 {
+		t.Fatal("projectsHeight should be > 0 by default at h=40")
+	}
+	full := m.h - 7 // chartHeight when the box reserves nothing
+	if m.chartHeight() >= full {
+		t.Fatalf("chartHeight %d should be < %d while box shown", m.chartHeight(), full)
+	}
+
+	// Toggle the field directly (handler wiring is Task 3).
+	m.showProjects = false
+	if got := m.projectsHeight(); got != 0 {
+		t.Errorf("projectsHeight = %d while hidden, want 0", got)
+	}
+	if got := m.chartHeight(); got != full {
+		t.Errorf("chartHeight = %d while hidden, want reclaimed %d", got, full)
+	}
+}
+
+func TestProjectsToggle_Key(t *testing.T) {
+	m, cleanup := seedScrollTestModel(t, 200)
+	defer cleanup()
+
+	full := m.h - 7 // chartHeight once the box is hidden
+
+	// Press 'p' → hide.
+	m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	if m.showProjects {
+		t.Fatal("first 'p' should toggle showProjects off")
+	}
+	if got := m.projectsHeight(); got != 0 {
+		t.Errorf("projectsHeight = %d after hide, want 0", got)
+	}
+	if got := m.chartHeight(); got != full {
+		t.Errorf("chartHeight = %d after hide, want reclaimed %d", got, full)
+	}
+	if m.viewport.Height != full {
+		t.Errorf("viewport.Height = %d after hide, want %d", m.viewport.Height, full)
+	}
+
+	// Press 'p' again → show.
+	m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	if !m.showProjects {
+		t.Fatal("second 'p' should toggle showProjects on")
+	}
+	if m.projectsHeight() <= 0 {
+		t.Error("projectsHeight should be > 0 again after show")
+	}
+}
+
+func TestProjectsToggle_RemovesBoxFromFrame(t *testing.T) {
+	m, cleanup := seedScrollTestModel(t, 200)
+	defer cleanup()
+
+	if !strings.Contains(m.View(), projectsTitle) {
+		t.Fatal("projects box should be present by default")
+	}
+	m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	if strings.Contains(m.View(), projectsTitle) {
+		t.Error("projects box title should be gone after toggling off")
+	}
+}
+
+func TestProjectsToggle_InertUnderHelp(t *testing.T) {
+	m, cleanup := seedScrollTestModel(t, 200)
+	defer cleanup()
+
+	m.showHelp = true
+	before := m.showProjects
+	m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	if m.showProjects != before {
+		t.Errorf("'p' must be inert while the help overlay is open")
+	}
+}
+
+func TestProjectsToggle_ClearsAndRequeries(t *testing.T) {
+	m, cleanup := seedScrollTestModel(t, 200)
+	defer cleanup()
+
+	// Hide → the rollup is cleared (no stale aggs held while invisible).
+	m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	if m.projectAggs != nil {
+		t.Errorf("projectAggs should be nil while hidden, got %d entries", len(m.projectAggs))
+	}
+
+	// Show → requeried for the visible window.
+	m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	if len(m.projectAggs) == 0 {
+		t.Error("projectAggs should repopulate after toggling on")
+	}
+}
+
+func TestProjectsTick_NotScheduledWhenHidden(t *testing.T) {
+	m, cleanup := seedScrollTestModel(t, 200)
+	defer cleanup()
+
+	m.showProjects = false
+	if cmd := m.scheduleProjectsTick(); cmd != nil {
+		t.Error("scheduleProjectsTick should return nil while hidden")
+	}
+}
