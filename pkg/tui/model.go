@@ -656,24 +656,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 	case key.Matches(msg, m.keys.Unit):
 		return m.handleUnitKey()
 	case key.Matches(msg, m.keys.Projects):
-		// Slide the box up (show) / down (hide) via a harmonica spring (#416).
-		// reduce_motion, a too-short terminal (no room for a box), or an
-		// empty/cleared chart (renderWindow would no-op against no content) →
-		// snap, the pre-#416 hard cut.
-		if m.deps.ReduceMotion || m.projectsTargetHeight() == 0 || m.lastCanvasW == 0 {
-			m.showProjects = !m.showProjects
-			m.viewport.Height = m.chartHeight()
-			m.refreshChart()
-			return nil
-		}
-		m.beginProjectsAnimation()
-		if !m.springActive {
-			return nil
-		}
-		gen := m.springGen
-		return tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
-			return springTickMsg{gen: gen}
-		})
+		return m.handleProjectsKey()
 	case key.Matches(msg, m.keys.ScrollLeft):
 		m.scrollLeft(ZoomLevels[m.zoomIdx].ScrollStep)
 		return m.scheduleProjectsTick()
@@ -711,6 +694,27 @@ func (m *Model) handleUnitKey() tea.Cmd {
 	// frame of refreshChart's new-unit content before the
 	// first tick paints the falling old-unit chart.
 	m.renderSpringFrame()
+	gen := m.springGen
+	return tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
+		return springTickMsg{gen: gen}
+	})
+}
+
+// handleProjectsKey slides the projects box up (show) / down (hide) via a
+// harmonica spring (#416). reduce_motion, a too-short terminal (no room for
+// a box), or an empty/cleared chart (renderWindow would no-op against no
+// content) → snap, the pre-#416 hard cut.
+func (m *Model) handleProjectsKey() tea.Cmd {
+	if m.deps.ReduceMotion || m.projectsTargetHeight() == 0 || m.lastCanvasW == 0 {
+		m.showProjects = !m.showProjects
+		m.viewport.Height = m.chartHeight()
+		m.refreshChart()
+		return nil
+	}
+	m.beginProjectsAnimation()
+	if !m.springActive {
+		return nil
+	}
 	gen := m.springGen
 	return tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
 		return springTickMsg{gen: gen}

@@ -24,10 +24,10 @@ func TestLerpInt(t *testing.T) {
 		{0, 12, 0.5, 6},
 		{12, 0, 0.5, 6},
 		{12, 0, 1, 0},
-		{0, 10, 0.24, 2},  // 2.4 rounds to 2
-		{0, 10, 0.25, 3},  // 2.5 rounds to 3 (math.Round)
-		{0, 10, -0.2, 0},  // r clamps to 0 (spring may undershoot marginally)
-		{0, 10, 1.3, 10},  // r clamps to 1 (spring may overshoot marginally)
+		{0, 10, 0.24, 2}, // 2.4 rounds to 2
+		{0, 10, 0.25, 3}, // 2.5 rounds to 3 (math.Round)
+		{0, 10, -0.2, 0}, // r clamps to 0 (spring may undershoot marginally)
+		{0, 10, 1.3, 10}, // r clamps to 1 (spring may overshoot marginally)
 	}
 	for _, c := range cases {
 		if got := lerpInt(c.a, c.b, c.r); got != c.want {
