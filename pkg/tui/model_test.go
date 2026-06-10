@@ -5652,3 +5652,36 @@ func TestProjectsTick_NotScheduledWhenHidden(t *testing.T) {
 		t.Error("scheduleProjectsTick should return nil while hidden")
 	}
 }
+
+// TestProjectsHeight_ContentAware pins the #420 formula: the box claims only
+// the rows its aggregates need — border(2) + title(1) + ceil(n/cols) — under
+// the pre-existing min(avail/2, projectsMaxRows) cap; zero aggs keep the
+// 4-row placeholder floor. Bare Model construction is enough: projectsHeight
+// reads only showProjects/w/h/projectAggs.
+func TestProjectsHeight_ContentAware(t *testing.T) {
+	cases := []struct {
+		desc string
+		w, h int
+		n    int
+		want int
+	}{
+		{"zero aggs keeps placeholder floor", 120, 40, 0, 4},
+		{"one agg single col", 60, 40, 1, 4},
+		{"two aggs single col (issue example: 5-row box)", 60, 40, 2, 5},
+		{"four aggs pack into two cols", 120, 40, 4, 5},
+		{"many aggs clamp to projectsMaxRows", 60, 40, 30, 12},
+		{"many aggs clamp to half avail on short terminal", 60, 20, 30, 6},
+	}
+	for _, tc := range cases {
+		t.Run(tc.desc, func(t *testing.T) {
+			m := Model{w: tc.w, h: tc.h, showProjects: true}
+			for range tc.n {
+				m.projectAggs = append(m.projectAggs, cache.ProjectAggregate{Label: "p"})
+			}
+			if got := m.projectsHeight(); got != tc.want {
+				t.Errorf("projectsHeight(w=%d h=%d n=%d) = %d, want %d",
+					tc.w, tc.h, tc.n, got, tc.want)
+			}
+		})
+	}
+}
