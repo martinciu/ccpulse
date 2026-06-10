@@ -998,9 +998,24 @@ func (m *Model) recomputeWindow() {
 // refreshProjects recomputes the per-project rollup for the chart's
 // currently-visible window and stores it in m.projectAggs. Cheap: the
 // window is bounded by what's on screen. Safe when the cache is nil or the
-// chart has no data (clears to empty → placeholder). The [from, to) window
-// is derived from the same lastStarts/viewportXOffset/visibleBuckets the
-// bar chart renders, so the box reconciles with the visible bars.
+// chart has no data (clears to empty → placeholder — including remaining
+// mode with zero usage samples, where the warming-up chart and an empty
+// box tell the same no-data story).
+//
+// The [from, to) window is mode-aware (#430):
+//
+//   - Bar modes (tokens/cost): derived from the same lastStarts/
+//     viewportXOffset/visibleBuckets the bar chart renders — exact bucket
+//     edges, so the box reconciles with the visible bars.
+//
+//   - Remaining mode: taken from visibleWindow(), the single source of
+//     truth for the on-screen time range. Here lastStarts holds sparse
+//     usage_samples timestamps (one per usage-API fetch) while
+//     viewportXOffset stays a canvas bucket index, so the bar-mode
+//     indexing would clamp onto the latest sample and query a window of
+//     minutes — empty unless a message landed after the newest sample
+//     (the "no activity in this window" symptom). setX already
+//     special-cases the same sparse-lastStarts mismatch for its clamp.
 func (m *Model) refreshProjects() {
 	if !m.showProjects {
 		m.projectAggs = nil
@@ -1010,15 +1025,20 @@ func (m *Model) refreshProjects() {
 		m.projectAggs = nil
 		return
 	}
-	start := max(0, m.viewportXOffset)
-	if start >= len(m.lastStarts) {
-		start = len(m.lastStarts) - 1
-	}
-	end := min(start+m.visibleBuckets(), len(m.lastStarts))
-	from := m.lastStarts[start]
-	to := m.lastChartTo
-	if end < len(m.lastStarts) {
-		to = m.lastStarts[end]
+	var from, to time.Time
+	if chartUnit(m.unitIdx) == chartUnitRemaining {
+		from, to = m.visibleWindow()
+	} else {
+		start := max(0, m.viewportXOffset)
+		if start >= len(m.lastStarts) {
+			start = len(m.lastStarts) - 1
+		}
+		end := min(start+m.visibleBuckets(), len(m.lastStarts))
+		from = m.lastStarts[start]
+		to = m.lastChartTo
+		if end < len(m.lastStarts) {
+			to = m.lastStarts[end]
+		}
 	}
 	aggs, err := m.deps.Cache.ProjectAggregates(m.ctx, from, to)
 	if err != nil {
