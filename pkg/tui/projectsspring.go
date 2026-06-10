@@ -5,11 +5,12 @@
 // animations are mutually exclusive — refreshChart aborts any in-flight one) and
 // is disambiguated by Model.springKind == springKindProjects.
 //
-// The crux (see spec): the CHART rescales (re-rasterized at the interpolated
-// height each frame, bars shrink/grow into fewer/more rows) while the BOX slices
-// (rendered once at target height at arm, bottom rows revealed each frame with a
-// phantom top border). Both read only in-memory snapshot state — no DB, no
-// ntcharts rebuild, per frame.
+// The crux (round two, see spec): every frame is produced by the STEADY
+// rendering pipelines at the animated height — the chart via renderWindow /
+// buildLineChart at the lever-derived chartHeight, the box re-flowed by the
+// steady View path at projectsHeight(). Endpoint frames are byte-identical to
+// the steady views by construction. All per-frame inputs are in-memory — no
+// DB per frame.
 package tui
 
 import (
@@ -19,7 +20,6 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/harmonica"
-	"github.com/charmbracelet/lipgloss"
 
 	"github.com/martinciu/ccpulse/pkg/cache"
 )
@@ -49,32 +49,6 @@ type projectsAnimSnapshot struct {
 // rounding to the nearest row. r is clamped to [0,1] by the caller's spring.
 func lerpInt(a, b int, r float64) int {
 	return int(math.Round(float64(a) + (float64(b)-float64(a))*r))
-}
-
-// projectsTopBorder renders a phantom rounded top-border line `width` cols wide,
-// matching renderProjectsBox's RoundedBorder + colorMuted, so the sliced box
-// reads as a complete bordered box at the cut throughout the slide.
-func projectsTopBorder(width int) string {
-	b := lipgloss.RoundedBorder()
-	inner := max(width-2, 0)
-	line := b.TopLeft + strings.Repeat(b.Top, inner) + b.TopRight
-	return lipgloss.NewStyle().Foreground(colorMuted).Render(line)
-}
-
-// projectsBandRows returns the bottom `animH` rows of the once-rendered box
-// `rows`, with the topmost visible row replaced by a phantom top border. animH<=0
-// → nil (nothing to show); animH>=len → the full box verbatim (settle frame).
-func projectsBandRows(rows []string, width, animH int) []string {
-	if animH <= 0 || len(rows) == 0 {
-		return nil
-	}
-	if animH >= len(rows) {
-		return rows
-	}
-	band := make([]string, 0, animH)
-	band = append(band, projectsTopBorder(width))
-	band = append(band, rows[len(rows)-(animH-1):]...) // bottom (animH-1) rows incl. real bottom border
-	return band
 }
 
 // renderProjectsFrame paints one slide frame entirely through the STEADY

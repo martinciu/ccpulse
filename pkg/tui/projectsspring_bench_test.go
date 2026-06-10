@@ -36,7 +36,6 @@ func BenchmarkProjectsAnimFrame(b *testing.B) {
 			m := benchModelForProjects(b, w, now)
 			for b.Loop() {
 				m.renderProjectsFrame()
-				_ = projectsBandRows(m.projectsSnap.boxRows, m.w, m.projectsAnimH)
 			}
 		})
 	}

@@ -734,17 +734,15 @@ func (m Model) View() string {
 	parts := []string{header, sep, body}
 	// The projects box sits between chart and footer, suppressed while the
 	// help overlay is up (help replaces the chart body, so the box would be
-	// out of place).
+	// out of place). projectsHeight() returns the animated height mid-slide,
+	// so the SAME render path produces steady and slide frames — the box
+	// re-flows at each height: real borders and title from the first frames,
+	// cells filling top-down, the "…N more" overflow recounting as rows fit
+	// (#416 round two; round one's pre-rendered bottom-slice revealed blank
+	// padding first).
 	if !m.showHelp {
-		switch {
-		case m.springActive && m.springKind == springKindProjects:
-			if band := projectsBandRows(m.projectsSnap.boxRows, m.w, m.projectsAnimH); len(band) > 0 {
-				parts = append(parts, strings.Join(band, "\n"))
-			}
-		default:
-			if ph := m.projectsHeight(); ph > 0 {
-				parts = append(parts, renderProjectsBox(m.projectAggs, m.w, ph))
-			}
+		if ph := m.projectsHeight(); ph > 0 {
+			parts = append(parts, renderProjectsBox(m.projectAggs, m.w, ph))
 		}
 	}
 	parts = append(parts, sep, footer)

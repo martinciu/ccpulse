@@ -61,57 +61,6 @@ func TestProjectsHeight_SpringBranchOverridesTarget(t *testing.T) {
 	}
 }
 
-func TestProjectsTopBorder_WidthAndCorners(t *testing.T) {
-	withForcedColor(t) // assert on the real painted ANSI, not stripped output
-	b := projectsTopBorder(80)
-	if w := lipgloss.Width(b); w != 80 {
-		t.Errorf("projectsTopBorder width=%d, want 80", w)
-	}
-	// Rounded border corners (strip styling via lipgloss.Width-agnostic contains).
-	if !strings.Contains(b, "╭") || !strings.Contains(b, "╮") {
-		t.Errorf("projectsTopBorder missing rounded corners: %q", b)
-	}
-	// The phantom border must carry the same colorMuted foreground as
-	// renderProjectsBox's real border (BorderForeground(colorMuted)); a colour
-	// mismatch would read as a visible seam at the slide cut. Fingerprint the
-	// envelope rather than hard-coding escape bytes.
-	muted := lipgloss.NewStyle().Foreground(colorMuted).Render(probeMarker)
-	open, _, ok := splitANSIEnvelope(muted)
-	if !ok {
-		t.Fatal("could not fingerprint colorMuted ANSI envelope")
-	}
-	if !strings.Contains(b, open) {
-		t.Errorf("phantom top border missing colorMuted foreground envelope %q in %q", open, b)
-	}
-}
-
-func TestProjectsBandRows_RevealsBottomWithPhantomTop(t *testing.T) {
-	rows := []string{"TOPBORDER", "title", "r1", "r2", "BOTBORDER"} // 5-row box
-
-	// animH=0 → no band.
-	if got := projectsBandRows(rows, 40, 0); got != nil {
-		t.Errorf("animH=0 band=%v, want nil", got)
-	}
-	// animH=1 → just the phantom top border.
-	band := projectsBandRows(rows, 40, 1)
-	if len(band) != 1 || !strings.Contains(band[0], "╭") {
-		t.Errorf("animH=1 band=%v, want [phantom-top]", band)
-	}
-	// animH=3 → phantom top + bottom 2 rows (r2, BOTBORDER).
-	band = projectsBandRows(rows, 40, 3)
-	if len(band) != 3 {
-		t.Fatalf("animH=3 len(band)=%d, want 3", len(band))
-	}
-	if !strings.Contains(band[0], "╭") || band[1] != "r2" || band[2] != "BOTBORDER" {
-		t.Errorf("animH=3 band=%v, want [phantom, r2, BOTBORDER]", band)
-	}
-	// animH>=len → full box verbatim (settle frame).
-	band = projectsBandRows(rows, 40, 5)
-	if len(band) != 5 || band[0] != "TOPBORDER" {
-		t.Errorf("animH=5 band=%v, want full rows", band)
-	}
-}
-
 // renderProjectsFrame must keep viewport.Height in lockstep with the
 // lever-derived chartHeight every frame (round-one finding ccpulse-416.1).
 func TestRenderProjectsFrame_SetsViewportHeightToChartHeight(t *testing.T) {
@@ -136,7 +85,12 @@ func TestRenderProjectsFrame_SetsViewportHeightToChartHeight(t *testing.T) {
 	}
 }
 
-func TestView_DuringSlide_HeightConservedAndPhantomBorder(t *testing.T) {
+// TestView_DuringSlide_HeightConservedRealBorder probes a mid-flight frame:
+// total height is conserved (chartHeight() + projectsHeight() == m.h - 7 and
+// the rendered frame is exactly m.h rows), and the box band carries the REAL
+// renderProjectsBox top border + title — re-flowed at the animated height,
+// not a phantom-topped bottom slice (#416 round two).
+func TestView_DuringSlide_HeightConservedRealBorder(t *testing.T) {
 	withForcedColor(t)
 	now := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
 	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
@@ -144,23 +98,36 @@ func TestView_DuringSlide_HeightConservedAndPhantomBorder(t *testing.T) {
 	m.showProjects = true
 	m.refreshProjects()
 	m.projectsSnap = projectsAnimSnapshot{
-		boxRows: strings.Split(renderProjectsBox(m.projectAggs, m.w, 12), "\n"),
-		startH:  0, targetH: 12,
-		values: m.lastValues, starts: m.lastStarts, peak: m.peak,
-		unit: chartUnitCost, isLine: false, vpWidth: m.viewport.Width,
-		zoom: ZoomLevels[m.zoomIdx], viewFrom: m.lastChartFrom, viewTo: m.lastChartTo,
+		startH: 0, targetH: 12,
 	}
 	m.springActive = true
 	m.springKind = springKindProjects
 	m.projectsAnimH = 5
 	m.renderProjectsFrame()
 
+	if got, want := m.chartHeight()+m.projectsHeight(), m.h-7; got != want {
+		t.Errorf("chartHeight+projectsHeight=%d, want %d (height lever conserved)", got, want)
+	}
 	frame := m.View()
 	if got := lipgloss.Height(frame); got != m.h {
 		t.Errorf("View height=%d, want %d (conserved every frame)", got, m.h)
 	}
-	if !strings.Contains(frame, "╭") {
-		t.Error("mid-slide frame missing phantom top border")
+	// animH=5 ≥ 4: the box band must be the real re-flowed box — top border
+	// with rounded corners and the title row right beneath it. The header is
+	// also a rounded-bordered block, so the box's top border is the LAST ╭
+	// row in the frame.
+	lines := strings.Split(frame, "\n")
+	topIdx := -1
+	for i, line := range lines {
+		if strings.Contains(line, "╭") {
+			topIdx = i
+		}
+	}
+	if topIdx == -1 {
+		t.Fatal("mid-slide frame missing the box top border")
+	}
+	if topIdx+1 >= len(lines) || !strings.Contains(lines[topIdx+1], projectsTitle) {
+		t.Errorf("row beneath the top border lacks the title %q (box not re-flowed)", projectsTitle)
 	}
 }
 
@@ -458,6 +425,49 @@ func assertSlideEndpoints(t *testing.T, m Model, dir string) Model {
 		t.Errorf("%s: settle frame differs from steady post-slide view\nsettle:\n%s\nsteady:\n%s", dir, settled, post)
 	}
 	return m
+}
+
+// TestProjectsSlide_BoxContentPresentEarly guards the round-one "box rose
+// empty" defect: as soon as the box band is a few rows tall it must carry
+// the real top border, the title, and (one row later) the top spender —
+// renderProjectsBox re-flowed at the animated height, not a blank-padded
+// pre-render sliced bottom-first.
+func TestProjectsSlide_BoxContentPresentEarly(t *testing.T) {
+	withForcedColor(t)
+	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
+	defer c.Close()
+	m.showProjects = false
+	m.refreshChart()
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	m = updated.(Model)
+	if len(m.projectAggs) == 0 {
+		t.Fatal("arm did not populate projectAggs (show-path requery missing)")
+	}
+	topLabel := m.projectAggs[0].Label
+
+	sawTitle := false
+	for i := 0; m.springActive && i < 600; i++ {
+		updated, _ = m.Update(springTickMsg{gen: m.springGen})
+		m = updated.(Model)
+		frame := m.View()
+		if lipgloss.Height(frame) != m.h {
+			t.Fatalf("tick %d: frame height %d != terminal height %d", i, lipgloss.Height(frame), m.h)
+		}
+		if m.springActive && m.projectsAnimH >= 4 {
+			if !strings.Contains(frame, projectsTitle) {
+				t.Fatalf("animH=%d: frame lacks box title %q — box rendering empty", m.projectsAnimH, projectsTitle)
+			}
+			sawTitle = true
+		}
+		if m.springActive && m.projectsAnimH >= 5 && !strings.Contains(frame, topLabel) {
+			t.Fatalf("animH=%d: frame lacks top spender %q — content not re-flowed", m.projectsAnimH, topLabel)
+		}
+	}
+	if !sawTitle {
+		t.Fatal("slide settled without ever sampling a frame at animH >= 4")
+	}
 }
 
 // projectAggsBackingPtr returns the backing-array address of a ProjectAggregate
