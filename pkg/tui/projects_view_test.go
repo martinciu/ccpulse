@@ -174,3 +174,21 @@ func TestProjectCell_TokenColumnAlignment(t *testing.T) {
 		}
 	}
 }
+
+// TestProjectCellCols pins the packing math shared by renderProjectsBox and
+// projectsHeight (#420): cells of minCellW packed with columnDivider gaps
+// into the box's inner width (outer minus border + padding = 4).
+func TestProjectCellCols(t *testing.T) {
+	cases := []struct{ w, want int }{
+		{50, 1},  // narrow: always at least one column
+		{102, 1}, // inner=98: one cell + divider + cell doesn't fit
+		{103, 2}, // inner=99 = 48 + 3 + 48: exactly two columns
+		{120, 2},
+		{200, 3}, // inner=196: three columns, not four
+	}
+	for _, tc := range cases {
+		if got := projectCellCols(tc.w); got != tc.want {
+			t.Errorf("projectCellCols(%d) = %d, want %d", tc.w, got, tc.want)
+		}
+	}
+}

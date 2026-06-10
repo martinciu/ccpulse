@@ -579,12 +579,25 @@ func (m *Model) scheduleProjectsTick() tea.Cmd {
 
 // handleProjectsTick recomputes the projects box if this tick is the latest
 // scheduled (gen matches); otherwise it was superseded by a later scroll and
-// is dropped. No Cmd to return — the settle chain ends here.
+// is dropped. The settle is also where the content-aware box height reflows
+// (#420): refreshProjects may change the row count, so re-sync the layout.
+// No Cmd to return — the settle chain ends here.
 func (m *Model) handleProjectsTick(msg projectsTickMsg) {
 	if msg.gen != m.projectsGen {
 		return
 	}
+	// Do not reflow mid-spring: a unit or zoom spring in flight owns m.peak as
+	// the bar-height normalization base, and applyProjectsResize calls
+	// renderWindow (bar mode) / buildLineChart (remaining mode) which would
+	// overwrite it, corrupting the spring frames and flashing steady-state
+	// content (#420). The deferred recompute is never lost — both spring settle
+	// paths call refreshChart (pkg/tui/springs.go settle, pkg/tui/zoomspring.go
+	// settle), whose pre-paint refreshProjects + height re-sync catches it.
+	if m.springActive {
+		return
+	}
 	m.refreshProjects()
+	m.applyProjectsResize()
 }
 
 // handleQuotaMsg records fresh usage, recomputes the window, and resolves the
@@ -1014,6 +1027,32 @@ func (m *Model) refreshProjects() {
 		return
 	}
 	m.projectAggs = aggs
+}
+
+// applyProjectsResize re-syncs the viewport height and chart content after a
+// projectAggs change moved the content-aware projectsHeight (#420). No-op
+// when the height is already in sync — the common case; most scroll-settles
+// don't cross a row-count boundary. Never re-queries the cache: bar mode
+// re-renders the in-memory visible window; remaining mode rebuilds the line
+// chart from lastPts5h/7d. Height is a fixed point after one call (resizing
+// never changes projectAggs), so callers never loop.
+func (m *Model) applyProjectsResize() {
+	nh := m.chartHeight()
+	if m.viewport.Height == nh {
+		return
+	}
+	m.viewport.Height = nh
+	if m.lastCanvasW == 0 {
+		return // cleared/pre-init chart: no content to re-render
+	}
+	if chartUnit(m.unitIdx) == chartUnitRemaining {
+		m.viewport.SetContent(buildLineChart(m.lastPts5h, m.lastPts7d,
+			m.lastChartFrom, m.lastChartTo, m.lastCanvasW, nh, m.now(),
+			ZoomLevels[m.zoomIdx], m.dateOrder, "projects-resize", ""))
+		m.setX(m.viewportXOffset)
+	} else {
+		m.renderWindow()
+	}
 }
 
 // minBarWidth is the smallest a quota bar may shrink to. Lowered from the
