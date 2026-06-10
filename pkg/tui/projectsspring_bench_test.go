@@ -35,7 +35,7 @@ func BenchmarkProjectsAnimFrame(b *testing.B) {
 		b.Run(strconv.Itoa(w), func(b *testing.B) {
 			m := benchModelForProjects(b, w, now)
 			for b.Loop() {
-				m.renderProjectsAnimFrame()
+				m.renderProjectsFrame()
 				_ = projectsBandRows(m.projectsSnap.boxRows, m.w, m.projectsAnimH)
 			}
 		})

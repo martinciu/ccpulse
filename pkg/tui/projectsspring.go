@@ -77,37 +77,27 @@ func projectsBandRows(rows []string, width, animH int) []string {
 	return band
 }
 
-// renderProjectsAnimFrame rebuilds the viewport chart body at the frame's
-// (animated) height from in-memory snapshot state — bar mode re-rasterizes the
-// skyline so bars rescale into the new row count; line mode re-builds the
-// windowed line chart. No DB, no ntcharts rebuild beyond the windowed line
-// canvas. The box band is composed separately by View.
-func (m *Model) renderProjectsAnimFrame() {
-	chartH := m.chartHeight() // derives from projectsAnimH via the projectsHeight lever
+// renderProjectsFrame paints one slide frame entirely through the STEADY
+// rendering pipelines at the lever-derived (animated) chart height — the
+// property that makes the slide's endpoint frames byte-identical to the
+// steady views (#416 round two; round one's parallel skyline/snapshot path
+// produced mismatched endpoints, shifted+recolored x-labels and an empty
+// box). Bar modes go through renderWindow (visible slice, flush-right
+// slack, on-screen peak, in-bar labels); remaining mode re-issues the
+// steady full-canvas line build + offset re-apply. All inputs are
+// in-memory — zero DB per frame.
+func (m *Model) renderProjectsFrame() {
+	chartH := m.chartHeight()
 	m.viewport.Height = chartH
-	snap := m.projectsSnap
-
-	if snap.isLine {
-		body := buildLineChart(snap.pts5h, snap.pts7d, snap.viewFrom, snap.viewTo,
-			snap.vpWidth, chartH, m.now(), snap.zoom, m.dateOrder, "projects", "")
-		m.viewport.SetContent(body)
-		m.viewport.SetXOffset(0)
+	if chartUnit(m.unitIdx) == chartUnitRemaining {
+		zoom := ZoomLevels[m.zoomIdx]
+		m.viewport.SetContent(buildLineChart(m.lastPts5h, m.lastPts7d,
+			m.lastChartFrom, m.lastChartTo, m.lastCanvasW, chartH,
+			m.now(), zoom, m.dateOrder, "projects", ""))
+		m.setX(m.viewportXOffset)
 		return
 	}
-
-	barsH := chartH
-	if chartH >= 6 {
-		barsH = chartH - 1
-	}
-	sky := rasterizeSkyline(snap.values, snap.starts, snap.peak, snap.vpWidth, barsH, snap.zoom)
-	body := drawSkyline(sky, barsH, snap.unit)
-	if chartH >= 6 {
-		labelRow := buildXLabelsRow(synthLabelStarts(snap.viewFrom, snap.viewTo, snap.zoom),
-			snap.vpWidth, snap.zoom, m.now(), m.dateOrder)
-		body = lipgloss.JoinVertical(lipgloss.Left, body, labelRow)
-	}
-	m.viewport.SetContent(body)
-	m.viewport.SetXOffset(0)
+	m.renderWindow()
 }
 
 // handleProjectsSpringTick advances one frame of the box slide: step the spring
@@ -130,7 +120,7 @@ func (m *Model) handleProjectsSpringTick(gen int) tea.Cmd {
 		return nil       // stop the loop — idle TUI is zero-animation-cost
 	}
 
-	m.renderProjectsAnimFrame()
+	m.renderProjectsFrame()
 	return tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
 		return springTickMsg{gen: gen}
 	})
@@ -178,6 +168,8 @@ func (m *Model) beginProjectsAnimation() {
 	m.springKind = springKindProjects
 	m.springGen++
 
-	// Paint frame 0 synchronously so the next View doesn't flash the target layout.
-	m.renderProjectsAnimFrame()
+	// The viewport is deliberately NOT repainted here: frame 0 of the slide IS
+	// the current steady frame (show starts at height 0 = the box-hidden
+	// layout; hide starts at the current target). That no-touch property is
+	// half of the endpoint-identity guarantee (#416 round two).
 }

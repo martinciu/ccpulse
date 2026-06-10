@@ -112,37 +112,27 @@ func TestProjectsBandRows_RevealsBottomWithPhantomTop(t *testing.T) {
 	}
 }
 
-func TestRenderProjectsAnimFrame_SetsViewportHeightToChartHeight(t *testing.T) {
+// renderProjectsFrame must keep viewport.Height in lockstep with the
+// lever-derived chartHeight every frame (round-one finding ccpulse-416.1).
+func TestRenderProjectsFrame_SetsViewportHeightToChartHeight(t *testing.T) {
 	withForcedColor(t)
-	now := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
 	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
 	defer c.Close()
+	m.showProjects = false
+	m.refreshChart()
 
-	// Hand-arm a mid-slide state (show, animH=5 of target 12).
-	m.showProjects = true
-	m.refreshProjects()
-	m.projectsSnap = projectsAnimSnapshot{
-		boxRows: strings.Split(renderProjectsBox(m.projectAggs, m.w, 12), "\n"),
-		startH:  0, targetH: 12,
-		values: m.lastValues, starts: m.lastStarts, peak: m.peak,
-		unit: chartUnitCost, isLine: false, vpWidth: m.viewport.Width,
-		zoom: ZoomLevels[m.zoomIdx], viewFrom: m.lastChartFrom, viewTo: m.lastChartTo,
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	m = updated.(Model)
+	for range 4 { // advance a few frames so projectsAnimH is mid-flight
+		updated, _ = m.Update(springTickMsg{gen: m.springGen})
+		m = updated.(Model)
 	}
-	m.springActive = true
-	m.springKind = springKindProjects
-	m.projectsAnimH = 5
-
-	m.renderProjectsAnimFrame()
-
-	wantChartH := m.h - 7 - 5 // 33-5 = 28
-	if m.viewport.Height != wantChartH {
-		t.Errorf("viewport.Height=%d, want chartHeight=%d during slide", m.viewport.Height, wantChartH)
+	if !m.springActive {
+		t.Fatal("slide settled in 4 ticks; cannot probe mid-flight")
 	}
-	if m.chartHeight() != wantChartH {
-		t.Errorf("chartHeight()=%d, want %d", m.chartHeight(), wantChartH)
-	}
-	if m.viewport.View() == "" {
-		t.Error("viewport content empty after renderProjectsAnimFrame")
+	if m.viewport.Height != m.chartHeight() {
+		t.Errorf("viewport.Height=%d, want chartHeight()=%d", m.viewport.Height, m.chartHeight())
 	}
 }
 
@@ -163,7 +153,7 @@ func TestView_DuringSlide_HeightConservedAndPhantomBorder(t *testing.T) {
 	m.springActive = true
 	m.springKind = springKindProjects
 	m.projectsAnimH = 5
-	m.renderProjectsAnimFrame()
+	m.renderProjectsFrame()
 
 	frame := m.View()
 	if got := lipgloss.Height(frame); got != m.h {
@@ -417,6 +407,57 @@ func TestZoomKey_AbortsInflightProjectsSlide(t *testing.T) {
 	if !m.showProjects {
 		t.Error("'z' during show-slide: showProjects=false, want true (slide's committed terminal state)")
 	}
+}
+
+// TestProjectsSlide_EndpointIdentity_BarMode is the headline #416-round-two
+// property: the slide's frame 0 is byte-identical to the steady pre-slide
+// View, and the settle frame is byte-identical to the steady post-slide View
+// — both directions, under forced color so styling drift fails the test.
+func TestProjectsSlide_EndpointIdentity_BarMode(t *testing.T) {
+	withForcedColor(t)
+	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
+	defer c.Close()
+	m.showProjects = false // hidden by default (#414) → first 'p' is a show
+	m.refreshChart()
+
+	m = assertSlideEndpoints(t, m, "show")
+	m = assertSlideEndpoints(t, m, "hide")
+	_ = m
+}
+
+// assertSlideEndpoints presses 'p', asserts frame-0 identity, drives the
+// spring to settle via constructed springTickMsg (never the real tea.Tick
+// Cmd), and asserts settle identity against a fresh steady re-render.
+func assertSlideEndpoints(t *testing.T, m Model, dir string) Model {
+	t.Helper()
+	pre := m.View()
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatalf("%s: 'p' returned nil cmd, want first tick scheduled", dir)
+	}
+	if !m.springActive || m.springKind != springKindProjects {
+		t.Fatalf("%s: springActive=%v kind=%d, want true/projects", dir, m.springActive, m.springKind)
+	}
+	if got := m.View(); got != pre {
+		t.Errorf("%s: frame 0 differs from steady pre-slide view\nframe0:\n%s\nsteady:\n%s", dir, got, pre)
+	}
+
+	for i := 0; m.springActive; i++ {
+		if i > 600 {
+			t.Fatalf("%s: slide did not settle within 600 ticks", dir)
+		}
+		updated, _ = m.Update(springTickMsg{gen: m.springGen})
+		m = updated.(Model)
+	}
+	settled := m.View()
+	m.refreshChart() // independent steady re-render of the post-slide state
+	if post := m.View(); settled != post {
+		t.Errorf("%s: settle frame differs from steady post-slide view\nsettle:\n%s\nsteady:\n%s", dir, settled, post)
+	}
+	return m
 }
 
 // projectAggsBackingPtr returns the backing-array address of a ProjectAggregate
