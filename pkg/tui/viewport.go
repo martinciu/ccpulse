@@ -202,8 +202,9 @@ const projectsMaxRows = 12
 // box. Content-aware since #420: the box shrinks to its aggregates and
 // chartHeight reclaims the rows. Heights depend on aggs but never the
 // reverse (refreshProjects derives its window from width/scroll state), so
-// there is no cycle; every projectAggs mutation is followed by
-// applyProjectsResize, which re-syncs the viewport in one pass.
+// there is no cycle; every projectAggs mutation re-syncs the viewport in
+// one pass (refreshChart inline before its paint, the debounced settle via
+// applyProjectsResize, clearChart self-contained).
 func (m Model) projectsHeight() int {
 	if !m.showProjects {
 		return 0

@@ -5728,9 +5728,8 @@ func TestProjectsSettleReflow_ChartReclaimsRows(t *testing.T) {
 }
 
 // TestRefreshChart_ViewportHeightFixedPoint asserts refreshChart leaves the
-// layout at its fixed point (#420): the tail applyProjectsResize corrects the
-// toggle-on transient where chartHeight was computed before refreshProjects
-// populated the aggs.
+// layout at its fixed point (#420): refreshProjects runs before the paint so
+// chartHeight is computed with the final aggs — no toggle-on double-render.
 func TestRefreshChart_ViewportHeightFixedPoint(t *testing.T) {
 	m, cleanup := seedScrollTestModel(t, 200)
 	defer cleanup()
@@ -5769,5 +5768,57 @@ func TestClearChart_ResetsProjectsLayout(t *testing.T) {
 	if m.viewport.Height != m.chartHeight() {
 		t.Errorf("viewport.Height = %d after clearChart, want %d",
 			m.viewport.Height, m.chartHeight())
+	}
+}
+
+// TestHandleProjectsTick_NoOpMidSpring asserts that a settle tick arriving
+// while a spring is in flight is silently ignored (#420). The spring owns
+// m.peak as the bar-height normalization base; allowing applyProjectsResize
+// to call renderWindow mid-spring would overwrite it and corrupt spring frames.
+// The deferred recompute is not lost — both settle paths (pkg/tui/springs.go,
+// pkg/tui/zoomspring.go) call refreshChart, which re-runs refreshProjects and
+// re-syncs the height before the final paint.
+//
+// projectsTickMsg is constructed directly; never invoke the real tea.Tick Cmd
+// in tests (it sleeps to the settle deadline — see reference_tui_tick_cmd_test_pattern).
+func TestHandleProjectsTick_NoOpMidSpring(t *testing.T) {
+	m, cleanup := seedScrollTestModel(t, 200)
+	defer cleanup()
+
+	m.showProjects = true
+	m.refreshChart()
+
+	// Inflate aggs to simulate a window that previously had more projects, then
+	// re-sync the layout to the taller box — mirrors TestProjectsSettleReflow pattern.
+	fakes := make([]cache.ProjectAggregate, 8)
+	for i := range fakes {
+		fakes[i] = cache.ProjectAggregate{Label: fmt.Sprintf("p%d", i)}
+	}
+	m.projectAggs = fakes
+	m.viewport.Height = m.chartHeight()
+
+	// Record the stable state the spring is mid-flight with.
+	peakBefore := m.peak
+	heightBefore := m.viewport.Height
+	aggsBefore := len(m.projectAggs)
+
+	// Arm a settle tick, then mark the spring active — simulates a scroll
+	// arriving while a unit/zoom spring is in flight.
+	if cmd := m.scheduleProjectsTick(); cmd == nil {
+		t.Fatal("scheduleProjectsTick must return a Cmd while shown")
+	}
+	m.springActive = true
+
+	// Deliver the current-gen tick mid-spring; the guard must short-circuit.
+	m.handleProjectsTick(projectsTickMsg{gen: m.projectsGen})
+
+	if m.peak != peakBefore {
+		t.Errorf("mid-spring tick: peak changed from %v to %v, want no change", peakBefore, m.peak)
+	}
+	if m.viewport.Height != heightBefore {
+		t.Errorf("mid-spring tick: viewport.Height changed from %d to %d, want no change", heightBefore, m.viewport.Height)
+	}
+	if len(m.projectAggs) != aggsBefore {
+		t.Errorf("mid-spring tick: projectAggs len changed from %d to %d, want no change", aggsBefore, len(m.projectAggs))
 	}
 }

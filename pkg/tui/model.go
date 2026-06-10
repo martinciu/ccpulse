@@ -586,6 +586,16 @@ func (m *Model) handleProjectsTick(msg projectsTickMsg) {
 	if msg.gen != m.projectsGen {
 		return
 	}
+	// Do not reflow mid-spring: a unit or zoom spring in flight owns m.peak as
+	// the bar-height normalization base, and applyProjectsResize calls
+	// renderWindow (bar mode) / buildLineChart (remaining mode) which would
+	// overwrite it, corrupting the spring frames and flashing steady-state
+	// content (#420). The deferred recompute is never lost — both spring settle
+	// paths call refreshChart (pkg/tui/springs.go settle, pkg/tui/zoomspring.go
+	// settle), whose pre-paint refreshProjects + height re-sync catches it.
+	if m.springActive {
+		return
+	}
 	m.refreshProjects()
 	m.applyProjectsResize()
 }
