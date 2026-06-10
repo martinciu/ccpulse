@@ -2,6 +2,7 @@ package tui
 
 import (
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -468,6 +469,46 @@ func TestProjectsSlide_BoxContentPresentEarly(t *testing.T) {
 	if !sawTitle {
 		t.Fatal("slide settled without ever sampling a frame at animH >= 4")
 	}
+}
+
+// TestProjectsSlide_XLabelRowStable guards round-one defects 3+4: during the
+// slide the x-axis label row must keep its exact content, column position
+// and ANSI styling — the steady renderer's own label row, not a synthetic
+// re-creation. Asserted by requiring the steady view's label line to appear
+// verbatim (bytes, incl. color) in every sampled mid-slide frame.
+func TestProjectsSlide_XLabelRowStable(t *testing.T) {
+	withForcedColor(t)
+	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
+	defer c.Close()
+	m.showProjects = false
+	m.refreshChart()
+
+	labelRow := findXLabelRow(t, m.View())
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	m = updated.(Model)
+	for i := 0; m.springActive && i < 600; i++ {
+		updated, _ = m.Update(springTickMsg{gen: m.springGen})
+		m = updated.(Model)
+		if m.springActive && m.chartHeight() >= 6 && !strings.Contains(m.View(), labelRow) {
+			t.Fatalf("tick %d (chartH=%d): steady x-label row missing/altered mid-slide\nwant line: %q", i, m.chartHeight(), labelRow)
+		}
+	}
+}
+
+// findXLabelRow returns the first View line carrying >= 2 HH:MM time labels
+// — the bar chart's x-axis row.
+func findXLabelRow(t *testing.T, view string) string {
+	t.Helper()
+	re := regexp.MustCompile(`\d{1,2}:\d{2}`)
+	for line := range strings.SplitSeq(view, "\n") {
+		if len(re.FindAllString(line, -1)) >= 2 {
+			return line
+		}
+	}
+	t.Fatal("no x-label row found in steady view")
+	return ""
 }
 
 // projectAggsBackingPtr returns the backing-array address of a ProjectAggregate

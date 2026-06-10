@@ -781,15 +781,18 @@ func (m Model) renderChartBody(rawBody string) string {
 		}
 		return barZoomYLabel(rawBody, m.zoomSnap, ZoomLevels[m.zoomIdx], m.chartHeight(), m.zoomSpringR)
 	case m.springActive && m.springKind == springKindProjects:
-		// The chart isn't morphing data, only height — render the steady-state
-		// y-axis at the frame's (animated) chartHeight, from frozen snapshot
-		// unit/peak/zoom. MUST precede the generic springActive case, which reads
-		// m.springRatios (the unit-toggle state, unset here).
-		if m.projectsSnap.isLine {
+		// Height-only animation: the y-overlay is EXACTLY the steady-state
+		// overlay at the frame's (animated) chartHeight — same live inputs
+		// as the steady cases below, so endpoint frames match them
+		// byte-for-byte (#416 round two). m.peak is recomputed by
+		// renderWindow each frame from the same fixed window (constant
+		// during the slide). MUST precede the generic springActive case,
+		// which reads m.springRatios (unit-toggle state, unset here).
+		if chartUnit(m.unitIdx) == chartUnitRemaining {
 			return overlayYTicks(rawBody, m.chartHeight(), 1.0)
 		}
-		return overlayYLabel(rawBody, m.projectsSnap.peak, m.projectsSnap.unit,
-			m.chartHeight(), 1.0, m.projectsSnap.zoom.hasInBarNumbers())
+		return overlayYLabel(rawBody, m.peak, chartUnit(m.unitIdx),
+			m.chartHeight(), 1.0, ZoomLevels[m.zoomIdx].hasInBarNumbers())
 	case m.springActive:
 		var maxR float64
 		for _, r := range m.springRatios {
