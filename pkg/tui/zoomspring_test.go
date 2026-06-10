@@ -66,7 +66,7 @@ func TestVisibleWindow_RemainingGeometry(t *testing.T) {
 // seedRemainingModelWithSamples builds a remaining-mode model at the 15m zoom
 // with `n` usage samples spaced 15m apart ending at `now`, then refreshes so
 // lastPts5h / lastChart* / hasData reflect the seeded data.
-func seedRemainingModelWithSamples(t *testing.T, n int, now time.Time) (Model, *cache.Cache) {
+func seedRemainingModelWithSamples(t testing.TB, n int, now time.Time) (Model, *cache.Cache) {
 	t.Helper()
 	m, c := seedModelAt(t, int(chartUnitRemaining), 0, now)
 	for i := range n {

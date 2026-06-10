@@ -413,6 +413,24 @@ func assertSlideEndpoints(t *testing.T, m Model, dir string) Model {
 	return m
 }
 
+// TestProjectsSlide_EndpointIdentity_LineMode mirrors the bar-mode headline
+// test in remaining (line) mode: the per-frame build is the steady
+// full-canvas buildLineChart at the lever height + the steady offset
+// re-apply — closing round-one finding ccpulse-416.2 (the old frame skipped
+// the steady path's windowing/offset semantics entirely).
+func TestProjectsSlide_EndpointIdentity_LineMode(t *testing.T) {
+	withForcedColor(t)
+	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	m, c := seedRemainingModelWithSamples(t, 60, now)
+	defer c.Close()
+	m.showProjects = false
+	m.refreshChart()
+
+	m = assertSlideEndpoints(t, m, "show-line")
+	m = assertSlideEndpoints(t, m, "hide-line")
+	_ = m
+}
+
 // TestProjectsSlide_BoxContentPresentEarly guards the round-one "box rose
 // empty" defect: as soon as the box band is a few rows tall it must carry
 // the real top border, the title, and (one row later) the top spender —
