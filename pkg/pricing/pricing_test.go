@@ -189,7 +189,7 @@ func TestHistory_TableAt(t *testing.T) {
 		{"exact earliest", mustTime("2026-05-09T00:00:00Z"), "2026-05-09"},
 		{"between versions -> preceding", mustTime("2026-05-09T23:59:59Z"), "2026-05-09"},
 		{"exact later version", mustTime("2026-05-10T00:00:00Z"), "2026-05-10"},
-		{"after latest -> latest", mustTime("2099-01-01T00:00:00Z"), "2026-05-28"},
+		{"after latest -> latest", mustTime("2099-01-01T00:00:00Z"), "2026-06-09"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -303,5 +303,43 @@ func TestHistory_CostFor_FallForward(t *testing.T) {
 				t.Errorf("VersionFor = %q, want %q", got, tt.wantVersion)
 			}
 		})
+	}
+}
+
+func TestLatestSnapshot_FableAndMythos(t *testing.T) {
+	h, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	tab := h.Latest()
+	if tab.Version != "2026-06-09" {
+		t.Fatalf("Latest().Version = %q, want 2026-06-09", tab.Version)
+	}
+	want := ModelRate{
+		InputPerMtok:        10.00,
+		OutputPerMtok:       50.00,
+		CacheReadPerMtok:    1.00,
+		CacheWrite5mPerMtok: 12.50,
+		CacheWrite1hPerMtok: 20.00,
+	}
+	for _, model := range []string{"claude-fable-5", "claude-mythos-5", "fable", "mythos"} {
+		got, ok := tab.Models[model]
+		if !ok {
+			t.Errorf("Models[%q] missing", model)
+			continue
+		}
+		if got != want {
+			t.Errorf("Models[%q] = %+v, want %+v", model, got, want)
+		}
+	}
+	// New snapshot must carry every model forward from 2026-05-28.
+	prev := h.TableAt(time.Date(2026, 5, 28, 12, 0, 0, 0, time.UTC))
+	if prev.Version != "2026-05-28" {
+		t.Fatalf("TableAt(2026-05-28).Version = %q, want 2026-05-28", prev.Version)
+	}
+	for model := range prev.Models {
+		if _, ok := tab.Models[model]; !ok {
+			t.Errorf("Models[%q] present in 2026-05-28 but missing from 2026-06-09", model)
+		}
 	}
 }
