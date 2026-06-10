@@ -5685,3 +5685,89 @@ func TestProjectsHeight_ContentAware(t *testing.T) {
 		})
 	}
 }
+
+// TestProjectsSettleReflow_ChartReclaimsRows drives the scroll-settle tick
+// (#420): when the settled window's rollup needs fewer rows than the box
+// currently shows, the box shrinks, chartHeight reclaims the rows, and
+// viewport.Height re-syncs — all in the same handleProjectsTick pass.
+// projectsTickMsg is constructed directly; never invoke the real tea.Tick
+// Cmd in tests (it sleeps).
+func TestProjectsSettleReflow_ChartReclaimsRows(t *testing.T) {
+	m, cleanup := seedScrollTestModel(t, 200)
+	defer cleanup()
+	m.showProjects = true
+	m.refreshChart()
+
+	// Simulate "the previous window showed 8 projects": inflate the aggs and
+	// re-sync the layout to that taller box.
+	fakes := make([]cache.ProjectAggregate, 8)
+	for i := range fakes {
+		fakes[i] = cache.ProjectAggregate{Label: fmt.Sprintf("p%d", i)}
+	}
+	m.projectAggs = fakes
+	m.viewport.Height = m.chartHeight()
+	tallBoxChartH := m.viewport.Height
+
+	// Settle: the fixture's real rollup needs fewer rows (its messages carry
+	// no cwd → a single "(no project)" agg), so the chart must grow back.
+	if cmd := m.scheduleProjectsTick(); cmd == nil {
+		t.Fatal("scheduleProjectsTick must return a Cmd while shown")
+	}
+	m.handleProjectsTick(projectsTickMsg{gen: m.projectsGen})
+
+	if len(m.projectAggs) >= 8 {
+		t.Fatalf("precondition: settled rollup = %d aggs, want < 8", len(m.projectAggs))
+	}
+	if got := m.chartHeight(); got <= tallBoxChartH {
+		t.Errorf("chartHeight = %d after settle, want > %d (reclaimed rows)", got, tallBoxChartH)
+	}
+	if m.viewport.Height != m.chartHeight() {
+		t.Errorf("viewport.Height = %d, want chartHeight %d (fixed point)",
+			m.viewport.Height, m.chartHeight())
+	}
+}
+
+// TestRefreshChart_ViewportHeightFixedPoint asserts refreshChart leaves the
+// layout at its fixed point (#420): the tail applyProjectsResize corrects the
+// toggle-on transient where chartHeight was computed before refreshProjects
+// populated the aggs.
+func TestRefreshChart_ViewportHeightFixedPoint(t *testing.T) {
+	m, cleanup := seedScrollTestModel(t, 200)
+	defer cleanup()
+	m.showProjects = true
+	m.refreshChart()
+	if len(m.projectAggs) == 0 {
+		t.Fatal("precondition: fixture should produce aggs")
+	}
+	if m.viewport.Height != m.chartHeight() {
+		t.Errorf("viewport.Height = %d after refreshChart, want chartHeight() = %d",
+			m.viewport.Height, m.chartHeight())
+	}
+}
+
+// TestClearChart_ResetsProjectsLayout asserts clearChart nils the aggs before
+// sizing the placeholder, so the cleared frame renders at the post-clear
+// height (#420). clearChart must be self-contained: refreshChart's error
+// paths return immediately after it, skipping the tail resize hook.
+func TestClearChart_ResetsProjectsLayout(t *testing.T) {
+	m, cleanup := seedScrollTestModel(t, 200)
+	defer cleanup()
+	m.showProjects = true
+	m.refreshChart()
+
+	fakes := make([]cache.ProjectAggregate, 8)
+	for i := range fakes {
+		fakes[i] = cache.ProjectAggregate{Label: fmt.Sprintf("p%d", i)}
+	}
+	m.projectAggs = fakes
+	m.viewport.Height = m.chartHeight()
+
+	m.clearChart()
+	if m.projectAggs != nil {
+		t.Error("clearChart must nil projectAggs")
+	}
+	if m.viewport.Height != m.chartHeight() {
+		t.Errorf("viewport.Height = %d after clearChart, want %d",
+			m.viewport.Height, m.chartHeight())
+	}
+}

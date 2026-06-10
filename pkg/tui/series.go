@@ -102,6 +102,12 @@ func (m *Model) loadTokenSeries(zoom ZoomLevel, from, to, earliest time.Time) (c
 // lastPts5h/7d in loadRemainingSeries) stay at their sites so behavior is
 // preserved exactly.
 func (m *Model) clearChart() {
+	// Nil the aggs FIRST and re-snap the height: the placeholder below must
+	// render at the post-clear box height (#420). Self-contained on purpose —
+	// refreshChart's error/empty paths return right after clearChart, never
+	// reaching the tail resize hook.
+	m.projectAggs = nil
+	m.viewport.Height = m.chartHeight()
 	m.viewport.SetContent(emptyPlaceholder(m.chartWidth(), m.chartHeight()))
 	m.lastValues = nil
 	m.lastStarts = nil
@@ -112,7 +118,6 @@ func (m *Model) clearChart() {
 	m.lastChartTo = time.Time{}
 	m.hasData = false
 	m.chartCache = chartCache{}
-	m.projectAggs = nil
 	m.setX(0)
 }
 
@@ -250,8 +255,12 @@ func (m *Model) refreshChart() {
 	}
 
 	// Recompute the per-project rollup for the freshly-set visible window
-	// (lastStarts/viewportXOffset/lastChartTo are all current here).
+	// (lastStarts/viewportXOffset/lastChartTo are all current here), then
+	// re-sync the layout: the render above used the pre-refresh box height,
+	// and the content-aware projectsHeight (#420) may have moved. One pass
+	// reaches the fixed point — resizing never changes projectAggs.
 	m.refreshProjects()
+	m.applyProjectsResize()
 }
 
 // renderWindow renders the bar-chart viewport from the visible window of
