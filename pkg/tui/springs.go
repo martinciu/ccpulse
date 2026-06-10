@@ -585,7 +585,8 @@ func (m *Model) renderSpringFrame() {
 // visibleWindow returns the [from, to] wall-clock window currently mapped to
 // the viewport at the active zoom and scroll offset. It is the single source
 // of truth for "what time range is on screen", shared by renderSpringLineFrame
-// (the u-toggle line frame) and the zoom squeeze's arm-time snapshot (#373).
+// (the u-toggle line frame), the zoom squeeze's arm-time snapshot (#373), and
+// refreshProjects' remaining-mode window (#430).
 //
 // Reads m.lastChartFrom/To, m.lastCanvasW (via the recomputed fullCanvasW),
 // m.viewportXOffset, and m.viewport.Width — all consistent with ZoomLevels[

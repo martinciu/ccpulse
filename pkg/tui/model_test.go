@@ -6,6 +6,7 @@ import (
 	"math"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -5532,6 +5533,132 @@ func TestProjectsDebounce_StaleTickDropped(t *testing.T) {
 	m.handleProjectsTick(projectsTickMsg{gen: m.projectsGen})
 	if len(m.projectAggs) == 0 {
 		t.Errorf("current-gen tick should have repopulated projectAggs")
+	}
+}
+
+// seedRemainingProjectsModel builds the #430 repro: 200 messages 15 min
+// apart ending TWO HOURS before now, plus 49 hourly usage samples ending
+// now. With the buggy lastStarts indexing, remaining mode clamps the
+// window to [latest-sample, lastChartTo) — which contains no messages —
+// while visibleWindow() (pinned right, w=120, 15m zoom → ~29 h on
+// screen) clearly does. Samples span 48 h so setX's remaining-mode
+// lower bound (#200, earliest-sample clamp) leaves room to scroll left.
+// Deliberately NOT seedScrollTestModel: its messages end at now, which
+// masks the bug (the bogus clamped window would still catch them).
+// refreshChart is NOT called — callers drive the entry path under test.
+func seedRemainingProjectsModel(t *testing.T) (*Model, func()) {
+	t.Helper()
+	c, err := cache.Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tab, err := pricing.Load()
+	if err != nil {
+		c.Close()
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(15 * time.Minute)
+	msgEnd := now.Add(-2 * time.Hour)
+	msgs := make([]parse.Message, 200)
+	for i := range msgs {
+		msgs[i] = parse.Message{
+			SessionID:   "s1",
+			ProjectSlug: "p",
+			Model:       "claude-opus-4-7",
+			Timestamp:   msgEnd.Add(time.Duration(-i*15) * time.Minute),
+			InputTokens: int64(1000 + i*10),
+		}
+	}
+	if err := c.InsertMessages(t.Context(), msgs, tab); err != nil {
+		c.Close()
+		t.Fatal(err)
+	}
+	for i := range 49 {
+		u := anthro.Usage{
+			FiveHour: &anthro.Bucket{Utilization: float64(10 + i), ResetsAt: timePtr(now.Add(time.Hour))},
+			SevenDay: &anthro.Bucket{Utilization: float64(5 + i), ResetsAt: timePtr(now.Add(24 * time.Hour))},
+		}
+		if err := c.RecordUsageSample(t.Context(), u, now.Add(time.Duration(-i)*time.Hour)); err != nil {
+			c.Close()
+			t.Fatalf("RecordUsageSample: %v", err)
+		}
+	}
+	m := New(Deps{Cache: c})
+	m.w, m.h = 120, 40
+	m.zoomIdx = 0 // 15m zoom: ~208 buckets vs chartWidth=118 → scrollable
+	m.unitIdx = int(chartUnitRemaining)
+	m.showProjects = true
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	return &m, func() { c.Close() }
+}
+
+// TestRefreshProjects_RemainingModeUsesVisibleWindow is the #430
+// regression: on the usage-line view, refreshChart must fill the
+// projects box from the on-screen time range (visibleWindow), not from
+// bucket-indexing the sparse usage-sample lastStarts — which lands on
+// the latest sample and yields an empty (or arbitrary) window.
+func TestRefreshProjects_RemainingModeUsesVisibleWindow(t *testing.T) {
+	m, cleanup := seedRemainingProjectsModel(t)
+	defer cleanup()
+
+	m.refreshChart() // first load pins to the right edge
+
+	if len(m.projectAggs) == 0 {
+		t.Fatalf("projectAggs empty after refreshChart in remaining mode "+
+			"(#430): viewportXOffset=%d len(lastStarts)=%d — window was "+
+			"derived by bucket-indexing sparse usage-sample timestamps",
+			m.viewportXOffset, len(m.lastStarts))
+	}
+	from, to := m.visibleWindow()
+	want, err := m.deps.Cache.ProjectAggregates(t.Context(), from, to)
+	if err != nil {
+		t.Fatalf("ProjectAggregates: %v", err)
+	}
+	if !slices.Equal(m.projectAggs, want) {
+		t.Errorf("projectAggs = %+v, want ProjectAggregates(visibleWindow()) = %+v",
+			m.projectAggs, want)
+	}
+}
+
+// TestProjectsTick_RemainingModeScrolledWindow covers the debounced
+// scroll-settle path (#430): after scrolling left on the usage-line
+// view, the settled tick must recompute the box for the scrolled
+// visibleWindow. projectsTickMsg is constructed directly; never invoke
+// the real tea.Tick Cmd (it sleeps out the debounce).
+func TestProjectsTick_RemainingModeScrolledWindow(t *testing.T) {
+	m, cleanup := seedRemainingProjectsModel(t)
+	defer cleanup()
+	m.refreshChart()
+
+	offBefore := m.viewportXOffset
+	for range 3 {
+		m.scrollLeft(ZoomLevels[m.zoomIdx].ScrollStep)
+	}
+	if m.viewportXOffset >= offBefore {
+		t.Fatalf("precondition: scrollLeft did not move the offset "+
+			"(%d → %d); the 48 h sample span should leave scroll room",
+			offBefore, m.viewportXOffset)
+	}
+	if cmd := m.scheduleProjectsTick(); cmd == nil {
+		t.Fatal("scheduleProjectsTick must return a Cmd when the box is shown")
+	}
+	m.projectAggs = nil // prove the settle recomputes, not a refreshChart leftover
+	m.handleProjectsTick(projectsTickMsg{gen: m.projectsGen})
+
+	if len(m.projectAggs) == 0 {
+		t.Fatalf("projectAggs empty after scroll-settle in remaining mode "+
+			"(#430): viewportXOffset=%d len(lastStarts)=%d",
+			m.viewportXOffset, len(m.lastStarts))
+	}
+	from, to := m.visibleWindow()
+	want, err := m.deps.Cache.ProjectAggregates(t.Context(), from, to)
+	if err != nil {
+		t.Fatalf("ProjectAggregates: %v", err)
+	}
+	if !slices.Equal(m.projectAggs, want) {
+		t.Errorf("settled projectAggs = %+v, want ProjectAggregates(visibleWindow()) = %+v",
+			m.projectAggs, want)
 	}
 }
 
