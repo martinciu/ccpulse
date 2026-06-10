@@ -15,39 +15,18 @@ package tui
 
 import (
 	"math"
-	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/harmonica"
-
-	"github.com/martinciu/ccpulse/pkg/cache"
 )
 
-// projectsAnimSnapshot captures, once at arm time, everything the per-frame
-// slide tick needs so nothing it reads can shift mid-animation.
-type projectsAnimSnapshot struct {
-	boxRows []string // box pre-rendered at the steady target height, split into rows (the SLICE source)
-	startH  int      // slide start outer height (show: 0, hide: target)
-	targetH int      // slide end   outer height (show: target, hide: 0)
-
-	// Chart inputs — frozen so the per-frame re-rasterize/re-build reads no DB.
-	values   []float64
-	starts   []time.Time
-	peak     float64
-	pts5h    []cache.UtilizationPoint
-	pts7d    []cache.UtilizationPoint
-	unit     chartUnit
-	isLine   bool
-	vpWidth  int
-	zoom     ZoomLevel
-	viewFrom time.Time // line mode: stable visible window (no horizontal squeeze in this slide)
-	viewTo   time.Time
-}
-
-// lerpInt linearly interpolates between integer heights a and b at parameter r,
-// rounding to the nearest row. r is clamped to [0,1] by the caller's spring.
+// lerpInt linearly interpolates between integer heights a and b at
+// parameter r, rounding to the nearest row. r is clamped to [0,1] here —
+// the critically-damped spring approaches 1 asymptotically but nothing
+// guarantees it never lands marginally outside the interval.
 func lerpInt(a, b int, r float64) int {
+	r = min(max(r, 0), 1)
 	return int(math.Round(float64(a) + (float64(b)-float64(a))*r))
 }
 
@@ -83,10 +62,10 @@ func (m *Model) renderProjectsFrame() {
 func (m *Model) handleProjectsSpringTick(gen int) tea.Cmd {
 	r, vel := m.projectsSpring.Update(m.projectsSpringR, m.projectsSpringVel, 1.0)
 	m.projectsSpringR, m.projectsSpringVel = r, vel
-	m.projectsAnimH = lerpInt(m.projectsSnap.startH, m.projectsSnap.targetH, r)
+	m.projectsAnimH = lerpInt(m.projectsSlideFrom, m.projectsSlideTo, r)
 
 	if math.Abs(1.0-r) < phaseTransitionThreshold {
-		m.projectsAnimH = m.projectsSnap.targetH
+		m.projectsAnimH = m.projectsSlideTo
 		m.springActive = false
 		m.springKind = springKindNone
 		m.viewport.Height = m.chartHeight()
@@ -100,50 +79,35 @@ func (m *Model) handleProjectsSpringTick(gen int) tea.Cmd {
 	})
 }
 
-// beginProjectsAnimation arms the box slide. Aborts any in-flight u/z FIRST (only
-// when one is running — calling refreshChart unconditionally would fire a wasted
-// refreshProjects query on the hide path). Commits showProjects to its terminal
-// value at arm so a later u/z abort reads the correct chartHeight with no extra
-// wiring (see series.go abort block). Snapshots the box (one requery on show; the
-// in-memory aggs on hide) and the chart inputs, seeds the spring, paints frame 0.
+// beginProjectsAnimation arms the box slide. A re-arm mid-slide reverses
+// from the CURRENT animated height (every intermediate height renders
+// correctly under re-flow — no snap to an extreme first); an in-flight u/z
+// is hard-cut via refreshChart exactly as u and z do to each other.
+// showProjects commits at arm (keeps u/z aborts free of projects-specific
+// wiring). Show pays THE one arm-time ProjectAggregates query via
+// refreshProjects (the box was unloaded while hidden, #414); hide pays
+// none. The viewport is deliberately NOT repainted: frame 0 of the slide
+// IS the current steady frame (show starts at height 0 = the box-hidden
+// layout; hide starts at the current target; re-arm wherever the slide
+// was) — that no-touch property is half of endpoint identity.
 func (m *Model) beginProjectsAnimation() {
-	if m.springActive {
-		m.refreshChart() // abort in-flight u/z; restore steady chart inputs to snapshot
+	from := m.projectsHeight() // animH mid-slide, steady extreme otherwise
+	if m.springActive && m.springKind != springKindProjects {
+		m.refreshChart() // abort in-flight u/z; restores steady chart content
 	}
 
-	show := !m.showProjects
-	m.showProjects = show // committed terminal state (the invariant that makes abort free)
-
-	target := m.projectsTargetHeight()
-	if show {
-		m.refreshProjects() // THE one arm-time query: box was hidden (#414) → repopulate
-		m.projectsSnap.startH, m.projectsSnap.targetH = 0, target
-	} else {
-		// projectAggs already populated (box was showing) — no query.
-		m.projectsSnap.startH, m.projectsSnap.targetH = target, 0
+	m.showProjects = !m.showProjects
+	to := 0
+	if m.showProjects {
+		to = m.projectsTargetHeight()
+		m.refreshProjects() // THE one arm-time query on the show path
 	}
-
-	m.projectsSnap.boxRows = strings.Split(renderProjectsBox(m.projectAggs, m.w, target), "\n")
-	m.projectsSnap.values = m.lastValues
-	m.projectsSnap.starts = m.lastStarts
-	m.projectsSnap.peak = m.peak
-	m.projectsSnap.pts5h = m.lastPts5h
-	m.projectsSnap.pts7d = m.lastPts7d
-	m.projectsSnap.unit = chartUnit(m.unitIdx)
-	m.projectsSnap.isLine = isLineMode(chartUnit(m.unitIdx))
-	m.projectsSnap.vpWidth = m.viewport.Width
-	m.projectsSnap.zoom = ZoomLevels[m.zoomIdx]
-	m.projectsSnap.viewFrom, m.projectsSnap.viewTo = m.visibleWindow()
+	m.projectsSlideFrom, m.projectsSlideTo = from, to
+	m.projectsAnimH = from
 
 	m.projectsSpring = harmonica.NewSpring(harmonica.FPS(springFPS), phase2Frequency, phase2Damping)
 	m.projectsSpringR, m.projectsSpringVel = 0, 0
-	m.projectsAnimH = m.projectsSnap.startH
 	m.springActive = true
 	m.springKind = springKindProjects
 	m.springGen++
-
-	// The viewport is deliberately NOT repainted here: frame 0 of the slide IS
-	// the current steady frame (show starts at height 0 = the box-hidden
-	// layout; hide starts at the current target). That no-touch property is
-	// half of the endpoint-identity guarantee (#416 round two).
 }

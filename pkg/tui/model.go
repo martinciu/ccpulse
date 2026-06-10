@@ -269,16 +269,20 @@ type Model struct {
 	zoomSpringR   float64
 	zoomSpringVel float64
 	zoomSnap      zoomAnimSnapshot
-	// Projects-box slide (#416). Single-phase spring on a 0→1 ratio driving
-	// projectsAnimH (the animated OUTER box height). projectsSnap freezes
-	// everything the per-frame tick reads so no frame touches the DB. Mutually
-	// exclusive with the unit/zoom springs via the shared springActive flag +
-	// springKind tag.
+	// Projects-box slide (#416): single-phase spring on the box's OUTER
+	// height. projectsAnimH is the animated height the projectsHeight()
+	// lever returns mid-slide; projectsSlideFrom/To are the endpoints of
+	// the in-flight slide (re-arm starts From at the current height).
+	// Frames render through the STEADY pipelines (renderProjectsFrame), so
+	// no snapshot state exists — endpoint frames equal the steady views by
+	// construction. Mutually exclusive with the unit/zoom springs via the
+	// shared springActive flag + springKind tag.
 	projectsSpring    harmonica.Spring
 	projectsSpringR   float64
 	projectsSpringVel float64
 	projectsAnimH     int
-	projectsSnap      projectsAnimSnapshot
+	projectsSlideFrom int
+	projectsSlideTo   int
 	// nowGen is bumped each time the live-advance tick is re-armed (zoom
 	// change). scheduleNowTick captures the current value into the scheduled
 	// nowTickMsg; the handler drops ticks whose gen doesn't match, so a zoom
@@ -653,9 +657,10 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		return m.handleUnitKey()
 	case key.Matches(msg, m.keys.Projects):
 		// Slide the box up (show) / down (hide) via a harmonica spring (#416).
-		// reduce_motion or a too-short terminal (no room for a box) → snap, the
-		// pre-#416 hard cut.
-		if m.deps.ReduceMotion || m.projectsTargetHeight() == 0 {
+		// reduce_motion, a too-short terminal (no room for a box), or an
+		// empty/cleared chart (renderWindow would no-op against no content) →
+		// snap, the pre-#416 hard cut.
+		if m.deps.ReduceMotion || m.projectsTargetHeight() == 0 || m.lastCanvasW == 0 {
 			m.showProjects = !m.showProjects
 			m.viewport.Height = m.chartHeight()
 			m.refreshChart()

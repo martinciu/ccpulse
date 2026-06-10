@@ -21,7 +21,7 @@ func benchModelForProjects(b *testing.B, vpWidth int, now time.Time) Model {
 	m.viewport.Width = vpWidth
 	m.refreshChart()
 	armProjectsShowForTest(b, &m)
-	m.projectsAnimH = m.projectsSnap.targetH / 2 // mid-slide
+	m.projectsAnimH = m.projectsSlideTo / 2 // mid-slide
 	return m
 }
 

@@ -8,7 +8,6 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/harmonica"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/martinciu/ccpulse/pkg/cache"
@@ -25,8 +24,10 @@ func TestLerpInt(t *testing.T) {
 		{0, 12, 0.5, 6},
 		{12, 0, 0.5, 6},
 		{12, 0, 1, 0},
-		{0, 10, 0.24, 2}, // 2.4 rounds to 2
-		{0, 10, 0.25, 3}, // 2.5 rounds to 3 (math.Round)
+		{0, 10, 0.24, 2},  // 2.4 rounds to 2
+		{0, 10, 0.25, 3},  // 2.5 rounds to 3 (math.Round)
+		{0, 10, -0.2, 0},  // r clamps to 0 (spring may undershoot marginally)
+		{0, 10, 1.3, 10},  // r clamps to 1 (spring may overshoot marginally)
 	}
 	for _, c := range cases {
 		if got := lerpInt(c.a, c.b, c.r); got != c.want {
@@ -98,9 +99,7 @@ func TestView_DuringSlide_HeightConservedRealBorder(t *testing.T) {
 	defer c.Close()
 	m.showProjects = true
 	m.refreshProjects()
-	m.projectsSnap = projectsAnimSnapshot{
-		startH: 0, targetH: 12,
-	}
+	m.projectsSlideFrom, m.projectsSlideTo = 0, 12
 	m.springActive = true
 	m.springKind = springKindProjects
 	m.projectsAnimH = 5
@@ -132,27 +131,13 @@ func TestView_DuringSlide_HeightConservedRealBorder(t *testing.T) {
 	}
 }
 
-// armProjectsShowForTest hand-builds a fully-armed SHOW slide (no key handler,
-// so this task is testable before Task 4). Mirrors what beginProjectsAnimation
-// will set up.
+// armProjectsShowForTest arms a SHOW slide through the production arm path
+// (the box starts hidden; beginProjectsAnimation toggles it on, pays the
+// arm-time aggs query, and seeds the spring without repainting frame 0).
 func armProjectsShowForTest(t testing.TB, m *Model) {
 	t.Helper()
-	m.showProjects = true
-	m.refreshProjects()
-	target := m.projectsTargetHeight()
-	m.projectsSnap = projectsAnimSnapshot{
-		boxRows: strings.Split(renderProjectsBox(m.projectAggs, m.w, target), "\n"),
-		startH:  0, targetH: target,
-		values: m.lastValues, starts: m.lastStarts, peak: m.peak,
-		unit: chartUnitCost, isLine: false, vpWidth: m.viewport.Width,
-		zoom: ZoomLevels[m.zoomIdx], viewFrom: m.lastChartFrom, viewTo: m.lastChartTo,
-	}
-	m.projectsSpring = harmonica.NewSpring(harmonica.FPS(springFPS), phase2Frequency, phase2Damping)
-	m.projectsSpringR, m.projectsSpringVel = 0, 0
-	m.projectsAnimH = 0
-	m.springActive = true
-	m.springKind = springKindProjects
-	m.springGen++
+	m.showProjects = false
+	m.beginProjectsAnimation()
 }
 
 func TestProjectsSpringTick_AdvancesThenSettles(t *testing.T) {
@@ -161,7 +146,7 @@ func TestProjectsSpringTick_AdvancesThenSettles(t *testing.T) {
 	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
 	defer c.Close()
 	armProjectsShowForTest(t, &m)
-	target := m.projectsSnap.targetH
+	target := m.projectsSlideTo
 
 	// One tick: ratio moves off 0, animH advances toward target.
 	updated, cmd := m.Update(springTickMsg{gen: m.springGen})
@@ -236,11 +221,11 @@ func TestProjectsKey_ShowFromIdle_ArmsAndQueriesOnce(t *testing.T) {
 	if !m.showProjects {
 		t.Error("show 'p': showProjects=false, want true (committed at arm)")
 	}
-	if m.projectsSnap.startH != 0 || m.projectsSnap.targetH != m.projectsTargetHeight() {
-		t.Errorf("show snap heights = (%d,%d), want (0,%d)", m.projectsSnap.startH, m.projectsSnap.targetH, m.projectsTargetHeight())
+	if m.projectsSlideFrom != 0 || m.projectsSlideTo != m.projectsTargetHeight() {
+		t.Errorf("show slide from/to = (%d,%d), want (0,%d)", m.projectsSlideFrom, m.projectsSlideTo, m.projectsTargetHeight())
 	}
-	if len(m.projectsSnap.boxRows) == 0 {
-		t.Error("show 'p': boxRows not snapshotted (arm requery missing)")
+	if len(m.projectAggs) == 0 {
+		t.Error("show 'p': projectAggs empty after arm (requery missing)")
 	}
 	if cmd == nil {
 		t.Error("show 'p': cmd=nil, want first tick scheduled")
@@ -283,8 +268,8 @@ func TestProjectsKey_HideFromIdle_NoArmQuery(t *testing.T) {
 	if m.showProjects {
 		t.Error("hide 'p': showProjects=true, want false (committed at arm)")
 	}
-	if m.projectsSnap.startH != m.projectsTargetHeight() || m.projectsSnap.targetH != 0 {
-		t.Errorf("hide snap heights=(%d,%d), want (%d,0)", m.projectsSnap.startH, m.projectsSnap.targetH, m.projectsTargetHeight())
+	if m.projectsSlideFrom != m.projectsTargetHeight() || m.projectsSlideTo != 0 {
+		t.Errorf("hide slide from/to=(%d,%d), want (%d,0)", m.projectsSlideFrom, m.projectsSlideTo, m.projectsTargetHeight())
 	}
 	// No arm requery on hide: the snapshot reused the already-populated aggs.
 	if projectAggsBackingPtr(m.projectAggs) != beforePtr {
@@ -511,6 +496,53 @@ func findXLabelRow(t *testing.T, view string) string {
 	return ""
 }
 
+// TestProjectsKey_RearmMidSlide_ReversesFromCurrentHeight: a second 'p'
+// mid-slide reverses the motion from wherever the box currently is — no
+// snap to an extreme first (re-flow rendering makes every intermediate
+// height a valid start), no u/z-style hard-cut abort.
+func TestProjectsKey_RearmMidSlide_ReversesFromCurrentHeight(t *testing.T) {
+	withForcedColor(t)
+	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
+	defer c.Close()
+	m.showProjects = false
+	m.refreshChart()
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	m = updated.(Model)
+	genShow := m.springGen
+	for range 6 { // mid-flight
+		updated, _ = m.Update(springTickMsg{gen: m.springGen})
+		m = updated.(Model)
+	}
+	if !m.springActive {
+		t.Fatal("slide settled in 6 ticks; cannot probe re-arm")
+	}
+	mid := m.projectsAnimH
+	if mid <= 0 || mid >= m.projectsTargetHeight() {
+		t.Fatalf("animH=%d not strictly mid-flight (target %d)", mid, m.projectsTargetHeight())
+	}
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("re-arm 'p': cmd=nil, want new tick loop")
+	}
+	if m.showProjects {
+		t.Error("re-arm 'p': showProjects=true, want false (reversed to hide)")
+	}
+	if m.springGen == genShow {
+		t.Error("re-arm 'p': springGen not bumped — stale show ticks would still apply")
+	}
+	if m.projectsSlideFrom != mid || m.projectsSlideTo != 0 {
+		t.Errorf("re-arm from/to = (%d,%d), want (%d,0) — must reverse from current height",
+			m.projectsSlideFrom, m.projectsSlideTo, mid)
+	}
+	if m.projectsAnimH != mid {
+		t.Errorf("re-arm animH=%d, want %d (frame 0 of the reversal = current frame)", m.projectsAnimH, mid)
+	}
+}
+
 // projectAggsBackingPtr returns the backing-array address of a ProjectAggregate
 // slice, or 0 if empty. refreshProjects reassigns m.projectAggs to a fresh slice
 // from ProjectAggregates, so a changed pointer ⇒ a query ran. Used to prove the
@@ -548,7 +580,7 @@ func TestProjectsSlide_RealFrame_BoundaryMovesMonotonically(t *testing.T) {
 			t.Fatalf("tick %d: frame height=%d, want %d (conserved)", i, h, m.h)
 		}
 		band := m.projectsAnimH
-		if band > 0 && band < m.projectsSnap.targetH { // mid-slide
+		if band > 0 && band < m.projectsSlideTo { // mid-slide
 			if !strings.Contains(frame, roundedTop) {
 				t.Errorf("tick %d (band=%d): phantom top border absent", i, band)
 			}
@@ -571,7 +603,7 @@ func TestProjectsSlide_RealFrame_BoundaryMovesMonotonically(t *testing.T) {
 	if !strings.Contains(final, projectsTitle) {
 		t.Error("settle frame missing the projects box title (full box not restored)")
 	}
-	if m.projectsAnimH != m.projectsSnap.targetH {
-		t.Errorf("settle animH=%d, want target %d", m.projectsAnimH, m.projectsSnap.targetH)
+	if m.projectsAnimH != m.projectsSlideTo {
+		t.Errorf("settle animH=%d, want target %d", m.projectsAnimH, m.projectsSlideTo)
 	}
 }
