@@ -145,7 +145,12 @@ func (m *Model) refreshChart() {
 		// springKind=springKindNone drops it; projectsAnimH and the slide
 		// from/to endpoints stay set but unread, and showProjects was already
 		// committed at arm so the chart rebuild below reads the correct
-		// chartHeight.
+		// chartHeight. Re-sync the viewport widget's Height here: aborting a
+		// projects slide changes what chartHeight() returns, and renderProjectsFrame
+		// last wrote a mid-slide value into viewport.Height; without this line every
+		// subsequent View() paints the wrong number of rows. For unit/zoom aborts
+		// the assignment is a no-op (their animations never change the height).
+		m.viewport.Height = m.chartHeight()
 	}
 
 	// Snapshot the wall-clock scroll anchor BEFORE the rebuild overwrites

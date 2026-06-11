@@ -643,6 +643,105 @@ func TestWindowSize_MidSlide_ViewportHeightSynced(t *testing.T) {
 	}
 }
 
+// TestRefreshMsg_MidSlide_ViewportHeightSynced is the RefreshMsg sibling of
+// TestWindowSize_MidSlide_ViewportHeightSynced. Before the fix, refreshChart's
+// spring-abort block cleared springActive/springKind, which changed
+// projectsHeight() (and therefore chartHeight()), but nothing re-assigned
+// m.viewport.Height — it kept the per-frame value renderProjectsFrame had
+// last written. Every subsequent View() would paint more or fewer rows than
+// m.h until the next resize or 'p'. The fix adds m.viewport.Height =
+// m.chartHeight() inside the abort block (same desync class, watcher-refresh
+// abort path).
+func TestRefreshMsg_MidSlide_ViewportHeightSynced(t *testing.T) {
+	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
+	defer c.Close()
+	m.showProjects = false
+	m.refreshChart()
+
+	// Arm the show slide.
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	m = updated.(Model)
+	if !m.springActive || m.springKind != springKindProjects {
+		t.Fatalf("setup: springActive=%v springKind=%d, want true/projects", m.springActive, m.springKind)
+	}
+
+	// Advance 4 ticks so projectsAnimH is mid-flight (never invoke the real
+	// tea.Tick Cmd — it real-sleeps; drive via constructed springTickMsg).
+	for range 4 {
+		updated, _ = m.Update(springTickMsg{gen: m.springGen})
+		m = updated.(Model)
+	}
+	if !m.springActive {
+		t.Fatal("slide settled in 4 ticks; cannot probe mid-flight behaviour")
+	}
+
+	// Fire a RefreshMsg mid-slide. refreshChart must abort the spring and
+	// re-assign viewport.Height from the post-abort chartHeight().
+	updated, _ = m.Update(RefreshMsg{})
+	m = updated.(Model)
+
+	if m.springActive {
+		t.Error("after RefreshMsg mid-slide: springActive=true, want false (slide aborted)")
+	}
+	if got, want := m.viewport.Height, m.chartHeight(); got != want {
+		t.Errorf("after mid-slide RefreshMsg: viewport.Height=%d, want chartHeight()=%d (desynced)", got, want)
+	}
+	if got := lipgloss.Height(m.View()); got != m.h {
+		t.Errorf("after mid-slide RefreshMsg: View height=%d, want terminal height %d", got, m.h)
+	}
+}
+
+// TestNowTick_MidSlide_ViewportHeightSynced is the nowTickMsg sibling of
+// TestWindowSize_MidSlide_ViewportHeightSynced. Before the fix, handleNowTick's
+// animatingViewport guard excluded springKindProjects, so nowTickMsg called
+// refreshChart during a projects slide; the abort block cleared springActive/Kind
+// but left viewport.Height at the mid-slide per-frame value. The fix adds
+// m.viewport.Height = m.chartHeight() inside the abort block (same desync class,
+// live-advance abort path). Note: handleNowTick returns a non-nil Cmd to
+// reschedule the next tick — never invoke it (it real-sleeps up to 1h); ignore.
+func TestNowTick_MidSlide_ViewportHeightSynced(t *testing.T) {
+	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
+	defer c.Close()
+	m.showProjects = false
+	m.refreshChart()
+
+	// Arm the show slide.
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	m = updated.(Model)
+	if !m.springActive || m.springKind != springKindProjects {
+		t.Fatalf("setup: springActive=%v springKind=%d, want true/projects", m.springActive, m.springKind)
+	}
+
+	// Advance 4 ticks so projectsAnimH is mid-flight (never invoke the real
+	// tea.Tick Cmd — it real-sleeps; drive via constructed springTickMsg).
+	for range 4 {
+		updated, _ = m.Update(springTickMsg{gen: m.springGen})
+		m = updated.(Model)
+	}
+	if !m.springActive {
+		t.Fatal("slide settled in 4 ticks; cannot probe mid-flight behaviour")
+	}
+
+	// Fire nowTickMsg mid-slide. handleNowTick calls refreshChart (not guarded
+	// for springKindProjects), which must abort the spring and re-assign
+	// viewport.Height from the post-abort chartHeight(). Ignore the returned
+	// Cmd — it reschedules a real tea.Tick that would real-sleep.
+	updated, _ = m.Update(nowTickMsg{gen: m.nowGen})
+	m = updated.(Model)
+
+	if m.springActive {
+		t.Error("after nowTickMsg mid-slide: springActive=true, want false (slide aborted)")
+	}
+	if got, want := m.viewport.Height, m.chartHeight(); got != want {
+		t.Errorf("after mid-slide nowTickMsg: viewport.Height=%d, want chartHeight()=%d (desynced)", got, want)
+	}
+	if got := lipgloss.Height(m.View()); got != m.h {
+		t.Errorf("after mid-slide nowTickMsg: View height=%d, want terminal height %d", got, m.h)
+	}
+}
+
 // projectAggsBackingPtr returns the backing-array address of a ProjectAggregate
 // slice, or 0 if empty. refreshProjects reassigns m.projectAggs to a fresh slice
 // from ProjectAggregates, so a changed pointer ⇒ a query ran. Used to prove the
