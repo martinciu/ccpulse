@@ -19,6 +19,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/harmonica"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // lerpInt linearly interpolates between integer heights a and b at
@@ -39,13 +40,17 @@ func lerpInt(a, b int, r float64) int {
 // slack, on-screen peak, in-bar labels); remaining mode uses a WINDOWED
 // line build at viewport width (#180 rationale: full-canvas rebuild at
 // canvasW=2880 blows the 60fps budget — ~41ms/frame at 30-day history vs.
-// the 16.7ms allowance). The windowed render is pixel-identical inside the
-// visible region because buildLineChart maps time→col linearly via
-// WithTimeRange, so the settle transition to refreshChart's full-canvas
-// path does not visibly snap. m.viewportXOffset is NOT changed here (the
-// logical scroll position must survive to the settle frame, where
-// refreshChart restores the full canvas and re-applies the offset via
-// setX). All inputs are in-memory — zero DB per frame.
+// the 16.7ms allowance). The braille body maps time→col linearly via
+// WithTimeRange, so the windowed plot lines up with the steady view; the
+// x-label row is NOT synthesized for the window (that drops any label
+// straddling the window's left edge, whose clipped tail the steady
+// viewport still shows) — it is built for the FULL canvas exactly as the
+// steady path does, then cut to the visible columns with the same
+// ansi.Cut the viewport applies to content, keeping the row byte-stable
+// mid-slide. m.viewportXOffset is NOT changed here (the logical scroll
+// position must survive to the settle frame, where refreshChart restores
+// the full canvas and re-applies the offset via setX). All inputs are
+// in-memory — zero DB per frame.
 func (m *Model) renderProjectsFrame() {
 	chartH := m.chartHeight()
 	m.viewport.Height = chartH
@@ -55,9 +60,17 @@ func (m *Model) renderProjectsFrame() {
 		viewFrom, viewTo := m.visibleWindow()
 		slicedPts5h := slicePointsInRange(m.lastPts5h, viewFrom, viewTo)
 		slicedPts7d := slicePointsInRange(m.lastPts7d, viewFrom, viewTo)
+		// xOff mirrors what setX last applied (m.viewportXOffset is the
+		// bucket-indexed shadow, already clamped); the cut therefore lands
+		// on the same columns the steady viewport shows.
+		xOff := m.viewportXOffset * zoom.stride()
+		labelRow := ansi.Cut(
+			renderXLabels(synthLabelStarts(m.lastChartFrom, m.lastChartTo, zoom),
+				m.lastCanvasW, zoom, m.now(), m.dateOrder),
+			xOff, xOff+vpW)
 		m.viewport.SetContent(buildLineChart(slicedPts5h, slicedPts7d,
 			viewFrom, viewTo, vpW, chartH,
-			m.now(), zoom, m.dateOrder, "projects", ""))
+			m.now(), zoom, m.dateOrder, "projects", labelRow))
 		m.viewport.SetXOffset(0)
 		return
 	}

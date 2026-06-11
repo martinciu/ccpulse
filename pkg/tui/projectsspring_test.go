@@ -500,6 +500,43 @@ func TestProjectsSlide_XLabelRowStable(t *testing.T) {
 	}
 }
 
+// TestProjectsSlide_XLabelRowStable_LineMode is the remaining-mode (line chart)
+// sibling of TestProjectsSlide_XLabelRowStable. It pins the windowed per-frame
+// buildLineChart fidelity: every mid-flight frame rendered by the WINDOWED
+// renderProjectsFrame remaining branch (slicePointsInRange + viewport.Width +
+// SetXOffset(0)) must keep the steady label row verbatim and must preserve the
+// terminal frame height. The endpoint-identity test (TestProjectsSlide_EndpointIdentity_LineMode)
+// sees only frame-0 and the settle frame — this test covers the frames in between.
+//
+// Threshold: buildLineChart emits the x-label row only when chartH >= 6
+// (identical to bar mode); frames below that height have no label row to check.
+func TestProjectsSlide_XLabelRowStable_LineMode(t *testing.T) {
+	withForcedColor(t)
+	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	m, c := seedRemainingModelWithSamples(t, 60, now)
+	defer c.Close()
+	m.showProjects = false
+	m.refreshChart()
+
+	labelRow := findXLabelRow(t, m.View())
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	m = updated.(Model)
+	for i := 0; m.springActive && i < 600; i++ {
+		updated, _ = m.Update(springTickMsg{gen: m.springGen})
+		m = updated.(Model)
+		frame := m.View()
+		if lipgloss.Height(frame) != m.h {
+			t.Fatalf("tick %d: frame height %d != terminal height %d", i, lipgloss.Height(frame), m.h)
+		}
+		// buildLineChart emits the x-label row only when chartH >= 6; skip the
+		// assertion for shorter frames where no label row is rendered.
+		if m.springActive && m.chartHeight() >= 6 && !strings.Contains(frame, labelRow) {
+			t.Fatalf("tick %d (chartH=%d): steady x-label row missing/altered mid-slide (windowed line build)\nwant line: %q", i, m.chartHeight(), labelRow)
+		}
+	}
+}
+
 // findXLabelRow returns the first View line carrying >= 2 HH:MM time labels
 // — the bar chart's x-axis row.
 func findXLabelRow(t *testing.T, view string) string {
