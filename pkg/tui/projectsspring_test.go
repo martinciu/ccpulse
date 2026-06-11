@@ -655,11 +655,21 @@ func projectAggsBackingPtr(a []cache.ProjectAggregate) uintptr {
 }
 
 // TestProjectsSlide_RealFrame_BoundaryMovesMonotonically drives a real show
-// slide tick-by-tick and asserts on the actual painted frame (withForcedColor →
-// real ANSI): the box band grows monotonically, the phantom top border is
-// present every mid-slide frame, the true top border lands only at settle, and
-// total height is conserved. Per the project's real-binary-verification rule,
-// the assertion is on View() output (the painted frame), not internal counters.
+// slide tick-by-tick and asserts on the PAINTED BOUNDARY in View() output
+// (withForcedColor → real ANSI), not on internal counters.
+//
+// Property: as the box grows (mid-flight, animH in (0, projectsSlideTo)), the
+// row index of the box's top border — the LAST "╭" row in the frame — must
+// move UP monotonically (decreasing or equal row index). The header is also a
+// rounded-bordered block, so the box's top border is always the last ╭ row;
+// this is the same detection used by TestView_DuringSlide_HeightConservedRealBorder.
+//
+// When animH == 0 there is no box band, and the last ╭ row is the header's —
+// a much smaller (higher) index. Monotonic tracking is gated on animH > 0 to
+// avoid a spurious first sample against the header-only frame.
+//
+// Cheap riders: per-tick height conservation (Fatalf), and settle assertions
+// (title present, animH == projectsSlideTo).
 func TestProjectsSlide_RealFrame_BoundaryMovesMonotonically(t *testing.T) {
 	withForcedColor(t)
 	now := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
@@ -671,8 +681,21 @@ func TestProjectsSlide_RealFrame_BoundaryMovesMonotonically(t *testing.T) {
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
 	m = updated.(Model)
 
-	roundedTop := lipgloss.RoundedBorder().TopLeft // "╭"
-	prevBand := -1
+	// lastRoundedTopRow returns the row index of the last "╭" line in frame, or
+	// -1 if none. The box's top border is the last such row (the header's ╭
+	// rows sit above it).
+	lastRoundedTopRow := func(frame string) int {
+		lines := strings.Split(frame, "\n")
+		idx := -1
+		for i, line := range lines {
+			if strings.Contains(line, "╭") {
+				idx = i
+			}
+		}
+		return idx
+	}
+
+	prevBoxTopRow := -1 // -1 = not yet tracking (animH still 0)
 	const maxTicks = 600
 	for i := range maxTicks {
 		frame := m.View()
@@ -680,15 +703,16 @@ func TestProjectsSlide_RealFrame_BoundaryMovesMonotonically(t *testing.T) {
 			t.Fatalf("tick %d: frame height=%d, want %d (conserved)", i, h, m.h)
 		}
 		band := m.projectsAnimH
-		if band > 0 && band < m.projectsSlideTo { // mid-slide
-			if !strings.Contains(frame, roundedTop) {
-				t.Errorf("tick %d (band=%d): phantom top border absent", i, band)
+		if band > 0 && band < m.projectsSlideTo { // mid-slide, box is present
+			boxTopRow := lastRoundedTopRow(frame)
+			if boxTopRow == -1 {
+				t.Errorf("tick %d (animH=%d): no ╭ row found in frame (box top border missing)", i, band)
+			} else if prevBoxTopRow != -1 && boxTopRow > prevBoxTopRow {
+				// Box top should move UP (lower row index) as the slide grows.
+				t.Errorf("tick %d: box top row moved DOWN: %d → %d (non-monotonic; box should rise)", i, prevBoxTopRow, boxTopRow)
 			}
-			if band < prevBand {
-				t.Errorf("tick %d: band=%d < prev=%d (non-monotonic)", i, band, prevBand)
-			}
+			prevBoxTopRow = boxTopRow
 		}
-		prevBand = band
 		if !m.springActive {
 			break
 		}
