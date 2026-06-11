@@ -36,18 +36,29 @@ func lerpInt(a, b int, r float64) int {
 // steady views (#416 round two; round one's parallel skyline/snapshot path
 // produced mismatched endpoints, shifted+recolored x-labels and an empty
 // box). Bar modes go through renderWindow (visible slice, flush-right
-// slack, on-screen peak, in-bar labels); remaining mode re-issues the
-// steady full-canvas line build + offset re-apply. All inputs are
-// in-memory — zero DB per frame.
+// slack, on-screen peak, in-bar labels); remaining mode uses a WINDOWED
+// line build at viewport width (#180 rationale: full-canvas rebuild at
+// canvasW=2880 blows the 60fps budget — ~41ms/frame at 30-day history vs.
+// the 16.7ms allowance). The windowed render is pixel-identical inside the
+// visible region because buildLineChart maps time→col linearly via
+// WithTimeRange, so the settle transition to refreshChart's full-canvas
+// path does not visibly snap. m.viewportXOffset is NOT changed here (the
+// logical scroll position must survive to the settle frame, where
+// refreshChart restores the full canvas and re-applies the offset via
+// setX). All inputs are in-memory — zero DB per frame.
 func (m *Model) renderProjectsFrame() {
 	chartH := m.chartHeight()
 	m.viewport.Height = chartH
 	if chartUnit(m.unitIdx) == chartUnitRemaining {
 		zoom := ZoomLevels[m.zoomIdx]
-		m.viewport.SetContent(buildLineChart(m.lastPts5h, m.lastPts7d,
-			m.lastChartFrom, m.lastChartTo, m.lastCanvasW, chartH,
+		vpW := m.viewport.Width
+		viewFrom, viewTo := m.visibleWindow()
+		slicedPts5h := slicePointsInRange(m.lastPts5h, viewFrom, viewTo)
+		slicedPts7d := slicePointsInRange(m.lastPts7d, viewFrom, viewTo)
+		m.viewport.SetContent(buildLineChart(slicedPts5h, slicedPts7d,
+			viewFrom, viewTo, vpW, chartH,
 			m.now(), zoom, m.dateOrder, "projects", ""))
-		m.setX(m.viewportXOffset)
+		m.viewport.SetXOffset(0)
 		return
 	}
 	m.renderWindow()
