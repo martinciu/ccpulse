@@ -561,6 +561,51 @@ func TestProjectsKey_RearmMidSlide_ReversesFromCurrentHeight(t *testing.T) {
 	}
 }
 
+// TestWindowSize_MidSlide_ViewportHeightSynced is the regression test for the
+// handleWindowSize desync found in ccpulse-416.17: before the fix, viewport.Height
+// was assigned from chartHeight() BEFORE refreshChart() aborted the in-flight
+// projects spring. refreshChart sets springActive=false and springKind=None, which
+// changes projectsHeight() (and therefore chartHeight()), so the pre-abort
+// assignment baked the mid-slide animated value into the viewport. Every frame
+// until the next resize or 'p' press over- or under-filled the terminal by up to
+// projectsMaxRows rows. The fix moves the Height assignment to after refreshChart.
+func TestWindowSize_MidSlide_ViewportHeightSynced(t *testing.T) {
+	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
+	defer c.Close()
+	m.showProjects = false
+	m.refreshChart()
+
+	// Arm the show slide.
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	m = updated.(Model)
+	if !m.springActive || m.springKind != springKindProjects {
+		t.Fatalf("setup: springActive=%v springKind=%d, want true/projects", m.springActive, m.springKind)
+	}
+
+	// Advance 3-4 ticks so projectsAnimH is mid-flight (never invoke the real
+	// tea.Tick Cmd — it real-sleeps; drive via constructed springTickMsg).
+	for range 4 {
+		updated, _ = m.Update(springTickMsg{gen: m.springGen})
+		m = updated.(Model)
+	}
+	if !m.springActive {
+		t.Fatal("slide settled in 4 ticks; cannot probe mid-flight behaviour")
+	}
+
+	// Fire a resize mid-slide. handleWindowSize must abort the spring and then
+	// re-assign viewport.Height from the post-abort chartHeight().
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+
+	if got, want := m.viewport.Height, m.chartHeight(); got != want {
+		t.Errorf("after mid-slide resize: viewport.Height=%d, want chartHeight()=%d (desynced)", got, want)
+	}
+	if got := lipgloss.Height(m.View()); got != m.h {
+		t.Errorf("after mid-slide resize: View height=%d, want terminal height %d", got, m.h)
+	}
+}
+
 // projectAggsBackingPtr returns the backing-array address of a ProjectAggregate
 // slice, or 0 if empty. refreshProjects reassigns m.projectAggs to a fresh slice
 // from ProjectAggregates, so a changed pointer ⇒ a query ran. Used to prove the

@@ -458,16 +458,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // handleWindowSize re-lays out the viewport, progress bars, and help width on
 // terminal resize, then re-queries the chart and (re)arms the intro.
+//
+// viewport.Width is set before refreshChart because renderWindow reads
+// m.viewport.Width to build the content. viewport.Height is set AFTER
+// refreshChart: refreshChart aborts any in-flight projects slide
+// (springActive=false, springKind=None), which changes what chartHeight()
+// returns. Assigning Height before the abort would bake the mid-slide value
+// into the viewport, leaving it desynced until the next resize or 'p' press.
 func (m *Model) handleWindowSize(msg tea.WindowSizeMsg) tea.Cmd {
 	m.w, m.h = msg.Width, msg.Height
 	m.viewport.Width = m.chartWidth()
-	m.viewport.Height = m.chartHeight()
 	// help.Width controls when ShortHelp ellipsizes; if left at 0
 	// the footer can wrap onto the body row and break chartHeight().
 	m.help.Width = m.w
 	m.progress = newProgressBar(m.progressWidth())
 	m.progress7d = newProgressBar(m.progressWidth())
 	m.refreshChart()
+	// Assign after refreshChart so the abort of any in-flight spring is
+	// reflected in the height (chartHeight() reads projectsHeight(), which
+	// reads projectsAnimH when springKind==springKindProjects).
+	m.viewport.Height = m.chartHeight()
 	return m.maybeArmIntro()
 }
 
