@@ -20,6 +20,16 @@ const (
 	projectsTitle = "Projects (visible window)"
 )
 
+// projectCellCols returns how many project cells pack side-by-side into an
+// outer box width (border + 1 col padding each side subtracted). Shared by
+// renderProjectsBox (column layout) and projectsHeight (rows needed) so the
+// packing math cannot drift between the renderer and the height calc (#420).
+func projectCellCols(outerWidth int) int {
+	inner := max(outerWidth-4, 1)
+	divW := lipgloss.Width(columnDivider)
+	return max(1, (inner+divW)/(minCellW+divW))
+}
+
 // renderProjectsBox renders aggs as a bordered, multi-column table sized to
 // width×height (outer dimensions, including border). Columns are packed to
 // fit width (≥1); cells fill column-major (top spender top-left, read down
@@ -62,7 +72,7 @@ func renderProjectsBox(aggs []cache.ProjectAggregate, width, height int) string 
 	// One row is spent on the title, so cells share the remaining innerH-1.
 	bodyRows := max(innerH-1, 1)
 
-	cols := max(1, (inner+lipgloss.Width(columnDivider))/(minCellW+lipgloss.Width(columnDivider)))
+	cols := projectCellCols(width)
 	cellW := (inner - (cols-1)*lipgloss.Width(columnDivider)) / cols
 
 	capacity := cols * bodyRows

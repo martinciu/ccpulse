@@ -197,7 +197,7 @@ const projectsMaxRows = 12
 // projectsHeight returns the OUTER height (incl. border) reserved for the
 // projects box. While a slide is in flight it returns the animated value so the
 // chart cedes/reclaims rows in lockstep (#416); otherwise 0 when hidden, else
-// the steady target.
+// the steady target (content-aware since #420 — see projectsTargetHeight).
 func (m Model) projectsHeight() int {
 	if m.springActive && m.springKind == springKindProjects {
 		return m.projectsAnimH
@@ -208,17 +208,31 @@ func (m Model) projectsHeight() int {
 	return m.projectsTargetHeight()
 }
 
-// projectsTargetHeight is the steady-state outer box height: roughly half the
-// post-header area, capped, and 0 when the terminal is too short to host both
-// the chart's 5-row floor and a usable box. Independent of project count so
-// chartHeight stays stable across scroll/zoom (no circular dependency).
+// projectsTargetHeight is the steady-state outer box height: the rows its
+// content actually needs — border (2) + title (1) + ceil(len(projectAggs)/
+// cols) body rows at the current column packing — capped at half the
+// post-header area and projectsMaxRows, and 0 when the terminal is too short
+// to host both the chart's 5-row floor and a usable box. Content-aware since
+// #420: the box shrinks to its aggregates and chartHeight reclaims the rows.
+// Heights depend on aggs but never the reverse (refreshProjects derives its
+// window from width/scroll state), so there is no cycle; every projectAggs
+// mutation re-syncs the viewport in one pass (refreshChart inline before its
+// paint, the debounced settle via applyProjectsResize, clearChart
+// self-contained). The #416 slide arms against this target, so the arm must
+// populate projectAggs BEFORE reading it (beginProjectsAnimation).
 func (m Model) projectsTargetHeight() int {
 	avail := m.h - 7 // shared by chart + projects box (same overhead as chartHeight)
 	// Need the chart's 5-row floor + a minimum 4-row box (border+title+1 row).
 	if avail < 5+4 {
 		return 0
 	}
-	return min(avail/2, projectsMaxRows)
+	upper := min(avail/2, projectsMaxRows)
+	needed := 4 // empty aggs: the centered placeholder keeps the 4-row floor
+	if n := len(m.projectAggs); n > 0 {
+		cols := projectCellCols(m.w)
+		needed = 3 + (n+cols-1)/cols // border(2) + title(1) + body rows
+	}
+	return min(needed, upper)
 }
 
 // chartHeight returns the available rows for the chart, leaving room for

@@ -604,12 +604,26 @@ func (m *Model) scheduleProjectsTick() tea.Cmd {
 
 // handleProjectsTick recomputes the projects box if this tick is the latest
 // scheduled (gen matches); otherwise it was superseded by a later scroll and
-// is dropped. No Cmd to return — the settle chain ends here.
+// is dropped. The settle is also where the content-aware box height reflows
+// (#420): refreshProjects may change the row count, so re-sync the layout.
+// No Cmd to return — the settle chain ends here.
 func (m *Model) handleProjectsTick(msg projectsTickMsg) {
 	if msg.gen != m.projectsGen {
 		return
 	}
+	// Do not reflow mid-spring: a unit or zoom spring in flight owns m.peak as
+	// the bar-height normalization base, and applyProjectsResize calls
+	// renderWindow (bar mode) / buildLineChart (remaining mode) which would
+	// overwrite it, corrupting the spring frames and flashing steady-state
+	// content (#420). The deferred recompute is never lost — every spring
+	// settle path calls refreshChart (pkg/tui/springs.go, pkg/tui/zoomspring.go,
+	// and the projects slide in pkg/tui/projectsspring.go, #416), whose
+	// pre-paint refreshProjects + height re-sync catches it.
+	if m.springActive {
+		return
+	}
 	m.refreshProjects()
+	m.applyProjectsResize()
 }
 
 // handleQuotaMsg records fresh usage, recomputes the window, and resolves the
@@ -1040,9 +1054,24 @@ func (m *Model) recomputeWindow() {
 // refreshProjects recomputes the per-project rollup for the chart's
 // currently-visible window and stores it in m.projectAggs. Cheap: the
 // window is bounded by what's on screen. Safe when the cache is nil or the
-// chart has no data (clears to empty → placeholder). The [from, to) window
-// is derived from the same lastStarts/viewportXOffset/visibleBuckets the
-// bar chart renders, so the box reconciles with the visible bars.
+// chart has no data (clears to empty → placeholder — including remaining
+// mode with zero usage samples, where the warming-up chart and an empty
+// box tell the same no-data story).
+//
+// The [from, to) window is mode-aware (#430):
+//
+//   - Bar modes (tokens/cost): derived from the same lastStarts/
+//     viewportXOffset/visibleBuckets the bar chart renders — exact bucket
+//     edges, so the box reconciles with the visible bars.
+//
+//   - Remaining mode: taken from visibleWindow(), the single source of
+//     truth for the on-screen time range. Here lastStarts holds sparse
+//     usage_samples timestamps (one per usage-API fetch) while
+//     viewportXOffset stays a canvas bucket index, so the bar-mode
+//     indexing would clamp onto the latest sample and query a window of
+//     minutes — empty unless a message landed after the newest sample
+//     (the "no activity in this window" symptom). setX already
+//     special-cases the same sparse-lastStarts mismatch for its clamp.
 func (m *Model) refreshProjects() {
 	if !m.showProjects {
 		m.projectAggs = nil
@@ -1052,15 +1081,20 @@ func (m *Model) refreshProjects() {
 		m.projectAggs = nil
 		return
 	}
-	start := max(0, m.viewportXOffset)
-	if start >= len(m.lastStarts) {
-		start = len(m.lastStarts) - 1
-	}
-	end := min(start+m.visibleBuckets(), len(m.lastStarts))
-	from := m.lastStarts[start]
-	to := m.lastChartTo
-	if end < len(m.lastStarts) {
-		to = m.lastStarts[end]
+	var from, to time.Time
+	if chartUnit(m.unitIdx) == chartUnitRemaining {
+		from, to = m.visibleWindow()
+	} else {
+		start := max(0, m.viewportXOffset)
+		if start >= len(m.lastStarts) {
+			start = len(m.lastStarts) - 1
+		}
+		end := min(start+m.visibleBuckets(), len(m.lastStarts))
+		from = m.lastStarts[start]
+		to = m.lastChartTo
+		if end < len(m.lastStarts) {
+			to = m.lastStarts[end]
+		}
 	}
 	aggs, err := m.deps.Cache.ProjectAggregates(m.ctx, from, to)
 	if err != nil {
@@ -1069,6 +1103,32 @@ func (m *Model) refreshProjects() {
 		return
 	}
 	m.projectAggs = aggs
+}
+
+// applyProjectsResize re-syncs the viewport height and chart content after a
+// projectAggs change moved the content-aware projectsHeight (#420). No-op
+// when the height is already in sync — the common case; most scroll-settles
+// don't cross a row-count boundary. Never re-queries the cache: bar mode
+// re-renders the in-memory visible window; remaining mode rebuilds the line
+// chart from lastPts5h/7d. Height is a fixed point after one call (resizing
+// never changes projectAggs), so callers never loop.
+func (m *Model) applyProjectsResize() {
+	nh := m.chartHeight()
+	if m.viewport.Height == nh {
+		return
+	}
+	m.viewport.Height = nh
+	if m.lastCanvasW == 0 {
+		return // cleared/pre-init chart: no content to re-render
+	}
+	if chartUnit(m.unitIdx) == chartUnitRemaining {
+		m.viewport.SetContent(buildLineChart(m.lastPts5h, m.lastPts7d,
+			m.lastChartFrom, m.lastChartTo, m.lastCanvasW, nh, m.now(),
+			ZoomLevels[m.zoomIdx], m.dateOrder, "projects-resize", ""))
+		m.setX(m.viewportXOffset)
+	} else {
+		m.renderWindow()
+	}
 }
 
 // minBarWidth is the smallest a quota bar may shrink to. Lowered from the

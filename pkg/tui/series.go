@@ -102,6 +102,12 @@ func (m *Model) loadTokenSeries(zoom ZoomLevel, from, to, earliest time.Time) (c
 // lastPts5h/7d in loadRemainingSeries) stay at their sites so behavior is
 // preserved exactly.
 func (m *Model) clearChart() {
+	// Nil the aggs FIRST and re-snap the height: the placeholder below must
+	// render at the post-clear box height (#420). Self-contained on purpose —
+	// refreshChart's error/empty paths return right after clearChart, never
+	// reaching the tail resize hook.
+	m.projectAggs = nil
+	m.viewport.Height = m.chartHeight()
 	m.viewport.SetContent(emptyPlaceholder(m.chartWidth(), m.chartHeight()))
 	m.lastValues = nil
 	m.lastStarts = nil
@@ -112,7 +118,6 @@ func (m *Model) clearChart() {
 	m.lastChartTo = time.Time{}
 	m.hasData = false
 	m.chartCache = chartCache{}
-	m.projectAggs = nil
 	m.setX(0)
 }
 
@@ -219,7 +224,7 @@ func (m *Model) refreshChart() {
 	m.lastValues = series.values
 	m.lastStarts = series.starts
 
-	chartH := m.chartHeight()
+	var chartH int
 	var canvasW int
 	if series.unit == chartUnitRemaining {
 		// Mirror bar mode's canvas-width formula so 'z' zoom and 'u'
@@ -243,6 +248,17 @@ func (m *Model) refreshChart() {
 	// mutations go through setX / scrollLeft / scrollRight.
 	m.restoreAnchor(anchor, zoom, canvasW, from, to)
 
+	// Recompute the per-project rollup now that lastStarts / viewportXOffset /
+	// lastChartTo are all current (#420). Doing this BEFORE the paint means the
+	// single call below uses the correct post-refresh box height — eliminating
+	// the double-render that occurred when the old tail re-ran after painting at
+	// the stale height. The toggle-on path is the deterministic case: aggs were
+	// nil (4-row placeholder floor) at restoreAnchor time, so without this
+	// reorder every 'p' press fired two full-canvas paints.
+	m.refreshProjects()
+	m.viewport.Height = m.chartHeight()
+	chartH = m.chartHeight()
+
 	// Paint (#255). Bar modes window the render to the visible slice via
 	// renderWindow, which computes the visible-slice peak and sets the
 	// viewport content + slack offset itself — so no separate peak calc and
@@ -258,10 +274,6 @@ func (m *Model) refreshChart() {
 	} else {
 		m.renderWindow()
 	}
-
-	// Recompute the per-project rollup for the freshly-set visible window
-	// (lastStarts/viewportXOffset/lastChartTo are all current here).
-	m.refreshProjects()
 }
 
 // renderWindow renders the bar-chart viewport from the visible window of

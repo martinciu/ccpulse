@@ -3,16 +3,36 @@
 All notable changes to ccpulse are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
+## [0.5.0] — 2026-06-10
 
 ### Added
-- Per-project cost & token breakdown in the TUI: a multi-column table below
-  the chart, aggregated over the chart's currently-visible time window, with
-  each repo's worktrees and subdirectories rolled up to the parent repo (#408)
+- Per-project cost & token breakdown in the TUI: a table below the chart,
+  aggregated over the chart's currently-visible time window, with each
+  repo's worktrees and subdirectories rolled up to the parent repo. Hidden
+  by default — press `p` to toggle. Compact token counts, right-aligned
+  columns; the box sizes to its content and the chart reclaims the spare
+  rows (#408, #409, #410, #411, #413, #414, #415, #420, #429)
+- Pricing snapshot for 2026-06-09 with Claude Fable 5 and Mythos 5 rates
+  ($10 / $50 per Mtok in/out), so usage on the new models is costed
+  correctly (#418, #419)
 
 ### Changed
 - Cache schema bumped to v8 (new `repo_root` column). Existing caches rebuild
   automatically on first launch to backfill it (#408)
+
+### Fixed
+- Projects box no longer shows "no activity in this window" (or data for the
+  wrong range) on the usage-line view after zooming or scrolling — its query
+  window now follows the chart's visible time range (#430, #431)
+- Ingest writes message rows and the file cursor in one transaction, closing
+  a crash window that left rows persisted without the cursor advancing
+  (forcing a redundant re-parse); a real `GetFile` DB error now logs and
+  skips the file instead of silently re-parsing from offset 0 (#401, #405)
+
+### Internal
+- Regenerate the demo GIF — smaller file, same tape (#399)
+- Bump `modernc.org/sqlite` in the go-deps group (#406)
+- Bump the gha-deps group with 2 updates (#407)
 
 ## [0.4.0] — 2026-06-02
 

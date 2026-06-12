@@ -123,8 +123,12 @@ func (m *Model) beginProjectsAnimation() {
 	m.showProjects = !m.showProjects
 	to := 0
 	if m.showProjects {
-		to = m.projectsTargetHeight()
+		// Query BEFORE reading the target: projectsTargetHeight is
+		// content-aware (#420), and on a show the aggs are still nil from
+		// the hidden state (#414) — reading first would arm a slide to the
+		// 4-row empty floor and jump to the real height at settle.
 		m.refreshProjects() // THE one arm-time query on the show path
+		to = m.projectsTargetHeight()
 	}
 	m.projectsSlideFrom, m.projectsSlideTo = from, to
 	m.projectsAnimH = from

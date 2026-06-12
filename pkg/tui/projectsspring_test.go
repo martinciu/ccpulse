@@ -41,13 +41,16 @@ func TestProjectsHeight_SpringBranchOverridesTarget(t *testing.T) {
 	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
 	defer c.Close()
 
-	// Steady target (122x40 → m.h-7=33 → min(16,12)=12).
+	// Steady target is content-aware (#420): the single-project fixture
+	// needs border(2)+title(1)+1 body row = 4, well under the 122x40 cap
+	// (m.h-7=33 → upper min(16,12)=12). The empty-aggs floor is also 4, so
+	// the value holds whether or not refreshProjects ran.
 	m.showProjects = true
 	if got, want := m.projectsHeight(), m.projectsTargetHeight(); got != want {
 		t.Fatalf("steady projectsHeight()=%d, want projectsTargetHeight()=%d", got, want)
 	}
-	if m.projectsTargetHeight() != 12 {
-		t.Fatalf("projectsTargetHeight()=%d, want 12 at 122x40", m.projectsTargetHeight())
+	if m.projectsTargetHeight() != 4 {
+		t.Fatalf("projectsTargetHeight()=%d, want 4 (content-aware, 1 project) at 122x40", m.projectsTargetHeight())
 	}
 
 	// Spring branch: returns projectsAnimH regardless of showProjects.
@@ -433,9 +436,12 @@ func TestProjectsSlide_EndpointIdentity_LineMode(t *testing.T) {
 
 // TestProjectsSlide_BoxContentPresentEarly guards the round-one "box rose
 // empty" defect: as soon as the box band is a few rows tall it must carry
-// the real top border, the title, and (one row later) the top spender —
+// the real top border, the title (height 3: shell around the title row, per
+// the degenerate-heights contract), and one row later the top spender —
 // renderProjectsBox re-flowed at the animated height, not a blank-padded
-// pre-render sliced bottom-first.
+// pre-render sliced bottom-first. Thresholds are 3/4 rather than 4/5 so the
+// assertions stay non-vacuous with the content-aware target (#420): the
+// single-project fixture's target is only 4 rows.
 func TestProjectsSlide_BoxContentPresentEarly(t *testing.T) {
 	withForcedColor(t)
 	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
@@ -459,18 +465,18 @@ func TestProjectsSlide_BoxContentPresentEarly(t *testing.T) {
 		if lipgloss.Height(frame) != m.h {
 			t.Fatalf("tick %d: frame height %d != terminal height %d", i, lipgloss.Height(frame), m.h)
 		}
-		if m.springActive && m.projectsAnimH >= 4 {
+		if m.springActive && m.projectsAnimH >= 3 {
 			if !strings.Contains(frame, projectsTitle) {
 				t.Fatalf("animH=%d: frame lacks box title %q — box rendering empty", m.projectsAnimH, projectsTitle)
 			}
 			sawTitle = true
 		}
-		if m.springActive && m.projectsAnimH >= 5 && !strings.Contains(frame, topLabel) {
+		if m.springActive && m.projectsAnimH >= 4 && !strings.Contains(frame, topLabel) {
 			t.Fatalf("animH=%d: frame lacks top spender %q — content not re-flowed", m.projectsAnimH, topLabel)
 		}
 	}
 	if !sawTitle {
-		t.Fatal("slide settled without ever sampling a frame at animH >= 4")
+		t.Fatal("slide settled without ever sampling a frame at animH >= 3")
 	}
 }
 
@@ -566,17 +572,20 @@ func TestProjectsKey_RearmMidSlide_ReversesFromCurrentHeight(t *testing.T) {
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
 	m = updated.(Model)
 	genShow := m.springGen
-	for range 6 { // mid-flight
+	// Advance until animH is STRICTLY between the endpoints. The content-aware
+	// target (#420) is only 4 rows for the single-project fixture, so a fixed
+	// tick count is fragile: too few ticks round the lerp to 0, too many land
+	// on the target. Driving on the observed height is robust to both the
+	// spring constants and the fixture's target size.
+	for i := 0; m.projectsAnimH <= 0 || m.projectsAnimH >= m.projectsTargetHeight(); i++ {
+		if i > 600 || !m.springActive {
+			t.Fatalf("no strictly-mid-flight frame observed (tick %d, animH=%d, target=%d, active=%v)",
+				i, m.projectsAnimH, m.projectsTargetHeight(), m.springActive)
+		}
 		updated, _ = m.Update(springTickMsg{gen: m.springGen})
 		m = updated.(Model)
 	}
-	if !m.springActive {
-		t.Fatal("slide settled in 6 ticks; cannot probe re-arm")
-	}
 	mid := m.projectsAnimH
-	if mid <= 0 || mid >= m.projectsTargetHeight() {
-		t.Fatalf("animH=%d not strictly mid-flight (target %d)", mid, m.projectsTargetHeight())
-	}
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
 	m = updated.(Model)

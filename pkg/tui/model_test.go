@@ -6,6 +6,7 @@ import (
 	"math"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -5535,6 +5536,132 @@ func TestProjectsDebounce_StaleTickDropped(t *testing.T) {
 	}
 }
 
+// seedRemainingProjectsModel builds the #430 repro: 200 messages 15 min
+// apart ending TWO HOURS before now, plus 49 hourly usage samples ending
+// now. With the buggy lastStarts indexing, remaining mode clamps the
+// window to [latest-sample, lastChartTo) — which contains no messages —
+// while visibleWindow() (pinned right, w=120, 15m zoom → ~29 h on
+// screen) clearly does. Samples span 48 h so setX's remaining-mode
+// lower bound (#200, earliest-sample clamp) leaves room to scroll left.
+// Deliberately NOT seedScrollTestModel: its messages end at now, which
+// masks the bug (the bogus clamped window would still catch them).
+// refreshChart is NOT called — callers drive the entry path under test.
+func seedRemainingProjectsModel(t *testing.T) (*Model, func()) {
+	t.Helper()
+	c, err := cache.Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tab, err := pricing.Load()
+	if err != nil {
+		c.Close()
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(15 * time.Minute)
+	msgEnd := now.Add(-2 * time.Hour)
+	msgs := make([]parse.Message, 200)
+	for i := range msgs {
+		msgs[i] = parse.Message{
+			SessionID:   "s1",
+			ProjectSlug: "p",
+			Model:       "claude-opus-4-7",
+			Timestamp:   msgEnd.Add(time.Duration(-i*15) * time.Minute),
+			InputTokens: int64(1000 + i*10),
+		}
+	}
+	if err := c.InsertMessages(t.Context(), msgs, tab); err != nil {
+		c.Close()
+		t.Fatal(err)
+	}
+	for i := range 49 {
+		u := anthro.Usage{
+			FiveHour: &anthro.Bucket{Utilization: float64(10 + i), ResetsAt: timePtr(now.Add(time.Hour))},
+			SevenDay: &anthro.Bucket{Utilization: float64(5 + i), ResetsAt: timePtr(now.Add(24 * time.Hour))},
+		}
+		if err := c.RecordUsageSample(t.Context(), u, now.Add(time.Duration(-i)*time.Hour)); err != nil {
+			c.Close()
+			t.Fatalf("RecordUsageSample: %v", err)
+		}
+	}
+	m := New(Deps{Cache: c})
+	m.w, m.h = 120, 40
+	m.zoomIdx = 0 // 15m zoom: ~208 buckets vs chartWidth=118 → scrollable
+	m.unitIdx = int(chartUnitRemaining)
+	m.showProjects = true
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	return &m, func() { c.Close() }
+}
+
+// TestRefreshProjects_RemainingModeUsesVisibleWindow is the #430
+// regression: on the usage-line view, refreshChart must fill the
+// projects box from the on-screen time range (visibleWindow), not from
+// bucket-indexing the sparse usage-sample lastStarts — which lands on
+// the latest sample and yields an empty (or arbitrary) window.
+func TestRefreshProjects_RemainingModeUsesVisibleWindow(t *testing.T) {
+	m, cleanup := seedRemainingProjectsModel(t)
+	defer cleanup()
+
+	m.refreshChart() // first load pins to the right edge
+
+	if len(m.projectAggs) == 0 {
+		t.Fatalf("projectAggs empty after refreshChart in remaining mode "+
+			"(#430): viewportXOffset=%d len(lastStarts)=%d — window was "+
+			"derived by bucket-indexing sparse usage-sample timestamps",
+			m.viewportXOffset, len(m.lastStarts))
+	}
+	from, to := m.visibleWindow()
+	want, err := m.deps.Cache.ProjectAggregates(t.Context(), from, to)
+	if err != nil {
+		t.Fatalf("ProjectAggregates: %v", err)
+	}
+	if !slices.Equal(m.projectAggs, want) {
+		t.Errorf("projectAggs = %+v, want ProjectAggregates(visibleWindow()) = %+v",
+			m.projectAggs, want)
+	}
+}
+
+// TestProjectsTick_RemainingModeScrolledWindow covers the debounced
+// scroll-settle path (#430): after scrolling left on the usage-line
+// view, the settled tick must recompute the box for the scrolled
+// visibleWindow. projectsTickMsg is constructed directly; never invoke
+// the real tea.Tick Cmd (it sleeps out the debounce).
+func TestProjectsTick_RemainingModeScrolledWindow(t *testing.T) {
+	m, cleanup := seedRemainingProjectsModel(t)
+	defer cleanup()
+	m.refreshChart()
+
+	offBefore := m.viewportXOffset
+	for range 3 {
+		m.scrollLeft(ZoomLevels[m.zoomIdx].ScrollStep)
+	}
+	if m.viewportXOffset >= offBefore {
+		t.Fatalf("precondition: scrollLeft did not move the offset "+
+			"(%d → %d); the 48 h sample span should leave scroll room",
+			offBefore, m.viewportXOffset)
+	}
+	if cmd := m.scheduleProjectsTick(); cmd == nil {
+		t.Fatal("scheduleProjectsTick must return a Cmd when the box is shown")
+	}
+	m.projectAggs = nil // prove the settle recomputes, not a refreshChart leftover
+	m.handleProjectsTick(projectsTickMsg{gen: m.projectsGen})
+
+	if len(m.projectAggs) == 0 {
+		t.Fatalf("projectAggs empty after scroll-settle in remaining mode "+
+			"(#430): viewportXOffset=%d len(lastStarts)=%d",
+			m.viewportXOffset, len(m.lastStarts))
+	}
+	from, to := m.visibleWindow()
+	want, err := m.deps.Cache.ProjectAggregates(t.Context(), from, to)
+	if err != nil {
+		t.Fatalf("ProjectAggregates: %v", err)
+	}
+	if !slices.Equal(m.projectAggs, want) {
+		t.Errorf("settled projectAggs = %+v, want ProjectAggregates(visibleWindow()) = %+v",
+			m.projectAggs, want)
+	}
+}
+
 func TestProjectsHeight_HiddenWhenToggledOff(t *testing.T) {
 	m, cleanup := seedScrollTestModel(t, 200)
 	defer cleanup()
@@ -5662,5 +5789,175 @@ func TestProjectsTick_NotScheduledWhenHidden(t *testing.T) {
 	m.showProjects = false
 	if cmd := m.scheduleProjectsTick(); cmd != nil {
 		t.Error("scheduleProjectsTick should return nil while hidden")
+	}
+}
+
+// TestProjectsHeight_ContentAware pins the #420 formula: the box claims only
+// the rows its aggregates need — border(2) + title(1) + ceil(n/cols) — under
+// the pre-existing min(avail/2, projectsMaxRows) cap; zero aggs keep the
+// 4-row placeholder floor. Bare Model construction is enough: projectsHeight
+// reads only showProjects/w/h/projectAggs.
+func TestProjectsHeight_ContentAware(t *testing.T) {
+	cases := []struct {
+		desc string
+		w, h int
+		n    int
+		want int
+	}{
+		{"zero aggs keeps placeholder floor", 120, 40, 0, 4},
+		{"one agg single col", 60, 40, 1, 4},
+		{"two aggs single col (issue example: 5-row box)", 60, 40, 2, 5},
+		{"four aggs pack into two cols", 120, 40, 4, 5},
+		{"many aggs clamp to projectsMaxRows", 60, 40, 30, 12},
+		{"many aggs clamp to half avail on short terminal", 60, 20, 30, 6},
+	}
+	for _, tc := range cases {
+		t.Run(tc.desc, func(t *testing.T) {
+			m := Model{w: tc.w, h: tc.h, showProjects: true}
+			for range tc.n {
+				m.projectAggs = append(m.projectAggs, cache.ProjectAggregate{Label: "p"})
+			}
+			if got := m.projectsHeight(); got != tc.want {
+				t.Errorf("projectsHeight(w=%d h=%d n=%d) = %d, want %d",
+					tc.w, tc.h, tc.n, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestProjectsSettleReflow_ChartReclaimsRows drives the scroll-settle tick
+// (#420): when the settled window's rollup needs fewer rows than the box
+// currently shows, the box shrinks, chartHeight reclaims the rows, and
+// viewport.Height re-syncs — all in the same handleProjectsTick pass.
+// projectsTickMsg is constructed directly; never invoke the real tea.Tick
+// Cmd in tests (it sleeps).
+func TestProjectsSettleReflow_ChartReclaimsRows(t *testing.T) {
+	m, cleanup := seedScrollTestModel(t, 200)
+	defer cleanup()
+	m.showProjects = true
+	m.refreshChart()
+
+	// Simulate "the previous window showed 8 projects": inflate the aggs and
+	// re-sync the layout to that taller box.
+	fakes := make([]cache.ProjectAggregate, 8)
+	for i := range fakes {
+		fakes[i] = cache.ProjectAggregate{Label: fmt.Sprintf("p%d", i)}
+	}
+	m.projectAggs = fakes
+	m.viewport.Height = m.chartHeight()
+	tallBoxChartH := m.viewport.Height
+
+	// Settle: the fixture's real rollup needs fewer rows (its messages carry
+	// no cwd → a single "(no project)" agg), so the chart must grow back.
+	if cmd := m.scheduleProjectsTick(); cmd == nil {
+		t.Fatal("scheduleProjectsTick must return a Cmd while shown")
+	}
+	m.handleProjectsTick(projectsTickMsg{gen: m.projectsGen})
+
+	if len(m.projectAggs) >= 8 {
+		t.Fatalf("precondition: settled rollup = %d aggs, want < 8", len(m.projectAggs))
+	}
+	if got := m.chartHeight(); got <= tallBoxChartH {
+		t.Errorf("chartHeight = %d after settle, want > %d (reclaimed rows)", got, tallBoxChartH)
+	}
+	if m.viewport.Height != m.chartHeight() {
+		t.Errorf("viewport.Height = %d, want chartHeight %d (fixed point)",
+			m.viewport.Height, m.chartHeight())
+	}
+}
+
+// TestRefreshChart_ViewportHeightFixedPoint asserts refreshChart leaves the
+// layout at its fixed point (#420): refreshProjects runs before the paint so
+// chartHeight is computed with the final aggs — no toggle-on double-render.
+func TestRefreshChart_ViewportHeightFixedPoint(t *testing.T) {
+	m, cleanup := seedScrollTestModel(t, 200)
+	defer cleanup()
+	m.showProjects = true
+	m.refreshChart()
+	if len(m.projectAggs) == 0 {
+		t.Fatal("precondition: fixture should produce aggs")
+	}
+	if m.viewport.Height != m.chartHeight() {
+		t.Errorf("viewport.Height = %d after refreshChart, want chartHeight() = %d",
+			m.viewport.Height, m.chartHeight())
+	}
+}
+
+// TestClearChart_ResetsProjectsLayout asserts clearChart nils the aggs before
+// sizing the placeholder, so the cleared frame renders at the post-clear
+// height (#420). clearChart must be self-contained: refreshChart's error
+// paths return immediately after it, skipping the tail resize hook.
+func TestClearChart_ResetsProjectsLayout(t *testing.T) {
+	m, cleanup := seedScrollTestModel(t, 200)
+	defer cleanup()
+	m.showProjects = true
+	m.refreshChart()
+
+	fakes := make([]cache.ProjectAggregate, 8)
+	for i := range fakes {
+		fakes[i] = cache.ProjectAggregate{Label: fmt.Sprintf("p%d", i)}
+	}
+	m.projectAggs = fakes
+	m.viewport.Height = m.chartHeight()
+
+	m.clearChart()
+	if m.projectAggs != nil {
+		t.Error("clearChart must nil projectAggs")
+	}
+	if m.viewport.Height != m.chartHeight() {
+		t.Errorf("viewport.Height = %d after clearChart, want %d",
+			m.viewport.Height, m.chartHeight())
+	}
+}
+
+// TestHandleProjectsTick_NoOpMidSpring asserts that a settle tick arriving
+// while a spring is in flight is silently ignored (#420). The spring owns
+// m.peak as the bar-height normalization base; allowing applyProjectsResize
+// to call renderWindow mid-spring would overwrite it and corrupt spring frames.
+// The deferred recompute is not lost — both settle paths (pkg/tui/springs.go,
+// pkg/tui/zoomspring.go) call refreshChart, which re-runs refreshProjects and
+// re-syncs the height before the final paint.
+//
+// projectsTickMsg is constructed directly; never invoke the real tea.Tick Cmd
+// in tests (it sleeps to the settle deadline — see reference_tui_tick_cmd_test_pattern).
+func TestHandleProjectsTick_NoOpMidSpring(t *testing.T) {
+	m, cleanup := seedScrollTestModel(t, 200)
+	defer cleanup()
+
+	m.showProjects = true
+	m.refreshChart()
+
+	// Inflate aggs to simulate a window that previously had more projects, then
+	// re-sync the layout to the taller box — mirrors TestProjectsSettleReflow pattern.
+	fakes := make([]cache.ProjectAggregate, 8)
+	for i := range fakes {
+		fakes[i] = cache.ProjectAggregate{Label: fmt.Sprintf("p%d", i)}
+	}
+	m.projectAggs = fakes
+	m.viewport.Height = m.chartHeight()
+
+	// Record the stable state the spring is mid-flight with.
+	peakBefore := m.peak
+	heightBefore := m.viewport.Height
+	aggsBefore := len(m.projectAggs)
+
+	// Arm a settle tick, then mark the spring active — simulates a scroll
+	// arriving while a unit/zoom spring is in flight.
+	if cmd := m.scheduleProjectsTick(); cmd == nil {
+		t.Fatal("scheduleProjectsTick must return a Cmd while shown")
+	}
+	m.springActive = true
+
+	// Deliver the current-gen tick mid-spring; the guard must short-circuit.
+	m.handleProjectsTick(projectsTickMsg{gen: m.projectsGen})
+
+	if m.peak != peakBefore {
+		t.Errorf("mid-spring tick: peak changed from %v to %v, want no change", peakBefore, m.peak)
+	}
+	if m.viewport.Height != heightBefore {
+		t.Errorf("mid-spring tick: viewport.Height changed from %d to %d, want no change", heightBefore, m.viewport.Height)
+	}
+	if len(m.projectAggs) != aggsBefore {
+		t.Errorf("mid-spring tick: projectAggs len changed from %d to %d, want no change", aggsBefore, len(m.projectAggs))
 	}
 }
