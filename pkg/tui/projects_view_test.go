@@ -72,6 +72,37 @@ func TestRenderProjectsBox_NoProjectLast(t *testing.T) {
 	}
 }
 
+// TestRenderProjectsBox_DegenerateHeights pins the #416 mid-slide contract:
+// every height the slide passes through renders EXACTLY that many rows
+// (View's per-frame height conservation depends on it) — 1: top border,
+// 2: closed border shell, 3: shell around the title row, 4+: the full
+// title+body layout.
+func TestRenderProjectsBox_DegenerateHeights(t *testing.T) {
+	for h := 1; h <= 5; h++ {
+		got := renderProjectsBox(sampleAggs(), 80, h)
+		rows := strings.Split(got, "\n")
+		if len(rows) != h {
+			t.Errorf("height %d: rendered %d rows, want exactly %d:\n%s", h, len(rows), h, got)
+			continue
+		}
+		if !strings.Contains(rows[0], "╭") || !strings.Contains(rows[0], "╮") {
+			t.Errorf("height %d: first row is not a top border: %q", h, rows[0])
+		}
+		if h >= 2 {
+			last := rows[len(rows)-1]
+			if !strings.Contains(last, "╰") || !strings.Contains(last, "╯") {
+				t.Errorf("height %d: last row is not a bottom border: %q", h, last)
+			}
+		}
+		if h >= 3 && !strings.Contains(got, projectsTitle) {
+			t.Errorf("height %d: title missing", h)
+		}
+		if h >= 5 && !strings.Contains(got, "dotfiles") {
+			t.Errorf("height %d: top spender missing", h)
+		}
+	}
+}
+
 func TestRenderProjectsBox_Overflow(t *testing.T) {
 	// 1 column (narrow) × bodyRows=2 → capacity 2; 10 aggs must overflow
 	// into a "…N more" final cell rather than silently dropping rows.

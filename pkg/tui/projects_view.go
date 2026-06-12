@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"math"
+	"strings"
 
 	"github.com/charmbracelet/lipgloss"
 
@@ -36,7 +37,16 @@ func projectCellCols(outerWidth int) int {
 // (ProjectAggregates guarantees this) and therefore lands in the final cell.
 // Empty aggs render a centered placeholder. When aggs exceed the cell budget
 // (cols × bodyRows), the final cell reads "…N more".
+//
+// Heights 1–3 occur only mid-slide (#416: the steady target is ≥ 4 or 0) and
+// degrade gracefully — 1: top border, 2: closed border shell, 3: shell around
+// the title row — always exactly `height` rows so View's per-frame height
+// conservation holds at every animated height.
 func renderProjectsBox(aggs []cache.ProjectAggregate, width, height int) string {
+	if height <= 2 {
+		return projectsBoxShell(width, height)
+	}
+
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(colorMuted).
@@ -50,6 +60,13 @@ func renderProjectsBox(aggs []cache.ProjectAggregate, width, height int) string 
 		return box.Render(lipgloss.Place(inner, innerH,
 			lipgloss.Center, lipgloss.Center,
 			lipgloss.NewStyle().Foreground(colorMuted).Render("no activity in this window")))
+	}
+
+	// Height 3: a single inner row — the title, no body. The general layout
+	// below always emits title + ≥1 body row (≥4 rows total), which would
+	// overflow the box.
+	if innerH < 2 {
+		return box.Render(lipgloss.NewStyle().Foreground(colorMuted).Render(projectsTitle))
 	}
 
 	// One row is spent on the title, so cells share the remaining innerH-1.
@@ -102,6 +119,23 @@ func renderProjectsBox(aggs []cache.ProjectAggregate, width, height int) string 
 	// Title via a styled top line inside the box.
 	title := lipgloss.NewStyle().Foreground(colorMuted).Render(projectsTitle)
 	return box.Render(lipgloss.JoinVertical(lipgloss.Left, title, body))
+}
+
+// projectsBoxShell renders the box's border rows alone at the degenerate
+// heights the slide passes through (1: top border, 2: top+bottom — the fully
+// squashed box), matching renderProjectsBox's RoundedBorder + colorMuted so
+// the shell reads as the same box. lipgloss cannot emit a bordered block
+// with zero content rows, hence the manual border rows.
+func projectsBoxShell(width, height int) string {
+	b := lipgloss.RoundedBorder()
+	inner := max(width-2, 0)
+	style := lipgloss.NewStyle().Foreground(colorMuted)
+	top := style.Render(b.TopLeft + strings.Repeat(b.Top, inner) + b.TopRight)
+	if height <= 1 {
+		return top
+	}
+	bottom := style.Render(b.BottomLeft + strings.Repeat(b.Bottom, inner) + b.BottomRight)
+	return lipgloss.JoinVertical(lipgloss.Left, top, bottom)
 }
 
 // Slot widths for the fixed right-hand columns. Each value is right-aligned

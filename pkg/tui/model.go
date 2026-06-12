@@ -136,6 +136,7 @@ const (
 	springKindNone springKind = iota
 	springKindUnit
 	springKindZoom
+	springKindProjects
 )
 
 // Model is the root Bubble Tea model for the chart view.
@@ -268,6 +269,20 @@ type Model struct {
 	zoomSpringR   float64
 	zoomSpringVel float64
 	zoomSnap      zoomAnimSnapshot
+	// Projects-box slide (#416): single-phase spring on the box's OUTER
+	// height. projectsAnimH is the animated height the projectsHeight()
+	// lever returns mid-slide; projectsSlideFrom/To are the endpoints of
+	// the in-flight slide (re-arm starts From at the current height).
+	// Frames render through the STEADY pipelines (renderProjectsFrame), so
+	// no snapshot state exists — endpoint frames equal the steady views by
+	// construction. Mutually exclusive with the unit/zoom springs via the
+	// shared springActive flag + springKind tag.
+	projectsSpring    harmonica.Spring
+	projectsSpringR   float64
+	projectsSpringVel float64
+	projectsAnimH     int
+	projectsSlideFrom int
+	projectsSlideTo   int
 	// nowGen is bumped each time the live-advance tick is re-armed (zoom
 	// change). scheduleNowTick captures the current value into the scheduled
 	// nowTickMsg; the handler drops ticks whose gen doesn't match, so a zoom
@@ -443,16 +458,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // handleWindowSize re-lays out the viewport, progress bars, and help width on
 // terminal resize, then re-queries the chart and (re)arms the intro.
+//
+// viewport.Width is set before refreshChart because renderWindow reads
+// m.viewport.Width to build the content. viewport.Height is set AFTER
+// refreshChart: refreshChart aborts any in-flight projects slide
+// (springActive=false, springKind=None), which changes what chartHeight()
+// returns. Assigning Height before the abort would bake the mid-slide value
+// into the viewport, leaving it desynced until the next resize or 'p' press.
 func (m *Model) handleWindowSize(msg tea.WindowSizeMsg) tea.Cmd {
 	m.w, m.h = msg.Width, msg.Height
 	m.viewport.Width = m.chartWidth()
-	m.viewport.Height = m.chartHeight()
 	// help.Width controls when ShortHelp ellipsizes; if left at 0
 	// the footer can wrap onto the body row and break chartHeight().
 	m.help.Width = m.w
 	m.progress = newProgressBar(m.progressWidth())
 	m.progress7d = newProgressBar(m.progressWidth())
 	m.refreshChart()
+	// Assign after refreshChart so the abort of any in-flight spring is
+	// reflected in the height (chartHeight() reads projectsHeight(), which
+	// reads projectsAnimH when springKind==springKindProjects).
+	m.viewport.Height = m.chartHeight()
 	return m.maybeArmIntro()
 }
 
@@ -590,9 +615,10 @@ func (m *Model) handleProjectsTick(msg projectsTickMsg) {
 	// the bar-height normalization base, and applyProjectsResize calls
 	// renderWindow (bar mode) / buildLineChart (remaining mode) which would
 	// overwrite it, corrupting the spring frames and flashing steady-state
-	// content (#420). The deferred recompute is never lost — both spring settle
-	// paths call refreshChart (pkg/tui/springs.go settle, pkg/tui/zoomspring.go
-	// settle), whose pre-paint refreshProjects + height re-sync catches it.
+	// content (#420). The deferred recompute is never lost — every spring
+	// settle path calls refreshChart (pkg/tui/springs.go, pkg/tui/zoomspring.go,
+	// and the projects slide in pkg/tui/projectsspring.go, #416), whose
+	// pre-paint refreshProjects + height re-sync catches it.
 	if m.springActive {
 		return
 	}
@@ -654,16 +680,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 	case key.Matches(msg, m.keys.Unit):
 		return m.handleUnitKey()
 	case key.Matches(msg, m.keys.Projects):
-		// Hard layout cut (not a spring): toggling the box changes
-		// chartHeight, so resize the viewport widget and rebuild content
-		// at the new height — the same subset of handleWindowSize that
-		// matters when only the chart's available height changes.
-		// refreshChart chains refreshProjects, so an on-show requery for
-		// the current window falls out for free.
-		m.showProjects = !m.showProjects
-		m.viewport.Height = m.chartHeight()
-		m.refreshChart()
-		return nil
+		return m.handleProjectsKey()
 	case key.Matches(msg, m.keys.ScrollLeft):
 		m.scrollLeft(ZoomLevels[m.zoomIdx].ScrollStep)
 		return m.scheduleProjectsTick()
@@ -707,6 +724,27 @@ func (m *Model) handleUnitKey() tea.Cmd {
 	})
 }
 
+// handleProjectsKey slides the projects box up (show) / down (hide) via a
+// harmonica spring (#416). reduce_motion, a too-short terminal (no room for
+// a box), or an empty/cleared chart (renderWindow would no-op against no
+// content) → snap, the pre-#416 hard cut.
+func (m *Model) handleProjectsKey() tea.Cmd {
+	if m.deps.ReduceMotion || m.projectsTargetHeight() == 0 || m.lastCanvasW == 0 {
+		m.showProjects = !m.showProjects
+		m.viewport.Height = m.chartHeight()
+		m.refreshChart()
+		return nil
+	}
+	m.beginProjectsAnimation()
+	if !m.springActive {
+		return nil
+	}
+	gen := m.springGen
+	return tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
+		return springTickMsg{gen: gen}
+	})
+}
+
 // View implements tea.Model; it renders the full TUI frame — header quota bars, separator, and token histogram.
 func (m Model) View() string {
 	if m.w == 0 {
@@ -729,7 +767,12 @@ func (m Model) View() string {
 	parts := []string{header, sep, body}
 	// The projects box sits between chart and footer, suppressed while the
 	// help overlay is up (help replaces the chart body, so the box would be
-	// out of place).
+	// out of place). projectsHeight() returns the animated height mid-slide,
+	// so the SAME render path produces steady and slide frames — the box
+	// re-flows at each height: real borders and title from the first frames,
+	// cells filling top-down, the "…N more" overflow recounting as rows fit
+	// (#416 round two; round one's pre-rendered bottom-slice revealed blank
+	// padding first).
 	if !m.showHelp {
 		if ph := m.projectsHeight(); ph > 0 {
 			parts = append(parts, renderProjectsBox(m.projectAggs, m.w, ph))
@@ -770,6 +813,19 @@ func (m Model) renderChartBody(rawBody string) string {
 			return overlayYTicks(rawBody, m.chartHeight(), 1.0)
 		}
 		return barZoomYLabel(rawBody, m.zoomSnap, ZoomLevels[m.zoomIdx], m.chartHeight(), m.zoomSpringR)
+	case m.springActive && m.springKind == springKindProjects:
+		// Height-only animation: the y-overlay is EXACTLY the steady-state
+		// overlay at the frame's (animated) chartHeight — same live inputs
+		// as the steady cases below, so endpoint frames match them
+		// byte-for-byte (#416 round two). m.peak is recomputed by
+		// renderWindow each frame from the same fixed window (constant
+		// during the slide). MUST precede the generic springActive case,
+		// which reads m.springRatios (unit-toggle state, unset here).
+		if chartUnit(m.unitIdx) == chartUnitRemaining {
+			return overlayYTicks(rawBody, m.chartHeight(), 1.0)
+		}
+		return overlayYLabel(rawBody, m.peak, chartUnit(m.unitIdx),
+			m.chartHeight(), 1.0, ZoomLevels[m.zoomIdx].hasInBarNumbers())
 	case m.springActive:
 		var maxR float64
 		for _, r := range m.springRatios {
