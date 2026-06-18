@@ -97,21 +97,3 @@ func runIndex(cmd *cobra.Command, rebuild bool) error {
 	fmt.Fprintf(cmd.OutOrStdout(), "rebuilt: %d messages\n", n)
 	return nil
 }
-
-func envOr(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
-}
-
-func expand(p string) string {
-	if p == "" {
-		return p
-	}
-	if p[0] == '~' {
-		home, _ := os.UserHomeDir()
-		return home + p[1:]
-	}
-	return p
-}
