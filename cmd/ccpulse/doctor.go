@@ -36,17 +36,15 @@ func runDoctor(cmd *cobra.Command) error {
 	fmt.Fprintf(out, "ℹ build channel: %s\n", channel.Channel())
 	cfg, err := config.Load(config.DefaultPath())
 	check(out, "config loads", err == nil, err)
+	env := deriveEnv(cfg)
 
-	projects := envOr("CCPULSE_PROJECTS_ROOT", expand(cfg.Paths.ProjectsRoot))
-	_, statErr := os.Stat(projects)
-	check(out, "projects_root readable: "+projects, statErr == nil, statErr)
+	_, statErr := os.Stat(env.projectsRoot)
+	check(out, "projects_root readable: "+env.projectsRoot, statErr == nil, statErr)
 
-	cacheDir := envOr("CCPULSE_CACHE_DIR", expand(cfg.Paths.CacheDir))
 	fmt.Fprintf(out, "ℹ config path: %s\n", config.DefaultPath())
-	fmt.Fprintf(out, "ℹ cache dir:   %s\n", cacheDir)
-	dbPath := filepath.Join(cacheDir, "state.db")
-	c, cacheErr := cache.Open(cmd.Context(), dbPath)
-	check(out, "cache db opens: "+dbPath, cacheErr == nil, cacheErr)
+	fmt.Fprintf(out, "ℹ cache dir:   %s\n", env.cacheDir)
+	c, cacheErr := cache.Open(cmd.Context(), env.dbPath)
+	check(out, "cache db opens: "+env.dbPath, cacheErr == nil, cacheErr)
 	if cacheErr == nil {
 		defer c.Close()
 		ok, ierr := c.IntegrityOK(cmd.Context())
@@ -65,9 +63,9 @@ func runDoctor(cmd *cobra.Command) error {
 	}
 
 	checkCredential(out)
-	reportCacheArtifacts(out, cacheDir)
+	reportCacheArtifacts(out, env.cacheDir)
 	checkClaudeCodeHook(out)
-	reportLogFile(out, cacheDir)
+	reportLogFile(out, env.cacheDir)
 	return nil
 }
 
