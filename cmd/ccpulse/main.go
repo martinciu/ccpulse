@@ -28,7 +28,6 @@ import (
 	"github.com/martinciu/ccpulse/pkg/devlog"
 	"github.com/martinciu/ccpulse/pkg/ingest"
 	"github.com/martinciu/ccpulse/pkg/pricing"
-	"github.com/martinciu/ccpulse/pkg/projects"
 	"github.com/martinciu/ccpulse/pkg/secfile"
 	"github.com/martinciu/ccpulse/pkg/tui"
 	"github.com/martinciu/ccpulse/pkg/watcher"
@@ -256,19 +255,14 @@ func detectTerminalBackground() string {
 }
 
 func runTUI(ctx context.Context, errOut io.Writer) error {
-	cfg, err := config.Load(config.DefaultPath())
-	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("load config %s: %w", config.DefaultPath(), err)
-	}
-	cacheDir := envOr("CCPULSE_CACHE_DIR", expand(cfg.Paths.CacheDir))
-	if err := secfile.MkdirAll(cacheDir); err != nil {
+	env, logCloser, err := bootstrap(errOut)
+	if err != nil {
 		return err
 	}
-	if logCloser := initDevlog(channel.IsDev(), cacheDir, resolvedLogLevel, os.Stderr); logCloser != nil {
+	if logCloser != nil {
 		defer logCloser.Close()
 	}
-	dbPath := filepath.Join(cacheDir, "state.db")
-	c, err := openCacheWithRebuild(ctx, dbPath, errOut)
+	c, err := openCacheWithRebuild(ctx, env.dbPath, errOut)
 	if err != nil {
 		return err
 	}
@@ -278,20 +272,13 @@ func runTUI(ctx context.Context, errOut io.Writer) error {
 	if err != nil {
 		return err
 	}
-	projectsRoot := envOr("CCPULSE_PROJECTS_ROOT", expand(cfg.Paths.ProjectsRoot))
 	c.AutoRecost(ctx, hist)
 
-	ing := &ingest.Ingester{
-		Cache:          c,
-		Pricing:        hist,
-		ProjectsRoot:   projectsRoot,
-		ParseErrorsLog: filepath.Join(cacheDir, "parse-errors.log"),
-		Resolver:       projects.New(),
-	}
+	ing := newIngester(c, hist, env)
 
-	w, err := watcher.New(projectsRoot)
+	w, err := watcher.New(env.projectsRoot)
 	if err != nil {
-		return watcherStartupError(projectsRoot, err)
+		return watcherStartupError(env.projectsRoot, err)
 	}
 
 	qs := resolveQuotaStartup(errOut, time.Now())
@@ -308,12 +295,12 @@ func runTUI(ctx context.Context, errOut io.Writer) error {
 	m := tui.New(tui.Deps{
 		Ctx:          ctx,
 		Cache:        c,
-		ProjectsRoot: projectsRoot,
+		ProjectsRoot: env.projectsRoot,
 		Credential:   qs.cred,
 		HasOAuth:     qs.hasOAuth,
-		CacheDir:     cacheDir,
+		CacheDir:     env.cacheDir,
 		IsDev:        channel.IsDev(),
-		ReduceMotion: cfg.UI.ReduceMotion,
+		ReduceMotion: env.cfg.UI.ReduceMotion,
 	})
 	p := newTeaProgram(m)
 
@@ -351,9 +338,9 @@ func runTUI(ctx context.Context, errOut io.Writer) error {
 			})
 		})
 	case qs.hasOAuth:
-		retention := time.Duration(cfg.History.RetentionDays) * 24 * time.Hour
+		retention := time.Duration(env.cfg.History.RetentionDays) * 24 * time.Hour
 		bg.Go(func() {
-			runQuotaPoller(pollerCtx, p, qs.cred, cacheDir, c, retention)
+			runQuotaPoller(pollerCtx, p, qs.cred, env.cacheDir, c, retention)
 		})
 	}
 
@@ -389,14 +376,8 @@ func runTUI(ctx context.Context, errOut io.Writer) error {
 // during the integrity check is bubbled up so a Ctrl-C between Open and tea.Run
 // doesn't trigger a doomed LockedRebuild.
 func openCacheWithRebuild(ctx context.Context, dbPath string, errOut io.Writer) (*cache.Cache, error) {
-	c, err := cache.Open(ctx, dbPath)
+	c, err := openCacheOrHint(ctx, dbPath, errOut)
 	if err != nil {
-		if errors.Is(err, cache.ErrLockHeld) {
-			fmt.Fprintln(errOut,
-				"ccpulse: cache locked by another ccpulse process. Close any other running ccpulse"+
-					" (a TUI in another terminal, or `ccpulse index --rebuild`) and retry. On first launch"+
-					" after a schema upgrade, an older still-running ccpulse blocks the one-time cache rebuild.")
-		}
 		return nil, err
 	}
 	// Integrity check; if the cache is corrupt, rebuild from scratch. JSONL is
@@ -413,15 +394,7 @@ func openCacheWithRebuild(ctx context.Context, dbPath string, errOut io.Writer) 
 		return c, nil
 	}
 	c.Close()
-	c, err = cache.LockedRebuild(ctx, dbPath)
-	if err != nil {
-		if errors.Is(err, cache.ErrLockHeld) {
-			fmt.Fprintln(errOut,
-				"ccpulse: cache integrity check failed and rebuild blocked by another ccpulse process. Close the other instance and retry.")
-		}
-		return nil, err
-	}
-	return c, nil
+	return lockedRebuildOrHint(ctx, dbPath, errOut)
 }
 
 // quotaStartup is the resolved credential + demo-seam state used to wire the

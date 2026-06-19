@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/martinciu/ccpulse/pkg/anthro"
@@ -14,7 +12,6 @@ import (
 	"github.com/martinciu/ccpulse/pkg/config"
 	"github.com/martinciu/ccpulse/pkg/ingest"
 	"github.com/martinciu/ccpulse/pkg/pricing"
-	"github.com/martinciu/ccpulse/pkg/projects"
 	"github.com/martinciu/ccpulse/pkg/status"
 	"github.com/spf13/cobra"
 )
@@ -37,18 +34,15 @@ func newStatusCmd() *cobra.Command {
 }
 
 func runStatus(cmd *cobra.Command, asJSON, quiet, doIndex bool) error {
-	cfg, err := config.Load(config.DefaultPath())
-	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("load config %s: %w", config.DefaultPath(), err)
-	}
-	cacheDir := envOr("CCPULSE_CACHE_DIR", expand(cfg.Paths.CacheDir))
-	dbPath := filepath.Join(cacheDir, "state.db")
-	c, err := cache.Open(cmd.Context(), dbPath)
+	env, logCloser, err := bootstrap(cmd.ErrOrStderr())
 	if err != nil {
-		if errors.Is(err, cache.ErrLockHeld) {
-			fmt.Fprintln(cmd.ErrOrStderr(),
-				"ccpulse status: cache locked by another ccpulse process; skipping this tick.")
-		}
+		return err
+	}
+	if logCloser != nil {
+		defer logCloser.Close()
+	}
+	c, err := openCacheOrHint(cmd.Context(), env.dbPath, cmd.ErrOrStderr())
+	if err != nil {
 		return err
 	}
 	defer c.Close()
@@ -64,14 +58,14 @@ func runStatus(cmd *cobra.Command, asJSON, quiet, doIndex bool) error {
 	// reports fresh token/cost history. Opt-in — bare status stays cheap.
 	var indexed int
 	if doIndex {
-		indexed = backfillBeforeStatus(cmd, c, hist, cfg, cacheDir)
+		indexed = backfillBeforeStatus(cmd, c, hist, env)
 	}
 
-	q := buildQuotaInput(cmd.Context(), cacheDir, time.Now(), cmd.ErrOrStderr())
+	q := buildQuotaInput(cmd.Context(), env.cacheDir, time.Now(), cmd.ErrOrStderr())
 
 	// Record a usage sample whenever Fetch returned genuinely fresh data.
 	// Best-effort — failure to record never blocks the visible quota number.
-	recordUsageSample(cmd, c, cfg, q)
+	recordUsageSample(cmd, c, env.cfg, q)
 
 	w, err := status.Compute(cmd.Context(), c.DB(), time.Now(), q)
 	if err != nil {
@@ -127,15 +121,8 @@ func printIndexedCount(out io.Writer, indexed int, asJSON bool) {
 // recordUsageSample and buildQuotaInput swallow their errors. Returns the
 // number of stale files processed — those whose stored cache offset differs
 // from the file's current size (0 when the cache was already current).
-func backfillBeforeStatus(cmd *cobra.Command, c *cache.Cache, hist pricing.History, cfg config.Config, cacheDir string) int {
-	projectsRoot := envOr("CCPULSE_PROJECTS_ROOT", expand(cfg.Paths.ProjectsRoot))
-	ing := &ingest.Ingester{
-		Cache:          c,
-		Pricing:        hist,
-		ProjectsRoot:   projectsRoot,
-		ParseErrorsLog: filepath.Join(cacheDir, "parse-errors.log"),
-		Resolver:       projects.New(),
-	}
+func backfillBeforeStatus(cmd *cobra.Command, c *cache.Cache, hist pricing.History, env appEnv) int {
+	ing := newIngester(c, hist, env)
 	bf := &ingest.Backfill{Ingester: ing}
 
 	var indexed int

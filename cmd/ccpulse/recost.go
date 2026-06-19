@@ -1,16 +1,12 @@
 package main
 
 import (
-	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 
 	"github.com/spf13/cobra"
 
 	"github.com/martinciu/ccpulse/pkg/cache"
-	"github.com/martinciu/ccpulse/pkg/config"
 	"github.com/martinciu/ccpulse/pkg/pricing"
 )
 
@@ -22,21 +18,19 @@ func newRecostCmd() *cobra.Command {
 		Hidden: true,
 		Args:   cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.Load(config.DefaultPath())
-			if err != nil && !os.IsNotExist(err) {
-				return fmt.Errorf("load config: %w", err)
+			env, logCloser, err := bootstrap(cmd.ErrOrStderr())
+			if err != nil {
+				return err
 			}
-			cacheDir := envOr("CCPULSE_CACHE_DIR", expand(cfg.Paths.CacheDir))
+			if logCloser != nil {
+				defer logCloser.Close()
+			}
 			hist, err := pricing.Load()
 			if err != nil {
 				return fmt.Errorf("load pricing: %w", err)
 			}
-			ca, err := cache.Open(cmd.Context(), filepath.Join(cacheDir, "state.db"))
+			ca, err := openCacheOrHint(cmd.Context(), env.dbPath, cmd.ErrOrStderr())
 			if err != nil {
-				if errors.Is(err, cache.ErrLockHeld) {
-					fmt.Fprintln(cmd.ErrOrStderr(),
-						"ccpulse recost: cache locked by another ccpulse process. Close the TUI and retry.")
-				}
 				return fmt.Errorf("open cache: %w", err)
 			}
 			defer ca.Close()

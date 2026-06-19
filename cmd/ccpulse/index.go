@@ -3,17 +3,9 @@ package main
 import (
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 
-	"github.com/martinciu/ccpulse/pkg/cache"
-	"github.com/martinciu/ccpulse/pkg/channel"
-	"github.com/martinciu/ccpulse/pkg/config"
-	"github.com/martinciu/ccpulse/pkg/devlog"
 	"github.com/martinciu/ccpulse/pkg/ingest"
 	"github.com/martinciu/ccpulse/pkg/pricing"
-	"github.com/martinciu/ccpulse/pkg/projects"
-	"github.com/martinciu/ccpulse/pkg/secfile"
 	"github.com/spf13/cobra"
 )
 
@@ -37,31 +29,16 @@ func runIndex(cmd *cobra.Command, rebuild bool) error {
 		return errors.New("`ccpulse index` (no flag) was removed; the TUI now backfills on launch. Use `ccpulse index --rebuild` to drop and rebuild the cache from JSONL")
 	}
 
-	cfg, err := config.Load(config.DefaultPath())
-	if err != nil && !os.IsNotExist(err) {
+	env, logCloser, err := bootstrap(cmd.ErrOrStderr())
+	if err != nil {
 		return err
 	}
-
-	projectsRoot := envOr("CCPULSE_PROJECTS_ROOT", expand(cfg.Paths.ProjectsRoot))
-	cacheDir := envOr("CCPULSE_CACHE_DIR", expand(cfg.Paths.CacheDir))
-	if err := secfile.MkdirAll(cacheDir); err != nil {
-		return err
-	}
-	if logCloser, err := devlog.Init(devlog.Options{
-		IsDev:    channel.IsDev(),
-		CacheDir: cacheDir,
-		Level:    resolvedLogLevel,
-	}); err == nil && logCloser != nil {
+	if logCloser != nil {
 		defer logCloser.Close()
 	}
-	dbPath := filepath.Join(cacheDir, "state.db")
 
-	c, err := cache.LockedRebuild(ctx, dbPath)
+	c, err := lockedRebuildOrHint(ctx, env.dbPath, cmd.ErrOrStderr())
 	if err != nil {
-		if errors.Is(err, cache.ErrLockHeld) {
-			fmt.Fprintln(cmd.ErrOrStderr(),
-				"ccpulse index --rebuild: cache locked by another ccpulse process. Close the TUI or any other ccpulse command and retry.")
-		}
 		return err
 	}
 	defer c.Close()
@@ -71,13 +48,7 @@ func runIndex(cmd *cobra.Command, rebuild bool) error {
 		return err
 	}
 
-	ing := &ingest.Ingester{
-		Cache:          c,
-		Pricing:        hist,
-		ProjectsRoot:   projectsRoot,
-		ParseErrorsLog: filepath.Join(cacheDir, "parse-errors.log"),
-		Resolver:       projects.New(),
-	}
+	ing := newIngester(c, hist, env)
 	bf := &ingest.Backfill{Ingester: ing}
 
 	if err := bf.Run(ctx, nil); err != nil {
@@ -96,22 +67,4 @@ func runIndex(cmd *cobra.Command, rebuild bool) error {
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "rebuilt: %d messages\n", n)
 	return nil
-}
-
-func envOr(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
-}
-
-func expand(p string) string {
-	if p == "" {
-		return p
-	}
-	if p[0] == '~' {
-		home, _ := os.UserHomeDir()
-		return home + p[1:]
-	}
-	return p
 }
