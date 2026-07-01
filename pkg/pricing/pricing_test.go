@@ -192,6 +192,8 @@ func TestHistory_TableAt(t *testing.T) {
 		{"exact earliest", mustTime("2026-05-09T00:00:00Z"), "2026-05-09"},
 		{"between versions -> preceding", mustTime("2026-05-09T23:59:59Z"), "2026-05-09"},
 		{"exact later version", mustTime("2026-05-10T00:00:00Z"), "2026-05-10"},
+		{"intro window end -> 2026-07-01", mustTime("2026-08-31T23:59:59Z"), "2026-07-01"},
+		{"standard rates start -> 2026-09-01", mustTime("2026-09-01T00:00:00Z"), "2026-09-01"},
 		{"after latest -> latest", mustTime("2099-01-01T00:00:00Z"), latest},
 	}
 	for _, c := range cases {
@@ -369,5 +371,83 @@ func TestHistory_CarryForward_AllSnapshots(t *testing.T) {
 				t.Errorf("model %q present in %s but missing from %s", model, prev.Version, cur.Version)
 			}
 		}
+	}
+}
+
+func TestSonnet5Snapshots(t *testing.T) {
+	h, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	intro := ModelRate{
+		InputPerMtok:        2.00,
+		OutputPerMtok:       10.00,
+		CacheReadPerMtok:    0.20,
+		CacheWrite5mPerMtok: 2.50,
+		CacheWrite1hPerMtok: 4.00,
+	}
+	standard := ModelRate{
+		InputPerMtok:        3.00,
+		OutputPerMtok:       15.00,
+		CacheReadPerMtok:    0.30,
+		CacheWrite5mPerMtok: 3.75,
+		CacheWrite1hPerMtok: 6.00,
+	}
+	for _, tc := range []struct {
+		version string
+		want    ModelRate
+	}{
+		{"2026-07-01", intro},
+		{"2026-09-01", standard},
+	} {
+		t.Run(tc.version, func(t *testing.T) {
+			tab := h.TableAt(mustParseDate(t, tc.version))
+			if tab.Version != tc.version {
+				t.Fatalf("TableAt(%s).Version = %q, want %q", tc.version, tab.Version, tc.version)
+			}
+			got, ok := tab.Models["claude-sonnet-5"]
+			if !ok {
+				t.Fatalf("Models[claude-sonnet-5] missing from %s", tc.version)
+			}
+			if got != tc.want {
+				t.Errorf("claude-sonnet-5 = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestSonnet5Resolution pins the intro/standard switchover: resolution is by
+// message timestamp, and pre-snapshot Sonnet 5 usage falls forward to intro
+// rates (issue #368 semantics).
+func TestSonnet5Resolution(t *testing.T) {
+	h, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	const Mtok = 1_000_000
+	cases := []struct {
+		name        string
+		ts          time.Time
+		wantVersion string
+		wantCost    float64
+	}{
+		{"fall-forward before first snapshot", time.Date(2026, 6, 15, 0, 0, 0, 0, time.UTC), "2026-07-01", 2.00},
+		{"intro window last second", time.Date(2026, 8, 31, 23, 59, 59, 0, time.UTC), "2026-07-01", 2.00},
+		{"standard from Sept 1", time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC), "2026-09-01", 3.00},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := parse.Message{Timestamp: tc.ts, Model: "claude-sonnet-5", InputTokens: Mtok}
+			cost, version, unknown := h.CostFor(m)
+			if unknown {
+				t.Fatal("unknown = true, want false")
+			}
+			if version != tc.wantVersion {
+				t.Errorf("version = %q, want %q", version, tc.wantVersion)
+			}
+			if cost != tc.wantCost {
+				t.Errorf("cost = %v, want %v", cost, tc.wantCost)
+			}
+		})
 	}
 }
