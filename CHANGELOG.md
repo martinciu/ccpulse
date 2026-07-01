@@ -3,6 +3,25 @@
 All notable changes to ccpulse are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.6.0] — 2026-07-02
+
+### Added
+- Animated projects-box toggle: `p` now slides the box open and closed with a
+  spring, the chart re-flowing to the freed or reclaimed rows every frame. A
+  second `p` mid-slide reverses from the current height; zoom/unit switches
+  and data refreshes cut straight to the steady view. All frames render
+  within the 60 fps budget, in bar and line modes alike (#416, #436)
+- Pricing snapshots for 2026-07-01 (intro) and 2026-09-01 (standard) with
+  Claude Sonnet 5 rates, so usage on the new model is costed correctly
+  (#443, #444)
+
+### Internal
+- Shared bootstrap for `cmd/ccpulse` subcommands: the five divergent "cache
+  locked" messages collapse to one canonical hint, and `status` now creates
+  the cache directory if missing (#421, #438)
+- Bump `modernc.org/sqlite` to 1.53.0 (#439) and the GitHub Actions
+  dependency groups (#437, #440, #441, #442)
+
 ## [0.5.0] — 2026-06-10
 
 ### Added
