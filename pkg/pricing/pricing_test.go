@@ -180,16 +180,19 @@ func TestHistory_TableAt(t *testing.T) {
 		return ts
 	}
 
+	versions := h.Versions()
+	earliest, latest := versions[0], versions[len(versions)-1]
+
 	cases := []struct {
 		name        string
 		ts          time.Time
 		wantVersion string
 	}{
-		{"before earliest -> earliest", mustTime("2025-01-01T00:00:00Z"), "2026-05-09"},
+		{"before earliest -> earliest", mustTime("2025-01-01T00:00:00Z"), earliest},
 		{"exact earliest", mustTime("2026-05-09T00:00:00Z"), "2026-05-09"},
 		{"between versions -> preceding", mustTime("2026-05-09T23:59:59Z"), "2026-05-09"},
 		{"exact later version", mustTime("2026-05-10T00:00:00Z"), "2026-05-10"},
-		{"after latest -> latest", mustTime("2099-01-01T00:00:00Z"), "2026-06-09"},
+		{"after latest -> latest", mustTime("2099-01-01T00:00:00Z"), latest},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -306,14 +309,25 @@ func TestHistory_CostFor_FallForward(t *testing.T) {
 	}
 }
 
-func TestLatestSnapshot_FableAndMythos(t *testing.T) {
+// mustParseDate parses a snapshot version string ("2006-01-02") into the
+// midnight-UTC instant TableAt resolves to that exact snapshot.
+func mustParseDate(t *testing.T, s string) time.Time {
+	t.Helper()
+	ts, err := time.Parse("2006-01-02", s)
+	if err != nil {
+		t.Fatalf("parse version %s: %v", s, err)
+	}
+	return ts
+}
+
+func TestSnapshot20260609_FableAndMythos(t *testing.T) {
 	h, err := Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	tab := h.Latest()
+	tab := h.TableAt(mustParseDate(t, "2026-06-09"))
 	if tab.Version != "2026-06-09" {
-		t.Fatalf("Latest().Version = %q, want 2026-06-09", tab.Version)
+		t.Fatalf("TableAt(2026-06-09).Version = %q, want 2026-06-09", tab.Version)
 	}
 	want := ModelRate{
 		InputPerMtok:        10.00,
@@ -332,14 +346,28 @@ func TestLatestSnapshot_FableAndMythos(t *testing.T) {
 			t.Errorf("Models[%q] = %+v, want %+v", model, got, want)
 		}
 	}
-	// New snapshot must carry every model forward from 2026-05-28.
-	prev := h.TableAt(time.Date(2026, 5, 28, 12, 0, 0, 0, time.UTC))
-	if prev.Version != "2026-05-28" {
-		t.Fatalf("TableAt(2026-05-28).Version = %q, want 2026-05-28", prev.Version)
+}
+
+// TestHistory_CarryForward_AllSnapshots encodes the snapshot convention:
+// every dated file carries every model forward from its predecessor —
+// snapshots only add entries (retired models keep their last known rate).
+func TestHistory_CarryForward_AllSnapshots(t *testing.T) {
+	h, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
 	}
-	for model := range prev.Models {
-		if _, ok := tab.Models[model]; !ok {
-			t.Errorf("Models[%q] present in 2026-05-28 but missing from 2026-06-09", model)
+	versions := h.Versions()
+	for i := 1; i < len(versions); i++ {
+		prev := h.TableAt(mustParseDate(t, versions[i-1]))
+		cur := h.TableAt(mustParseDate(t, versions[i]))
+		if prev.Version != versions[i-1] || cur.Version != versions[i] {
+			t.Fatalf("TableAt resolved %s/%s, want %s/%s",
+				prev.Version, cur.Version, versions[i-1], versions[i])
+		}
+		for model := range prev.Models {
+			if _, ok := cur.Models[model]; !ok {
+				t.Errorf("model %q present in %s but missing from %s", model, prev.Version, cur.Version)
+			}
 		}
 	}
 }
