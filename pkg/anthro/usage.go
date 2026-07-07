@@ -135,6 +135,17 @@ func SetAPIURLForTest(url string) (restore func()) {
 	return func() { apiURL = prev }
 }
 
+// StatusError is a non-2xx response from the usage endpoint. RetryAfter
+// carries the parsed Retry-After header when the server sent one; zero
+// when the header is absent or unparseable. The error string is kept
+// byte-identical to the pre-#447 untyped error ("api status %d").
+type StatusError struct {
+	Code       int
+	RetryAfter time.Duration
+}
+
+func (e *StatusError) Error() string { return fmt.Sprintf("api status %d", e.Code) }
+
 // FetchResult is what Fetch returns to the caller.
 type FetchResult struct {
 	Usage     Usage
@@ -304,7 +315,7 @@ func fetchAPI(ctx context.Context, token string) (Usage, error) {
 
 	if resp.StatusCode != http.StatusOK {
 		// fetchAPI is the only layer with HTTP detail; log here AND return
-		// a sentinel error for caller branching. Not a duplicate-handling
+		// a typed error for caller branching. Not a duplicate-handling
 		// violation — upstream layers log different content at different
 		// severity.
 		// strconv.Quote escapes ANSI/CR/control bytes in body_snippet so a
@@ -318,7 +329,10 @@ func fetchAPI(ctx context.Context, token string) (Usage, error) {
 			"status", resp.StatusCode,
 			"dur_ms", durMS,
 			"body_snippet", strconv.Quote(string(snippet)))
-		return Usage{}, fmt.Errorf("api status %d", resp.StatusCode)
+		return Usage{}, &StatusError{
+			Code:       resp.StatusCode,
+			RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After"), time.Now()),
+		}
 	}
 
 	var u Usage

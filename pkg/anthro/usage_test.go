@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -952,6 +953,45 @@ func TestParseRetryAfter(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := parseRetryAfter(tt.header, now); got != tt.want {
 				t.Errorf("parseRetryAfter(%q) = %v, want %v", tt.header, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFetchAPIStatusError(t *testing.T) {
+	tests := []struct {
+		name           string
+		status         int
+		retryAfter     string // header value; "" = header absent
+		wantRetryAfter time.Duration
+	}{
+		{name: "429 with Retry-After seconds", status: http.StatusTooManyRequests, retryAfter: "60", wantRetryAfter: time.Minute},
+		{name: "429 without Retry-After", status: http.StatusTooManyRequests, retryAfter: "", wantRetryAfter: 0},
+		{name: "500 carries code", status: http.StatusInternalServerError, retryAfter: "", wantRetryAfter: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+				if tt.retryAfter != "" {
+					w.Header().Set("Retry-After", tt.retryAfter)
+				}
+				w.WriteHeader(tt.status)
+				_, _ = w.Write([]byte(`{"type":"error","error":{"type":"rate_limit_error"}}`))
+			})
+			withTestEndpoint(t, srv.URL)
+			_, err := fetchAPI(context.Background(), "tok")
+			var se *StatusError
+			if !errors.As(err, &se) {
+				t.Fatalf("fetchAPI error = %v (%T), want *StatusError", err, err)
+			}
+			if se.Code != tt.status {
+				t.Errorf("Code = %d, want %d", se.Code, tt.status)
+			}
+			if se.RetryAfter != tt.wantRetryAfter {
+				t.Errorf("RetryAfter = %v, want %v", se.RetryAfter, tt.wantRetryAfter)
+			}
+			if want := fmt.Sprintf("api status %d", tt.status); se.Error() != want {
+				t.Errorf("Error() = %q, want %q", se.Error(), want)
 			}
 		})
 	}
