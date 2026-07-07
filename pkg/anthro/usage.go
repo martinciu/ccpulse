@@ -246,6 +246,27 @@ func acquireFetchLock(cacheDir string) (release func(), err error) {
 	}, nil
 }
 
+// parseRetryAfter interprets an RFC 7231 Retry-After header value: either
+// delta-seconds ("120") or an HTTP-date, evaluated against now. Returns 0
+// for an absent, garbage, negative, or already-past value.
+func parseRetryAfter(header string, now time.Time) time.Duration {
+	if header == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(header); err == nil {
+		if secs <= 0 {
+			return 0
+		}
+		return time.Duration(secs) * time.Second
+	}
+	if t, err := http.ParseTime(header); err == nil {
+		if d := t.Sub(now); d > 0 {
+			return d
+		}
+	}
+	return 0
+}
+
 // fetchAPI emits exactly one slog record per call. The four message keys
 // (anthro.fetchAPI, anthro.fetchAPI non-2xx, anthro.fetchAPI transport error,
 // anthro.fetchAPI decode) are distinct because each variant carries a

@@ -932,3 +932,27 @@ func TestFreshFromCache(t *testing.T) {
 		})
 	}
 }
+
+func TestParseRetryAfter(t *testing.T) {
+	now := time.Date(2026, 7, 7, 20, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name   string
+		header string
+		want   time.Duration
+	}{
+		{name: "absent", header: "", want: 0},
+		{name: "delta seconds", header: "120", want: 2 * time.Minute},
+		{name: "delta zero", header: "0", want: 0},
+		{name: "delta negative", header: "-5", want: 0},
+		{name: "http date future", header: now.Add(90 * time.Second).Format(http.TimeFormat), want: 90 * time.Second},
+		{name: "http date past", header: now.Add(-time.Minute).Format(http.TimeFormat), want: 0},
+		{name: "garbage", header: "soon", want: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := parseRetryAfter(tt.header, now); got != tt.want {
+				t.Errorf("parseRetryAfter(%q) = %v, want %v", tt.header, got, tt.want)
+			}
+		})
+	}
+}
