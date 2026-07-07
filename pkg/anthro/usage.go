@@ -151,6 +151,10 @@ type FetchResult struct {
 	Usage     Usage
 	Source    string    // "api" | "cache_fresh" | "cache_stale"
 	UpdatedAt time.Time // when the data was actually pulled from Anthropic
+	// APIStatus carries the typed non-2xx error behind a cache_stale
+	// fallback so callers can branch on rate limiting (#447). nil for
+	// every other source and for non-status failures (transport, decode).
+	APIStatus *StatusError
 }
 
 // freshFromCache returns a cache_fresh result when the cached entry is valid and
@@ -218,7 +222,14 @@ func Fetch(ctx context.Context, cred Credential, cacheDir string) (res FetchResu
 	u, apiErr := fetchAPI(ctx, cred.AccessToken)
 	if apiErr != nil {
 		if cacheErr == nil {
-			return FetchResult{Usage: cached.Usage, Source: "cache_stale", UpdatedAt: cached.UpdatedAt}, nil
+			var se *StatusError
+			errors.As(apiErr, &se) // stays nil for transport/decode failures
+			return FetchResult{
+				Usage:     cached.Usage,
+				Source:    "cache_stale",
+				UpdatedAt: cached.UpdatedAt,
+				APIStatus: se,
+			}, nil
 		}
 		return FetchResult{}, fmt.Errorf("anthro fetch: %w", apiErr)
 	}

@@ -310,6 +310,9 @@ func TestFetchCacheStaleAPIFail(t *testing.T) {
 	if res.Source != "cache_stale" {
 		t.Errorf("Source = %q, want cache_stale", res.Source)
 	}
+	if res.APIStatus == nil || res.APIStatus.Code != http.StatusInternalServerError {
+		t.Errorf("APIStatus = %+v, want Code 500", res.APIStatus)
+	}
 	if res.UpdatedAt.Sub(wrote).Abs() > time.Second {
 		t.Errorf("UpdatedAt should be original write time")
 	}
@@ -994,5 +997,69 @@ func TestFetchAPIStatusError(t *testing.T) {
 				t.Errorf("Error() = %q, want %q", se.Error(), want)
 			}
 		})
+	}
+}
+
+func TestFetchCacheStaleRateLimited(t *testing.T) {
+	dir := t.TempDir()
+	writeFixtureCache(t, dir, time.Now().Add(-10*time.Minute))
+	srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "60")
+		http.Error(w, `{"type":"error"}`, http.StatusTooManyRequests)
+	})
+	withTestEndpoint(t, srv.URL)
+	res, err := Fetch(context.Background(), Credential{AccessToken: "tok"}, dir)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if res.Source != "cache_stale" {
+		t.Errorf("Source = %q, want cache_stale", res.Source)
+	}
+	if res.APIStatus == nil {
+		t.Fatal("APIStatus = nil, want *StatusError")
+	}
+	if res.APIStatus.Code != http.StatusTooManyRequests {
+		t.Errorf("APIStatus.Code = %d, want 429", res.APIStatus.Code)
+	}
+	if res.APIStatus.RetryAfter != time.Minute {
+		t.Errorf("APIStatus.RetryAfter = %v, want 1m", res.APIStatus.RetryAfter)
+	}
+}
+
+func TestFetchCacheStaleTransportError_NoAPIStatus(t *testing.T) {
+	dir := t.TempDir()
+	writeFixtureCache(t, dir, time.Now().Add(-10*time.Minute))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	srv.Close() // connection refused → transport error, not a StatusError
+	withTestEndpoint(t, srv.URL)
+	res, err := Fetch(context.Background(), Credential{AccessToken: "tok"}, dir)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if res.Source != "cache_stale" {
+		t.Errorf("Source = %q, want cache_stale", res.Source)
+	}
+	if res.APIStatus != nil {
+		t.Errorf("APIStatus = %+v, want nil on transport error", res.APIStatus)
+	}
+}
+
+func TestFetchNoCacheRateLimited_ErrorsAs(t *testing.T) {
+	dir := t.TempDir()
+	srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "30")
+		http.Error(w, "rate limited", http.StatusTooManyRequests)
+	})
+	withTestEndpoint(t, srv.URL)
+	_, err := Fetch(context.Background(), Credential{AccessToken: "tok"}, dir)
+	if err == nil {
+		t.Fatal("expected error when no cache and API 429s")
+	}
+	var se *StatusError
+	if !errors.As(err, &se) {
+		t.Fatalf("errors.As failed on %v (%T)", err, err)
+	}
+	if se.Code != http.StatusTooManyRequests || se.RetryAfter != 30*time.Second {
+		t.Errorf("StatusError = %+v, want Code 429 RetryAfter 30s", se)
 	}
 }
