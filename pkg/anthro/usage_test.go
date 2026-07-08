@@ -948,6 +948,7 @@ func TestParseRetryAfter(t *testing.T) {
 		{name: "delta seconds", header: "120", want: 2 * time.Minute},
 		{name: "delta zero", header: "0", want: 0},
 		{name: "delta negative", header: "-5", want: 0},
+		{name: "delta overflow", header: "10000000000", want: 0},
 		{name: "http date future", header: now.Add(90 * time.Second).Format(http.TimeFormat), want: 90 * time.Second},
 		{name: "http date past", header: now.Add(-time.Minute).Format(http.TimeFormat), want: 0},
 		{name: "garbage", header: "soon", want: 0},

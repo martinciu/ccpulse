@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -270,13 +271,13 @@ func acquireFetchLock(cacheDir string) (release func(), err error) {
 
 // parseRetryAfter interprets an RFC 7231 Retry-After header value: either
 // delta-seconds ("120") or an HTTP-date, evaluated against now. Returns 0
-// for an absent, garbage, negative, or already-past value.
+// for an absent, garbage, negative, overflowing, or already-past value.
 func parseRetryAfter(header string, now time.Time) time.Duration {
 	if header == "" {
 		return 0
 	}
 	if secs, err := strconv.Atoi(header); err == nil {
-		if secs <= 0 {
+		if secs <= 0 || secs > int(math.MaxInt64/int64(time.Second)) {
 			return 0
 		}
 		return time.Duration(secs) * time.Second
