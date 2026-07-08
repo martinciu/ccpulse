@@ -450,9 +450,11 @@ func startBackfill(ctx context.Context, p *tea.Program, ing *ingest.Ingester) (c
 	return bfCancel, &bfDone
 }
 
-// runQuotaPoller fires once immediately, then every 2 minutes, fetching
-// usage data and pushing QuotaMsg to the program. On a successful fetch
-// where Source=="api", it also appends a row to usage_samples and (if
+// runQuotaPoller fires once immediately, then re-polls on a per-outcome
+// cadence: basePollInterval normally, backing off per pollBackoff while
+// the usage endpoint returns 429 (#447). Each attempt fetches usage data
+// and pushes QuotaMsg to the program. On a successful fetch where
+// Source=="api", it also appends a row to usage_samples and (if
 // retention > 0) prunes anything older than now-retention. All side
 // effects are best-effort; errors are swallowed so the TUI quota stays
 // up to date even if the cache is misbehaving.
@@ -464,18 +466,29 @@ func runQuotaPoller(
 	c *cache.Cache,
 	retention time.Duration,
 ) {
-	push := func() {
+	var backoff pollBackoff
+	// push performs one fetch attempt, pushes any result to the TUI, and
+	// returns the delay before the next attempt.
+	push := func() time.Duration {
 		res, err := anthro.Fetch(ctx, cred, cacheDir)
 		if err != nil {
+			var se *anthro.StatusError
+			errors.As(err, &se) // stays nil for transport/decode failures
+			delay := backoff.next(se)
 			slog.Warn("ccpulse.quotaPoller",
 				"outcome", "fetch_error",
-				"err", err)
-			return
+				"err", err,
+				"next_retry_s", int(delay.Seconds()),
+				"consecutive_429", backoff.consecutive429)
+			return delay
 		}
+		delay := backoff.next(res.APIStatus)
 		if res.Source == "cache_stale" {
 			slog.Warn("ccpulse.quotaPoller",
 				"outcome", "cache_stale",
-				"cache_age_s", int(time.Since(res.UpdatedAt).Seconds()))
+				"cache_age_s", int(time.Since(res.UpdatedAt).Seconds()),
+				"next_retry_s", int(delay.Seconds()),
+				"consecutive_429", backoff.consecutive429)
 		}
 		if res.Source == "api" {
 			_ = c.RecordUsageSample(ctx, res.Usage, res.UpdatedAt)
@@ -488,16 +501,16 @@ func runQuotaPoller(
 			Source:    res.Source,
 			UpdatedAt: res.UpdatedAt,
 		})
+		return delay
 	}
-	push() // immediate first tick
-	t := time.NewTicker(3 * time.Minute)
+	t := time.NewTimer(push()) // immediate first attempt
 	defer t.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			push()
+			t.Reset(push())
 		}
 	}
 }

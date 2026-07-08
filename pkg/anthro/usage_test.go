@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -308,6 +309,9 @@ func TestFetchCacheStaleAPIFail(t *testing.T) {
 	}
 	if res.Source != "cache_stale" {
 		t.Errorf("Source = %q, want cache_stale", res.Source)
+	}
+	if res.APIStatus == nil || res.APIStatus.Code != http.StatusInternalServerError {
+		t.Errorf("APIStatus = %+v, want Code 500", res.APIStatus)
 	}
 	if res.UpdatedAt.Sub(wrote).Abs() > time.Second {
 		t.Errorf("UpdatedAt should be original write time")
@@ -930,5 +934,133 @@ func TestFreshFromCache(t *testing.T) {
 				t.Errorf("Source = %q, want cache_fresh", res.Source)
 			}
 		})
+	}
+}
+
+func TestParseRetryAfter(t *testing.T) {
+	now := time.Date(2026, 7, 7, 20, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name   string
+		header string
+		want   time.Duration
+	}{
+		{name: "absent", header: "", want: 0},
+		{name: "delta seconds", header: "120", want: 2 * time.Minute},
+		{name: "delta zero", header: "0", want: 0},
+		{name: "delta negative", header: "-5", want: 0},
+		{name: "delta overflow", header: "10000000000", want: 0},
+		{name: "http date future", header: now.Add(90 * time.Second).Format(http.TimeFormat), want: 90 * time.Second},
+		{name: "http date past", header: now.Add(-time.Minute).Format(http.TimeFormat), want: 0},
+		{name: "garbage", header: "soon", want: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := parseRetryAfter(tt.header, now); got != tt.want {
+				t.Errorf("parseRetryAfter(%q) = %v, want %v", tt.header, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFetchAPIStatusError(t *testing.T) {
+	tests := []struct {
+		name           string
+		status         int
+		retryAfter     string // header value; "" = header absent
+		wantRetryAfter time.Duration
+	}{
+		{name: "429 with Retry-After seconds", status: http.StatusTooManyRequests, retryAfter: "60", wantRetryAfter: time.Minute},
+		{name: "429 without Retry-After", status: http.StatusTooManyRequests, retryAfter: "", wantRetryAfter: 0},
+		{name: "500 carries code", status: http.StatusInternalServerError, retryAfter: "", wantRetryAfter: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+				if tt.retryAfter != "" {
+					w.Header().Set("Retry-After", tt.retryAfter)
+				}
+				w.WriteHeader(tt.status)
+				_, _ = w.Write([]byte(`{"type":"error","error":{"type":"rate_limit_error"}}`))
+			})
+			withTestEndpoint(t, srv.URL)
+			_, err := fetchAPI(context.Background(), "tok")
+			var se *StatusError
+			if !errors.As(err, &se) {
+				t.Fatalf("fetchAPI error = %v (%T), want *StatusError", err, err)
+			}
+			if se.Code != tt.status {
+				t.Errorf("Code = %d, want %d", se.Code, tt.status)
+			}
+			if se.RetryAfter != tt.wantRetryAfter {
+				t.Errorf("RetryAfter = %v, want %v", se.RetryAfter, tt.wantRetryAfter)
+			}
+			if want := fmt.Sprintf("api status %d", tt.status); se.Error() != want {
+				t.Errorf("Error() = %q, want %q", se.Error(), want)
+			}
+		})
+	}
+}
+
+func TestFetchCacheStaleRateLimited(t *testing.T) {
+	dir := t.TempDir()
+	writeFixtureCache(t, dir, time.Now().Add(-10*time.Minute))
+	srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "60")
+		http.Error(w, `{"type":"error"}`, http.StatusTooManyRequests)
+	})
+	withTestEndpoint(t, srv.URL)
+	res, err := Fetch(context.Background(), Credential{AccessToken: "tok"}, dir)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if res.Source != "cache_stale" {
+		t.Errorf("Source = %q, want cache_stale", res.Source)
+	}
+	if res.APIStatus == nil {
+		t.Fatal("APIStatus = nil, want *StatusError")
+	}
+	if res.APIStatus.Code != http.StatusTooManyRequests {
+		t.Errorf("APIStatus.Code = %d, want 429", res.APIStatus.Code)
+	}
+	if res.APIStatus.RetryAfter != time.Minute {
+		t.Errorf("APIStatus.RetryAfter = %v, want 1m", res.APIStatus.RetryAfter)
+	}
+}
+
+func TestFetchCacheStaleTransportError_NoAPIStatus(t *testing.T) {
+	dir := t.TempDir()
+	writeFixtureCache(t, dir, time.Now().Add(-10*time.Minute))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	srv.Close() // connection refused → transport error, not a StatusError
+	withTestEndpoint(t, srv.URL)
+	res, err := Fetch(context.Background(), Credential{AccessToken: "tok"}, dir)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if res.Source != "cache_stale" {
+		t.Errorf("Source = %q, want cache_stale", res.Source)
+	}
+	if res.APIStatus != nil {
+		t.Errorf("APIStatus = %+v, want nil on transport error", res.APIStatus)
+	}
+}
+
+func TestFetchNoCacheRateLimited_ErrorsAs(t *testing.T) {
+	dir := t.TempDir()
+	srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "30")
+		http.Error(w, "rate limited", http.StatusTooManyRequests)
+	})
+	withTestEndpoint(t, srv.URL)
+	_, err := Fetch(context.Background(), Credential{AccessToken: "tok"}, dir)
+	if err == nil {
+		t.Fatal("expected error when no cache and API 429s")
+	}
+	var se *StatusError
+	if !errors.As(err, &se) {
+		t.Fatalf("errors.As failed on %v (%T)", err, err)
+	}
+	if se.Code != http.StatusTooManyRequests || se.RetryAfter != 30*time.Second {
+		t.Errorf("StatusError = %+v, want Code 429 RetryAfter 30s", se)
 	}
 }

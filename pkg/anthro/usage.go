@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -135,11 +136,26 @@ func SetAPIURLForTest(url string) (restore func()) {
 	return func() { apiURL = prev }
 }
 
+// StatusError is a non-2xx response from the usage endpoint. RetryAfter
+// carries the parsed Retry-After header when the server sent one; zero
+// when the header is absent or unparseable. The error string is kept
+// byte-identical to the pre-#447 untyped error ("api status %d").
+type StatusError struct {
+	Code       int
+	RetryAfter time.Duration
+}
+
+func (e *StatusError) Error() string { return fmt.Sprintf("api status %d", e.Code) }
+
 // FetchResult is what Fetch returns to the caller.
 type FetchResult struct {
 	Usage     Usage
 	Source    string    // "api" | "cache_fresh" | "cache_stale"
 	UpdatedAt time.Time // when the data was actually pulled from Anthropic
+	// APIStatus carries the typed non-2xx error behind a cache_stale
+	// fallback so callers can branch on rate limiting (#447). nil for
+	// every other source and for non-status failures (transport, decode).
+	APIStatus *StatusError
 }
 
 // freshFromCache returns a cache_fresh result when the cached entry is valid and
@@ -207,7 +223,14 @@ func Fetch(ctx context.Context, cred Credential, cacheDir string) (res FetchResu
 	u, apiErr := fetchAPI(ctx, cred.AccessToken)
 	if apiErr != nil {
 		if cacheErr == nil {
-			return FetchResult{Usage: cached.Usage, Source: "cache_stale", UpdatedAt: cached.UpdatedAt}, nil
+			var se *StatusError
+			errors.As(apiErr, &se) // stays nil for transport/decode failures
+			return FetchResult{
+				Usage:     cached.Usage,
+				Source:    "cache_stale",
+				UpdatedAt: cached.UpdatedAt,
+				APIStatus: se,
+			}, nil
 		}
 		return FetchResult{}, fmt.Errorf("anthro fetch: %w", apiErr)
 	}
@@ -244,6 +267,27 @@ func acquireFetchLock(cacheDir string) (release func(), err error) {
 		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 		_ = f.Close()
 	}, nil
+}
+
+// parseRetryAfter interprets an RFC 7231 Retry-After header value: either
+// delta-seconds ("120") or an HTTP-date, evaluated against now. Returns 0
+// for an absent, garbage, negative, overflowing, or already-past value.
+func parseRetryAfter(header string, now time.Time) time.Duration {
+	if header == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(header); err == nil {
+		if secs <= 0 || secs > int(math.MaxInt64/int64(time.Second)) {
+			return 0
+		}
+		return time.Duration(secs) * time.Second
+	}
+	if t, err := http.ParseTime(header); err == nil {
+		if d := t.Sub(now); d > 0 {
+			return d
+		}
+	}
+	return 0
 }
 
 // fetchAPI emits exactly one slog record per call. The four message keys
@@ -283,7 +327,7 @@ func fetchAPI(ctx context.Context, token string) (Usage, error) {
 
 	if resp.StatusCode != http.StatusOK {
 		// fetchAPI is the only layer with HTTP detail; log here AND return
-		// a sentinel error for caller branching. Not a duplicate-handling
+		// a typed error for caller branching. Not a duplicate-handling
 		// violation — upstream layers log different content at different
 		// severity.
 		// strconv.Quote escapes ANSI/CR/control bytes in body_snippet so a
@@ -297,7 +341,10 @@ func fetchAPI(ctx context.Context, token string) (Usage, error) {
 			"status", resp.StatusCode,
 			"dur_ms", durMS,
 			"body_snippet", strconv.Quote(string(snippet)))
-		return Usage{}, fmt.Errorf("api status %d", resp.StatusCode)
+		return Usage{}, &StatusError{
+			Code:       resp.StatusCode,
+			RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After"), time.Now()),
+		}
 	}
 
 	var u Usage
