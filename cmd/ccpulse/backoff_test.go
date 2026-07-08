@@ -53,6 +53,26 @@ func TestPollBackoffNext(t *testing.T) {
 			want: []time.Duration{6 * time.Minute},
 		},
 		{
+			name: "retry-after between exponential and cap is honored",
+			seq:  []*anthro.StatusError{st(http.StatusTooManyRequests, 20*time.Minute)},
+			want: []time.Duration{20 * time.Minute},
+		},
+		{
+			name: "honored retry-after still escalates the counter",
+			seq: []*anthro.StatusError{
+				st(http.StatusTooManyRequests, 45*time.Minute), st(http.StatusTooManyRequests, 0),
+			},
+			want: []time.Duration{45 * time.Minute, 12 * time.Minute},
+		},
+		{
+			name: "escalated exponential floors smaller retry-after",
+			seq: []*anthro.StatusError{
+				st(http.StatusTooManyRequests, 0), st(http.StatusTooManyRequests, 0),
+				st(http.StatusTooManyRequests, 10*time.Minute),
+			},
+			want: []time.Duration{6 * time.Minute, 12 * time.Minute, 24 * time.Minute},
+		},
+		{
 			name: "retry-after above cap is honored",
 			seq:  []*anthro.StatusError{st(http.StatusTooManyRequests, 45*time.Minute)},
 			want: []time.Duration{45 * time.Minute},
