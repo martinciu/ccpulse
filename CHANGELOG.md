@@ -3,6 +3,18 @@
 All notable changes to ccpulse are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.7.0] — 2026-07-08
+
+### Changed
+- The quota poller now honors `Retry-After` and backs off on sustained 429s:
+  consecutive rate-limits stretch the poll interval 6 → 12 → 24 → 30-min cap
+  (a server `Retry-After` is honored past the cap, clamped to 1 h), and any
+  non-429 outcome resets to the 3-minute base. One-shot callers
+  (`ccpulse status`, first paint) are unchanged and never sleep (#447, #448)
+
+### Internal
+- Bump the gha-deps group with 3 updates (#446)
+
 ## [0.6.0] — 2026-07-02
 
 ### Added
