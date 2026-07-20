@@ -165,8 +165,10 @@ func TestLockedRebuild_PreservesUsageLimits(t *testing.T) {
 	}
 	fable := "Fable"
 	u := anthro.Usage{Limits: []anthro.Limit{
-		{Kind: "weekly_scoped", Group: "weekly", Percent: 35, Severity: "normal", IsActive: true,
-			Scope: &anthro.LimitScope{Model: &anthro.ScopeModel{DisplayName: &fable}}},
+		{
+			Kind: "weekly_scoped", Group: "weekly", Percent: 35, Severity: "normal", IsActive: true,
+			Scope: &anthro.LimitScope{Model: &anthro.ScopeModel{DisplayName: &fable}},
+		},
 	}}
 	if err := c.RecordUsageSample(ctx, u, time.Unix(1750000000, 0)); err != nil {
 		t.Fatal(err)

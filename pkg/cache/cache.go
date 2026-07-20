@@ -349,10 +349,10 @@ const insertUsageLimitSQL = `INSERT OR IGNORE INTO usage_limits(
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 // limitArgs flattens one limits entry into insertUsageLimitSQL's argument
-// list. Scope columns collapse to '' when absent so the composite primary
+// list. Scope columns collapse to ” when absent so the composite primary
 // key dedupes (SQLite treats NULLs in a PK as distinct). scope_surface
 // stores the raw JSON of an unrecognized-shape surface; the observed
-// literal null collapses to '' like an absent scope.
+// literal null collapses to ” like an absent scope.
 func limitArgs(ts int64, l anthro.Limit) []any {
 	var resetsAt any
 	if l.ResetsAt != nil {

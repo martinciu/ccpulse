@@ -2521,8 +2521,10 @@ func TestRecordUsageSample_WritesLimits(t *testing.T) {
 	u := anthro.Usage{
 		Limits: []anthro.Limit{
 			{Kind: "session", Group: "session", Percent: 8, Severity: "normal", ResetsAt: &reset},
-			{Kind: "weekly_scoped", Group: "weekly", Percent: 35, Severity: "normal", IsActive: true,
-				Scope: &anthro.LimitScope{Model: &anthro.ScopeModel{DisplayName: &fable}}},
+			{
+				Kind: "weekly_scoped", Group: "weekly", Percent: 35, Severity: "normal", IsActive: true,
+				Scope: &anthro.LimitScope{Model: &anthro.ScopeModel{DisplayName: &fable}},
+			},
 		},
 	}
 	if err := c.RecordUsageSample(t.Context(), u, when); err != nil {
