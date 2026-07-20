@@ -2507,3 +2507,136 @@ func TestInsertMessagesAndRecordFile_RollbackOnFailure(t *testing.T) {
 		t.Fatalf("messages count = %d, want 0 (insert must roll back with the failed cursor write)", n)
 	}
 }
+
+func TestRecordUsageSample_WritesLimits(t *testing.T) {
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	when := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	reset := when.Add(3 * time.Hour)
+	fable := "Fable"
+	u := anthro.Usage{
+		Limits: []anthro.Limit{
+			{Kind: "session", Group: "session", Percent: 8, Severity: "normal", ResetsAt: &reset},
+			{Kind: "weekly_scoped", Group: "weekly", Percent: 35, Severity: "normal", IsActive: true,
+				Scope: &anthro.LimitScope{Model: &anthro.ScopeModel{DisplayName: &fable}}},
+		},
+	}
+	if err := c.RecordUsageSample(t.Context(), u, when); err != nil {
+		t.Fatalf("RecordUsageSample: %v", err)
+	}
+
+	var n int
+	if err := c.DB().QueryRowContext(t.Context(),
+		`SELECT COUNT(*) FROM usage_limits WHERE ts=?`, when.Unix()).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("usage_limits rows = %d, want 2", n)
+	}
+
+	var limGroup, severity, scopeModel, scopeSurface string
+	var percent float64
+	var resetsAt sql.NullString
+	var isActive int
+	err = c.DB().QueryRowContext(t.Context(),
+		`SELECT lim_group, percent, severity, resets_at, scope_model, scope_surface, is_active
+		 FROM usage_limits WHERE ts=? AND kind='weekly_scoped'`, when.Unix()).
+		Scan(&limGroup, &percent, &severity, &resetsAt, &scopeModel, &scopeSurface, &isActive)
+	if err != nil {
+		t.Fatalf("query weekly_scoped row: %v", err)
+	}
+	if limGroup != "weekly" || percent != 35 || severity != "normal" {
+		t.Errorf("weekly_scoped row: group=%q percent=%v severity=%q", limGroup, percent, severity)
+	}
+	if resetsAt.Valid {
+		t.Errorf("weekly_scoped resets_at should be NULL, got %q", resetsAt.String)
+	}
+	if scopeModel != "Fable" {
+		t.Errorf("scope_model = %q, want Fable", scopeModel)
+	}
+	if scopeSurface != "" {
+		t.Errorf("scope_surface = %q, want empty", scopeSurface)
+	}
+	if isActive != 1 {
+		t.Errorf("is_active = %d, want 1", isActive)
+	}
+
+	var sessResets sql.NullString
+	if err := c.DB().QueryRowContext(t.Context(),
+		`SELECT resets_at FROM usage_limits WHERE ts=? AND kind='session'`, when.Unix()).
+		Scan(&sessResets); err != nil {
+		t.Fatal(err)
+	}
+	if !sessResets.Valid || sessResets.String != reset.UTC().Format(time.RFC3339Nano) {
+		t.Errorf("session resets_at = %+v, want %s", sessResets, reset.UTC().Format(time.RFC3339Nano))
+	}
+}
+
+func TestRecordUsageSample_NoLimitsWritesNoChildRows(t *testing.T) {
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	when := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	if err := c.RecordUsageSample(t.Context(), anthro.Usage{}, when); err != nil {
+		t.Fatalf("RecordUsageSample: %v", err)
+	}
+	var parents, children int
+	if err := c.DB().QueryRowContext(t.Context(),
+		`SELECT COUNT(*) FROM usage_samples`).Scan(&parents); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.DB().QueryRowContext(t.Context(),
+		`SELECT COUNT(*) FROM usage_limits`).Scan(&children); err != nil {
+		t.Fatal(err)
+	}
+	if parents != 1 || children != 0 {
+		t.Fatalf("parents=%d children=%d, want 1 and 0", parents, children)
+	}
+}
+
+func TestRecordUsageSample_DuplicateTsKeepsFirstLimits(t *testing.T) {
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	when := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	first := anthro.Usage{Limits: []anthro.Limit{
+		{Kind: "weekly_all", Group: "weekly", Percent: 10},
+	}}
+	second := anthro.Usage{Limits: []anthro.Limit{
+		{Kind: "weekly_all", Group: "weekly", Percent: 99},
+		{Kind: "session", Group: "session", Percent: 50},
+	}}
+	if err := c.RecordUsageSample(t.Context(), first, when); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.RecordUsageSample(t.Context(), second, when); err != nil {
+		t.Fatal(err)
+	}
+
+	var n int
+	if err := c.DB().QueryRowContext(t.Context(),
+		`SELECT COUNT(*) FROM usage_limits WHERE ts=?`, when.Unix()).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("usage_limits rows = %d, want 1 (second sample's children must not land)", n)
+	}
+	var pct float64
+	if err := c.DB().QueryRowContext(t.Context(),
+		`SELECT percent FROM usage_limits WHERE ts=? AND kind='weekly_all'`, when.Unix()).Scan(&pct); err != nil {
+		t.Fatal(err)
+	}
+	if pct != 10 {
+		t.Fatalf("percent = %v, want 10 (first sample wins)", pct)
+	}
+}

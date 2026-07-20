@@ -74,7 +74,7 @@ func init() {
 var schemaSQL string
 
 // SchemaVersion is the expected on-disk schema version; a mismatch triggers an auto-rebuild.
-const SchemaVersion = "8"
+const SchemaVersion = "9"
 
 // normalizeResetsAtSQL flips legacy `0001-01-01T00:00:00Z` sentinels
 // (written before issue #189 landed) to SQL NULL across every
@@ -248,10 +248,14 @@ func removeWithSiblings(path string) error {
 }
 
 // RecordUsageSample inserts a row at when.UTC().Unix() with one column per
-// anthro.Usage bucket. INSERT OR IGNORE: same-second collisions keep the
-// first row. Nil buckets write NULL into both their pct and resets_at columns.
+// anthro.Usage bucket, plus one usage_limits child row per entry of u.Limits,
+// all in a single transaction. INSERT OR IGNORE: same-second collisions keep
+// the first row — child inserts are gated on the parent insert landing, so
+// parent and children can never mix samples. Nil buckets write NULL into both
+// their pct and resets_at columns.
 func (c *Cache) RecordUsageSample(ctx context.Context, u anthro.Usage, when time.Time) error {
-	args := []any{when.UTC().Unix(), "api"}
+	ts := when.UTC().Unix()
+	args := []any{ts, "api"}
 	args = append(args, bucketArgs(u.FiveHour)...)
 	args = append(args, bucketArgs(u.SevenDay)...)
 	args = append(args, bucketArgs(u.SevenDaySonnet)...)
@@ -264,8 +268,27 @@ func (c *Cache) RecordUsageSample(ctx context.Context, u anthro.Usage, when time
 	args = append(args, bucketArgs(u.OmelettePromotional)...)
 	args = append(args, extraUsageArgs(u.ExtraUsage)...)
 
-	_, err := c.db.ExecContext(ctx, insertUsageSampleSQL, args...)
-	return err
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("record usage sample: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	res, err := tx.ExecContext(ctx, insertUsageSampleSQL, args...)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 1 {
+		for _, l := range u.Limits {
+			if _, err := tx.ExecContext(ctx, insertUsageLimitSQL, limitArgs(ts, l)...); err != nil {
+				return err
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("record usage sample: commit: %w", err)
+	}
+	return nil
 }
 
 const insertUsageSampleSQL = `INSERT OR IGNORE INTO usage_samples(
@@ -319,6 +342,36 @@ func extraUsageArgs(e *anthro.ExtraUsage) []any {
 		pct = *e.Utilization
 	}
 	return []any{enabled, e.MonthlyLimit, e.UsedCredits, pct, e.Currency}
+}
+
+const insertUsageLimitSQL = `INSERT OR IGNORE INTO usage_limits(
+	ts, kind, lim_group, percent, severity, resets_at, scope_model, scope_surface, is_active
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+
+// limitArgs flattens one limits entry into insertUsageLimitSQL's argument
+// list. Scope columns collapse to '' when absent so the composite primary
+// key dedupes (SQLite treats NULLs in a PK as distinct). scope_surface
+// stores the raw JSON of an unrecognized-shape surface; the observed
+// literal null collapses to '' like an absent scope.
+func limitArgs(ts int64, l anthro.Limit) []any {
+	var resetsAt any
+	if l.ResetsAt != nil {
+		resetsAt = l.ResetsAt.UTC().Format(time.RFC3339Nano)
+	}
+	var scopeModel, scopeSurface string
+	if l.Scope != nil {
+		if l.Scope.Model != nil && l.Scope.Model.DisplayName != nil {
+			scopeModel = *l.Scope.Model.DisplayName
+		}
+		if s := string(l.Scope.Surface); s != "" && s != "null" {
+			scopeSurface = s
+		}
+	}
+	active := 0
+	if l.IsActive {
+		active = 1
+	}
+	return []any{ts, l.Kind, l.Group, l.Percent, l.Severity, resetsAt, scopeModel, scopeSurface, active}
 }
 
 // PruneUsageSamples deletes rows with ts < cutoff.UTC().Unix().

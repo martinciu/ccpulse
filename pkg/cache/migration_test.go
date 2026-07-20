@@ -75,8 +75,8 @@ func TestOpen_UpgradesFromV7_RebuildsWithRepoRoot(t *testing.T) {
 		`SELECT value FROM meta WHERE key='schema_version'`).Scan(&ver); err != nil {
 		t.Fatal(err)
 	}
-	if ver != "8" {
-		t.Fatalf("schema_version = %q, want 8 after upgrade", ver)
+	if ver != "9" {
+		t.Fatalf("schema_version = %q, want 9 after upgrade", ver)
 	}
 
 	// Quota history preserved across the destroy+recreate rebuild.
