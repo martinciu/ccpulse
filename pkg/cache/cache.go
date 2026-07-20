@@ -374,14 +374,32 @@ func limitArgs(ts int64, l anthro.Limit) []any {
 	return []any{ts, l.Kind, l.Group, l.Percent, l.Severity, resetsAt, scopeModel, scopeSurface, active}
 }
 
-// PruneUsageSamples deletes rows with ts < cutoff.UTC().Unix().
-// Returns the number of rows deleted.
+// PruneUsageSamples deletes rows with ts < cutoff.UTC().Unix() from
+// usage_samples and their usage_limits children, in one transaction.
+// Returns the number of parent (usage_samples) rows deleted.
 func (c *Cache) PruneUsageSamples(ctx context.Context, cutoff time.Time) (int64, error) {
-	res, err := c.db.ExecContext(ctx, `DELETE FROM usage_samples WHERE ts < ?`, cutoff.UTC().Unix())
+	cut := cutoff.UTC().Unix()
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("prune usage samples: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM usage_limits WHERE ts < ?`, cut); err != nil {
+		return 0, err
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM usage_samples WHERE ts < ?`, cut)
 	if err != nil {
 		return 0, err
 	}
-	return res.RowsAffected()
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("prune usage samples: commit: %w", err)
+	}
+	return n, nil
 }
 
 // SevenDaySample is a single usage_samples row projected to the columns

@@ -2640,3 +2640,45 @@ func TestRecordUsageSample_DuplicateTsKeepsFirstLimits(t *testing.T) {
 		t.Fatalf("percent = %v, want 10 (first sample wins)", pct)
 	}
 }
+
+func TestPruneUsageSamples_CascadesLimits(t *testing.T) {
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	oldWhen := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	newWhen := time.Date(2026, 7, 20, 0, 0, 0, 0, time.UTC)
+	u := anthro.Usage{Limits: []anthro.Limit{{Kind: "weekly_all", Group: "weekly", Percent: 22}}}
+	if err := c.RecordUsageSample(t.Context(), u, oldWhen); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.RecordUsageSample(t.Context(), u, newWhen); err != nil {
+		t.Fatal(err)
+	}
+
+	deleted, err := c.PruneUsageSamples(t.Context(), time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("PruneUsageSamples: %v", err)
+	}
+	if deleted != 1 {
+		t.Fatalf("deleted = %d, want 1 (parent rows only)", deleted)
+	}
+
+	var oldChildren, newChildren int
+	if err := c.DB().QueryRowContext(t.Context(),
+		`SELECT COUNT(*) FROM usage_limits WHERE ts=?`, oldWhen.Unix()).Scan(&oldChildren); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.DB().QueryRowContext(t.Context(),
+		`SELECT COUNT(*) FROM usage_limits WHERE ts=?`, newWhen.Unix()).Scan(&newChildren); err != nil {
+		t.Fatal(err)
+	}
+	if oldChildren != 0 {
+		t.Errorf("old usage_limits rows = %d, want 0 (pruned)", oldChildren)
+	}
+	if newChildren != 1 {
+		t.Errorf("new usage_limits rows = %d, want 1 (kept)", newChildren)
+	}
+}
