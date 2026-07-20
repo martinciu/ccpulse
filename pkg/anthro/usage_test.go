@@ -30,7 +30,12 @@ const sampleAPIBody = `{
   "tangelo":              null,
   "iguana_necktie":       null,
   "omelette_promotional": null,
-  "extra_usage":          {"is_enabled": true, "monthly_limit": 2000, "used_credits": 0.0, "utilization": null, "currency": "EUR"}
+  "extra_usage":          {"is_enabled": true, "monthly_limit": 2000, "used_credits": 0.0, "utilization": null, "currency": "EUR"},
+  "limits": [
+    {"kind": "session",       "group": "session", "percent": 8,  "severity": "normal", "resets_at": "2026-05-09T16:10:00.151311+00:00", "scope": null, "is_active": false},
+    {"kind": "weekly_all",    "group": "weekly",  "percent": 22, "severity": "normal", "resets_at": "2026-05-10T09:00:00.151331+00:00", "scope": null, "is_active": false},
+    {"kind": "weekly_scoped", "group": "weekly",  "percent": 35, "severity": "normal", "resets_at": "2026-05-10T09:00:00.151331+00:00", "scope": {"model": {"id": null, "display_name": "Fable"}, "surface": null}, "is_active": true}
+  ]
 }`
 
 func TestUsageUnmarshalFull(t *testing.T) {
@@ -124,10 +129,75 @@ func TestUsageRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`"five_hour"`, `"seven_day_sonnet"`, `"extra_usage"`, `"tangelo":null`, `"is_enabled":true`} {
+	for _, want := range []string{`"five_hour"`, `"seven_day_sonnet"`, `"extra_usage"`, `"tangelo":null`, `"is_enabled":true`, `"weekly_scoped"`, `"display_name":"Fable"`} {
 		if !strings.Contains(string(out), want) {
 			t.Errorf("round-trip missing %s in %s", want, out)
 		}
+	}
+}
+
+func TestUsageUnmarshalLimits(t *testing.T) {
+	var u Usage
+	if err := json.Unmarshal([]byte(sampleAPIBody), &u); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(u.Limits) != 3 {
+		t.Fatalf("len(Limits) = %d, want 3", len(u.Limits))
+	}
+	sess := u.Limits[0]
+	if sess.Kind != "session" || sess.Group != "session" || sess.Percent != 8 || sess.Severity != "normal" {
+		t.Errorf("limits[0] = %+v", sess)
+	}
+	if sess.Scope != nil {
+		t.Errorf("limits[0].Scope should be nil, got %+v", sess.Scope)
+	}
+	if sess.IsActive {
+		t.Error("limits[0].IsActive should be false")
+	}
+	if sess.ResetsAt == nil {
+		t.Fatal("limits[0].ResetsAt should be non-nil")
+	}
+	scoped := u.Limits[2]
+	if scoped.Kind != "weekly_scoped" || !scoped.IsActive || scoped.Percent != 35 {
+		t.Errorf("limits[2] = %+v", scoped)
+	}
+	if scoped.Scope == nil || scoped.Scope.Model == nil {
+		t.Fatalf("limits[2].Scope.Model missing: %+v", scoped.Scope)
+	}
+	if scoped.Scope.Model.ID != nil {
+		t.Errorf("limits[2].Scope.Model.ID should be nil, got %v", *scoped.Scope.Model.ID)
+	}
+	if scoped.Scope.Model.DisplayName == nil || *scoped.Scope.Model.DisplayName != "Fable" {
+		t.Errorf("limits[2].Scope.Model.DisplayName = %v, want Fable", scoped.Scope.Model.DisplayName)
+	}
+	if string(scoped.Scope.Surface) != "null" {
+		t.Errorf("limits[2].Scope.Surface = %q, want literal null", scoped.Scope.Surface)
+	}
+}
+
+func TestUsageLimitsFidelity(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"null limits stay null", `{"limits": null}`, `"limits":null`},
+		{"empty limits stay empty", `{"limits": []}`, `"limits":[]`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var u Usage
+			if err := json.Unmarshal([]byte(tc.in), &u); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			out, err := json.Marshal(u)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(out), tc.want) {
+				t.Errorf("marshal output %s missing %s", out, tc.want)
+			}
+		})
 	}
 }
 
