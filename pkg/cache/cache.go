@@ -587,7 +587,7 @@ ON CONFLICT(session_id, message_id) DO UPDATE SET
   cache_write_5m_tokens = max(excluded.cache_write_5m_tokens, cache_write_5m_tokens),
   cache_write_1h_tokens = max(excluded.cache_write_1h_tokens, cache_write_1h_tokens),
   cost_usd_estimate     = max(excluded.cost_usd_estimate, cost_usd_estimate),
-  effort                = max(excluded.effort, effort),
+  effort                = CASE WHEN excluded.effort <> '' THEN excluded.effort ELSE effort END,
   iterations_json       = coalesce(excluded.iterations_json, iterations_json)`)
 	if err != nil {
 		return fmt.Errorf("insert messages: prepare: %w", err)

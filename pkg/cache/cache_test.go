@@ -2797,13 +2797,11 @@ func TestInsertAndQueryEffort(t *testing.T) {
 		t.Errorf("effort for absent field = %q, want empty", got)
 	}
 
-	// Upsert conflict: a later content-block line without effort must not
-	// clobber the stored value (max('', 'xhigh') keeps 'xhigh').
-	if err := c.InsertMessages(t.Context(), []parse.Message{withoutEffort, withEffort}, tab); err != nil {
-		t.Fatal(err)
-	}
 	blank := withEffort
 	blank.Effort = ""
+	// Upsert conflict: a later content-block line with a blank effort must not
+	// clobber the stored value (the CASE clause keeps 'xhigh' when
+	// excluded.effort = '').
 	if err := c.InsertMessages(t.Context(), []parse.Message{blank}, tab); err != nil {
 		t.Fatal(err)
 	}
@@ -2813,6 +2811,36 @@ func TestInsertAndQueryEffort(t *testing.T) {
 	}
 	if got != "xhigh" {
 		t.Errorf("effort after blank-line upsert = %q, want %q", got, "xhigh")
+	}
+
+	// Upsert conflict: effort arrives on a later line for a row that was
+	// created without one (m2 started blank) - the value must be stored.
+	m2WithEffort := withoutEffort
+	m2WithEffort.Effort = "xhigh"
+	if err := c.InsertMessages(t.Context(), []parse.Message{m2WithEffort}, tab); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.DB().QueryRowContext(t.Context(),
+		`SELECT effort FROM messages WHERE message_id='m2'`).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != "xhigh" {
+		t.Errorf("effort for m2 after value-after-blank upsert = %q, want %q", got, "xhigh")
+	}
+
+	// Upsert conflict: two differing non-blank efforts - the later non-blank
+	// value wins (last-non-blank-wins via the CASE clause).
+	lowEffort := withEffort
+	lowEffort.Effort = "low"
+	if err := c.InsertMessages(t.Context(), []parse.Message{lowEffort}, tab); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.DB().QueryRowContext(t.Context(),
+		`SELECT effort FROM messages WHERE message_id='m1'`).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != "low" {
+		t.Errorf("effort after differing non-blank upsert = %q, want %q", got, "low")
 	}
 }
 
@@ -2867,5 +2895,21 @@ func TestInsertAndQueryIterations(t *testing.T) {
 	}
 	if !got.Valid || got.String != blob {
 		t.Errorf("iterations_json after redundant upsert = (%v, %q), want blob kept", got.Valid, got.String)
+	}
+
+	// Conflict: a second, different informative blob for the same turn
+	// replaces the stored one (coalesce(excluded, existing) is last-writer-
+	// wins for non-NULL values, not first-writer-wins).
+	const blob2 = `[{"input_tokens":5,"output_tokens":9,"type":"message","model":"claude-fable-5"}]`
+	replaced := redundant
+	replaced.IterationsJSON = blob2
+	if err := c.InsertMessages(t.Context(), []parse.Message{replaced}, tab); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.DB().QueryRowContext(t.Context(), query).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Valid || got.String != blob2 {
+		t.Errorf("iterations_json after second blob upsert = (%v, %q), want %q", got.Valid, got.String, blob2)
 	}
 }
