@@ -78,8 +78,8 @@ func TestOpen_UpgradesFromV7_RebuildsWithRepoRoot(t *testing.T) {
 		`SELECT value FROM meta WHERE key='schema_version'`).Scan(&ver); err != nil {
 		t.Fatal(err)
 	}
-	if ver != "9" {
-		t.Fatalf("schema_version = %q, want 9 after upgrade", ver)
+	if ver != "10" {
+		t.Fatalf("schema_version = %q, want 10 after upgrade", ver)
 	}
 
 	// Quota history preserved across the destroy+recreate rebuild.
@@ -130,8 +130,8 @@ func TestOpen_UpgradesFromV8_PreservesUsageHistory(t *testing.T) {
 		`SELECT value FROM meta WHERE key='schema_version'`).Scan(&ver); err != nil {
 		t.Fatal(err)
 	}
-	if ver != "9" {
-		t.Fatalf("schema_version = %q, want 9 after upgrade", ver)
+	if ver != "10" {
+		t.Fatalf("schema_version = %q, want 10 after upgrade", ver)
 	}
 
 	var pct float64
@@ -153,8 +153,90 @@ func TestOpen_UpgradesFromV8_PreservesUsageHistory(t *testing.T) {
 	}
 }
 
+// TestOpen_UpgradesFromV9_PreservesUsageLimitsWithEmptyScopeModelID covers
+// the #459 v9→v10 bump: a v9 usage_limits table (no scope_model_id column)
+// rebuilt to v10 must preserve its rows, with scope_model_id defaulting to
+// ” — restoreTable (lock.go) inserts using the OLD db's own column list, so
+// the new column is never named in the INSERT and falls back to its DDL
+// default rather than erroring.
+func TestOpen_UpgradesFromV9_PreservesUsageLimitsWithEmptyScopeModelID(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "state.db")
+
+	old, err := sql.Open("sqlite", path+"?"+cachePragmas)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed := []string{
+		`CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+		`INSERT INTO meta(key,value) VALUES('schema_version','9')`,
+		`CREATE TABLE usage_samples (ts INTEGER PRIMARY KEY, source TEXT NOT NULL DEFAULT 'api', five_hour_pct REAL)`,
+		`INSERT INTO usage_samples(ts, five_hour_pct) VALUES(1700000000, 42.5)`,
+		`CREATE TABLE usage_limits (
+			ts            INTEGER NOT NULL,
+			kind          TEXT    NOT NULL,
+			lim_group     TEXT    NOT NULL DEFAULT '',
+			percent       REAL    NOT NULL DEFAULT 0,
+			severity      TEXT    NOT NULL DEFAULT '',
+			resets_at     TEXT,
+			scope_model   TEXT    NOT NULL DEFAULT '',
+			scope_surface TEXT    NOT NULL DEFAULT '',
+			is_active     INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (ts, kind, scope_model, scope_surface)
+		)`,
+		`INSERT INTO usage_limits(ts, kind, lim_group, percent, severity, scope_model, is_active)
+		 VALUES(1700000000, 'weekly_scoped', 'weekly', 35, 'normal', 'Fable', 1)`,
+	}
+	for _, s := range seed {
+		if _, err := old.ExecContext(ctx, s); err != nil {
+			t.Fatalf("seed v9 db: %v\nstmt: %s", err, s)
+		}
+	}
+	if err := old.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	c, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("Open on v9 cache must rebuild, got: %v", err)
+	}
+	defer c.Close()
+
+	var ver string
+	if err := c.DB().QueryRowContext(ctx,
+		`SELECT value FROM meta WHERE key='schema_version'`).Scan(&ver); err != nil {
+		t.Fatal(err)
+	}
+	if ver != "10" {
+		t.Fatalf("schema_version = %q, want 10 after upgrade", ver)
+	}
+
+	var pct float64
+	if err := c.DB().QueryRowContext(ctx,
+		`SELECT five_hour_pct FROM usage_samples WHERE ts=1700000000`).Scan(&pct); err != nil {
+		t.Fatalf("usage_samples not preserved across rebuild: %v", err)
+	}
+	if pct != 42.5 {
+		t.Fatalf("preserved five_hour_pct = %v, want 42.5", pct)
+	}
+
+	var scopeModel, scopeModelID string
+	var limPct float64
+	if err := c.DB().QueryRowContext(ctx,
+		`SELECT scope_model, scope_model_id, percent FROM usage_limits WHERE ts=1700000000 AND kind='weekly_scoped'`).
+		Scan(&scopeModel, &scopeModelID, &limPct); err != nil {
+		t.Fatalf("usage_limits not preserved across rebuild: %v", err)
+	}
+	if scopeModel != "Fable" || limPct != 35 {
+		t.Fatalf("preserved row scope_model=%q percent=%v, want Fable/35", scopeModel, limPct)
+	}
+	if scopeModelID != "" {
+		t.Fatalf("preserved row scope_model_id=%q, want empty (v9 db had no such column)", scopeModelID)
+	}
+}
+
 // TestLockedRebuild_PreservesUsageLimits proves limits history survives the
-// destroy+recreate rebuild — the future v9→v10 bump path.
+// destroy+recreate rebuild at the current schema version (v10 as of #459).
 func TestLockedRebuild_PreservesUsageLimits(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "state.db")

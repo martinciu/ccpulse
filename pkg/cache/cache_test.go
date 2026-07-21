@@ -2540,14 +2540,14 @@ func TestRecordUsageSample_WritesLimits(t *testing.T) {
 		t.Fatalf("usage_limits rows = %d, want 2", n)
 	}
 
-	var limGroup, severity, scopeModel, scopeSurface string
+	var limGroup, severity, scopeModel, scopeModelID, scopeSurface string
 	var percent float64
 	var resetsAt sql.NullString
 	var isActive int
 	err = c.DB().QueryRowContext(t.Context(),
-		`SELECT lim_group, percent, severity, resets_at, scope_model, scope_surface, is_active
+		`SELECT lim_group, percent, severity, resets_at, scope_model, scope_model_id, scope_surface, is_active
 		 FROM usage_limits WHERE ts=? AND kind='weekly_scoped'`, when.Unix()).
-		Scan(&limGroup, &percent, &severity, &resetsAt, &scopeModel, &scopeSurface, &isActive)
+		Scan(&limGroup, &percent, &severity, &resetsAt, &scopeModel, &scopeModelID, &scopeSurface, &isActive)
 	if err != nil {
 		t.Fatalf("query weekly_scoped row: %v", err)
 	}
@@ -2559,6 +2559,9 @@ func TestRecordUsageSample_WritesLimits(t *testing.T) {
 	}
 	if scopeModel != "Fable" {
 		t.Errorf("scope_model = %q, want Fable", scopeModel)
+	}
+	if scopeModelID != "" {
+		t.Errorf("scope_model_id = %q, want empty (Scope.Model.ID nil)", scopeModelID)
 	}
 	if scopeSurface != "" {
 		t.Errorf("scope_surface = %q, want empty", scopeSurface)
@@ -2575,6 +2578,78 @@ func TestRecordUsageSample_WritesLimits(t *testing.T) {
 	}
 	if !sessResets.Valid || sessResets.String != reset.UTC().Format(time.RFC3339Nano) {
 		t.Errorf("session resets_at = %+v, want %s", sessResets, reset.UTC().Format(time.RFC3339Nano))
+	}
+}
+
+// TestRecordUsageSample_ScopeModelIDDistinguishesRows covers #459: two
+// weekly_scoped entries sharing scope.model.display_name but with distinct
+// scope.model.id values must NOT collapse into one usage_limits row. Before
+// scope_model_id joined the composite PK, the second entry's INSERT OR
+// IGNORE silently dropped on the first entry's (ts, kind, scope_model,
+// scope_surface) tuple.
+func TestRecordUsageSample_ScopeModelIDDistinguishesRows(t *testing.T) {
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	when := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	fable := "Fable"
+	idA := "model-a"
+	idB := "model-b"
+	u := anthro.Usage{
+		Limits: []anthro.Limit{
+			{
+				Kind: "weekly_scoped", Group: "weekly", Percent: 35, Severity: "normal", IsActive: true,
+				Scope: &anthro.LimitScope{Model: &anthro.ScopeModel{DisplayName: &fable, ID: &idA}},
+			},
+			{
+				Kind: "weekly_scoped", Group: "weekly", Percent: 60, Severity: "warning", IsActive: false,
+				Scope: &anthro.LimitScope{Model: &anthro.ScopeModel{DisplayName: &fable, ID: &idB}},
+			},
+		},
+	}
+	if err := c.RecordUsageSample(t.Context(), u, when); err != nil {
+		t.Fatalf("RecordUsageSample: %v", err)
+	}
+
+	var n int
+	if err := c.DB().QueryRowContext(t.Context(),
+		`SELECT COUNT(*) FROM usage_limits WHERE ts=? AND kind='weekly_scoped'`, when.Unix()).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("usage_limits weekly_scoped rows = %d, want 2 (distinct scope_model_id must not collide)", n)
+	}
+
+	rows, err := c.DB().QueryContext(t.Context(),
+		`SELECT scope_model_id, percent FROM usage_limits
+		 WHERE ts=? AND kind='weekly_scoped' ORDER BY scope_model_id`, when.Unix())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+
+	type row struct {
+		scopeModelID string
+		percent      float64
+	}
+	var got []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.scopeModelID, &r.percent); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, r)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+
+	want := []row{{idA, 35}, {idB, 60}}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("scope_model_id rows = %+v, want %+v", got, want)
 	}
 }
 
