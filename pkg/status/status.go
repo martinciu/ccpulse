@@ -29,6 +29,7 @@ type Window struct {
 	Projection        *Projections    `json:"projection,omitempty"`
 	Periods           *Periods        `json:"periods,omitempty"`
 	Throughput        *Throughput     `json:"throughput,omitempty"`
+	ScopedLimits      []ScopedLimit   `json:"scoped_limits,omitempty"`
 }
 
 // Projections carries the per-bucket burn-rate predictions.

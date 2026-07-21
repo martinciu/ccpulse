@@ -72,6 +72,7 @@ FROM messages WHERE ts >= ?`, cutoff)
 		w.QuotaSource = q.Source
 		w.QuotaUpdatedAt = q.UpdatedAt
 		w.Projection = buildProjections(ctx, db, q.Usage, now)
+		w.ScopedLimits = distillScopedLimits(q.Usage, now)
 	}
 	return w, nil
 }

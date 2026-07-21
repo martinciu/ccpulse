@@ -221,7 +221,7 @@ func (m Model) projectsHeight() int {
 // self-contained). The #416 slide arms against this target, so the arm must
 // populate projectAggs BEFORE reading it (beginProjectsAnimation).
 func (m Model) projectsTargetHeight() int {
-	avail := m.h - 7 // shared by chart + projects box (same overhead as chartHeight)
+	avail := m.h - 5 - m.headerContentRows() // shared by chart + projects box (same overhead as chartHeight)
 	// Need the chart's 5-row floor + a minimum 4-row box (border+title+1 row).
 	if avail < 5+4 {
 		return 0
@@ -236,12 +236,13 @@ func (m Model) projectsTargetHeight() int {
 }
 
 // chartHeight returns the available rows for the chart, leaving room for
-// the bordered header box (4 rows: top border, bars row, burn-rate row,
-// bottom border), two separators (2 rows), the help footer (1 row), and the
-// projects box (projectsHeight, 0 when the terminal is too short). Total
-// non-body overhead = 7 rows + the projects box.
+// the bordered header box (2 border rows + headerContentRows content rows —
+// 4 total when no scoped limits are present), two separators (2 rows), the
+// help footer (1 row), and the projects box (projectsHeight, 0 when the
+// terminal is too short). Non-body overhead = 5 + headerContentRows rows +
+// the projects box.
 func (m Model) chartHeight() int {
-	h := m.h - 7 - m.projectsHeight()
+	h := m.h - 5 - m.headerContentRows() - m.projectsHeight()
 	if h < 5 {
 		return 5
 	}

@@ -565,3 +565,53 @@ func TestRenderQuotaSide_ProducesExactSlotWidth(t *testing.T) {
 		})
 	}
 }
+
+func TestScopedLabel(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"short name keeps trailing space", "Fable", "Fable "},
+		{"exactly at cap untruncated", strings.Repeat("a", scopedLabelMaxW-1), strings.Repeat("a", scopedLabelMaxW-1) + " "},
+		{"over cap truncated with ellipsis", strings.Repeat("a", scopedLabelMaxW+5), strings.Repeat("a", scopedLabelMaxW-2) + "… "},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			got := scopedLabel(tt.in)
+			if got != tt.want {
+				t.Errorf("scopedLabel(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+			if w := lipgloss.Width(got); w > scopedLabelMaxW {
+				t.Errorf("label width %d exceeds cap %d", w, scopedLabelMaxW)
+			}
+		})
+	}
+}
+
+func TestRenderScopedLimitRow_Width(t *testing.T) {
+	// Same contract as renderQuotaSide: rendered width is determined
+	// entirely by its inputs — label + bar width + 1-col gap + fixed slot.
+	bar := newProgressBar(40)
+	label := scopedLabel("Fable")
+	for _, reset := range []string{"", "34m", "5d 12h", "23h 59m"} {
+		got := renderScopedLimitRow(label, bar, 0.35, reset)
+		wantW := lipgloss.Width(label) + 40 + 1 + statusBlockMaxW
+		if w := lipgloss.Width(got); w != wantW {
+			t.Errorf("reset=%q: width %d, want %d", reset, w, wantW)
+		}
+		if strings.Contains(got, "\n") {
+			t.Errorf("reset=%q: row must be single-line, got %q", reset, got)
+		}
+	}
+}
+
+func TestRenderScopedLimitRow_EmptyResetKeepsSlot(t *testing.T) {
+	bar := newProgressBar(20)
+	withReset := renderScopedLimitRow(scopedLabel("Fable"), bar, 0.5, "5d 12h")
+	without := renderScopedLimitRow(scopedLabel("Fable"), bar, 0.5, "")
+	if lipgloss.Width(withReset) != lipgloss.Width(without) {
+		t.Errorf("blank reset must keep slot width: with=%d without=%d",
+			lipgloss.Width(withReset), lipgloss.Width(without))
+	}
+}

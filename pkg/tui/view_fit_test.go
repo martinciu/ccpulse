@@ -243,3 +243,83 @@ func TestViewFitsTerminal_HelpOverlay(t *testing.T) {
 		}
 	}
 }
+
+func TestViewFitsWithScopedLimits(t *testing.T) {
+	t.Parallel()
+	// A scoped-limit row grows the header box by one line; chartHeight and
+	// projectsTargetHeight must both absorb it or the frame overflows m.h.
+	for _, n := range []int{1, 2} {
+		for _, h := range []int{24, 30, 40} {
+			name := fmt.Sprintf("n%d_h%d", n, h)
+			t.Run(name, func(t *testing.T) {
+				m := newScopedTestModel(t, 100, h, n)
+				m.viewport.Width = m.chartWidth()
+				m.viewport.Height = m.chartHeight()
+				assertFits(t, m)
+			})
+		}
+	}
+}
+
+// TestViewFitsWithScopedLimits_ProjectsBox extends the scoped-limit sweep to
+// exercise projectsTargetHeight's headerContentRows-derived overhead
+// (viewport.go:224) with the projects box visible and populated. The sweep
+// above runs with showProjects default-false and no projectAggs, so it never
+// touches that path — reintroducing the flat `m.h - 7` there alone (the
+// pre-#463 formula, still pinned with zero scoped limits by
+// TestView_DuringSlide_HeightConservedRealBorder) would pass the whole
+// suite. Follows production's re-sync order: set showProjects/projectAggs
+// first, then viewport.Height = chartHeight() last, same as handleWindowSize.
+func TestViewFitsWithScopedLimits_ProjectsBox(t *testing.T) {
+	t.Parallel()
+	for _, n := range []int{1, 2} {
+		for _, h := range []int{24, 30} {
+			name := fmt.Sprintf("n%d_h%d", n, h)
+			t.Run(name, func(t *testing.T) {
+				m := newScopedTestModel(t, 100, h, n)
+				m.showProjects = true
+				for range 3 {
+					m.projectAggs = append(m.projectAggs, cache.ProjectAggregate{Label: "p"})
+				}
+				m.viewport.Width = m.chartWidth()
+				m.viewport.Height = m.chartHeight()
+				assertFits(t, m)
+			})
+		}
+	}
+}
+
+// TestProjectsTargetHeight_WithScopedRows pins projectsTargetHeight's avail
+// computation (viewport.go:224) once scoped-limit rows have grown
+// headerContentRows() above its 0-scoped baseline of 2. The coarse "does it
+// fit" check in TestViewFitsWithScopedLimits_ProjectsBox can't distinguish the
+// correct avail (m.h - 5 - headerContentRows()) from the flat pre-#463
+// `m.h - 7` at every n/h/aggs combination — projectsMaxRows and chartHeight's
+// own 5-row floor absorb small discrepancies — so this pins the exact
+// returned height instead, with enough aggs that the avail/2 cap binds and
+// the two formulas' 1-row difference becomes visible in the return value.
+func TestProjectsTargetHeight_WithScopedRows(t *testing.T) {
+	t.Parallel()
+	m := newScopedTestModel(t, 100, 24, 2) // headerContentRows() == 4
+	m.showProjects = true
+	for range 8 { // enough that `needed` exceeds avail/2, so the cap binds
+		m.projectAggs = append(m.projectAggs, cache.ProjectAggregate{Label: "p"})
+	}
+	avail := m.h - 5 - m.headerContentRows()
+	cols := projectCellCols(m.w)
+	needed := 3 + (len(m.projectAggs)+cols-1)/cols
+	want := min(needed, min(avail/2, projectsMaxRows))
+	if got := m.projectsTargetHeight(); got != want {
+		t.Errorf("projectsTargetHeight() = %d, want %d (avail=%d cols=%d needed=%d)",
+			got, want, avail, cols, needed)
+	}
+}
+
+func TestHeaderContentRows(t *testing.T) {
+	for _, tt := range []struct{ n, want int }{{0, 2}, {1, 3}, {2, 4}} {
+		m := newScopedTestModel(t, 100, 40, tt.n)
+		if got := m.headerContentRows(); got != tt.want {
+			t.Errorf("n=%d: headerContentRows = %d, want %d", tt.n, got, tt.want)
+		}
+	}
+}

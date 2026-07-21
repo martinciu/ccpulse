@@ -5961,3 +5961,259 @@ func TestHandleProjectsTick_NoOpMidSpring(t *testing.T) {
 		t.Errorf("mid-spring tick: projectAggs len changed from %d to %d, want no change", aggsBefore, len(m.projectAggs))
 	}
 }
+
+// scopedWindow returns a Window carrying both regular buckets and n scoped
+// limits, for header-row tests.
+func scopedWindow(n int) status.Window {
+	w := status.Window{
+		Percent: 55, MinutesToReset: intPtr(130),
+		Has7d: true, Percent7d: 42, MinutesToReset7d: intPtr(3 * 24 * 60),
+	}
+	names := []string{"Fable", "Opus", "Sonnet"}
+	for i := range n {
+		mins := 5 * 24 * 60
+		w.ScopedLimits = append(w.ScopedLimits, status.ScopedLimit{
+			Kind: "weekly_scoped", Model: names[i%len(names)], Percent: 35,
+			IsActive: true, Severity: "normal", MinutesToReset: &mins,
+		})
+	}
+	return w
+}
+
+func newScopedTestModel(t *testing.T, w, h, n int) Model {
+	t.Helper()
+	m := New(Deps{})
+	m.w, m.h = w, h
+	m.window = scopedWindow(n)
+	m.progress = newProgressBar(m.progressWidth())
+	m.progress7d = newProgressBar(m.progressWidth())
+	m.rebuildScopedBars()
+	return m
+}
+
+func TestQuotaBarsScopedRows(t *testing.T) {
+	t.Run("no scoped limits renders exactly 2 rows", func(t *testing.T) {
+		m := newScopedTestModel(t, 120, 40, 0)
+		if got := len(strings.Split(m.quotaBars(), "\n")); got != 2 {
+			t.Errorf("rows = %d, want 2 (bars + burn-rate)", got)
+		}
+	})
+	t.Run("one scoped limit appends one row with label and reset", func(t *testing.T) {
+		m := newScopedTestModel(t, 120, 40, 1)
+		rows := strings.Split(m.quotaBars(), "\n")
+		if len(rows) != 3 {
+			t.Fatalf("rows = %d, want 3", len(rows))
+		}
+		last := rows[2]
+		if !strings.Contains(last, "Fable") {
+			t.Errorf("scoped row missing model label: %q", last)
+		}
+		if !strings.Contains(last, "5d ") {
+			t.Errorf("scoped row missing reset time: %q", last)
+		}
+	})
+	t.Run("two scoped limits append two rows", func(t *testing.T) {
+		m := newScopedTestModel(t, 120, 40, 2)
+		rows := strings.Split(m.quotaBars(), "\n")
+		if len(rows) != 4 {
+			t.Fatalf("rows = %d, want 4", len(rows))
+		}
+		if !strings.Contains(rows[2], "Fable") || !strings.Contains(rows[3], "Opus") {
+			t.Errorf("scoped rows out of order:\n%q\n%q", rows[2], rows[3])
+		}
+	})
+	t.Run("scoped row right edge aligns with bars row", func(t *testing.T) {
+		// quotaBars() joins rows with lipgloss.JoinVertical, which pads every
+		// row to the widest — comparing rows[2] to rows[0] post-join would
+		// hold for ANY scopedBarWidth and can never fail (ccpulse-463.4).
+		// Build the scoped row directly from renderScopedLimitRow and
+		// compare its width against the bars row's width computed
+		// independently (the perSideChrome formula from scopedBarWidth's
+		// doc), not against a post-join sibling.
+		for _, w := range []int{80, 100, 120, 121} {
+			m := newScopedTestModel(t, w, 40, 1)
+			labelW := lipgloss.Width(scopedLabel("Fable"))
+			row := renderScopedLimitRow(scopedLabel("Fable"), newProgressBar(m.scopedBarWidth(labelW)), 0.35, "5d 12h")
+			barsRowW := 2*(3+1+statusBlockMaxW+m.progressWidth()) + 3
+			if lipgloss.Width(row) != barsRowW {
+				t.Errorf("w=%d: scoped row width %d != bars row width %d",
+					w, lipgloss.Width(row), barsRowW)
+			}
+		}
+	})
+	t.Run("nil MinutesToReset renders blank slot at full width", func(t *testing.T) {
+		m := newScopedTestModel(t, 120, 40, 1)
+		m.window.ScopedLimits[0].MinutesToReset = nil
+		rows := strings.Split(m.quotaBars(), "\n")
+		if len(rows) != 3 {
+			t.Fatalf("rows = %d, want 3 (nil MinutesToReset must still render the scoped row)", len(rows))
+		}
+
+		// As above, the width assertion must be on pre-join material — a
+		// post-join comparison against rows[0] would be vacuous. Build the
+		// blank- and non-blank-reset rows directly and compare both to each
+		// other and to the independently-computed bars-row width.
+		labelW := lipgloss.Width(scopedLabel("Fable"))
+		bar := newProgressBar(m.scopedBarWidth(labelW))
+		blank := renderScopedLimitRow(scopedLabel("Fable"), bar, 0.35, "")
+		withReset := renderScopedLimitRow(scopedLabel("Fable"), bar, 0.35, "5d 12h")
+		barsRowW := 2*(3+1+statusBlockMaxW+m.progressWidth()) + 3
+		if lipgloss.Width(blank) != lipgloss.Width(withReset) {
+			t.Errorf("blank-reset row width %d != non-blank row width %d",
+				lipgloss.Width(blank), lipgloss.Width(withReset))
+		}
+		if lipgloss.Width(blank) != barsRowW {
+			t.Errorf("blank-reset row width %d != bars row width %d",
+				lipgloss.Width(blank), barsRowW)
+		}
+	})
+	t.Run("fill ratio differs at 0%, 35%, and 100% (mirrors TestQuotaBarRendered)", func(t *testing.T) {
+		// scopedWindow hardcodes Percent 35 for every entry; the fill ratio
+		// float64(sl.Percent)/100.0 (model.go) is otherwise never exercised
+		// at the 0/100 extremes. An un-divided percent (ViewAs clamping to
+		// 1.0 → always-full bar) would still pass every other subtest here.
+		renderAt := func(pct int) string {
+			m := newScopedTestModel(t, 120, 40, 1)
+			m.window.ScopedLimits[0].Percent = pct
+			return m.quotaBars()
+		}
+		zero, mid, full := renderAt(0), renderAt(35), renderAt(100)
+		if zero == mid {
+			t.Error("scoped bar must render differently at 0% vs 35% fill; got identical output")
+		}
+		if mid == full {
+			t.Error("scoped bar must render differently at 35% vs 100% fill; got identical output")
+		}
+		if zero == full {
+			t.Error("scoped bar must render differently at 0% vs 100% fill; got identical output")
+		}
+	})
+	t.Run("rows fit inner box width at all terminal widths", func(t *testing.T) {
+		for _, w := range []int{40, 44, 60, 80, 100, 120, 121, 160, 200} {
+			m := newScopedTestModel(t, w, 40, 2)
+			inner := w - 4
+			for i, line := range strings.Split(m.quotaBars(), "\n") {
+				if lw := lipgloss.Width(line); lw > inner {
+					t.Errorf("w=%d row %d: width %d exceeds inner %d\n%q", w, i, lw, inner, line)
+				}
+			}
+		}
+	})
+	t.Run("mismatched progressScoped length renders without panic", func(t *testing.T) {
+		m := newScopedTestModel(t, 120, 40, 1)
+		m.progressScoped = nil // window says 1, bars say 0 → render 0 scoped rows
+		if got := len(strings.Split(m.quotaBars(), "\n")); got != 2 {
+			t.Errorf("rows = %d, want 2 when bars missing", got)
+		}
+	})
+}
+
+func TestRebuildScopedBars(t *testing.T) {
+	m := newScopedTestModel(t, 120, 40, 2)
+	if len(m.progressScoped) != 2 {
+		t.Fatalf("progressScoped = %d, want 2", len(m.progressScoped))
+	}
+	m.window = scopedWindow(0)
+	m.rebuildScopedBars()
+	if len(m.progressScoped) != 0 {
+		t.Errorf("progressScoped = %d after clearing window, want 0", len(m.progressScoped))
+	}
+}
+
+// scopedQuotaUsage builds an *anthro.Usage carrying exactly one
+// weekly_scoped limit (mirrors pkg/status/scoped_test.go's scopedUsage
+// shape), for driving handleQuotaMsg through a real 0→1 scoped-row
+// transition rather than hand-assigning m.window.
+func scopedQuotaUsage(model string) *anthro.Usage {
+	resetsAt := time.Now().Add(5 * 24 * time.Hour)
+	name := model
+	return &anthro.Usage{
+		Limits: []anthro.Limit{
+			{
+				Kind: "weekly_scoped", Group: "weekly", Percent: 35,
+				Severity: "normal", ResetsAt: &resetsAt, IsActive: true,
+				Scope: &anthro.LimitScope{Model: &anthro.ScopeModel{DisplayName: &name}},
+			},
+		},
+	}
+}
+
+// TestHandleQuotaMsg_ScopedRowGrowth_ResyncsViewportHeight guards against
+// a viewport/header desync (#463): recomputeWindow (called from
+// handleQuotaMsg) can grow scopedRowCount() from 0→N, which grows
+// headerContentRows() and therefore chartHeight() — but the new scoped
+// rows render immediately in quotaBars(); they don't participate in the
+// intro spring. Without a re-sync, the viewport stays sized for the old
+// (0-scoped) header and View() overflows m.h until the next watcher
+// event or chart-affecting keypress heals it via refreshChart.
+//
+// ReduceMotion starts introPending/quotaIntroPending false, so
+// springIntro never arms and the QuotaMsg lands on the steady-state
+// fallthrough path — not the spring-settle path that already re-syncs.
+func TestHandleQuotaMsg_ScopedRowGrowth_ResyncsViewportHeight(t *testing.T) {
+	c, err := cache.Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	defer c.Close()
+
+	m := New(Deps{Cache: c, ReduceMotion: true})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+
+	if got := m.scopedRowCount(); got != 0 {
+		t.Fatalf("test setup: scopedRowCount = %d after WindowSize; want 0", got)
+	}
+	if m.springActive {
+		t.Fatalf("test setup: springActive = true after WindowSize with ReduceMotion; want false")
+	}
+
+	// Drive the real handler path — never invoke the returned Cmd (it may
+	// be a tea.Tick closure that real-sleeps up to an hour and/or leaks
+	// under the package's goleak guard).
+	updated, cmd := m.Update(QuotaMsg{
+		Usage: scopedQuotaUsage("Fable"), Source: "api", UpdatedAt: time.Now(),
+	})
+	m = updated.(Model)
+	_ = cmd
+
+	if got := m.scopedRowCount(); got != 1 {
+		t.Fatalf("test setup: scopedRowCount = %d after QuotaMsg; want 1", got)
+	}
+	if h := lipgloss.Height(m.View()); h > m.h {
+		t.Errorf("View() height = %d after 0→1 scoped-row QuotaMsg; want <= m.h (%d) — viewport not re-synced to the grown header",
+			h, m.h)
+	}
+}
+
+// TestHandleWindowSize_RebuildsScopedBars guards the resize call site
+// (handleWindowSize, model.go:478): tests elsewhere call rebuildScopedBars
+// directly via newScopedTestModel, so a regression that dropped the call
+// from handleWindowSize itself would be invisible to the suite. This test
+// drives a real tea.WindowSizeMsg through Update — the production path —
+// and asserts the scoped bar actually resized. Deleting the
+// rebuildScopedBars call in handleWindowSize makes this test fail.
+func TestHandleWindowSize_RebuildsScopedBars(t *testing.T) {
+	m := newScopedTestModel(t, 120, 40, 1)
+	if len(m.progressScoped) != 1 {
+		t.Fatalf("test setup: progressScoped = %d, want 1", len(m.progressScoped))
+	}
+	label := scopedLabel("Fable")
+	before := lipgloss.Width(renderScopedLimitRow(label, m.progressScoped[0], 0.35, "5d 12h"))
+
+	// Drive the real resize path — never invoke the returned Cmd (it may be
+	// a tea.Tick closure that real-sleeps and/or leaks under goleak); m.hasData
+	// is false here, so maybeArmIntro's Cmd is nil regardless.
+	updated, cmd := m.Update(tea.WindowSizeMsg{Width: 60, Height: 40})
+	m = updated.(Model)
+	_ = cmd
+
+	if len(m.progressScoped) != 1 {
+		t.Fatalf("progressScoped = %d after resize, want 1 (row must survive)", len(m.progressScoped))
+	}
+	after := lipgloss.Width(renderScopedLimitRow(label, m.progressScoped[0], 0.35, "5d 12h"))
+	if after == before {
+		t.Errorf("scoped bar width unchanged after resize 120→60 (got %d both times); "+
+			"handleWindowSize must rebuild scoped bars at the new width", before)
+	}
+}

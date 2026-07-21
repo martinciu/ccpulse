@@ -246,3 +246,36 @@ func renderBurnRateSide(label string, p *status.Projection, slotW int, window ti
 		panic(fmt.Sprintf("renderBurnRateSide: unhandled burnSeverity %d", severityFor(p, window)))
 	}
 }
+
+// scopedLabelMaxW caps the dim model-name label on a scoped-limit row
+// (including its trailing space) so a long display_name can't starve the
+// bar: at 80 cols the row keeps a ≥50-col bar. Names within the cap render
+// untruncated; longer ones end in "…".
+const scopedLabelMaxW = 16
+
+// scopedLabel renders a ScopedLimit's display_name into the row label:
+// truncated to scopedLabelMaxW-1 with an ellipsis tail, plus the trailing
+// space that separates label from bar. The space lives outside the
+// truncation so it survives even for over-long names.
+func scopedLabel(name string) string {
+	return ansi.Truncate(name, scopedLabelMaxW-1, "…") + " "
+}
+
+// renderScopedLimitRow composes one full-width scoped-limit row inside the
+// header box, mirroring renderQuotaSide's layout contract:
+//
+//	[dim label] [gradient bar] [1-col gap] [right-aligned reset slot]
+//
+// reset is "" when the API sent no resets_at — the fixed-width slot still
+// renders so the box's right edge stays stable. No numeric percent text:
+// the bar fill conveys it, same as the 5h/7d bars. severity and is_active
+// deliberately have no visual mapping (spec #463 v1).
+func renderScopedLimitRow(label string, bar progress.Model, fillRatio float64, reset string) string {
+	return lipgloss.JoinHorizontal(
+		lipgloss.Top,
+		dimStyle.Render(label),
+		bar.ViewAs(fillRatio),
+		barTimeGap,
+		timeSlotStyle.Render(reset),
+	)
+}

@@ -32,7 +32,12 @@ const sampleAPIBody = `{
   "tangelo":              null,
   "iguana_necktie":       null,
   "omelette_promotional": null,
-  "extra_usage":          {"is_enabled": true, "monthly_limit": 2000, "used_credits": 0.0, "utilization": null, "currency": "EUR"}
+  "extra_usage":          {"is_enabled": true, "monthly_limit": 2000, "used_credits": 0.0, "utilization": null, "currency": "EUR"},
+  "limits": [
+    {"kind": "session",       "group": "session", "percent": 8,  "severity": "normal", "resets_at": "2126-01-01T00:00:00.000+00:00", "scope": null, "is_active": false},
+    {"kind": "weekly_all",    "group": "weekly",  "percent": 22, "severity": "normal", "resets_at": "2126-01-02T00:00:00.000+00:00", "scope": null, "is_active": false},
+    {"kind": "weekly_scoped", "group": "weekly",  "percent": 35, "severity": "normal", "resets_at": "2126-01-02T00:00:00.000+00:00", "scope": {"model": {"id": null, "display_name": "Fable"}, "surface": null}, "is_active": true}
+  ]
 }`
 
 func writeTempCache(t *testing.T, dir string) {
@@ -945,5 +950,48 @@ func TestStatusPrunesWhenRetentionConfigured(t *testing.T) {
 	// After the call: 1 fresh row inserted, 1 old row pruned → exactly 1 row total.
 	if got := countSamples(t, filepath.Join(cacheDir, "state.db")); got != 1 {
 		t.Fatalf("usage_samples rows = %d, want 1 (old row pruned, fresh row inserted)", got)
+	}
+}
+
+func TestStatusJSONScopedLimits(t *testing.T) {
+	cacheDir := t.TempDir()
+	credDir := t.TempDir()
+	t.Setenv("CCPULSE_CACHE_DIR", cacheDir)
+	t.Setenv("HOME", credDir)
+	writeTempCache(t, cacheDir)
+	writeTempCredential(t, credDir)
+
+	cmd := newStatusCmd()
+	cmd.SetArgs([]string{"--json"})
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	if err := cmd.ExecuteContext(t.Context()); err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &parsed); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	scoped, ok := parsed["scoped_limits"].([]any)
+	if !ok {
+		t.Fatalf("scoped_limits missing or not an array: %v", parsed["scoped_limits"])
+	}
+	if len(scoped) != 1 {
+		t.Fatalf("scoped_limits len = %d, want 1 (session/weekly_all filtered)", len(scoped))
+	}
+	entry, ok := scoped[0].(map[string]any)
+	if !ok {
+		t.Fatalf("scoped_limits[0] not an object: %v", scoped[0])
+	}
+	pct, ok := entry["percent"].(float64)
+	if !ok {
+		t.Fatalf("scoped_limits[0].percent missing or not a number: %v", entry)
+	}
+	if entry["model"] != "Fable" || entry["kind"] != "weekly_scoped" ||
+		int(pct) != 35 || entry["is_active"] != true {
+		t.Errorf("scoped_limits[0] mismatch: %v", entry)
+	}
+	if entry["minutes_to_reset"] == nil {
+		t.Errorf("minutes_to_reset should be set (fixture resets_at is in the future): %v", entry)
 	}
 }

@@ -38,10 +38,81 @@ func TestParseFakeQuota_TierOverride(t *testing.T) {
 
 func TestParseFakeQuota_Invalid(t *testing.T) {
 	now := time.Now()
-	cases := []string{"", "  ", "55", "55,42,1", "x,2", "55,y", "-1,40", "55,101"}
+	cases := []string{"", "  ", "55", "55,42,1", "x,2", "55,y", "-1,40", "55,101", "NaN,42", "55,NaN"}
 	for _, in := range cases {
 		if _, _, ok := parseFakeQuota(in, "", now); ok {
 			t.Errorf("parseFakeQuota(%q): expected ok=false", in)
 		}
 	}
+}
+
+func TestParseFakeQuota_ScopedSegments(t *testing.T) {
+	now := time.Date(2026, 7, 21, 12, 0, 0, 0, time.UTC)
+
+	t.Run("single scoped entry", func(t *testing.T) {
+		u, _, ok := parseFakeQuota("55,42,Fable:35", "", now)
+		if !ok {
+			t.Fatal("expected ok=true")
+		}
+		if len(u.Limits) != 1 {
+			t.Fatalf("Limits = %d, want 1", len(u.Limits))
+		}
+		l := u.Limits[0]
+		if l.Kind != "weekly_scoped" || l.Group != "weekly" || l.Percent != 35 ||
+			l.Severity != "normal" || !l.IsActive {
+			t.Errorf("limit mismatch: %+v", l)
+		}
+		if l.Scope == nil || l.Scope.Model == nil || l.Scope.Model.DisplayName == nil ||
+			*l.Scope.Model.DisplayName != "Fable" {
+			t.Errorf("scope mismatch: %+v", l.Scope)
+		}
+		if l.ResetsAt == nil || !l.ResetsAt.After(now) {
+			t.Errorf("ResetsAt: %v, want future", l.ResetsAt)
+		}
+	})
+
+	t.Run("multiple scoped entries preserve order", func(t *testing.T) {
+		u, _, ok := parseFakeQuota("55,42,Fable:35,Opus:80", "", now)
+		if !ok || len(u.Limits) != 2 {
+			t.Fatalf("ok=%v Limits=%d, want true/2", ok, len(u.Limits))
+		}
+		if *u.Limits[0].Scope.Model.DisplayName != "Fable" || *u.Limits[1].Scope.Model.DisplayName != "Opus" {
+			t.Errorf("order: %+v", u.Limits)
+		}
+	})
+
+	t.Run("no scoped segments leaves Limits nil", func(t *testing.T) {
+		u, _, ok := parseFakeQuota("55,42", "", now)
+		if !ok || u.Limits != nil {
+			t.Errorf("ok=%v Limits=%+v, want true/nil", ok, u.Limits)
+		}
+	})
+
+	t.Run("boundary percents 0 and 100 accepted", func(t *testing.T) {
+		u, _, ok := parseFakeQuota("55,42,Fable:0", "", now)
+		if !ok || len(u.Limits) != 1 || u.Limits[0].Percent != 0 {
+			t.Errorf("Fable:0 → ok=%v Limits=%+v, want true/[{Percent:0}]", ok, u.Limits)
+		}
+		u, _, ok = parseFakeQuota("55,42,Fable:100", "", now)
+		if !ok || len(u.Limits) != 1 || u.Limits[0].Percent != 100 {
+			t.Errorf("Fable:100 → ok=%v Limits=%+v, want true/[{Percent:100}]", ok, u.Limits)
+		}
+	})
+
+	t.Run("malformed scoped segment rejects whole var", func(t *testing.T) {
+		for _, in := range []string{
+			"55,42,Fable",     // no colon
+			"55,42,:35",       // empty name
+			"55,42,Fable:",    // empty pct
+			"55,42,Fable:x",   // non-numeric pct
+			"55,42,Fable:-1",  // below range
+			"55,42,Fable:101", // above range
+			"55,42,Fable:NaN", // NaN
+			"55,42,",          // trailing comma → empty segment
+		} {
+			if _, _, ok := parseFakeQuota(in, "", now); ok {
+				t.Errorf("parseFakeQuota(%q): expected ok=false", in)
+			}
+		}
+	})
 }
