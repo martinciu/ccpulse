@@ -25,6 +25,32 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
+      - name: Resolve currently-effective pricing snapshot
+        id: effective
+        shell: bash
+        run: |
+          today=$(date -u +%F)
+          export LC_ALL=C
+          mapfile -t all < <(
+            for f in pkg/pricing/history/*.json; do
+              base=$(basename "$f" .json)
+              [[ "$base" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] && printf '%s\n' "$base"
+            done | sort
+          )
+          if [ "${#all[@]}" -eq 0 ]; then
+            echo "::error::no pricing snapshots found under pkg/pricing/history/" >&2
+            exit 1
+          fi
+          effective=""
+          for base in "${all[@]}"; do
+            [[ "$base" > "$today" ]] && break   # array sorted asc: first future date ends the scan
+            effective="$base"
+          done
+          [ -z "$effective" ] && effective="${all[0]}"   # all future -> earliest (mirrors TableAt)
+          echo "version=$effective" >> "$GITHUB_OUTPUT"
+          echo "file=pkg/pricing/history/$effective.json" >> "$GITHUB_OUTPUT"
+          echo "resolved effective pricing snapshot: $effective (today=$today)"
+
       - uses: anthropics/claude-code-action@af0559ee4f514d1ef21826982bed13f7edc3c35e  # v1.0.178
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
