@@ -2759,3 +2759,113 @@ func TestPruneUsageSamples_CascadesLimits(t *testing.T) {
 		t.Errorf("new usage_limits rows = %d, want 1 (kept)", newChildren)
 	}
 }
+
+func TestInsertAndQueryEffort(t *testing.T) {
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	tab, _ := pricing.Load()
+	ts := time.Now()
+	withEffort := parse.Message{
+		SessionID: "s1", MessageID: "m1", ProjectSlug: "slug-a",
+		Model: "claude-fable-5", Timestamp: ts, OutputTokens: 10, Effort: "xhigh",
+	}
+	withoutEffort := parse.Message{
+		SessionID: "s1", MessageID: "m2", ProjectSlug: "slug-a",
+		Model: "claude-fable-5", Timestamp: ts, OutputTokens: 10,
+	}
+	if err := c.InsertMessages(t.Context(), []parse.Message{withEffort, withoutEffort}, tab); err != nil {
+		t.Fatal(err)
+	}
+
+	var got string
+	if err := c.DB().QueryRowContext(t.Context(),
+		`SELECT effort FROM messages WHERE message_id='m1'`).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != "xhigh" {
+		t.Errorf("effort = %q, want %q", got, "xhigh")
+	}
+	if err := c.DB().QueryRowContext(t.Context(),
+		`SELECT effort FROM messages WHERE message_id='m2'`).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != "" {
+		t.Errorf("effort for absent field = %q, want empty", got)
+	}
+
+	// Upsert conflict: a later content-block line without effort must not
+	// clobber the stored value (max('', 'xhigh') keeps 'xhigh').
+	if err := c.InsertMessages(t.Context(), []parse.Message{withoutEffort, withEffort}, tab); err != nil {
+		t.Fatal(err)
+	}
+	blank := withEffort
+	blank.Effort = ""
+	if err := c.InsertMessages(t.Context(), []parse.Message{blank}, tab); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.DB().QueryRowContext(t.Context(),
+		`SELECT effort FROM messages WHERE message_id='m1'`).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != "xhigh" {
+		t.Errorf("effort after blank-line upsert = %q, want %q", got, "xhigh")
+	}
+}
+
+func TestInsertAndQueryIterations(t *testing.T) {
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	tab, _ := pricing.Load()
+	ts := time.Now()
+	const blob = `[{"input_tokens":2,"output_tokens":3,"type":"message","model":"claude-fable-5"},{"input_tokens":2,"output_tokens":2299,"type":"fallback_message","model":"claude-opus-4-8"}]`
+
+	redundant := parse.Message{
+		SessionID: "s1", MessageID: "m1", ProjectSlug: "slug-a",
+		Model: "claude-opus-4-8", Timestamp: ts, OutputTokens: 2299,
+	}
+	if err := c.InsertMessages(t.Context(), []parse.Message{redundant}, tab); err != nil {
+		t.Fatal(err)
+	}
+
+	var got sql.NullString
+	query := `SELECT iterations_json FROM messages WHERE message_id='m1'`
+	if err := c.DB().QueryRowContext(t.Context(), query).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Valid {
+		t.Errorf("iterations_json = %q, want NULL for redundant iterations", got.String)
+	}
+
+	// Conflict: an informative line for the same turn sets the blob.
+	informative := redundant
+	informative.IterationsJSON = blob
+	if err := c.InsertMessages(t.Context(), []parse.Message{informative}, tab); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.DB().QueryRowContext(t.Context(), query).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Valid || got.String != blob {
+		t.Errorf("iterations_json = (%v, %q), want stored blob verbatim", got.Valid, got.String)
+	}
+
+	// Conflict: a later redundant line (NULL) must not clobber the blob
+	// (coalesce(excluded, existing) keeps the stored value).
+	if err := c.InsertMessages(t.Context(), []parse.Message{redundant}, tab); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.DB().QueryRowContext(t.Context(), query).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Valid || got.String != blob {
+		t.Errorf("iterations_json after redundant upsert = (%v, %q), want blob kept", got.Valid, got.String)
+	}
+}

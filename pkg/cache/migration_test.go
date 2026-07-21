@@ -78,8 +78,8 @@ func TestOpen_UpgradesFromV7_RebuildsWithRepoRoot(t *testing.T) {
 		`SELECT value FROM meta WHERE key='schema_version'`).Scan(&ver); err != nil {
 		t.Fatal(err)
 	}
-	if ver != "10" {
-		t.Fatalf("schema_version = %q, want 10 after upgrade", ver)
+	if ver != "11" {
+		t.Fatalf("schema_version = %q, want 11 after upgrade", ver)
 	}
 
 	// Quota history preserved across the destroy+recreate rebuild.
@@ -130,8 +130,8 @@ func TestOpen_UpgradesFromV8_PreservesUsageHistory(t *testing.T) {
 		`SELECT value FROM meta WHERE key='schema_version'`).Scan(&ver); err != nil {
 		t.Fatal(err)
 	}
-	if ver != "10" {
-		t.Fatalf("schema_version = %q, want 10 after upgrade", ver)
+	if ver != "11" {
+		t.Fatalf("schema_version = %q, want 11 after upgrade", ver)
 	}
 
 	var pct float64
@@ -207,8 +207,8 @@ func TestOpen_UpgradesFromV9_PreservesUsageLimitsWithEmptyScopeModelID(t *testin
 		`SELECT value FROM meta WHERE key='schema_version'`).Scan(&ver); err != nil {
 		t.Fatal(err)
 	}
-	if ver != "10" {
-		t.Fatalf("schema_version = %q, want 10 after upgrade", ver)
+	if ver != "11" {
+		t.Fatalf("schema_version = %q, want 11 after upgrade", ver)
 	}
 
 	var pct float64

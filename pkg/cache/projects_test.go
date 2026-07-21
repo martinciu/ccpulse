@@ -24,8 +24,8 @@ func TestSchema_HasRepoRoot(t *testing.T) {
 		t.Fatalf("messages.repo_root column count = %d, want 1", n)
 	}
 
-	if SchemaVersion != "10" {
-		t.Fatalf("SchemaVersion = %q, want 10", SchemaVersion)
+	if SchemaVersion != "11" {
+		t.Fatalf("SchemaVersion = %q, want 11", SchemaVersion)
 	}
 }
 
