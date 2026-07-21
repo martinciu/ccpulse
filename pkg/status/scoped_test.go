@@ -96,6 +96,32 @@ func TestDistillScopedLimits(t *testing.T) {
 		}
 	})
 
+	t.Run("control characters stripped from display_name", func(t *testing.T) {
+		poisoned := "\x1b]0;pwned\x07Claude\nOpus\r"
+		u := &anthro.Usage{Limits: []anthro.Limit{
+			{Kind: "weekly_scoped", Percent: 50, Scope: &anthro.LimitScope{Model: &anthro.ScopeModel{DisplayName: strPtr(poisoned)}}},
+		}}
+		got := distillScopedLimits(u, now)
+		if len(got) != 1 {
+			t.Fatalf("want 1 entry, got %d: %+v", len(got), got)
+		}
+		if strings.ContainsAny(got[0].Model, "\x1b\n\r\a") {
+			t.Errorf("Model retains control bytes: %q", got[0].Model)
+		}
+		if got[0].Model != "]0;pwnedClaudeOpus" {
+			t.Errorf("Model = %q, want printable remainder preserved", got[0].Model)
+		}
+	})
+
+	t.Run("display_name of only control bytes skipped entirely", func(t *testing.T) {
+		u := &anthro.Usage{Limits: []anthro.Limit{
+			{Kind: "weekly_scoped", Percent: 50, Scope: &anthro.LimitScope{Model: &anthro.ScopeModel{DisplayName: strPtr("\x1b\n\r\x07")}}},
+		}}
+		if got := distillScopedLimits(u, now); got != nil {
+			t.Errorf("want nil (all-control display_name skipped), got %+v", got)
+		}
+	})
+
 	t.Run("API order preserved", func(t *testing.T) {
 		u := &anthro.Usage{Limits: []anthro.Limit{
 			{Kind: "weekly_scoped", Percent: 10, Scope: &anthro.LimitScope{Model: &anthro.ScopeModel{DisplayName: strPtr("Zeta")}}},
