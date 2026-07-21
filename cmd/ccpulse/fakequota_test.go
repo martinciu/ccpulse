@@ -38,7 +38,7 @@ func TestParseFakeQuota_TierOverride(t *testing.T) {
 
 func TestParseFakeQuota_Invalid(t *testing.T) {
 	now := time.Now()
-	cases := []string{"", "  ", "55", "55,42,1", "x,2", "55,y", "-1,40", "55,101"}
+	cases := []string{"", "  ", "55", "55,42,1", "x,2", "55,y", "-1,40", "55,101", "NaN,42", "55,NaN"}
 	for _, in := range cases {
 		if _, _, ok := parseFakeQuota(in, "", now); ok {
 			t.Errorf("parseFakeQuota(%q): expected ok=false", in)
@@ -96,6 +96,7 @@ func TestParseFakeQuota_ScopedSegments(t *testing.T) {
 			"55,42,Fable:x",   // non-numeric pct
 			"55,42,Fable:-1",  // below range
 			"55,42,Fable:101", // above range
+			"55,42,Fable:NaN", // NaN
 		} {
 			if _, _, ok := parseFakeQuota(in, "", now); ok {
 				t.Errorf("parseFakeQuota(%q): expected ok=false", in)

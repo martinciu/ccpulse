@@ -1,6 +1,7 @@
 package main
 
 import (
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -39,7 +40,7 @@ func parseFakeQuota(quotaEnv, tierEnv string, now time.Time) (usage *anthro.Usag
 	if err5 != nil || err7 != nil {
 		return nil, "", false
 	}
-	if p5h < 0 || p5h > 100 || p7d < 0 || p7d > 100 {
+	if math.IsNaN(p5h) || math.IsNaN(p7d) || p5h < 0 || p5h > 100 || p7d < 0 || p7d > 100 {
 		return nil, "", false
 	}
 	reset5h := now.Add(fakeQuota5hReset)
@@ -72,7 +73,7 @@ func parseScopedSegments(segs []string, resetsAt time.Time) ([]anthro.Limit, boo
 		name, pctStr, found := strings.Cut(seg, ":")
 		name = strings.TrimSpace(name)
 		pct, errP := strconv.ParseFloat(strings.TrimSpace(pctStr), 64)
-		if !found || name == "" || errP != nil || pct < 0 || pct > 100 {
+		if !found || name == "" || errP != nil || math.IsNaN(pct) || pct < 0 || pct > 100 {
 			return nil, false
 		}
 		limits = append(limits, anthro.Limit{
