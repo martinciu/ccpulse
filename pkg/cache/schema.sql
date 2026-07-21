@@ -86,10 +86,11 @@ CREATE TABLE IF NOT EXISTS usage_limits (
   severity      TEXT    NOT NULL DEFAULT '',  -- free text, unvalidated
   resets_at     TEXT,                         -- RFC3339Nano UTC, NULL when API sends null
   scope_model   TEXT    NOT NULL DEFAULT '',  -- scope.model.display_name; '' = unscoped
+  scope_model_id TEXT   NOT NULL DEFAULT '',  -- scope.model.id; '' = null/absent
   scope_surface TEXT    NOT NULL DEFAULT '',  -- raw JSON of scope.surface; '' = null/absent
   is_active     INTEGER NOT NULL DEFAULT 0,
   -- Scope columns are NOT NULL '' (not nullable) deliberately: SQLite rowid
   -- tables allow NULLs in PK columns and treat each NULL as distinct, so a
   -- nullable-column PK would never dedupe.
-  PRIMARY KEY (ts, kind, scope_model, scope_surface)
+  PRIMARY KEY (ts, kind, scope_model, scope_model_id, scope_surface)
 );

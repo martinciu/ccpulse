@@ -74,7 +74,7 @@ func init() {
 var schemaSQL string
 
 // SchemaVersion is the expected on-disk schema version; a mismatch triggers an auto-rebuild.
-const SchemaVersion = "9"
+const SchemaVersion = "10"
 
 // normalizeResetsAtSQL flips legacy `0001-01-01T00:00:00Z` sentinels
 // (written before issue #189 landed) to SQL NULL across every
@@ -349,8 +349,8 @@ func extraUsageArgs(e *anthro.ExtraUsage) []any {
 }
 
 const insertUsageLimitSQL = `INSERT OR IGNORE INTO usage_limits(
-	ts, kind, lim_group, percent, severity, resets_at, scope_model, scope_surface, is_active
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	ts, kind, lim_group, percent, severity, resets_at, scope_model, scope_model_id, scope_surface, is_active
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 // limitArgs flattens one limits entry into insertUsageLimitSQL's argument
 // list. Scope columns collapse to ” when absent so the composite primary
@@ -362,11 +362,9 @@ func limitArgs(ts int64, l anthro.Limit) []any {
 	if l.ResetsAt != nil {
 		resetsAt = l.ResetsAt.UTC().Format(time.RFC3339Nano)
 	}
-	var scopeModel, scopeSurface string
+	var scopeModel, scopeModelID, scopeSurface string
 	if l.Scope != nil {
-		if l.Scope.Model != nil && l.Scope.Model.DisplayName != nil {
-			scopeModel = *l.Scope.Model.DisplayName
-		}
+		scopeModel, scopeModelID = scopeModelFields(l.Scope.Model)
 		if s := string(l.Scope.Surface); s != "" && s != "null" {
 			scopeSurface = s
 		}
@@ -375,7 +373,23 @@ func limitArgs(ts int64, l anthro.Limit) []any {
 	if l.IsActive {
 		active = 1
 	}
-	return []any{ts, l.Kind, l.Group, l.Percent, l.Severity, resetsAt, scopeModel, scopeSurface, active}
+	return []any{ts, l.Kind, l.Group, l.Percent, l.Severity, resetsAt, scopeModel, scopeModelID, scopeSurface, active}
+}
+
+// scopeModelFields flattens an optional ScopeModel's DisplayName/ID to
+// limitArgs' NOT NULL ” convention for scope columns: nil model or nil
+// field both collapse to "".
+func scopeModelFields(m *anthro.ScopeModel) (displayName, id string) {
+	if m == nil {
+		return "", ""
+	}
+	if m.DisplayName != nil {
+		displayName = *m.DisplayName
+	}
+	if m.ID != nil {
+		id = *m.ID
+	}
+	return displayName, id
 }
 
 // PruneUsageSamples deletes rows with ts < cutoff.UTC().Unix() from
