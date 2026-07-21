@@ -2,6 +2,7 @@ package parse
 
 import (
 	"bufio"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -248,6 +249,41 @@ func TestIterationsInformativePredicate(t *testing.T) {
 			want:       `[{"input_tokens":2,"output_tokens":299,"cache_read_input_tokens":20000,"cache_creation_input_tokens":400,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":400},"type":"message"}]`,
 		},
 		{
+			name:       "single input mismatch kept",
+			iterations: `[{"input_tokens":3,"output_tokens":300,"cache_read_input_tokens":20000,"cache_creation_input_tokens":400,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":400},"type":"message"}]`,
+			want:       `[{"input_tokens":3,"output_tokens":300,"cache_read_input_tokens":20000,"cache_creation_input_tokens":400,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":400},"type":"message"}]`,
+		},
+		{
+			name:       "single cache_read mismatch kept",
+			iterations: `[{"input_tokens":2,"output_tokens":300,"cache_read_input_tokens":20001,"cache_creation_input_tokens":400,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":400},"type":"message"}]`,
+			want:       `[{"input_tokens":2,"output_tokens":300,"cache_read_input_tokens":20001,"cache_creation_input_tokens":400,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":400},"type":"message"}]`,
+		},
+		{
+			name:       "single cache_creation_input_tokens mismatch kept",
+			iterations: `[{"input_tokens":2,"output_tokens":300,"cache_read_input_tokens":20000,"cache_creation_input_tokens":401,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":400},"type":"message"}]`,
+			want:       `[{"input_tokens":2,"output_tokens":300,"cache_read_input_tokens":20000,"cache_creation_input_tokens":401,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":400},"type":"message"}]`,
+		},
+		{
+			name:       "single ephemeral_5m mismatch kept",
+			iterations: `[{"input_tokens":2,"output_tokens":300,"cache_read_input_tokens":20000,"cache_creation_input_tokens":400,"cache_creation":{"ephemeral_5m_input_tokens":1,"ephemeral_1h_input_tokens":400},"type":"message"}]`,
+			want:       `[{"input_tokens":2,"output_tokens":300,"cache_read_input_tokens":20000,"cache_creation_input_tokens":400,"cache_creation":{"ephemeral_5m_input_tokens":1,"ephemeral_1h_input_tokens":400},"type":"message"}]`,
+		},
+		{
+			name:       "single ephemeral_1h mismatch kept",
+			iterations: `[{"input_tokens":2,"output_tokens":300,"cache_read_input_tokens":20000,"cache_creation_input_tokens":400,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":401},"type":"message"}]`,
+			want:       `[{"input_tokens":2,"output_tokens":300,"cache_read_input_tokens":20000,"cache_creation_input_tokens":400,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":401},"type":"message"}]`,
+		},
+		{
+			name:       "single entry with type absent kept",
+			iterations: `[{"input_tokens":2,"output_tokens":300,"cache_read_input_tokens":20000,"cache_creation_input_tokens":400,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":400}}]`,
+			want:       `[{"input_tokens":2,"output_tokens":300,"cache_read_input_tokens":20000,"cache_creation_input_tokens":400,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":400}}]`,
+		},
+		{
+			name:       "single redundant plus unknown field dropped",
+			iterations: `[{"input_tokens":2,"output_tokens":300,"cache_read_input_tokens":20000,"cache_creation_input_tokens":400,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":400},"type":"message","duration_ms":123}]`,
+			want:       "",
+		},
+		{
 			name:       "multi-attempt kept",
 			iterations: "[" + redundantEntry + `,{"input_tokens":2,"output_tokens":2299,"cache_read_input_tokens":21000,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"type":"fallback_message","model":"claude-opus-4-8"}]`,
 			want:       "[" + redundantEntry + `,{"input_tokens":2,"output_tokens":2299,"cache_read_input_tokens":21000,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"type":"fallback_message","model":"claude-opus-4-8"}]`,
@@ -278,5 +314,34 @@ func TestIterationsInformativePredicate(t *testing.T) {
 				t.Errorf("IterationsJSON = %q, want %q", msgs[0].IterationsJSON, tt.want)
 			}
 		})
+	}
+}
+
+// TestIterationsOversizedKeptWithoutProbe asserts that an iterations blob
+// larger than maxIterationsProbe is returned verbatim without ever being
+// decoded. The fixture is a single entry matching the outer usage on all
+// known fields — probing it would classify it redundant and return "" — so
+// only the size guard's pre-probe short-circuit can produce the verbatim
+// result asserted here.
+func TestIterationsOversizedKeptWithoutProbe(t *testing.T) {
+	padding := strings.Repeat("x", maxIterationsProbe)
+	its := `[{"input_tokens":2,"output_tokens":300,"cache_read_input_tokens":20000,"cache_creation_input_tokens":400,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":400},"type":"message","padding":"` + padding + `"}]`
+
+	if len(its) <= maxIterationsProbe {
+		t.Fatalf("fixture too small: len=%d, want > %d", len(its), maxIterationsProbe)
+	}
+
+	var raw rawLine
+	raw.Message.Model = "claude-fable-5"
+	raw.Message.Usage.InputTokens = 2
+	raw.Message.Usage.OutputTokens = 300
+	raw.Message.Usage.CacheReadInputTokens = 20000
+	raw.Message.Usage.CacheCreationInputTokens = 400
+	raw.Message.Usage.CacheCreation.Ephemeral1hInputTokens = 400
+	raw.Message.Usage.Iterations = json.RawMessage(its)
+
+	got := informativeIterations(raw)
+	if got != its {
+		t.Errorf("informativeIterations returned %d bytes, want verbatim input of %d bytes", len(got), len(its))
 	}
 }

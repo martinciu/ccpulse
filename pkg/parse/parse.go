@@ -133,8 +133,10 @@ func toMessage(raw rawLine, slug string) Message {
 }
 
 // iterationEntry is the typed probe informativeIterations uses to compare an
-// iterations entry against the outer usage. Unknown fields are ignored here
-// but preserved on disk — the raw bytes are stored verbatim, never re-marshaled.
+// iterations entry against the outer usage. Unknown fields are ignored here;
+// whenever the blob is stored it is stored verbatim, never re-marshaled — but
+// an entry that matches the outer usage on all known fields is dropped as
+// redundant even if it carries unknown extra fields.
 type iterationEntry struct {
 	InputTokens              int64 `json:"input_tokens"`
 	OutputTokens             int64 `json:"output_tokens"`
@@ -148,6 +150,14 @@ type iterationEntry struct {
 	Model string `json:"model"`
 }
 
+// maxIterationsProbe bounds the decode probe in informativeIterations, not
+// storage. Real iterations arrays are a handful of entries; ~3-byte "{}," entries
+// decode to ~96-byte structs, so an unbounded json.Unmarshal on a hostile blob
+// near the scanner's line cap can balloon to gigabytes transiently. Blobs over
+// this size are stored verbatim without probing (fail open; storage stays
+// bounded by the input size, not by this constant).
+const maxIterationsProbe = 1 << 20 // 1 MiB
+
 // informativeIterations returns message.usage.iterations verbatim when the
 // array carries information the flat usage columns do not: more than one
 // attempt, a non-"message" entry type, an explicit model differing from the
@@ -160,6 +170,9 @@ func informativeIterations(raw rawLine) string {
 	its := raw.Message.Usage.Iterations
 	if len(its) == 0 {
 		return "" // key absent
+	}
+	if len(its) > maxIterationsProbe {
+		return string(its) // too large to probe cheaply; keep verbatim (fail open)
 	}
 	var entries []iterationEntry
 	if err := json.Unmarshal(its, &entries); err != nil {
