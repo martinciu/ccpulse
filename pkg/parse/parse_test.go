@@ -190,3 +190,22 @@ func TestParse_CapturesMessageID(t *testing.T) {
 		t.Errorf("msgs[3].MessageID = %q, want empty (line has no message.id)", msgs[3].MessageID)
 	}
 }
+
+func TestParseCapturesEffort(t *testing.T) {
+	input := `{"type":"assistant","sessionId":"s1","timestamp":"2026-07-21T10:00:00.000Z","effort":"xhigh","message":{"id":"m1","role":"assistant","model":"claude-fable-5","usage":{"input_tokens":1,"output_tokens":2}}}` + "\n" +
+		`{"type":"assistant","sessionId":"s1","timestamp":"2026-07-21T10:00:01.000Z","message":{"id":"m2","role":"assistant","model":"claude-fable-5","usage":{"input_tokens":1,"output_tokens":2}}}` + "\n"
+
+	msgs, err := Parse(strings.NewReader(input), "test-slug")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("got %d messages, want 2", len(msgs))
+	}
+	if msgs[0].Effort != "xhigh" {
+		t.Errorf("msgs[0].Effort = %q, want %q", msgs[0].Effort, "xhigh")
+	}
+	if msgs[1].Effort != "" {
+		t.Errorf("msgs[1].Effort = %q, want empty (field absent pre-CC-2.1.212)", msgs[1].Effort)
+	}
+}

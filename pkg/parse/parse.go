@@ -28,6 +28,7 @@ type Message struct {
 	Cwd                string
 	GitBranch          string
 	RepoRoot           string
+	Effort             string
 }
 
 type rawLine struct {
@@ -36,6 +37,7 @@ type rawLine struct {
 	Timestamp time.Time `json:"timestamp"`
 	Cwd       string    `json:"cwd"`
 	GitBranch string    `json:"gitBranch"`
+	Effort    string    `json:"effort"`
 	Message   struct {
 		ID    string `json:"id"`
 		Role  string `json:"role"`
@@ -123,6 +125,7 @@ func toMessage(raw rawLine, slug string) Message {
 		CacheWrite1hTokens: raw.Message.Usage.CacheCreation.Ephemeral1hInputTokens,
 		Cwd:                raw.Cwd,
 		GitBranch:          raw.GitBranch,
+		Effort:             raw.Effort,
 	}
 }
 
