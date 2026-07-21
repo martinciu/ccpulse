@@ -48,22 +48,38 @@ func parseFakeQuota(quotaEnv, tierEnv string, now time.Time) (usage *anthro.Usag
 		FiveHour: &anthro.Bucket{Utilization: p5h, ResetsAt: &reset5h},
 		SevenDay: &anthro.Bucket{Utilization: p7d, ResetsAt: &reset7d},
 	}
-	for _, seg := range parts[2:] {
-		name, pctStr, found := strings.Cut(seg, ":")
-		name = strings.TrimSpace(name)
-		pct, errP := strconv.ParseFloat(strings.TrimSpace(pctStr), 64)
-		if !found || name == "" || errP != nil || pct < 0 || pct > 100 {
-			return nil, "", false
-		}
-		usage.Limits = append(usage.Limits, anthro.Limit{
-			Kind: "weekly_scoped", Group: "weekly", Percent: pct,
-			Severity: "normal", ResetsAt: &reset7d, IsActive: true,
-			Scope: &anthro.LimitScope{Model: &anthro.ScopeModel{DisplayName: &name}},
-		})
+	limits, segsOK := parseScopedSegments(parts[2:], reset7d)
+	if !segsOK {
+		return nil, "", false
 	}
+	usage.Limits = limits
 	tier = strings.TrimSpace(tierEnv)
 	if tier == "" {
 		tier = defaultFakeTier
 	}
 	return usage, tier, true
+}
+
+// parseScopedSegments parses the optional "<model>:<weekly%>" segments of
+// CCPULSE_FAKE_QUOTA into weekly_scoped limits entries (#463). Returns
+// ok=false when any segment is malformed — the caller then rejects the
+// whole var, matching parseFakeQuota's all-or-nothing contract. An empty
+// segs yields (nil, true) so the no-scoped-segments path leaves
+// Usage.Limits nil.
+func parseScopedSegments(segs []string, resetsAt time.Time) ([]anthro.Limit, bool) {
+	var limits []anthro.Limit
+	for _, seg := range segs {
+		name, pctStr, found := strings.Cut(seg, ":")
+		name = strings.TrimSpace(name)
+		pct, errP := strconv.ParseFloat(strings.TrimSpace(pctStr), 64)
+		if !found || name == "" || errP != nil || pct < 0 || pct > 100 {
+			return nil, false
+		}
+		limits = append(limits, anthro.Limit{
+			Kind: "weekly_scoped", Group: "weekly", Percent: pct,
+			Severity: "normal", ResetsAt: &resetsAt, IsActive: true,
+			Scope: &anthro.LimitScope{Model: &anthro.ScopeModel{DisplayName: &name}},
+		})
+	}
+	return limits, true
 }

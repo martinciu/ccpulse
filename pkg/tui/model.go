@@ -153,9 +153,9 @@ type Model struct {
 	progress7d progress.Model // 7-day quota bar
 
 	progressScoped []progress.Model // per-model weekly limit bars, one per Window.ScopedLimits entry (#463)
-	viewport   viewport.Model
-	help       help.Model
-	showHelp   bool
+	viewport       viewport.Model
+	help           help.Model
+	showHelp       bool
 
 	zoomIdx int // index into ZoomLevels
 	unitIdx int // 0 = cost, 1 = tokens, 2 = remaining. Cycled by 'u'. Resets to cost on launch.

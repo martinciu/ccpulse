@@ -74,8 +74,8 @@ func TestDistillScopedLimits(t *testing.T) {
 
 	t.Run("missing display_name skipped", func(t *testing.T) {
 		u := &anthro.Usage{Limits: []anthro.Limit{
-			{Kind: "weekly_scoped", Percent: 40},                              // nil Scope
-			{Kind: "weekly_scoped", Percent: 41, Scope: &anthro.LimitScope{}}, // nil Model
+			{Kind: "weekly_scoped", Percent: 40},                                                                                // nil Scope
+			{Kind: "weekly_scoped", Percent: 41, Scope: &anthro.LimitScope{}},                                                   // nil Model
 			{Kind: "weekly_scoped", Percent: 42, Scope: &anthro.LimitScope{Model: &anthro.ScopeModel{}}},                        // nil DisplayName
 			{Kind: "weekly_scoped", Percent: 43, Scope: &anthro.LimitScope{Model: &anthro.ScopeModel{DisplayName: strPtr("")}}}, // empty
 		}}
