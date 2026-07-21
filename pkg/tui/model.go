@@ -151,6 +151,8 @@ type Model struct {
 	keys       KeyMap
 	progress   progress.Model // 5-hour quota bar
 	progress7d progress.Model // 7-day quota bar
+
+	progressScoped []progress.Model // per-model weekly limit bars, one per Window.ScopedLimits entry (#463)
 	viewport   viewport.Model
 	help       help.Model
 	showHelp   bool
@@ -473,6 +475,7 @@ func (m *Model) handleWindowSize(msg tea.WindowSizeMsg) tea.Cmd {
 	m.help.Width = m.w
 	m.progress = newProgressBar(m.progressWidth())
 	m.progress7d = newProgressBar(m.progressWidth())
+	m.rebuildScopedBars()
 	m.refreshChart()
 	// Assign after refreshChart so the abort of any in-flight spring is
 	// reflected in the height (chartHeight() reads projectsHeight(), which
@@ -997,7 +1000,22 @@ func (m Model) quotaBars() string {
 	burnRight := renderBurnRateSide(burnPad, sevenDayProj, slotW, 7*24*time.Hour, burnRateUnitPerDay)
 	burnRow := lipgloss.JoinHorizontal(lipgloss.Top, burnLeft, divider, burnRight)
 
-	return lipgloss.JoinVertical(lipgloss.Left, barsRow, burnRow)
+	rows := []string{barsRow, burnRow}
+	// Scoped per-model weekly rows (#463): one full-width row per
+	// weekly_scoped limits entry, presence-gated — most accounts have
+	// none and render exactly the two rows above. Count is capped by the
+	// built bars (scopedRowCount) so a transient window/bars mismatch
+	// degrades to fewer rows, never a panic.
+	for i := range m.scopedRowCount() {
+		sl := m.window.ScopedLimits[i]
+		reset := ""
+		if sl.MinutesToReset != nil {
+			reset = durString(*sl.MinutesToReset)
+		}
+		rows = append(rows, renderScopedLimitRow(
+			scopedLabel(sl.Model), m.progressScoped[i], float64(sl.Percent)/100.0, reset))
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, rows...)
 }
 
 // nextBoundary returns the wall-clock instant of the END of the bucket
@@ -1049,6 +1067,43 @@ func (m *Model) recomputeWindow() {
 	}
 	m.progress = newProgressBar(m.progressWidth())
 	m.progress7d = newProgressBar(m.progressWidth())
+	m.rebuildScopedBars()
+}
+
+// scopedRowCount is the number of scoped-limit rows quotaBars will render:
+// the window's entries capped by the built bars, so a transient mismatch
+// (window updated before rebuildScopedBars runs) can never index past
+// progressScoped. headerContentRows derives from this same count so the
+// height math always matches what is painted.
+func (m Model) scopedRowCount() int {
+	return min(len(m.window.ScopedLimits), len(m.progressScoped))
+}
+
+// scopedBarWidth sizes a scoped-limit row's bar so the row's right edge
+// aligns with the bars row above it: the bars row's total width (two
+// symmetric sides plus the " │ " divider) minus this row's own chrome
+// (label + 1-col gap + reset slot). Same minBarWidth floor as the 5h/7d
+// bars so narrow terminals degrade instead of wrapping.
+func (m Model) scopedBarWidth(labelW int) int {
+	const perSideChrome = 3 + 1 + statusBlockMaxW // "5h " label + gap + time slot
+	barsRowW := 2*(perSideChrome+m.progressWidth()) + 3
+	w := barsRowW - labelW - 1 - statusBlockMaxW
+	if w < minBarWidth {
+		return minBarWidth
+	}
+	return w
+}
+
+// rebuildScopedBars re-derives the per-entry progress models from the
+// current window and terminal width. Called wherever progress/progress7d
+// are rebuilt (resize, recomputeWindow) — entry count and label widths can
+// change on every quota poll.
+func (m *Model) rebuildScopedBars() {
+	m.progressScoped = m.progressScoped[:0]
+	for _, sl := range m.window.ScopedLimits {
+		labelW := lipgloss.Width(scopedLabel(sl.Model))
+		m.progressScoped = append(m.progressScoped, newProgressBar(m.scopedBarWidth(labelW)))
+	}
 }
 
 // refreshProjects recomputes the per-project rollup for the chart's

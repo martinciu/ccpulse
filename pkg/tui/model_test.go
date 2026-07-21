@@ -5961,3 +5961,114 @@ func TestHandleProjectsTick_NoOpMidSpring(t *testing.T) {
 		t.Errorf("mid-spring tick: projectAggs len changed from %d to %d, want no change", aggsBefore, len(m.projectAggs))
 	}
 }
+
+// scopedWindow returns a Window carrying both regular buckets and n scoped
+// limits, for header-row tests.
+func scopedWindow(n int) status.Window {
+	w := status.Window{
+		Percent: 55, MinutesToReset: intPtr(130),
+		Has7d: true, Percent7d: 42, MinutesToReset7d: intPtr(3 * 24 * 60),
+	}
+	names := []string{"Fable", "Opus", "Sonnet"}
+	for i := range n {
+		mins := 5 * 24 * 60
+		w.ScopedLimits = append(w.ScopedLimits, status.ScopedLimit{
+			Kind: "weekly_scoped", Model: names[i%len(names)], Percent: 35,
+			IsActive: true, Severity: "normal", MinutesToReset: &mins,
+		})
+	}
+	return w
+}
+
+func newScopedTestModel(t *testing.T, w, h, n int) Model {
+	t.Helper()
+	m := New(Deps{})
+	m.w, m.h = w, h
+	m.window = scopedWindow(n)
+	m.progress = newProgressBar(m.progressWidth())
+	m.progress7d = newProgressBar(m.progressWidth())
+	m.rebuildScopedBars()
+	return m
+}
+
+func TestQuotaBarsScopedRows(t *testing.T) {
+	t.Run("no scoped limits renders exactly 2 rows", func(t *testing.T) {
+		m := newScopedTestModel(t, 120, 40, 0)
+		if got := len(strings.Split(m.quotaBars(), "\n")); got != 2 {
+			t.Errorf("rows = %d, want 2 (bars + burn-rate)", got)
+		}
+	})
+	t.Run("one scoped limit appends one row with label and reset", func(t *testing.T) {
+		m := newScopedTestModel(t, 120, 40, 1)
+		rows := strings.Split(m.quotaBars(), "\n")
+		if len(rows) != 3 {
+			t.Fatalf("rows = %d, want 3", len(rows))
+		}
+		last := rows[2]
+		if !strings.Contains(last, "Fable") {
+			t.Errorf("scoped row missing model label: %q", last)
+		}
+		if !strings.Contains(last, "5d ") {
+			t.Errorf("scoped row missing reset time: %q", last)
+		}
+	})
+	t.Run("two scoped limits append two rows", func(t *testing.T) {
+		m := newScopedTestModel(t, 120, 40, 2)
+		rows := strings.Split(m.quotaBars(), "\n")
+		if len(rows) != 4 {
+			t.Fatalf("rows = %d, want 4", len(rows))
+		}
+		if !strings.Contains(rows[2], "Fable") || !strings.Contains(rows[3], "Opus") {
+			t.Errorf("scoped rows out of order:\n%q\n%q", rows[2], rows[3])
+		}
+	})
+	t.Run("scoped row right edge aligns with bars row", func(t *testing.T) {
+		for _, w := range []int{80, 100, 120, 121} {
+			m := newScopedTestModel(t, w, 40, 1)
+			rows := strings.Split(m.quotaBars(), "\n")
+			if lipgloss.Width(rows[2]) != lipgloss.Width(rows[0]) {
+				t.Errorf("w=%d: scoped row width %d != bars row width %d",
+					w, lipgloss.Width(rows[2]), lipgloss.Width(rows[0]))
+			}
+		}
+	})
+	t.Run("nil MinutesToReset renders blank slot at full width", func(t *testing.T) {
+		m := newScopedTestModel(t, 120, 40, 1)
+		m.window.ScopedLimits[0].MinutesToReset = nil
+		rows := strings.Split(m.quotaBars(), "\n")
+		if lipgloss.Width(rows[2]) != lipgloss.Width(rows[0]) {
+			t.Errorf("blank-reset row width %d != bars row width %d",
+				lipgloss.Width(rows[2]), lipgloss.Width(rows[0]))
+		}
+	})
+	t.Run("rows fit inner box width at all terminal widths", func(t *testing.T) {
+		for _, w := range []int{40, 44, 60, 80, 100, 120, 121, 160, 200} {
+			m := newScopedTestModel(t, w, 40, 2)
+			inner := w - 4
+			for i, line := range strings.Split(m.quotaBars(), "\n") {
+				if lw := lipgloss.Width(line); lw > inner {
+					t.Errorf("w=%d row %d: width %d exceeds inner %d\n%q", w, i, lw, inner, line)
+				}
+			}
+		}
+	})
+	t.Run("mismatched progressScoped length renders without panic", func(t *testing.T) {
+		m := newScopedTestModel(t, 120, 40, 1)
+		m.progressScoped = nil // window says 1, bars say 0 → render 0 scoped rows
+		if got := len(strings.Split(m.quotaBars(), "\n")); got != 2 {
+			t.Errorf("rows = %d, want 2 when bars missing", got)
+		}
+	})
+}
+
+func TestRebuildScopedBars(t *testing.T) {
+	m := newScopedTestModel(t, 120, 40, 2)
+	if len(m.progressScoped) != 2 {
+		t.Fatalf("progressScoped = %d, want 2", len(m.progressScoped))
+	}
+	m.window = scopedWindow(0)
+	m.rebuildScopedBars()
+	if len(m.progressScoped) != 0 {
+		t.Errorf("progressScoped = %d after clearing window, want 0", len(m.progressScoped))
+	}
+}
