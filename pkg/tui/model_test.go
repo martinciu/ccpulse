@@ -6072,3 +6072,69 @@ func TestRebuildScopedBars(t *testing.T) {
 		t.Errorf("progressScoped = %d after clearing window, want 0", len(m.progressScoped))
 	}
 }
+
+// scopedQuotaUsage builds an *anthro.Usage carrying exactly one
+// weekly_scoped limit (mirrors pkg/status/scoped_test.go's scopedUsage
+// shape), for driving handleQuotaMsg through a real 0→1 scoped-row
+// transition rather than hand-assigning m.window.
+func scopedQuotaUsage(model string) *anthro.Usage {
+	resetsAt := time.Now().Add(5 * 24 * time.Hour)
+	name := model
+	return &anthro.Usage{
+		Limits: []anthro.Limit{
+			{
+				Kind: "weekly_scoped", Group: "weekly", Percent: 35,
+				Severity: "normal", ResetsAt: &resetsAt, IsActive: true,
+				Scope: &anthro.LimitScope{Model: &anthro.ScopeModel{DisplayName: &name}},
+			},
+		},
+	}
+}
+
+// TestHandleQuotaMsg_ScopedRowGrowth_ResyncsViewportHeight guards against
+// a viewport/header desync (#463): recomputeWindow (called from
+// handleQuotaMsg) can grow scopedRowCount() from 0→N, which grows
+// headerContentRows() and therefore chartHeight() — but the new scoped
+// rows render immediately in quotaBars(); they don't participate in the
+// intro spring. Without a re-sync, the viewport stays sized for the old
+// (0-scoped) header and View() overflows m.h until the next watcher
+// event or chart-affecting keypress heals it via refreshChart.
+//
+// ReduceMotion starts introPending/quotaIntroPending false, so
+// springIntro never arms and the QuotaMsg lands on the steady-state
+// fallthrough path — not the spring-settle path that already re-syncs.
+func TestHandleQuotaMsg_ScopedRowGrowth_ResyncsViewportHeight(t *testing.T) {
+	c, err := cache.Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	defer c.Close()
+
+	m := New(Deps{Cache: c, ReduceMotion: true})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+
+	if got := m.scopedRowCount(); got != 0 {
+		t.Fatalf("test setup: scopedRowCount = %d after WindowSize; want 0", got)
+	}
+	if m.springActive {
+		t.Fatalf("test setup: springActive = true after WindowSize with ReduceMotion; want false")
+	}
+
+	// Drive the real handler path — never invoke the returned Cmd (it may
+	// be a tea.Tick closure that real-sleeps up to an hour and/or leaks
+	// under the package's goleak guard).
+	updated, cmd := m.Update(QuotaMsg{
+		Usage: scopedQuotaUsage("Fable"), Source: "api", UpdatedAt: time.Now(),
+	})
+	m = updated.(Model)
+	_ = cmd
+
+	if got := m.scopedRowCount(); got != 1 {
+		t.Fatalf("test setup: scopedRowCount = %d after QuotaMsg; want 1", got)
+	}
+	if h := lipgloss.Height(m.View()); h > m.h {
+		t.Errorf("View() height = %d after 0→1 scoped-row QuotaMsg; want <= m.h (%d) — viewport not re-synced to the grown header",
+			h, m.h)
+	}
+}

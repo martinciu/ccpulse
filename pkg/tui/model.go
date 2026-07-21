@@ -637,6 +637,19 @@ func (m *Model) handleQuotaMsg(msg QuotaMsg) tea.Cmd {
 	m.quotaSource = msg.Source
 	m.quotaUpdatedAt = msg.UpdatedAt
 	m.recomputeWindow()
+	// (#463) recomputeWindow can change scopedRowCount() (e.g. 0→N on
+	// first quota arrival, or N changing on a later poll), which grows
+	// or shrinks headerContentRows() and therefore chartHeight(). Scoped
+	// rows render immediately — they don't participate in the intro
+	// spring — so without this the viewport stays sized for the old
+	// header and View() overflows m.h until the next watcher event or
+	// chart-affecting keypress. Skipped while a spring is active:
+	// mid-spring heights are owned by the animation, and every settle
+	// path (springs.go, zoomspring.go, projectsspring.go) already calls
+	// refreshChart, which re-syncs.
+	if !m.springActive {
+		m.applyProjectsResize()
+	}
 	// (#192) Quota arrival timing fix. Two paths:
 	//
 	// 1. In-flight: the open-path intro is still running but the
