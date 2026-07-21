@@ -29,6 +29,7 @@ type Message struct {
 	GitBranch          string
 	RepoRoot           string
 	Effort             string
+	IterationsJSON     string
 }
 
 type rawLine struct {
@@ -51,6 +52,7 @@ type rawLine struct {
 				Ephemeral5mInputTokens int64 `json:"ephemeral_5m_input_tokens"`
 				Ephemeral1hInputTokens int64 `json:"ephemeral_1h_input_tokens"`
 			} `json:"cache_creation"`
+			Iterations json.RawMessage `json:"iterations"`
 		} `json:"usage"`
 	} `json:"message"`
 }
@@ -126,7 +128,62 @@ func toMessage(raw rawLine, slug string) Message {
 		Cwd:                raw.Cwd,
 		GitBranch:          raw.GitBranch,
 		Effort:             raw.Effort,
+		IterationsJSON:     informativeIterations(raw),
 	}
+}
+
+// iterationEntry is the typed probe informativeIterations uses to compare an
+// iterations entry against the outer usage. Unknown fields are ignored here
+// but preserved on disk — the raw bytes are stored verbatim, never re-marshaled.
+type iterationEntry struct {
+	InputTokens              int64 `json:"input_tokens"`
+	OutputTokens             int64 `json:"output_tokens"`
+	CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
+	CacheCreation            struct {
+		Ephemeral5mInputTokens int64 `json:"ephemeral_5m_input_tokens"`
+		Ephemeral1hInputTokens int64 `json:"ephemeral_1h_input_tokens"`
+	} `json:"cache_creation"`
+	Type  string `json:"type"`
+	Model string `json:"model"`
+}
+
+// informativeIterations returns message.usage.iterations verbatim when the
+// array carries information the flat usage columns do not: more than one
+// attempt, a non-"message" entry type, an explicit model differing from the
+// outer message.model, or token counts differing from the outer usage.
+// Redundant single-attempt arrays (~99.9% of live data) return "" so the
+// cache stores NULL instead of duplicating the flat columns. Content that
+// fails to decode as []iterationEntry is kept verbatim (fail open): storing
+// an odd blob beats silently dropping attempt data.
+func informativeIterations(raw rawLine) string {
+	its := raw.Message.Usage.Iterations
+	if len(its) == 0 {
+		return "" // key absent
+	}
+	var entries []iterationEntry
+	if err := json.Unmarshal(its, &entries); err != nil {
+		return string(its)
+	}
+	if len(entries) == 0 {
+		return "" // JSON null or empty array
+	}
+	if len(entries) > 1 {
+		return string(its)
+	}
+	e := entries[0]
+	u := raw.Message.Usage
+	if e.Type != "message" ||
+		(e.Model != "" && e.Model != raw.Message.Model) ||
+		e.InputTokens != u.InputTokens ||
+		e.OutputTokens != u.OutputTokens ||
+		e.CacheReadInputTokens != u.CacheReadInputTokens ||
+		e.CacheCreationInputTokens != u.CacheCreationInputTokens ||
+		e.CacheCreation.Ephemeral5mInputTokens != u.CacheCreation.Ephemeral5mInputTokens ||
+		e.CacheCreation.Ephemeral1hInputTokens != u.CacheCreation.Ephemeral1hInputTokens {
+		return string(its)
+	}
+	return ""
 }
 
 // Parse is a convenience wrapper around ParseWithErrors that drops
