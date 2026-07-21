@@ -5,6 +5,9 @@ import (
 	"database/sql"
 	"path/filepath"
 	"testing"
+	"time"
+
+	"github.com/martinciu/ccpulse/pkg/anthro"
 )
 
 // TestOpen_UpgradesFromV7_RebuildsWithRepoRoot reproduces the #408 schema bump.
@@ -75,8 +78,8 @@ func TestOpen_UpgradesFromV7_RebuildsWithRepoRoot(t *testing.T) {
 		`SELECT value FROM meta WHERE key='schema_version'`).Scan(&ver); err != nil {
 		t.Fatal(err)
 	}
-	if ver != "8" {
-		t.Fatalf("schema_version = %q, want 8 after upgrade", ver)
+	if ver != "9" {
+		t.Fatalf("schema_version = %q, want 9 after upgrade", ver)
 	}
 
 	// Quota history preserved across the destroy+recreate rebuild.
@@ -87,5 +90,107 @@ func TestOpen_UpgradesFromV7_RebuildsWithRepoRoot(t *testing.T) {
 	}
 	if pct != 42.5 {
 		t.Fatalf("preserved five_hour_pct = %v, want 42.5", pct)
+	}
+}
+
+// TestOpen_UpgradesFromV8_PreservesUsageHistory covers the #455 v8→v9 bump:
+// a v8 cache (no usage_limits table) must rebuild to v9 with quota history
+// intact and an empty usage_limits table created.
+func TestOpen_UpgradesFromV8_PreservesUsageHistory(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "state.db")
+
+	old, err := sql.Open("sqlite", path+"?"+cachePragmas)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed := []string{
+		`CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+		`INSERT INTO meta(key,value) VALUES('schema_version','8')`,
+		`CREATE TABLE usage_samples (ts INTEGER PRIMARY KEY, source TEXT NOT NULL DEFAULT 'api', five_hour_pct REAL)`,
+		`INSERT INTO usage_samples(ts, five_hour_pct) VALUES(1700000000, 42.5)`,
+	}
+	for _, s := range seed {
+		if _, err := old.ExecContext(ctx, s); err != nil {
+			t.Fatalf("seed v8 db: %v\nstmt: %s", err, s)
+		}
+	}
+	if err := old.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	c, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("Open on v8 cache must rebuild, got: %v", err)
+	}
+	defer c.Close()
+
+	var ver string
+	if err := c.DB().QueryRowContext(ctx,
+		`SELECT value FROM meta WHERE key='schema_version'`).Scan(&ver); err != nil {
+		t.Fatal(err)
+	}
+	if ver != "9" {
+		t.Fatalf("schema_version = %q, want 9 after upgrade", ver)
+	}
+
+	var pct float64
+	if err := c.DB().QueryRowContext(ctx,
+		`SELECT five_hour_pct FROM usage_samples WHERE ts=1700000000`).Scan(&pct); err != nil {
+		t.Fatalf("usage_samples not preserved across rebuild: %v", err)
+	}
+	if pct != 42.5 {
+		t.Fatalf("preserved five_hour_pct = %v, want 42.5", pct)
+	}
+
+	var n int
+	if err := c.DB().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM usage_limits`).Scan(&n); err != nil {
+		t.Fatalf("usage_limits table missing after upgrade: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("usage_limits rows = %d, want 0 (no history existed)", n)
+	}
+}
+
+// TestLockedRebuild_PreservesUsageLimits proves limits history survives the
+// destroy+recreate rebuild — the future v9→v10 bump path.
+func TestLockedRebuild_PreservesUsageLimits(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "state.db")
+
+	c, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fable := "Fable"
+	u := anthro.Usage{Limits: []anthro.Limit{
+		{
+			Kind: "weekly_scoped", Group: "weekly", Percent: 35, Severity: "normal", IsActive: true,
+			Scope: &anthro.LimitScope{Model: &anthro.ScopeModel{DisplayName: &fable}},
+		},
+	}}
+	if err := c.RecordUsageSample(ctx, u, time.Unix(1750000000, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	c2, err := LockedRebuild(ctx, path)
+	if err != nil {
+		t.Fatalf("LockedRebuild: %v", err)
+	}
+	defer c2.Close()
+
+	var scopeModel string
+	var pct float64
+	if err := c2.DB().QueryRowContext(ctx,
+		`SELECT scope_model, percent FROM usage_limits WHERE ts=1750000000 AND kind='weekly_scoped'`).
+		Scan(&scopeModel, &pct); err != nil {
+		t.Fatalf("usage_limits not preserved across rebuild: %v", err)
+	}
+	if scopeModel != "Fable" || pct != 35 {
+		t.Fatalf("preserved row scope_model=%q percent=%v, want Fable/35", scopeModel, pct)
 	}
 }

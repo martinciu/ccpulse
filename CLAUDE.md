@@ -69,7 +69,7 @@ These env vars override `config.toml` at runtime — useful for testing against 
 
 ### SQLite schema
 
-Four tables: `messages` (one row per assistant turn, including `cwd` and `git_branch` captured from each JSONL line's envelope), `files` (last byte offset and line number per JSONL file for incremental parsing), `meta` (schema version), `usage_samples` (one row per successful Anthropic usage-API fetch, JSON payload of `anthro.Usage`).
+Five tables: `messages` (one row per assistant turn, including `cwd` and `git_branch` captured from each JSONL line's envelope), `files` (last byte offset and line number per JSONL file for incremental parsing), `meta` (schema version), `usage_samples` (one row per successful Anthropic usage-API fetch, one column pair per quota bucket), `usage_limits` (one row per entry of the usage-API `limits` array — per-model weekly limits live here — keyed to `usage_samples.ts` and written in the same transaction).
 
 ### Project metadata
 

@@ -39,6 +39,39 @@ type ExtraUsage struct {
 	Currency     string   `json:"currency"`
 }
 
+// ScopeModel identifies the model a weekly_scoped limit applies to.
+// ID is null in every observed probe; DisplayName carries the label
+// (e.g. "Fable").
+type ScopeModel struct {
+	ID          *string `json:"id"`
+	DisplayName *string `json:"display_name"`
+}
+
+// LimitScope narrows a limit to a model and/or surface. Surface is kept
+// as raw JSON: it is null in every observed probe and guessing a concrete
+// struct would turn a future shape change into a decode error that breaks
+// the whole usage fetch. json.RawMessage round-trips any shape faithfully.
+type LimitScope struct {
+	Model   *ScopeModel     `json:"model"`
+	Surface json.RawMessage `json:"surface"`
+}
+
+// Limit is one entry of the top-level limits array — the forward-looking
+// canonical quota representation (issue #455). Kind/Group/Severity are
+// free text: enum values beyond the observed ones must not break parsing.
+// Non-pointer fields follow the Bucket.Utilization precedent; a JSON null
+// into a non-pointer is a decode no-op, so unexpected nulls can't break
+// the fetch.
+type Limit struct {
+	Kind     string      `json:"kind"`
+	Group    string      `json:"group"`
+	Percent  float64     `json:"percent"`
+	Severity string      `json:"severity"`
+	ResetsAt *time.Time  `json:"resets_at"`
+	Scope    *LimitScope `json:"scope"`
+	IsActive bool        `json:"is_active"`
+}
+
 // Usage mirrors the /api/oauth/usage response 1:1. Null buckets are
 // represented as nil pointers so they round-trip faithfully.
 type Usage struct {
@@ -53,6 +86,7 @@ type Usage struct {
 	IguanaNecktie       *Bucket     `json:"iguana_necktie"`
 	OmelettePromotional *Bucket     `json:"omelette_promotional"`
 	ExtraUsage          *ExtraUsage `json:"extra_usage"`
+	Limits              []Limit     `json:"limits"`
 }
 
 // cacheVersion bumps when the cache envelope shape changes. Old caches are

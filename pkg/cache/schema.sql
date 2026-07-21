@@ -77,3 +77,19 @@ CREATE TABLE IF NOT EXISTS usage_samples (
   extra_usage_pct                 REAL,
   extra_usage_currency            TEXT
 );
+
+CREATE TABLE IF NOT EXISTS usage_limits (
+  ts            INTEGER NOT NULL,             -- = usage_samples.ts; pruned/preserved together, no FK (pragma off)
+  kind          TEXT    NOT NULL,             -- session | weekly_all | weekly_scoped | ...
+  lim_group     TEXT    NOT NULL DEFAULT '',  -- "group" is a reserved word
+  percent       REAL    NOT NULL DEFAULT 0,
+  severity      TEXT    NOT NULL DEFAULT '',  -- free text, unvalidated
+  resets_at     TEXT,                         -- RFC3339Nano UTC, NULL when API sends null
+  scope_model   TEXT    NOT NULL DEFAULT '',  -- scope.model.display_name; '' = unscoped
+  scope_surface TEXT    NOT NULL DEFAULT '',  -- raw JSON of scope.surface; '' = null/absent
+  is_active     INTEGER NOT NULL DEFAULT 0,
+  -- Scope columns are NOT NULL '' (not nullable) deliberately: SQLite rowid
+  -- tables allow NULLs in PK columns and treat each NULL as distinct, so a
+  -- nullable-column PK would never dedupe.
+  PRIMARY KEY (ts, kind, scope_model, scope_surface)
+);

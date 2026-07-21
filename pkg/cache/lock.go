@@ -114,10 +114,12 @@ type preservedTable struct {
 
 // rebuildSnapshot holds the tables/keys carried across a LockedRebuild
 // destroy+recreate — everything NOT derivable from transcripts. Today:
-// the Anthropic quota-history (usage_samples, issue #22) and meta rows
-// other than schema_version (chiefly the recost fingerprint).
+// the Anthropic quota-history (usage_samples, issue #22; usage_limits,
+// issue #455) and meta rows other than schema_version (chiefly the
+// recost fingerprint).
 type rebuildSnapshot struct {
 	usageSamples preservedTable
+	usageLimits  preservedTable
 	meta         preservedTable
 }
 
@@ -139,8 +141,22 @@ func snapshotPreservable(ctx context.Context, path string) rebuildSnapshot {
 	}
 	defer db.Close()
 	snap.usageSamples = snapshotTable(ctx, db, "usage_samples", "")
+	if tableExists(ctx, db, "usage_limits") {
+		snap.usageLimits = snapshotTable(ctx, db, "usage_limits", "")
+	}
 	snap.meta = snapshotTable(ctx, db, "meta", "key <> 'schema_version'")
 	return snap
+}
+
+// tableExists reports whether name is a table in db. Guards snapshotTable
+// calls for tables added in later schema versions, so a rebuild from an
+// older schema doesn't log a spurious cache.snapshotTableFailed warn for a
+// table that legitimately doesn't exist yet.
+func tableExists(ctx context.Context, db *sql.DB, name string) bool {
+	var n int
+	err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, name).Scan(&n)
+	return err == nil && n > 0
 }
 
 // snapshotTable runs SELECT * (optionally filtered by where) and returns the
@@ -190,6 +206,9 @@ func snapshotTable(ctx context.Context, db *sql.DB, table, where string) preserv
 func restorePreservable(ctx context.Context, db *sql.DB, snap rebuildSnapshot) error {
 	if err := restoreTable(ctx, db, "usage_samples", snap.usageSamples); err != nil {
 		return fmt.Errorf("restore usage_samples: %w", err)
+	}
+	if err := restoreTable(ctx, db, "usage_limits", snap.usageLimits); err != nil {
+		return fmt.Errorf("restore usage_limits: %w", err)
 	}
 	if err := restoreTable(ctx, db, "meta", snap.meta); err != nil {
 		return fmt.Errorf("restore meta: %w", err)
