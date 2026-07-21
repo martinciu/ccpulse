@@ -243,3 +243,28 @@ func TestViewFitsTerminal_HelpOverlay(t *testing.T) {
 		}
 	}
 }
+
+func TestViewFitsWithScopedLimits(t *testing.T) {
+	// A scoped-limit row grows the header box by one line; chartHeight and
+	// projectsTargetHeight must both absorb it or the frame overflows m.h.
+	for _, n := range []int{1, 2} {
+		for _, h := range []int{24, 30, 40} {
+			m := newScopedTestModel(t, 100, h, n)
+			m.viewport.Width = m.chartWidth()
+			m.viewport.Height = m.chartHeight()
+			v := m.View()
+			if got := lipgloss.Height(v); got > m.h {
+				t.Errorf("n=%d h=%d: View height %d exceeds terminal height %d", n, h, got, m.h)
+			}
+		}
+	}
+}
+
+func TestHeaderContentRows(t *testing.T) {
+	for _, tt := range []struct{ n, want int }{{0, 2}, {1, 3}, {2, 4}} {
+		m := newScopedTestModel(t, 100, 40, tt.n)
+		if got := m.headerContentRows(); got != tt.want {
+			t.Errorf("n=%d: headerContentRows = %d, want %d", tt.n, got, tt.want)
+		}
+	}
+}

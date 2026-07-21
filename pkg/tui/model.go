@@ -1079,6 +1079,14 @@ func (m Model) scopedRowCount() int {
 	return min(len(m.window.ScopedLimits), len(m.progressScoped))
 }
 
+// headerContentRows is the number of content rows inside the bordered
+// header box: bars row + burn-rate row + one per rendered scoped-limit
+// row. chartHeight and projectsTargetHeight derive their overhead from
+// this so the frame never overflows when scoped rows are present.
+func (m Model) headerContentRows() int {
+	return 2 + m.scopedRowCount()
+}
+
 // scopedBarWidth sizes a scoped-limit row's bar so the row's right edge
 // aligns with the bars row above it: the bars row's total width (two
 // symmetric sides plus the " │ " divider) minus this row's own chrome
