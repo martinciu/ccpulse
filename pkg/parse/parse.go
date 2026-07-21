@@ -171,19 +171,25 @@ func informativeIterations(raw rawLine) string {
 	if len(entries) > 1 {
 		return string(its)
 	}
-	e := entries[0]
+	if informativeEntry(entries[0], raw) {
+		return string(its)
+	}
+	return ""
+}
+
+// informativeEntry reports whether a single iterations entry differs from the
+// outer envelope in any stored dimension — entry type, model, or any token
+// count. False means the entry merely restates the flat usage columns.
+func informativeEntry(e iterationEntry, raw rawLine) bool {
 	u := raw.Message.Usage
-	if e.Type != "message" ||
+	return e.Type != "message" ||
 		(e.Model != "" && e.Model != raw.Message.Model) ||
 		e.InputTokens != u.InputTokens ||
 		e.OutputTokens != u.OutputTokens ||
 		e.CacheReadInputTokens != u.CacheReadInputTokens ||
 		e.CacheCreationInputTokens != u.CacheCreationInputTokens ||
 		e.CacheCreation.Ephemeral5mInputTokens != u.CacheCreation.Ephemeral5mInputTokens ||
-		e.CacheCreation.Ephemeral1hInputTokens != u.CacheCreation.Ephemeral1hInputTokens {
-		return string(its)
-	}
-	return ""
+		e.CacheCreation.Ephemeral1hInputTokens != u.CacheCreation.Ephemeral1hInputTokens
 }
 
 // Parse is a convenience wrapper around ParseWithErrors that drops
