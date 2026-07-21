@@ -65,18 +65,22 @@ jobs:
             repo is already checked out in the working directory. Do NOT modify
             any files and do NOT open a pull request.
 
-            ## 1. Read the current pricing snapshot
+            ## 1. Read the currently-effective pricing snapshot
 
             Pricing lives as dated snapshots under `pkg/pricing/history/`, one
-            JSON file per effective date named `<YYYY-MM-DD>.json`. Glob
-            `pkg/pricing/history/*.json` and pick the lexically-greatest
-            filename — that is the current authoritative table. There is no
-            single top-level pricing file — only the dated history
-            snapshots. Read the chosen file. Note its
-            top-level `version` and every entry under `models`. Each model has
-            five USD-per-million-token rates: `input_per_mtok`,
-            `output_per_mtok`, `cache_read_per_mtok`, `cache_write_5m_per_mtok`,
-            `cache_write_1h_per_mtok`.
+            JSON file per effective date named `<YYYY-MM-DD>.json`. A snapshot
+            may be dated in the FUTURE — a scheduled price change committed
+            ahead of its effective date — so the lexically-greatest file is NOT
+            necessarily the table in effect today. The currently-effective
+            snapshot (the greatest-dated file whose date is on or before today's
+            UTC date) has already been resolved for you:
+              - effective version: ${{ steps.effective.outputs.version }}
+              - effective file:    ${{ steps.effective.outputs.file }}
+            Read that file — do NOT compare any future-dated snapshot against
+            the page. Note its top-level `version` and every entry under
+            `models`. Each model has five USD-per-million-token rates:
+            `input_per_mtok`, `output_per_mtok`, `cache_read_per_mtok`,
+            `cache_write_5m_per_mtok`, `cache_write_1h_per_mtok`.
 
             ## 2. Fetch the pricing page
 
@@ -84,7 +88,11 @@ jobs:
             (follow redirects). Extract the "Model pricing" table. For every
             Claude model row capture: Base Input Tokens, 5m Cache Writes,
             1h Cache Writes, Cache Hits & Refreshes, Output Tokens (all USD per
-            million tokens).
+            million tokens). When the page lists more than one dated rate row
+            for a model — e.g. an introductory rate with an end date plus a
+            standard rate with a later start date — capture the row in effect on
+            today's UTC date, the same date basis used to resolve the effective
+            snapshot in step 1.
 
             ## 3. Compare
 
