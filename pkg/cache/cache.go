@@ -276,12 +276,16 @@ func (c *Cache) RecordUsageSample(ctx context.Context, u anthro.Usage, when time
 
 	res, err := tx.ExecContext(ctx, insertUsageSampleSQL, args...)
 	if err != nil {
-		return err
+		return fmt.Errorf("record usage sample: insert sample: %w", err)
 	}
-	if n, err := res.RowsAffected(); err == nil && n == 1 {
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("record usage sample: rows affected: %w", err)
+	}
+	if n == 1 {
 		for _, l := range u.Limits {
 			if _, err := tx.ExecContext(ctx, insertUsageLimitSQL, limitArgs(ts, l)...); err != nil {
-				return err
+				return fmt.Errorf("record usage sample: insert limit: %w", err)
 			}
 		}
 	}
@@ -386,15 +390,15 @@ func (c *Cache) PruneUsageSamples(ctx context.Context, cutoff time.Time) (int64,
 	defer func() { _ = tx.Rollback() }()
 
 	if _, err := tx.ExecContext(ctx, `DELETE FROM usage_limits WHERE ts < ?`, cut); err != nil {
-		return 0, err
+		return 0, fmt.Errorf("prune usage limits: %w", err)
 	}
 	res, err := tx.ExecContext(ctx, `DELETE FROM usage_samples WHERE ts < ?`, cut)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("prune usage samples: %w", err)
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("prune usage samples: rows affected: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("prune usage samples: commit: %w", err)
