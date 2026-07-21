@@ -6023,12 +6023,21 @@ func TestQuotaBarsScopedRows(t *testing.T) {
 		}
 	})
 	t.Run("scoped row right edge aligns with bars row", func(t *testing.T) {
+		// quotaBars() joins rows with lipgloss.JoinVertical, which pads every
+		// row to the widest — comparing rows[2] to rows[0] post-join would
+		// hold for ANY scopedBarWidth and can never fail (ccpulse-463.4).
+		// Build the scoped row directly from renderScopedLimitRow and
+		// compare its width against the bars row's width computed
+		// independently (the perSideChrome formula from scopedBarWidth's
+		// doc), not against a post-join sibling.
 		for _, w := range []int{80, 100, 120, 121} {
 			m := newScopedTestModel(t, w, 40, 1)
-			rows := strings.Split(m.quotaBars(), "\n")
-			if lipgloss.Width(rows[2]) != lipgloss.Width(rows[0]) {
+			labelW := lipgloss.Width(scopedLabel("Fable"))
+			row := renderScopedLimitRow(scopedLabel("Fable"), newProgressBar(m.scopedBarWidth(labelW)), 0.35, "5d 12h")
+			barsRowW := 2*(3+1+statusBlockMaxW+m.progressWidth()) + 3
+			if lipgloss.Width(row) != barsRowW {
 				t.Errorf("w=%d: scoped row width %d != bars row width %d",
-					w, lipgloss.Width(rows[2]), lipgloss.Width(rows[0]))
+					w, lipgloss.Width(row), barsRowW)
 			}
 		}
 	})
@@ -6036,9 +6045,47 @@ func TestQuotaBarsScopedRows(t *testing.T) {
 		m := newScopedTestModel(t, 120, 40, 1)
 		m.window.ScopedLimits[0].MinutesToReset = nil
 		rows := strings.Split(m.quotaBars(), "\n")
-		if lipgloss.Width(rows[2]) != lipgloss.Width(rows[0]) {
+		if len(rows) != 3 {
+			t.Fatalf("rows = %d, want 3 (nil MinutesToReset must still render the scoped row)", len(rows))
+		}
+
+		// As above, the width assertion must be on pre-join material — a
+		// post-join comparison against rows[0] would be vacuous. Build the
+		// blank- and non-blank-reset rows directly and compare both to each
+		// other and to the independently-computed bars-row width.
+		labelW := lipgloss.Width(scopedLabel("Fable"))
+		bar := newProgressBar(m.scopedBarWidth(labelW))
+		blank := renderScopedLimitRow(scopedLabel("Fable"), bar, 0.35, "")
+		withReset := renderScopedLimitRow(scopedLabel("Fable"), bar, 0.35, "5d 12h")
+		barsRowW := 2*(3+1+statusBlockMaxW+m.progressWidth()) + 3
+		if lipgloss.Width(blank) != lipgloss.Width(withReset) {
+			t.Errorf("blank-reset row width %d != non-blank row width %d",
+				lipgloss.Width(blank), lipgloss.Width(withReset))
+		}
+		if lipgloss.Width(blank) != barsRowW {
 			t.Errorf("blank-reset row width %d != bars row width %d",
-				lipgloss.Width(rows[2]), lipgloss.Width(rows[0]))
+				lipgloss.Width(blank), barsRowW)
+		}
+	})
+	t.Run("fill ratio differs at 0%, 35%, and 100% (mirrors TestQuotaBarRendered)", func(t *testing.T) {
+		// scopedWindow hardcodes Percent 35 for every entry; the fill ratio
+		// float64(sl.Percent)/100.0 (model.go) is otherwise never exercised
+		// at the 0/100 extremes. An un-divided percent (ViewAs clamping to
+		// 1.0 → always-full bar) would still pass every other subtest here.
+		renderAt := func(pct int) string {
+			m := newScopedTestModel(t, 120, 40, 1)
+			m.window.ScopedLimits[0].Percent = pct
+			return m.quotaBars()
+		}
+		zero, mid, full := renderAt(0), renderAt(35), renderAt(100)
+		if zero == mid {
+			t.Error("scoped bar must render differently at 0% vs 35% fill; got identical output")
+		}
+		if mid == full {
+			t.Error("scoped bar must render differently at 35% vs 100% fill; got identical output")
+		}
+		if zero == full {
+			t.Error("scoped bar must render differently at 0% vs 100% fill; got identical output")
 		}
 	})
 	t.Run("rows fit inner box width at all terminal widths", func(t *testing.T) {
@@ -6136,5 +6183,37 @@ func TestHandleQuotaMsg_ScopedRowGrowth_ResyncsViewportHeight(t *testing.T) {
 	if h := lipgloss.Height(m.View()); h > m.h {
 		t.Errorf("View() height = %d after 0→1 scoped-row QuotaMsg; want <= m.h (%d) — viewport not re-synced to the grown header",
 			h, m.h)
+	}
+}
+
+// TestHandleWindowSize_RebuildsScopedBars guards the resize call site
+// (handleWindowSize, model.go:478): tests elsewhere call rebuildScopedBars
+// directly via newScopedTestModel, so a regression that dropped the call
+// from handleWindowSize itself would be invisible to the suite. This test
+// drives a real tea.WindowSizeMsg through Update — the production path —
+// and asserts the scoped bar actually resized. Deleting the
+// rebuildScopedBars call in handleWindowSize makes this test fail.
+func TestHandleWindowSize_RebuildsScopedBars(t *testing.T) {
+	m := newScopedTestModel(t, 120, 40, 1)
+	if len(m.progressScoped) != 1 {
+		t.Fatalf("test setup: progressScoped = %d, want 1", len(m.progressScoped))
+	}
+	label := scopedLabel("Fable")
+	before := lipgloss.Width(renderScopedLimitRow(label, m.progressScoped[0], 0.35, "5d 12h"))
+
+	// Drive the real resize path — never invoke the returned Cmd (it may be
+	// a tea.Tick closure that real-sleeps and/or leaks under goleak); m.hasData
+	// is false here, so maybeArmIntro's Cmd is nil regardless.
+	updated, cmd := m.Update(tea.WindowSizeMsg{Width: 60, Height: 40})
+	m = updated.(Model)
+	_ = cmd
+
+	if len(m.progressScoped) != 1 {
+		t.Fatalf("progressScoped = %d after resize, want 1 (row must survive)", len(m.progressScoped))
+	}
+	after := lipgloss.Width(renderScopedLimitRow(label, m.progressScoped[0], 0.35, "5d 12h"))
+	if after == before {
+		t.Errorf("scoped bar width unchanged after resize 120→60 (got %d both times); "+
+			"handleWindowSize must rebuild scoped bars at the new width", before)
 	}
 }
