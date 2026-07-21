@@ -491,9 +491,13 @@ func runQuotaPoller(
 				"consecutive_429", backoff.consecutive429)
 		}
 		if res.Source == "api" {
-			_ = c.RecordUsageSample(ctx, res.Usage, res.UpdatedAt)
+			if err := c.RecordUsageSample(ctx, res.Usage, res.UpdatedAt); err != nil {
+				slog.Warn("usage.recordFailed", "err", err)
+			}
 			if retention > 0 {
-				_, _ = c.PruneUsageSamples(ctx, time.Now().Add(-retention))
+				if _, err := c.PruneUsageSamples(ctx, time.Now().Add(-retention)); err != nil {
+					slog.Warn("usage.pruneFailed", "err", err)
+				}
 			}
 		}
 		p.Send(tui.QuotaMsg{
