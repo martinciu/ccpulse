@@ -28,6 +28,8 @@ type Message struct {
 	Cwd                string
 	GitBranch          string
 	RepoRoot           string
+	Effort             string
+	IterationsJSON     string
 }
 
 type rawLine struct {
@@ -36,6 +38,7 @@ type rawLine struct {
 	Timestamp time.Time `json:"timestamp"`
 	Cwd       string    `json:"cwd"`
 	GitBranch string    `json:"gitBranch"`
+	Effort    string    `json:"effort"`
 	Message   struct {
 		ID    string `json:"id"`
 		Role  string `json:"role"`
@@ -49,6 +52,7 @@ type rawLine struct {
 				Ephemeral5mInputTokens int64 `json:"ephemeral_5m_input_tokens"`
 				Ephemeral1hInputTokens int64 `json:"ephemeral_1h_input_tokens"`
 			} `json:"cache_creation"`
+			Iterations json.RawMessage `json:"iterations"`
 		} `json:"usage"`
 	} `json:"message"`
 }
@@ -123,7 +127,82 @@ func toMessage(raw rawLine, slug string) Message {
 		CacheWrite1hTokens: raw.Message.Usage.CacheCreation.Ephemeral1hInputTokens,
 		Cwd:                raw.Cwd,
 		GitBranch:          raw.GitBranch,
+		Effort:             raw.Effort,
+		IterationsJSON:     informativeIterations(raw),
 	}
+}
+
+// iterationEntry is the typed probe informativeIterations uses to compare an
+// iterations entry against the outer usage. Unknown fields are ignored here;
+// whenever the blob is stored it is stored verbatim, never re-marshaled — but
+// an entry that matches the outer usage on all known fields is dropped as
+// redundant even if it carries unknown extra fields.
+type iterationEntry struct {
+	InputTokens              int64 `json:"input_tokens"`
+	OutputTokens             int64 `json:"output_tokens"`
+	CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
+	CacheCreation            struct {
+		Ephemeral5mInputTokens int64 `json:"ephemeral_5m_input_tokens"`
+		Ephemeral1hInputTokens int64 `json:"ephemeral_1h_input_tokens"`
+	} `json:"cache_creation"`
+	Type  string `json:"type"`
+	Model string `json:"model"`
+}
+
+// maxIterationsProbe bounds the decode probe in informativeIterations, not
+// storage. Real iterations arrays are a handful of entries; ~3-byte "{}," entries
+// decode to ~96-byte structs, so an unbounded json.Unmarshal on a hostile blob
+// near the scanner's line cap can balloon to gigabytes transiently. Blobs over
+// this size are stored verbatim without probing (fail open; storage stays
+// bounded by the input size, not by this constant).
+const maxIterationsProbe = 1 << 20 // 1 MiB
+
+// informativeIterations returns message.usage.iterations verbatim when the
+// array carries information the flat usage columns do not: more than one
+// attempt, a non-"message" entry type, an explicit model differing from the
+// outer message.model, or token counts differing from the outer usage.
+// Redundant single-attempt arrays (~99.9% of live data) return "" so the
+// cache stores NULL instead of duplicating the flat columns. Content that
+// fails to decode as []iterationEntry is kept verbatim (fail open): storing
+// an odd blob beats silently dropping attempt data.
+func informativeIterations(raw rawLine) string {
+	its := raw.Message.Usage.Iterations
+	if len(its) == 0 {
+		return "" // key absent
+	}
+	if len(its) > maxIterationsProbe {
+		return string(its) // too large to probe cheaply; keep verbatim (fail open)
+	}
+	var entries []iterationEntry
+	if err := json.Unmarshal(its, &entries); err != nil {
+		return string(its)
+	}
+	if len(entries) == 0 {
+		return "" // JSON null or empty array
+	}
+	if len(entries) > 1 {
+		return string(its)
+	}
+	if informativeEntry(entries[0], raw) {
+		return string(its)
+	}
+	return ""
+}
+
+// informativeEntry reports whether a single iterations entry differs from the
+// outer envelope in any stored dimension — entry type, model, or any token
+// count. False means the entry merely restates the flat usage columns.
+func informativeEntry(e iterationEntry, raw rawLine) bool {
+	u := raw.Message.Usage
+	return e.Type != "message" ||
+		(e.Model != "" && e.Model != raw.Message.Model) ||
+		e.InputTokens != u.InputTokens ||
+		e.OutputTokens != u.OutputTokens ||
+		e.CacheReadInputTokens != u.CacheReadInputTokens ||
+		e.CacheCreationInputTokens != u.CacheCreationInputTokens ||
+		e.CacheCreation.Ephemeral5mInputTokens != u.CacheCreation.Ephemeral5mInputTokens ||
+		e.CacheCreation.Ephemeral1hInputTokens != u.CacheCreation.Ephemeral1hInputTokens
 }
 
 // Parse is a convenience wrapper around ParseWithErrors that drops

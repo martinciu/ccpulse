@@ -19,6 +19,8 @@ CREATE TABLE IF NOT EXISTS messages (
   cwd TEXT NOT NULL DEFAULT '',
   git_branch TEXT NOT NULL DEFAULT '',
   repo_root TEXT NOT NULL DEFAULT '',
+  effort TEXT NOT NULL DEFAULT '',
+  iterations_json TEXT,
   UNIQUE(session_id, message_id)
 );
 

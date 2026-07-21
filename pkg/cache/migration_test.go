@@ -78,8 +78,8 @@ func TestOpen_UpgradesFromV7_RebuildsWithRepoRoot(t *testing.T) {
 		`SELECT value FROM meta WHERE key='schema_version'`).Scan(&ver); err != nil {
 		t.Fatal(err)
 	}
-	if ver != "10" {
-		t.Fatalf("schema_version = %q, want 10 after upgrade", ver)
+	if ver != "11" {
+		t.Fatalf("schema_version = %q, want 11 after upgrade", ver)
 	}
 
 	// Quota history preserved across the destroy+recreate rebuild.
@@ -130,8 +130,8 @@ func TestOpen_UpgradesFromV8_PreservesUsageHistory(t *testing.T) {
 		`SELECT value FROM meta WHERE key='schema_version'`).Scan(&ver); err != nil {
 		t.Fatal(err)
 	}
-	if ver != "10" {
-		t.Fatalf("schema_version = %q, want 10 after upgrade", ver)
+	if ver != "11" {
+		t.Fatalf("schema_version = %q, want 11 after upgrade", ver)
 	}
 
 	var pct float64
@@ -207,8 +207,8 @@ func TestOpen_UpgradesFromV9_PreservesUsageLimitsWithEmptyScopeModelID(t *testin
 		`SELECT value FROM meta WHERE key='schema_version'`).Scan(&ver); err != nil {
 		t.Fatal(err)
 	}
-	if ver != "10" {
-		t.Fatalf("schema_version = %q, want 10 after upgrade", ver)
+	if ver != "11" {
+		t.Fatalf("schema_version = %q, want 11 after upgrade", ver)
 	}
 
 	var pct float64
@@ -274,5 +274,76 @@ func TestLockedRebuild_PreservesUsageLimits(t *testing.T) {
 	}
 	if scopeModel != "Fable" || pct != 35 {
 		t.Fatalf("preserved row scope_model=%q percent=%v, want Fable/35", scopeModel, pct)
+	}
+}
+
+// TestOpen_UpgradesFromV10_AddsEffortAndIterations covers the #457 v10→v11
+// bump: a v10 cache (messages without effort / iterations_json) must rebuild
+// to v11 with both columns present and quota history preserved.
+func TestOpen_UpgradesFromV10_AddsEffortAndIterations(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "state.db")
+
+	old, err := sql.Open("sqlite", path+"?"+cachePragmas)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed := []string{
+		`CREATE TABLE messages (
+			id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, message_id TEXT NOT NULL,
+			project_slug TEXT NOT NULL, ts TEXT NOT NULL, role TEXT NOT NULL, model TEXT NOT NULL,
+			input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL,
+			cache_read_tokens INTEGER NOT NULL, cache_write_5m_tokens INTEGER NOT NULL,
+			cache_write_1h_tokens INTEGER NOT NULL, cost_usd_estimate REAL NOT NULL,
+			pricing_version TEXT NOT NULL, pricing_unknown INTEGER NOT NULL DEFAULT 0,
+			is_subagent INTEGER NOT NULL DEFAULT 0, parent_session_id TEXT,
+			cwd TEXT NOT NULL DEFAULT '', git_branch TEXT NOT NULL DEFAULT '',
+			repo_root TEXT NOT NULL DEFAULT '',
+			UNIQUE(session_id, message_id))`,
+		`CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+		`INSERT INTO meta(key,value) VALUES('schema_version','10')`,
+		`CREATE TABLE usage_samples (ts INTEGER PRIMARY KEY, source TEXT NOT NULL DEFAULT 'api', five_hour_pct REAL)`,
+		`INSERT INTO usage_samples(ts, five_hour_pct) VALUES(1700000000, 42.5)`,
+	}
+	for _, s := range seed {
+		if _, err := old.ExecContext(ctx, s); err != nil {
+			t.Fatalf("seed v10 db: %v\nstmt: %s", err, s)
+		}
+	}
+	if err := old.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	c, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("Open on v10 cache must rebuild, got: %v", err)
+	}
+	defer c.Close()
+
+	var ver string
+	if err := c.DB().QueryRowContext(ctx,
+		`SELECT value FROM meta WHERE key='schema_version'`).Scan(&ver); err != nil {
+		t.Fatal(err)
+	}
+	if ver != "11" {
+		t.Fatalf("schema_version = %q, want 11 after upgrade", ver)
+	}
+
+	var n int
+	if err := c.DB().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name IN ('effort','iterations_json')`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("new column count = %d, want 2 (effort, iterations_json)", n)
+	}
+
+	var pct float64
+	if err := c.DB().QueryRowContext(ctx,
+		`SELECT five_hour_pct FROM usage_samples WHERE ts=1700000000`).Scan(&pct); err != nil {
+		t.Fatalf("usage_samples not preserved across rebuild: %v", err)
+	}
+	if pct != 42.5 {
+		t.Fatalf("preserved five_hour_pct = %v, want 42.5", pct)
 	}
 }

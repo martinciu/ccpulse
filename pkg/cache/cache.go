@@ -74,7 +74,7 @@ func init() {
 var schemaSQL string
 
 // SchemaVersion is the expected on-disk schema version; a mismatch triggers an auto-rebuild.
-const SchemaVersion = "10"
+const SchemaVersion = "11"
 
 // normalizeResetsAtSQL flips legacy `0001-01-01T00:00:00Z` sentinels
 // (written before issue #189 landed) to SQL NULL across every
@@ -576,8 +576,9 @@ INSERT INTO messages
  input_tokens, output_tokens, cache_read_tokens,
  cache_write_5m_tokens, cache_write_1h_tokens,
  cost_usd_estimate, pricing_version, pricing_unknown,
- is_subagent, parent_session_id, cwd, git_branch, repo_root)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+ is_subagent, parent_session_id, cwd, git_branch, repo_root,
+ effort, iterations_json)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(session_id, message_id) DO UPDATE SET
   ts                    = min(excluded.ts, ts),
   input_tokens          = max(excluded.input_tokens, input_tokens),
@@ -585,7 +586,9 @@ ON CONFLICT(session_id, message_id) DO UPDATE SET
   cache_read_tokens     = max(excluded.cache_read_tokens, cache_read_tokens),
   cache_write_5m_tokens = max(excluded.cache_write_5m_tokens, cache_write_5m_tokens),
   cache_write_1h_tokens = max(excluded.cache_write_1h_tokens, cache_write_1h_tokens),
-  cost_usd_estimate     = max(excluded.cost_usd_estimate, cost_usd_estimate)`)
+  cost_usd_estimate     = max(excluded.cost_usd_estimate, cost_usd_estimate),
+  effort                = CASE WHEN excluded.effort <> '' THEN excluded.effort ELSE effort END,
+  iterations_json       = coalesce(excluded.iterations_json, iterations_json)`)
 	if err != nil {
 		return fmt.Errorf("insert messages: prepare: %w", err)
 	}
@@ -606,12 +609,19 @@ ON CONFLICT(session_id, message_id) DO UPDATE SET
 		if msgID == "" {
 			msgID = "synthetic:" + tsStr
 		}
+		// "" means absent-or-redundant; store NULL so downstream #455 work
+		// can filter informative rows with IS NOT NULL.
+		var iterJSON any
+		if m.IterationsJSON != "" {
+			iterJSON = m.IterationsJSON
+		}
 		if _, err := stmt.ExecContext(ctx,
 			m.SessionID, msgID, m.ProjectSlug, tsStr,
 			m.Role, m.Model,
 			m.InputTokens, m.OutputTokens, m.CacheReadTokens,
 			m.CacheWrite5mTokens, m.CacheWrite1hTokens,
 			cost, version, unk, sub, m.ParentSessionID, m.Cwd, m.GitBranch, m.RepoRoot,
+			m.Effort, iterJSON,
 		); err != nil {
 			return fmt.Errorf("insert messages: exec: %w", err)
 		}
