@@ -1118,9 +1118,11 @@ func (m Model) scopedBarWidth(labelW int) int {
 // rebuildScopedBars re-derives the per-entry progress models from the
 // current window and terminal width. Called wherever progress/progress7d
 // are rebuilt (resize, recomputeWindow) — entry count and label widths can
-// change on every quota poll.
+// change on every quota poll. Reassigns to nil for copy-safety: Model is
+// copied by value in bubbletea's Update/View loop, so reslicing the backing
+// array would mutate prior copies. nil reassignment keeps value-copies independent.
 func (m *Model) rebuildScopedBars() {
-	m.progressScoped = m.progressScoped[:0]
+	m.progressScoped = nil
 	for _, sl := range m.window.ScopedLimits {
 		labelW := lipgloss.Width(scopedLabel(sl.Model))
 		m.progressScoped = append(m.progressScoped, newProgressBar(m.scopedBarWidth(labelW)))
