@@ -88,6 +88,17 @@ func TestParseFakeQuota_ScopedSegments(t *testing.T) {
 		}
 	})
 
+	t.Run("boundary percents 0 and 100 accepted", func(t *testing.T) {
+		u, _, ok := parseFakeQuota("55,42,Fable:0", "", now)
+		if !ok || len(u.Limits) != 1 || u.Limits[0].Percent != 0 {
+			t.Errorf("Fable:0 → ok=%v Limits=%+v, want true/[{Percent:0}]", ok, u.Limits)
+		}
+		u, _, ok = parseFakeQuota("55,42,Fable:100", "", now)
+		if !ok || len(u.Limits) != 1 || u.Limits[0].Percent != 100 {
+			t.Errorf("Fable:100 → ok=%v Limits=%+v, want true/[{Percent:100}]", ok, u.Limits)
+		}
+	})
+
 	t.Run("malformed scoped segment rejects whole var", func(t *testing.T) {
 		for _, in := range []string{
 			"55,42,Fable",     // no colon
@@ -97,6 +108,7 @@ func TestParseFakeQuota_ScopedSegments(t *testing.T) {
 			"55,42,Fable:-1",  // below range
 			"55,42,Fable:101", // above range
 			"55,42,Fable:NaN", // NaN
+			"55,42,",          // trailing comma → empty segment
 		} {
 			if _, _, ok := parseFakeQuota(in, "", now); ok {
 				t.Errorf("parseFakeQuota(%q): expected ok=false", in)

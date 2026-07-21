@@ -143,7 +143,16 @@ func TestComputePopulatesScopedLimits(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(w.ScopedLimits) != 1 || w.ScopedLimits[0].Model != "Fable" {
-		t.Errorf("Window.ScopedLimits: %+v", w.ScopedLimits)
+		t.Fatalf("Window.ScopedLimits: %+v", w.ScopedLimits)
+	}
+	sl := w.ScopedLimits[0]
+	if sl.Kind != "weekly_scoped" || sl.Percent != 35 || sl.Severity != "normal" || !sl.IsActive {
+		t.Errorf("Window.ScopedLimits[0] mismatch: %+v", sl)
+	}
+	// reset = now.Add(24 * time.Hour) → 1440 minutes. Pinning this proves Compute
+	// passed its caller's now through to distillScopedLimits, not time.Now().
+	if sl.MinutesToReset == nil || *sl.MinutesToReset != 1440 {
+		t.Errorf("MinutesToReset: %v, want *1440", sl.MinutesToReset)
 	}
 }
 
@@ -173,6 +182,22 @@ func TestScopedLimitsJSON(t *testing.T) {
 		}
 		if strings.Contains(out, "scoped_limits") {
 			t.Errorf("scoped_limits should be omitted when empty: %s", out)
+		}
+	})
+	t.Run("nil MinutesToReset marshals as null, not absent", func(t *testing.T) {
+		// ScopedLimit.MinutesToReset has no omitempty (mirrors Window.MinutesToReset's
+		// documented null-round-trips rationale): status --json consumers distinguish
+		// "no reset time known" (null) from a field that doesn't exist. A future
+		// omitempty addition would silently break that contract.
+		out, err := JSON(Window{ScopedLimits: []ScopedLimit{{
+			Kind: "weekly_scoped", Model: "Fable", Percent: 35,
+			IsActive: true, Severity: "normal", MinutesToReset: nil,
+		}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out, `"minutes_to_reset":null`) {
+			t.Errorf("JSON missing \"minutes_to_reset\":null in %s", out)
 		}
 	})
 }

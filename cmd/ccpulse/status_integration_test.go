@@ -983,8 +983,12 @@ func TestStatusJSONScopedLimits(t *testing.T) {
 	if !ok {
 		t.Fatalf("scoped_limits[0] not an object: %v", scoped[0])
 	}
+	pct, ok := entry["percent"].(float64)
+	if !ok {
+		t.Fatalf("scoped_limits[0].percent missing or not a number: %v", entry)
+	}
 	if entry["model"] != "Fable" || entry["kind"] != "weekly_scoped" ||
-		int(entry["percent"].(float64)) != 35 || entry["is_active"] != true {
+		int(pct) != 35 || entry["is_active"] != true {
 		t.Errorf("scoped_limits[0] mismatch: %v", entry)
 	}
 	if entry["minutes_to_reset"] == nil {
