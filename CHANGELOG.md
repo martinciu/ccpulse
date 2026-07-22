@@ -3,6 +3,39 @@
 All notable changes to ccpulse are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.8.0] — 2026-07-22
+
+### Added
+- Scoped per-model weekly limits in the quota header: for accounts whose usage
+  API reports `weekly_scoped` ceilings, the header renders one gradient bar per
+  model below the 5h and 7d bars, each with its own reset countdown; the cache
+  parses and persists the usage-API `limits` array into a new `usage_limits`
+  table. `status --json` gains an additive `scoped_limits` array. Accounts
+  without scoped limits render the same header as before (#458, #463, #467)
+- The parser now persists two more fields of the Claude Code JSONL envelope per
+  turn — the top-level `effort` field and, when informative, the verbatim
+  `message.usage.iterations` blob (e.g. multi-model fallback attempts). Storage
+  only; groundwork for multi-model cost attribution (#464)
+
+### Changed
+- Cache schema bumped v8 → v11 across this release (the new `usage_limits` table
+  and its per-model dedupe key, plus the stored `effort` / `iterations_json`
+  columns). Existing caches rebuild automatically on first launch, preserving
+  Anthropic quota history (#458, #462, #464)
+
+### Fixed
+- The quota poller now logs `RecordUsageSample` / `PruneUsageSamples` errors
+  instead of silently discarding them — a dropped usage sample or a persistently
+  failing prune (unbounded table growth) is now visible in the log rather than
+  surfacing only as an unexplained gap in usage history (#461)
+
+### Internal
+- pricing-drift CI now compares the currently-effective pricing snapshot rather
+  than the lexically-largest one, so a future-dated snapshot no longer trips the
+  drift check (396a94c)
+- Bump `actions/setup-go` 6.5.0 → 7.0.0 (#454), `anthropics/claude-code-action`
+  (#451, #453), and `modernc.org/sqlite` (#452)
+
 ## [0.7.0] — 2026-07-08
 
 ### Changed
