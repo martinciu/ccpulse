@@ -138,19 +138,20 @@ jobs:
                  local vs page value for each affected field.
                - Any new models on the page not in the snapshot.
                - A link to https://platform.claude.com/docs/en/about-claude/pricing
-               - The fix for a rate correction: create
-                 `pkg/pricing/history/<today>.json` with the corrected rates if
-                 no snapshot dated today already exists, or edit that file in
-                 place if one does — seeded from the currently-effective
-                 snapshot (${{ steps.effective.outputs.version }}), and never
-                 edit a snapshot whose date is already in the past. Because
-                 pricing resolution walks forward from a snapshot's date, also
-                 review every future-dated snapshot for the affected model and
-                 decide whether its rate there is a deliberately different
-                 scheduled price or an inherited copy of today's error,
-                 correcting it if the latter.
-               - The fix for a new model: copy it into every existing snapshot
-                 dated on or after the new/edited file, INCLUDING future-dated
+               - The fix always starts the same way, whatever the drift is:
+                 create `pkg/pricing/history/<today>.json` if no snapshot dated
+                 today already exists, or edit that file in place if one does —
+                 seeded from the currently-effective snapshot
+                 (${{ steps.effective.outputs.version }}). Never edit a snapshot
+                 whose date is already in the past. Every corrected rate and
+                 every new model goes into that one file.
+               - Then, for each corrected rate: because pricing resolution walks
+                 forward from a snapshot's date, also review every future-dated
+                 snapshot for the affected model and decide whether its rate
+                 there is a deliberately different scheduled price or an
+                 inherited copy of today's error, correcting it if the latter.
+               - Then, for each new model: copy its entry into every existing
+                 snapshot dated on or after today's file, INCLUDING future-dated
                  ones — model resolution walks forward only, so a model missing
                  from a later snapshot costs $0 and is stamped pricing_unknown.
                - After editing snapshots, run `go test ./pkg/pricing/...` and
