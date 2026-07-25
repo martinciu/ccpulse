@@ -192,7 +192,7 @@ func TestHistory_TableAt(t *testing.T) {
 		{"exact earliest", mustTime("2026-05-09T00:00:00Z"), "2026-05-09"},
 		{"between versions -> preceding", mustTime("2026-05-09T23:59:59Z"), "2026-05-09"},
 		{"exact later version", mustTime("2026-05-10T00:00:00Z"), "2026-05-10"},
-		{"intro window end -> 2026-07-01", mustTime("2026-08-31T23:59:59Z"), "2026-07-01"},
+		{"intro window end -> 2026-07-24", mustTime("2026-08-31T23:59:59Z"), "2026-07-24"},
 		{"standard rates start -> 2026-09-01", mustTime("2026-09-01T00:00:00Z"), "2026-09-01"},
 		{"after latest -> latest", mustTime("2099-01-01T00:00:00Z"), latest},
 	}
@@ -432,12 +432,50 @@ func TestSonnet5Resolution(t *testing.T) {
 		wantCost    float64
 	}{
 		{"fall-forward before first snapshot", time.Date(2026, 6, 15, 0, 0, 0, 0, time.UTC), "2026-07-01", 2.00},
-		{"intro window last second", time.Date(2026, 8, 31, 23, 59, 59, 0, time.UTC), "2026-07-01", 2.00},
+		{"intro window last second", time.Date(2026, 8, 31, 23, 59, 59, 0, time.UTC), "2026-07-24", 2.00},
 		{"standard from Sept 1", time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC), "2026-09-01", 3.00},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			m := parse.Message{Timestamp: tc.ts, Model: "claude-sonnet-5", InputTokens: Mtok}
+			cost, version, unknown := h.CostFor(m)
+			if unknown {
+				t.Fatal("unknown = true, want false")
+			}
+			if version != tc.wantVersion {
+				t.Errorf("version = %q, want %q", version, tc.wantVersion)
+			}
+			if cost != tc.wantCost {
+				t.Errorf("cost = %v, want %v", cost, tc.wantCost)
+			}
+		})
+	}
+}
+
+// TestOpus5Resolution pins the Claude Opus 5 rates introduced by the
+// 2026-07-24 snapshot AND proves the entry was propagated into the
+// future-dated 2026-09-01 table. Resolution walks forward only, so a model
+// absent from a later snapshot costs $0 rather than falling back (issue #470).
+func TestOpus5Resolution(t *testing.T) {
+	h, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	const Mtok = 1_000_000
+	cases := []struct {
+		name        string
+		ts          time.Time
+		wantVersion string
+		wantCost    float64
+	}{
+		{"fall-forward before snapshot", time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC), "2026-07-24", 5.00},
+		{"exact snapshot date", time.Date(2026, 7, 24, 0, 0, 0, 0, time.UTC), "2026-07-24", 5.00},
+		{"intro window last second", time.Date(2026, 8, 31, 23, 59, 59, 0, time.UTC), "2026-07-24", 5.00},
+		{"after standard rates start", time.Date(2026, 9, 15, 0, 0, 0, 0, time.UTC), "2026-09-01", 5.00},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := parse.Message{Timestamp: tc.ts, Model: "claude-opus-5", InputTokens: Mtok}
 			cost, version, unknown := h.CostFor(m)
 			if unknown {
 				t.Fatal("unknown = true, want false")
