@@ -192,6 +192,7 @@ func TestHistory_TableAt(t *testing.T) {
 		{"exact earliest", mustTime("2026-05-09T00:00:00Z"), "2026-05-09"},
 		{"between versions -> preceding", mustTime("2026-05-09T23:59:59Z"), "2026-05-09"},
 		{"exact later version", mustTime("2026-05-10T00:00:00Z"), "2026-05-10"},
+		{"day before 2026-07-24 -> 2026-07-01", mustTime("2026-07-23T23:59:59Z"), "2026-07-01"},
 		{"intro window end -> 2026-07-24", mustTime("2026-08-31T23:59:59Z"), "2026-07-24"},
 		{"standard rates start -> 2026-09-01", mustTime("2026-09-01T00:00:00Z"), "2026-09-01"},
 		{"after latest -> latest", mustTime("2099-01-01T00:00:00Z"), latest},
@@ -398,6 +399,7 @@ func TestSonnet5Snapshots(t *testing.T) {
 		want    ModelRate
 	}{
 		{"2026-07-01", intro},
+		{"2026-07-24", intro},
 		{"2026-09-01", standard},
 	} {
 		t.Run(tc.version, func(t *testing.T) {
@@ -452,10 +454,45 @@ func TestSonnet5Resolution(t *testing.T) {
 	}
 }
 
-// TestOpus5Resolution pins the Claude Opus 5 rates introduced by the
-// 2026-07-24 snapshot AND proves the entry was propagated into the
-// future-dated 2026-09-01 table. Resolution walks forward only, so a model
-// absent from a later snapshot costs $0 rather than falling back (issue #470).
+func TestOpus5Snapshots(t *testing.T) {
+	h, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := ModelRate{
+		InputPerMtok:        5.00,
+		OutputPerMtok:       25.00,
+		CacheReadPerMtok:    0.50,
+		CacheWrite5mPerMtok: 6.25,
+		CacheWrite1hPerMtok: 10.00,
+	}
+	for _, tc := range []struct {
+		version string
+		want    ModelRate
+	}{
+		{"2026-07-24", want},
+		{"2026-09-01", want},
+	} {
+		t.Run(tc.version, func(t *testing.T) {
+			tab := h.TableAt(mustParseDate(t, tc.version))
+			if tab.Version != tc.version {
+				t.Fatalf("TableAt(%s).Version = %q, want %q", tc.version, tab.Version, tc.version)
+			}
+			got, ok := tab.Models["claude-opus-5"]
+			if !ok {
+				t.Fatalf("Models[claude-opus-5] missing from %s", tc.version)
+			}
+			if got != tc.want {
+				t.Errorf("claude-opus-5 = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestOpus5Resolution pins the pricing_version stamped and the resolved cost
+// for Claude Opus 5 across the 2026-07-24 intro window and the 2026-09-01
+// carry-forward table. Resolution walks forward only, so a model absent from
+// a later snapshot costs $0 rather than falling back (issue #470).
 func TestOpus5Resolution(t *testing.T) {
 	h, err := Load()
 	if err != nil {
