@@ -3,6 +3,27 @@
 All notable changes to ccpulse are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.9.0] — 2026-07-25
+
+### Added
+- Pricing snapshot for 2026-07-24 with Claude Opus 5 rates ($5 / $25 per Mtok
+  in/out, $0.50 cache-read, $6.25 / $10 cache-write 5m / 1h). The same rates are
+  propagated into the future-dated 2026-09-01 snapshot, so Opus 5 stays costed
+  past the Sonnet 5 introductory window. Opus 5 usage previously priced at $0
+  and was stamped `pricing_unknown`; because the new snapshot changes the recost
+  fingerprint, cached messages are re-stamped once on next launch and historical
+  totals rise by the accumulated Opus 5 spend — no other model's cost moves
+  (#470, #471)
+
+### Internal
+- Pricing snapshots are now asserted by full `ModelRate` equality
+  (`TestOpus5Snapshots`, plus `2026-07-24` added to `TestSonnet5Snapshots`)
+  rather than resolution alone, which had left four of five rates per model
+  unpinned. The pricing-drift checker's generated fix instruction also covers
+  corrected rates as well as new models, names the resolved effective snapshot,
+  and warns that inserting a snapshot shifts date-pinned test expectations
+  (#471)
+
 ## [0.8.0] — 2026-07-22
 
 ### Added
