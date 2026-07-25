@@ -139,9 +139,14 @@ jobs:
                - Any new models on the page not in the snapshot.
                - A link to https://platform.claude.com/docs/en/about-claude/pricing
                - The fix, stated explicitly: add a new snapshot file
-                 `pkg/pricing/history/<today>.json` with corrected rates — never
-                 edit an existing frozen snapshot. Do not modify pricing data
-                 here and do not open a PR.
+                 `pkg/pricing/history/<today>.json` with corrected rates, seeded
+                 from the currently-effective snapshot — never edit a snapshot
+                 whose date is already in the past. Additionally, state that a
+                 NEW MODEL must be copied into every existing snapshot dated on
+                 or after the new file, INCLUDING future-dated ones: model
+                 resolution walks forward only, so a model missing from a later
+                 snapshot costs $0 and is stamped pricing_unknown. Do not modify
+                 pricing data here and do not open a PR.
 
             ## 6. Page layout changed
 
