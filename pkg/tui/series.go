@@ -148,7 +148,7 @@ func (m *Model) refreshChart() {
 		// (zoomSpringR/Vel/zoomSnap) likewise stay set but unread (#373).
 		// The projects slide (#416) rides this same abort: springActive=false +
 		// springKind=springKindNone drops it; breakdownAnimH and the slide
-		// from/to endpoints stay set but unread, and showProjects was already
+		// from/to endpoints stay set but unread, and m.breakdown was already
 		// committed at arm so the chart rebuild below reads the correct
 		// chartHeight. Re-sync the viewport widget's Height here: aborting a
 		// projects slide changes what chartHeight() returns, and renderBreakdownFrame
@@ -255,7 +255,7 @@ func (m *Model) refreshChart() {
 	// the stale height. The toggle-on path is the deterministic case: aggs were
 	// nil (4-row placeholder floor) at restoreAnchor time, so without this
 	// reorder every 'p' press fired two full-canvas paints.
-	m.refreshProjects()
+	m.refreshBreakdown()
 	m.viewport.Height = m.chartHeight()
 	chartH = m.chartHeight()
 

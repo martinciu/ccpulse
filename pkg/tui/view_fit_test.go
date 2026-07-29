@@ -264,11 +264,11 @@ func TestViewFitsWithScopedLimits(t *testing.T) {
 // TestViewFitsWithScopedLimits_ProjectsBox extends the scoped-limit sweep to
 // exercise breakdownTargetHeight's headerContentRows-derived overhead
 // (viewport.go:224) with the projects box visible and populated. The sweep
-// above runs with showProjects default-false and no projectAggs, so it never
+// above runs with breakdown default-none and no projectAggs, so it never
 // touches that path — reintroducing the flat `m.h - 7` there alone (the
 // pre-#463 formula, still pinned with zero scoped limits by
 // TestView_DuringSlide_HeightConservedRealBorder) would pass the whole
-// suite. Follows production's re-sync order: set showProjects/projectAggs
+// suite. Follows production's re-sync order: set breakdown/projectAggs
 // first, then viewport.Height = chartHeight() last, same as handleWindowSize.
 func TestViewFitsWithScopedLimits_ProjectsBox(t *testing.T) {
 	t.Parallel()
@@ -277,7 +277,7 @@ func TestViewFitsWithScopedLimits_ProjectsBox(t *testing.T) {
 			name := fmt.Sprintf("n%d_h%d", n, h)
 			t.Run(name, func(t *testing.T) {
 				m := newScopedTestModel(t, 100, h, n)
-				m.showProjects = true
+				m.breakdown = breakdownProjects
 				for range 3 {
 					m.projectAggs = append(m.projectAggs, cache.ProjectAggregate{Label: "p"})
 				}
@@ -301,7 +301,7 @@ func TestViewFitsWithScopedLimits_ProjectsBox(t *testing.T) {
 func TestProjectsTargetHeight_WithScopedRows(t *testing.T) {
 	t.Parallel()
 	m := newScopedTestModel(t, 100, 24, 2) // headerContentRows() == 4
-	m.showProjects = true
+	m.breakdown = breakdownProjects
 	for range 8 { // enough that `needed` exceeds avail/2, so the cap binds
 		m.projectAggs = append(m.projectAggs, cache.ProjectAggregate{Label: "p"})
 	}

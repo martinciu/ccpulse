@@ -202,7 +202,7 @@ func (m Model) breakdownHeight() int {
 	if m.springActive && m.springKind == springKindBreakdown {
 		return m.breakdownAnimH
 	}
-	if !m.showProjects {
+	if m.breakdown == breakdownNone {
 		return 0
 	}
 	return m.breakdownTargetHeight()
@@ -214,7 +214,7 @@ func (m Model) breakdownHeight() int {
 // post-header area and breakdownMaxRows, and 0 when the terminal is too short
 // to host both the chart's 5-row floor and a usable box. Content-aware since
 // #420: the box shrinks to its aggregates and chartHeight reclaims the rows.
-// Heights depend on aggs but never the reverse (refreshProjects derives its
+// Heights depend on aggs but never the reverse (refreshBreakdown derives its
 // window from width/scroll state), so there is no cycle; every projectAggs
 // mutation re-syncs the viewport in one pass (refreshChart inline before its
 // paint, the debounced settle via applyBreakdownResize, clearChart

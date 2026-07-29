@@ -46,7 +46,7 @@ func BenchmarkProjectsAnimFrame(b *testing.B) {
 	b.Run("bar", func(b *testing.B) {
 		m, c := seedBarModelWithMessages(b, int(chartUnitCost), now)
 		defer c.Close()
-		m.showProjects = false
+		m.breakdown = breakdownNone
 		m.refreshChart()
 		m.beginBreakdownAnimation() // show: arm + 1 aggs query (outside the loop)
 		target := m.breakdownTargetHeight()
@@ -61,7 +61,7 @@ func BenchmarkProjectsAnimFrame(b *testing.B) {
 	b.Run("line", func(b *testing.B) {
 		m, c := seedRemainingModelWithSamples(b, 60, now)
 		defer c.Close()
-		m.showProjects = false
+		m.breakdown = breakdownNone
 		m.refreshChart()
 		m.beginBreakdownAnimation()
 		target := m.breakdownTargetHeight()
@@ -80,7 +80,7 @@ func BenchmarkProjectsAnimFrame(b *testing.B) {
 		if m.lastCanvasW < 2000 {
 			b.Fatalf("fixture canvas %d, want realistic-history width (>=2000)", m.lastCanvasW)
 		}
-		m.showProjects = false
+		m.breakdown = breakdownNone
 		m.refreshChart()
 		m.beginBreakdownAnimation()
 		target := m.breakdownTargetHeight()

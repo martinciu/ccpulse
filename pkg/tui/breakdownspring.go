@@ -81,8 +81,8 @@ func (m *Model) renderBreakdownFrame() {
 // toward r=1, lerp the outer box height startH→targetH, re-render the frame, and
 // settle when within phaseTransitionThreshold. On settle it commits the height,
 // clears the spring, and restores steady state via refreshChart (which chains
-// refreshProjects — the 1 settle query on show; a no-op on hide since
-// showProjects was committed to false at arm). Returns nil to stop the loop.
+// refreshBreakdown — the 1 settle query on show; a no-op on hide since
+// m.breakdown was committed to none at arm). Returns nil to stop the loop.
 func (m *Model) handleBreakdownSpringTick(gen int) tea.Cmd {
 	r, vel := m.breakdownSpring.Update(m.breakdownSpringR, m.breakdownSpringVel, 1.0)
 	m.breakdownSpringR, m.breakdownSpringVel = r, vel
@@ -93,7 +93,7 @@ func (m *Model) handleBreakdownSpringTick(gen int) tea.Cmd {
 		m.springActive = false
 		m.springKind = springKindNone
 		m.viewport.Height = m.chartHeight()
-		m.refreshChart() // steady-state restore (chart + chained refreshProjects)
+		m.refreshChart() // steady-state restore (chart + chained refreshBreakdown)
 		return nil       // stop the loop — idle TUI is zero-animation-cost
 	}
 
@@ -107,9 +107,9 @@ func (m *Model) handleBreakdownSpringTick(gen int) tea.Cmd {
 // from the CURRENT animated height (every intermediate height renders
 // correctly under re-flow — no snap to an extreme first); an in-flight u/z
 // is hard-cut via refreshChart exactly as u and z do to each other.
-// showProjects commits at arm (keeps u/z aborts free of projects-specific
+// m.breakdown commits at arm (keeps u/z aborts free of breakdown-specific
 // wiring). Show pays THE one arm-time ProjectAggregates query via
-// refreshProjects (the box was unloaded while hidden, #414); hide pays
+// refreshBreakdown (the box was unloaded while hidden, #414); hide pays
 // none. The viewport is deliberately NOT repainted: frame 0 of the slide
 // IS the current steady frame (show starts at height 0 = the box-hidden
 // layout; hide starts at the current target; re-arm wherever the slide
@@ -120,14 +120,18 @@ func (m *Model) beginBreakdownAnimation() {
 		m.refreshChart() // abort in-flight u/z; restores steady chart content
 	}
 
-	m.showProjects = !m.showProjects
+	if m.breakdown == breakdownProjects {
+		m.breakdown = breakdownNone
+	} else {
+		m.breakdown = breakdownProjects
+	}
 	to := 0
-	if m.showProjects {
+	if m.breakdown != breakdownNone {
 		// Query BEFORE reading the target: breakdownTargetHeight is
 		// content-aware (#420), and on a show the aggs are still nil from
 		// the hidden state (#414) — reading first would arm a slide to the
 		// 4-row empty floor and jump to the real height at settle.
-		m.refreshProjects() // THE one arm-time query on the show path
+		m.refreshBreakdown() // THE one arm-time query on the show path
 		to = m.breakdownTargetHeight()
 	}
 	m.breakdownSlideFrom, m.breakdownSlideTo = from, to

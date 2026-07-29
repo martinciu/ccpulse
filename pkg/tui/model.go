@@ -139,6 +139,17 @@ const (
 	springKindBreakdown
 )
 
+// breakdownKind selects which breakdown panel is showing beneath the chart.
+// A single field rather than one bool per panel: mutual exclusion is then
+// structural — no state can represent two panels being up at once (#475).
+type breakdownKind int
+
+const (
+	breakdownNone breakdownKind = iota // hidden
+	breakdownProjects
+	breakdownModels
+)
+
 // Model is the root Bubble Tea model for the chart view.
 type Model struct {
 	// ctx is the program-lifetime ctx threaded into every Cache call
@@ -291,7 +302,7 @@ type Model struct {
 	// switch can't leave a previous cadence's tick chain running (#311).
 	nowGen int
 	// breakdownGen is bumped on every scroll; scheduleBreakdownTick captures
-	// it so a settled tick runs refreshProjects only when not superseded by
+	// it so a settled tick runs refreshBreakdown only when not superseded by
 	// a later scroll (#311 generation-guard pattern).
 	breakdownGen int
 	// springXOffset is the leftmost bucket index visible in the viewport
@@ -382,14 +393,14 @@ type Model struct {
 	// drives the Y label column rendered outside the scrollable viewport.
 	peak float64
 
-	// showProjects toggles the projects breakdown box (the `p` key). Default
-	// true. When false, breakdownHeight() returns 0 — the box is not rendered
-	// and the chart reclaims its rows. Session-only; not persisted.
-	showProjects bool
+	// breakdown selects the visible breakdown panel (the `p` and `m` keys).
+	// Default breakdownNone. When none, breakdownHeight() returns 0 — the box
+	// is not rendered and the chart gets those rows (#416, #475).
+	breakdown breakdownKind
 
 	// projectAggs is the last per-project rollup for the visible window,
 	// rendered in the projects box below the chart. Recomputed by
-	// refreshProjects on refresh/zoom and on the debounced scroll-settle.
+	// refreshBreakdown on refresh/zoom and on the debounced scroll-settle.
 	projectAggs []cache.ProjectAggregate
 
 	w, h int
@@ -407,14 +418,14 @@ func New(d Deps) Model {
 		d.Ctx = context.Background()
 	}
 	m := Model{
-		ctx:          d.Ctx,
-		deps:         d,
-		keys:         defaultKeyMap(),
-		help:         help.New(),
-		zoomIdx:      0, // default: 15m
-		dateOrder:    detectDateOrder(),
-		now:          time.Now,
-		showProjects: false,
+		ctx:       d.Ctx,
+		deps:      d,
+		keys:      defaultKeyMap(),
+		help:      help.New(),
+		zoomIdx:   0, // default: 15m
+		dateOrder: detectDateOrder(),
+		now:       time.Now,
+		breakdown: breakdownNone,
 	}
 	m.progress = newProgressBar(40)
 	m.progress7d = newProgressBar(40)
@@ -595,7 +606,7 @@ func (m *Model) handleNowTick(msg nowTickMsg) tea.Cmd {
 // again and supersedes this tick. The chart scrolls live — only the
 // projects box recompute is debounced.
 func (m *Model) scheduleBreakdownTick() tea.Cmd {
-	if !m.showProjects {
+	if m.breakdown == breakdownNone {
 		return nil
 	}
 	m.breakdownGen++
@@ -608,7 +619,7 @@ func (m *Model) scheduleBreakdownTick() tea.Cmd {
 // handleBreakdownTick recomputes the projects box if this tick is the latest
 // scheduled (gen matches); otherwise it was superseded by a later scroll and
 // is dropped. The settle is also where the content-aware box height reflows
-// (#420): refreshProjects may change the row count, so re-sync the layout.
+// (#420): refreshBreakdown may change the row count, so re-sync the layout.
 // No Cmd to return — the settle chain ends here.
 func (m *Model) handleBreakdownTick(msg breakdownTickMsg) {
 	if msg.gen != m.breakdownGen {
@@ -621,11 +632,11 @@ func (m *Model) handleBreakdownTick(msg breakdownTickMsg) {
 	// content (#420). The deferred recompute is never lost — every spring
 	// settle path calls refreshChart (pkg/tui/springs.go, pkg/tui/zoomspring.go,
 	// and the projects slide in pkg/tui/projectsspring.go, #416), whose
-	// pre-paint refreshProjects + height re-sync catches it.
+	// pre-paint refreshBreakdown + height re-sync catches it.
 	if m.springActive {
 		return
 	}
-	m.refreshProjects()
+	m.refreshBreakdown()
 	m.applyBreakdownResize()
 }
 
@@ -746,7 +757,11 @@ func (m *Model) handleUnitKey() tea.Cmd {
 // content) → snap, the pre-#416 hard cut.
 func (m *Model) handleBreakdownKey() tea.Cmd {
 	if m.deps.ReduceMotion || m.breakdownTargetHeight() == 0 || m.lastCanvasW == 0 {
-		m.showProjects = !m.showProjects
+		if m.breakdown == breakdownProjects {
+			m.breakdown = breakdownNone
+		} else {
+			m.breakdown = breakdownProjects
+		}
 		m.viewport.Height = m.chartHeight()
 		m.refreshChart()
 		return nil
@@ -1129,8 +1144,8 @@ func (m *Model) rebuildScopedBars() {
 	}
 }
 
-// refreshProjects recomputes the per-project rollup for the chart's
-// currently-visible window and stores it in m.projectAggs. Cheap: the
+// refreshBreakdown recomputes the rollup for the chart's currently-visible
+// window and stores it in m.projectAggs. Cheap: the
 // window is bounded by what's on screen. Safe when the cache is nil or the
 // chart has no data (clears to empty → placeholder — including remaining
 // mode with zero usage samples, where the warming-up chart and an empty
@@ -1150,8 +1165,8 @@ func (m *Model) rebuildScopedBars() {
 //     minutes — empty unless a message landed after the newest sample
 //     (the "no activity in this window" symptom). setX already
 //     special-cases the same sparse-lastStarts mismatch for its clamp.
-func (m *Model) refreshProjects() {
-	if !m.showProjects {
+func (m *Model) refreshBreakdown() {
+	if m.breakdown == breakdownNone {
 		m.projectAggs = nil
 		return
 	}
@@ -1176,7 +1191,7 @@ func (m *Model) refreshProjects() {
 	}
 	aggs, err := m.deps.Cache.ProjectAggregates(m.ctx, from, to)
 	if err != nil {
-		slog.Debug("tui.refreshProjects", "err", err)
+		slog.Debug("tui.refreshBreakdown", "err", err)
 		m.projectAggs = nil
 		return
 	}

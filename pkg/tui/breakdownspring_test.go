@@ -44,8 +44,8 @@ func TestProjectsHeight_SpringBranchOverridesTarget(t *testing.T) {
 	// Steady target is content-aware (#420): the single-project fixture
 	// needs border(2)+title(1)+1 body row = 4, well under the 122x40 cap
 	// (m.h-7=33 → upper min(16,12)=12). The empty-aggs floor is also 4, so
-	// the value holds whether or not refreshProjects ran.
-	m.showProjects = true
+	// the value holds whether or not refreshBreakdown ran.
+	m.breakdown = breakdownProjects
 	if got, want := m.breakdownHeight(), m.breakdownTargetHeight(); got != want {
 		t.Fatalf("steady breakdownHeight()=%d, want breakdownTargetHeight()=%d", got, want)
 	}
@@ -53,16 +53,16 @@ func TestProjectsHeight_SpringBranchOverridesTarget(t *testing.T) {
 		t.Fatalf("breakdownTargetHeight()=%d, want 4 (content-aware, 1 project) at 122x40", m.breakdownTargetHeight())
 	}
 
-	// Spring branch: returns breakdownAnimH regardless of showProjects.
+	// Spring branch: returns breakdownAnimH regardless of m.breakdown.
 	m.springActive = true
 	m.springKind = springKindBreakdown
 	m.breakdownAnimH = 7
 	if got := m.breakdownHeight(); got != 7 {
 		t.Errorf("in-slide breakdownHeight()=%d, want 7 (animated)", got)
 	}
-	m.showProjects = false
+	m.breakdown = breakdownNone
 	if got := m.breakdownHeight(); got != 7 {
-		t.Errorf("in-slide breakdownHeight() with showProjects=false=%d, want 7", got)
+		t.Errorf("in-slide breakdownHeight() with breakdown=none=%d, want 7", got)
 	}
 }
 
@@ -73,7 +73,7 @@ func TestRenderProjectsFrame_SetsViewportHeightToChartHeight(t *testing.T) {
 	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
 	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
 	defer c.Close()
-	m.showProjects = false
+	m.breakdown = breakdownNone
 	m.refreshChart()
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
@@ -100,8 +100,8 @@ func TestView_DuringSlide_HeightConservedRealBorder(t *testing.T) {
 	now := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
 	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
 	defer c.Close()
-	m.showProjects = true
-	m.refreshProjects()
+	m.breakdown = breakdownProjects
+	m.refreshBreakdown()
 	m.breakdownSlideFrom, m.breakdownSlideTo = 0, 12
 	m.springActive = true
 	m.springKind = springKindBreakdown
@@ -139,7 +139,7 @@ func TestView_DuringSlide_HeightConservedRealBorder(t *testing.T) {
 // arm-time aggs query, and seeds the spring without repainting frame 0).
 func armProjectsShowForTest(t testing.TB, m *Model) {
 	t.Helper()
-	m.showProjects = false
+	m.breakdown = breakdownNone
 	m.beginBreakdownAnimation()
 }
 
@@ -183,8 +183,8 @@ func TestProjectsSpringTick_AdvancesThenSettles(t *testing.T) {
 	if m.breakdownAnimH != target {
 		t.Errorf("after settle: breakdownAnimH=%d, want target %d", m.breakdownAnimH, target)
 	}
-	if !m.showProjects {
-		t.Error("after show settle: showProjects=false, want true (committed)")
+	if m.breakdown == breakdownNone {
+		t.Error("after show settle: breakdown=none, want projects (committed)")
 	}
 	if m.viewport.Height != m.chartHeight() {
 		t.Errorf("after settle: viewport.Height=%d, want chartHeight=%d", m.viewport.Height, m.chartHeight())
@@ -212,8 +212,8 @@ func TestProjectsKey_ShowFromIdle_ArmsAndQueriesOnce(t *testing.T) {
 	now := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
 	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
 	defer c.Close()
-	m.showProjects = false // hidden by default (#414) → first 'p' is a show
-	m.refreshChart()       // ensure steady chart inputs present; projectAggs stays nil (hidden)
+	m.breakdown = breakdownNone // hidden by default (#414) → first 'p' is a show
+	m.refreshChart()            // ensure steady chart inputs present; projectAggs stays nil (hidden)
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
 	m = updated.(Model)
@@ -221,8 +221,8 @@ func TestProjectsKey_ShowFromIdle_ArmsAndQueriesOnce(t *testing.T) {
 	if !m.springActive || m.springKind != springKindBreakdown {
 		t.Fatalf("show 'p': springActive=%v springKind=%d, want true/projects", m.springActive, m.springKind)
 	}
-	if !m.showProjects {
-		t.Error("show 'p': showProjects=false, want true (committed at arm)")
+	if m.breakdown == breakdownNone {
+		t.Error("show 'p': breakdown=none, want projects (committed at arm)")
 	}
 	if m.breakdownSlideFrom != 0 || m.breakdownSlideTo != m.breakdownTargetHeight() {
 		t.Errorf("show slide from/to = (%d,%d), want (0,%d)", m.breakdownSlideFrom, m.breakdownSlideTo, m.breakdownTargetHeight())
@@ -246,7 +246,7 @@ func TestProjectsKey_ShowFromIdle_ArmsAndQueriesOnce(t *testing.T) {
 		t.Fatal("3 ticks settled the slide unexpectedly; can't probe mid-flight")
 	}
 	if projectAggsBackingPtr(m.projectAggs) != armPtr {
-		t.Error("projectAggs reassigned mid-slide → a per-tick refreshProjects ran (want zero DB per frame)")
+		t.Error("projectAggs reassigned mid-slide → a per-tick refreshBreakdown ran (want zero DB per frame)")
 	}
 }
 
@@ -255,7 +255,7 @@ func TestProjectsKey_HideFromIdle_NoArmQuery(t *testing.T) {
 	now := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
 	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
 	defer c.Close()
-	m.showProjects = true
+	m.breakdown = breakdownProjects
 	m.refreshChart() // box shown → projectAggs populated
 	if len(m.projectAggs) == 0 {
 		t.Fatal("seed: projectAggs empty, want populated before hide")
@@ -268,8 +268,8 @@ func TestProjectsKey_HideFromIdle_NoArmQuery(t *testing.T) {
 	if !m.springActive || m.springKind != springKindBreakdown {
 		t.Fatalf("hide 'p': springActive=%v springKind=%d", m.springActive, m.springKind)
 	}
-	if m.showProjects {
-		t.Error("hide 'p': showProjects=true, want false (committed at arm)")
+	if m.breakdown != breakdownNone {
+		t.Error("hide 'p': breakdown=projects, want none (committed at arm)")
 	}
 	if m.breakdownSlideFrom != m.breakdownTargetHeight() || m.breakdownSlideTo != 0 {
 		t.Errorf("hide slide from/to=(%d,%d), want (%d,0)", m.breakdownSlideFrom, m.breakdownSlideTo, m.breakdownTargetHeight())
@@ -285,7 +285,7 @@ func TestProjectsKey_ReduceMotion_Snaps(t *testing.T) {
 	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
 	defer c.Close()
 	m.deps.ReduceMotion = true
-	m.showProjects = false
+	m.breakdown = breakdownNone
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
 	m = updated.(Model)
@@ -293,8 +293,8 @@ func TestProjectsKey_ReduceMotion_Snaps(t *testing.T) {
 	if m.springActive {
 		t.Error("reduce_motion 'p': springActive=true, want snap")
 	}
-	if !m.showProjects {
-		t.Error("reduce_motion 'p': showProjects=false, want toggled on")
+	if m.breakdown == breakdownNone {
+		t.Error("reduce_motion 'p': breakdown=none, want toggled on")
 	}
 	if cmd != nil {
 		t.Errorf("reduce_motion 'p': cmd=%v, want nil (synchronous cut)", cmd)
@@ -310,7 +310,7 @@ func TestProjectsKey_TooShort_Snaps(t *testing.T) {
 	defer c.Close()
 	m.h = 12 // m.h-7=5 < 9 → breakdownTargetHeight()==0
 	m.viewport.Height = m.chartHeight()
-	m.showProjects = false
+	m.breakdown = breakdownNone
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
 	m = updated.(Model)
@@ -327,7 +327,7 @@ func TestProjectsKey_AbortsInflightZoom(t *testing.T) {
 	now := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
 	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
 	defer c.Close()
-	m.showProjects = false
+	m.breakdown = breakdownNone
 
 	// Arm a zoom, then press 'p' mid-flight.
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
@@ -347,7 +347,7 @@ func TestZoomKey_AbortsInflightProjectsSlide(t *testing.T) {
 	now := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
 	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
 	defer c.Close()
-	m.showProjects = false
+	m.breakdown = breakdownNone
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}}) // arm show slide
 	m = updated.(Model)
@@ -360,8 +360,8 @@ func TestZoomKey_AbortsInflightProjectsSlide(t *testing.T) {
 	if m.springKind != springKindZoom || !m.springActive {
 		t.Errorf("'z' during slide: springKind=%d active=%v, want zoom/true", m.springKind, m.springActive)
 	}
-	if !m.showProjects {
-		t.Error("'z' during show-slide: showProjects=false, want true (slide's committed terminal state)")
+	if m.breakdown == breakdownNone {
+		t.Error("'z' during show-slide: breakdown=none, want projects (slide's committed terminal state)")
 	}
 }
 
@@ -374,7 +374,7 @@ func TestProjectsSlide_EndpointIdentity_BarMode(t *testing.T) {
 	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
 	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
 	defer c.Close()
-	m.showProjects = false // hidden by default (#414) → first 'p' is a show
+	m.breakdown = breakdownNone // hidden by default (#414) → first 'p' is a show
 	m.refreshChart()
 
 	m = assertSlideEndpoints(t, m, "show")
@@ -426,7 +426,7 @@ func TestProjectsSlide_EndpointIdentity_LineMode(t *testing.T) {
 	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
 	m, c := seedRemainingModelWithSamples(t, 60, now)
 	defer c.Close()
-	m.showProjects = false
+	m.breakdown = breakdownNone
 	m.refreshChart()
 
 	m = assertSlideEndpoints(t, m, "show-line")
@@ -447,7 +447,7 @@ func TestProjectsSlide_BoxContentPresentEarly(t *testing.T) {
 	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
 	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
 	defer c.Close()
-	m.showProjects = false
+	m.breakdown = breakdownNone
 	m.refreshChart()
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
@@ -490,7 +490,7 @@ func TestProjectsSlide_XLabelRowStable(t *testing.T) {
 	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
 	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
 	defer c.Close()
-	m.showProjects = false
+	m.breakdown = breakdownNone
 	m.refreshChart()
 
 	labelRow := findXLabelRow(t, m.View())
@@ -521,7 +521,7 @@ func TestProjectsSlide_XLabelRowStable_LineMode(t *testing.T) {
 	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
 	m, c := seedRemainingModelWithSamples(t, 60, now)
 	defer c.Close()
-	m.showProjects = false
+	m.breakdown = breakdownNone
 	m.refreshChart()
 
 	labelRow := findXLabelRow(t, m.View())
@@ -566,7 +566,7 @@ func TestProjectsKey_RearmMidSlide_ReversesFromCurrentHeight(t *testing.T) {
 	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
 	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
 	defer c.Close()
-	m.showProjects = false
+	m.breakdown = breakdownNone
 	m.refreshChart()
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
@@ -592,8 +592,8 @@ func TestProjectsKey_RearmMidSlide_ReversesFromCurrentHeight(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("re-arm 'p': cmd=nil, want new tick loop")
 	}
-	if m.showProjects {
-		t.Error("re-arm 'p': showProjects=true, want false (reversed to hide)")
+	if m.breakdown != breakdownNone {
+		t.Error("re-arm 'p': breakdown=projects, want none (reversed to hide)")
 	}
 	if m.springGen == genShow {
 		t.Error("re-arm 'p': springGen not bumped — stale show ticks would still apply")
@@ -619,7 +619,7 @@ func TestWindowSize_MidSlide_ViewportHeightSynced(t *testing.T) {
 	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
 	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
 	defer c.Close()
-	m.showProjects = false
+	m.breakdown = breakdownNone
 	m.refreshChart()
 
 	// Arm the show slide.
@@ -665,7 +665,7 @@ func TestRefreshMsg_MidSlide_ViewportHeightSynced(t *testing.T) {
 	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
 	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
 	defer c.Close()
-	m.showProjects = false
+	m.breakdown = breakdownNone
 	m.refreshChart()
 
 	// Arm the show slide.
@@ -713,7 +713,7 @@ func TestNowTick_MidSlide_ViewportHeightSynced(t *testing.T) {
 	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
 	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
 	defer c.Close()
-	m.showProjects = false
+	m.breakdown = breakdownNone
 	m.refreshChart()
 
 	// Arm the show slide.
@@ -752,7 +752,7 @@ func TestNowTick_MidSlide_ViewportHeightSynced(t *testing.T) {
 }
 
 // projectAggsBackingPtr returns the backing-array address of a ProjectAggregate
-// slice, or 0 if empty. refreshProjects reassigns m.projectAggs to a fresh slice
+// slice, or 0 if empty. refreshBreakdown reassigns m.projectAggs to a fresh slice
 // from ProjectAggregates, so a changed pointer ⇒ a query ran. Used to prove the
 // zero-DB-per-frame contract without a cache interface seam.
 func projectAggsBackingPtr(a []cache.ProjectAggregate) uintptr {
@@ -783,7 +783,7 @@ func TestProjectsSlide_RealFrame_BoundaryMovesMonotonically(t *testing.T) {
 	now := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
 	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
 	defer c.Close()
-	m.showProjects = false
+	m.breakdown = breakdownNone
 	m.refreshChart()
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
@@ -837,5 +837,17 @@ func TestProjectsSlide_RealFrame_BoundaryMovesMonotonically(t *testing.T) {
 	}
 	if m.breakdownAnimH != m.breakdownSlideTo {
 		t.Errorf("settle animH=%d, want target %d", m.breakdownAnimH, m.breakdownSlideTo)
+	}
+}
+
+// TestBreakdownKind_ZeroValueIsHidden pins the enum ordering: the zero value
+// must be "hidden" so a freshly constructed Model renders no box.
+func TestBreakdownKind_ZeroValueIsHidden(t *testing.T) {
+	var k breakdownKind
+	if k != breakdownNone {
+		t.Fatalf("zero breakdownKind = %v, want breakdownNone", k)
+	}
+	if breakdownProjects == breakdownModels {
+		t.Fatal("breakdownProjects and breakdownModels must be distinct")
 	}
 }

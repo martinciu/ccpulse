@@ -5479,12 +5479,12 @@ func TestRefresh_RestoresRightEdgeAfterNarrowContent(t *testing.T) {
 
 func TestView_ShowsProjectsBox(t *testing.T) {
 	// seedScrollTestModel builds a 120×40 model and calls refreshChart.
-	// showProjects defaults to false, so we enable it explicitly to test the
+	// breakdown defaults to none, so we enable it explicitly to test the
 	// "box shown" state. The seeded messages carry no cwd, so they roll up
 	// into the "(no project)" bucket.
 	m, cleanup := seedScrollTestModel(t, 200)
 	defer cleanup()
-	m.showProjects = true
+	m.breakdown = breakdownProjects
 	m.refreshChart()
 
 	if m.breakdownHeight() <= 0 {
@@ -5507,9 +5507,9 @@ func TestProjectsDebounce_StaleTickDropped(t *testing.T) {
 	// returns a Cmd, and drive the handler directly with constructed messages.
 	m, cleanup := seedScrollTestModel(t, 200)
 	defer cleanup()
-	// showProjects defaults to false; enable it so scheduleBreakdownTick returns
+	// breakdown defaults to none; enable it so scheduleBreakdownTick returns
 	// a Cmd and handleBreakdownTick can repopulate projectAggs.
-	m.showProjects = true
+	m.breakdown = breakdownProjects
 
 	// Two scrolls in quick succession → gen advanced twice.
 	cmd1 := m.scheduleBreakdownTick()
@@ -5587,7 +5587,7 @@ func seedRemainingProjectsModel(t *testing.T) (*Model, func()) {
 	m.w, m.h = 120, 40
 	m.zoomIdx = 0 // 15m zoom: ~208 buckets vs chartWidth=118 → scrollable
 	m.unitIdx = int(chartUnitRemaining)
-	m.showProjects = true
+	m.breakdown = breakdownProjects
 	m.viewport.Width = m.chartWidth()
 	m.viewport.Height = m.chartHeight()
 	return &m, func() { c.Close() }
@@ -5667,8 +5667,8 @@ func TestProjectsHeight_HiddenWhenToggledOff(t *testing.T) {
 	defer cleanup()
 
 	// New default: box is hidden. Chart gets the full m.h-7 height.
-	if m.showProjects {
-		t.Fatal("showProjects should default to false")
+	if m.breakdown != breakdownNone {
+		t.Fatal("breakdown should default to breakdownNone")
 	}
 	full := m.h - 7 // chartHeight when the box reserves nothing
 	if got := m.breakdownHeight(); got != 0 {
@@ -5679,7 +5679,7 @@ func TestProjectsHeight_HiddenWhenToggledOff(t *testing.T) {
 	}
 
 	// Show the box: it should now reserve rows and reduce chartHeight.
-	m.showProjects = true
+	m.breakdown = breakdownProjects
 	m.refreshChart()
 	if m.breakdownHeight() <= 0 {
 		t.Fatal("breakdownHeight should be > 0 at h=40 when shown")
@@ -5701,8 +5701,8 @@ func TestProjectsToggle_Key(t *testing.T) {
 
 	// Press 'p' → show (box is hidden by default).
 	m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
-	if !m.showProjects {
-		t.Fatal("first 'p' should toggle showProjects on")
+	if m.breakdown == breakdownNone {
+		t.Fatal("first 'p' should toggle breakdown to projects")
 	}
 	if m.breakdownHeight() <= 0 {
 		t.Errorf("breakdownHeight = %d after show, want > 0", m.breakdownHeight())
@@ -5716,8 +5716,8 @@ func TestProjectsToggle_Key(t *testing.T) {
 
 	// Press 'p' again → hide.
 	m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
-	if m.showProjects {
-		t.Fatal("second 'p' should toggle showProjects off")
+	if m.breakdown != breakdownNone {
+		t.Fatal("second 'p' should toggle breakdown to none")
 	}
 	if got := m.breakdownHeight(); got != 0 {
 		t.Errorf("breakdownHeight = %d after hide, want 0", got)
@@ -5754,9 +5754,9 @@ func TestProjectsToggle_InertUnderHelp(t *testing.T) {
 	defer cleanup()
 
 	m.showHelp = true
-	before := m.showProjects
+	before := m.breakdown
 	m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
-	if m.showProjects != before {
+	if m.breakdown != before {
 		t.Errorf("'p' must be inert while the help overlay is open")
 	}
 }
@@ -5786,7 +5786,7 @@ func TestProjectsTick_NotScheduledWhenHidden(t *testing.T) {
 	m, cleanup := seedScrollTestModel(t, 200)
 	defer cleanup()
 
-	m.showProjects = false
+	m.breakdown = breakdownNone
 	if cmd := m.scheduleBreakdownTick(); cmd != nil {
 		t.Error("scheduleBreakdownTick should return nil while hidden")
 	}
@@ -5796,7 +5796,7 @@ func TestProjectsTick_NotScheduledWhenHidden(t *testing.T) {
 // the rows its aggregates need — border(2) + title(1) + ceil(n/cols) — under
 // the pre-existing min(avail/2, breakdownMaxRows) cap; zero aggs keep the
 // 4-row placeholder floor. Bare Model construction is enough: breakdownHeight
-// reads only showProjects/w/h/projectAggs.
+// reads only breakdown/w/h/projectAggs.
 func TestProjectsHeight_ContentAware(t *testing.T) {
 	cases := []struct {
 		desc string
@@ -5813,7 +5813,7 @@ func TestProjectsHeight_ContentAware(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.desc, func(t *testing.T) {
-			m := Model{w: tc.w, h: tc.h, showProjects: true}
+			m := Model{w: tc.w, h: tc.h, breakdown: breakdownProjects}
 			for range tc.n {
 				m.projectAggs = append(m.projectAggs, cache.ProjectAggregate{Label: "p"})
 			}
@@ -5834,7 +5834,7 @@ func TestProjectsHeight_ContentAware(t *testing.T) {
 func TestProjectsSettleReflow_ChartReclaimsRows(t *testing.T) {
 	m, cleanup := seedScrollTestModel(t, 200)
 	defer cleanup()
-	m.showProjects = true
+	m.breakdown = breakdownProjects
 	m.refreshChart()
 
 	// Simulate "the previous window showed 8 projects": inflate the aggs and
@@ -5867,12 +5867,12 @@ func TestProjectsSettleReflow_ChartReclaimsRows(t *testing.T) {
 }
 
 // TestRefreshChart_ViewportHeightFixedPoint asserts refreshChart leaves the
-// layout at its fixed point (#420): refreshProjects runs before the paint so
+// layout at its fixed point (#420): refreshBreakdown runs before the paint so
 // chartHeight is computed with the final aggs — no toggle-on double-render.
 func TestRefreshChart_ViewportHeightFixedPoint(t *testing.T) {
 	m, cleanup := seedScrollTestModel(t, 200)
 	defer cleanup()
-	m.showProjects = true
+	m.breakdown = breakdownProjects
 	m.refreshChart()
 	if len(m.projectAggs) == 0 {
 		t.Fatal("precondition: fixture should produce aggs")
@@ -5890,7 +5890,7 @@ func TestRefreshChart_ViewportHeightFixedPoint(t *testing.T) {
 func TestClearChart_ResetsProjectsLayout(t *testing.T) {
 	m, cleanup := seedScrollTestModel(t, 200)
 	defer cleanup()
-	m.showProjects = true
+	m.breakdown = breakdownProjects
 	m.refreshChart()
 
 	fakes := make([]cache.ProjectAggregate, 8)
@@ -5915,7 +5915,7 @@ func TestClearChart_ResetsProjectsLayout(t *testing.T) {
 // m.peak as the bar-height normalization base; allowing applyBreakdownResize
 // to call renderWindow mid-spring would overwrite it and corrupt spring frames.
 // The deferred recompute is not lost — both settle paths (pkg/tui/springs.go,
-// pkg/tui/zoomspring.go) call refreshChart, which re-runs refreshProjects and
+// pkg/tui/zoomspring.go) call refreshChart, which re-runs refreshBreakdown and
 // re-syncs the height before the final paint.
 //
 // breakdownTickMsg is constructed directly; never invoke the real tea.Tick Cmd
@@ -5924,7 +5924,7 @@ func TestHandleProjectsTick_NoOpMidSpring(t *testing.T) {
 	m, cleanup := seedScrollTestModel(t, 200)
 	defer cleanup()
 
-	m.showProjects = true
+	m.breakdown = breakdownProjects
 	m.refreshChart()
 
 	// Inflate aggs to simulate a window that previously had more projects, then
