@@ -794,9 +794,24 @@ func (m Model) effectiveKind() breakdownKind {
 // breakdownTargetHeight() is kind-independent with no rows loaded: it answers
 // "is there room for a box at all", the same question for either panel.
 func (m *Model) handleBreakdownKey(want breakdownKind) tea.Cmd {
+	cur := m.effectiveKind()
 	target := want
-	if m.effectiveKind() == want {
+	if cur == want {
 		target = breakdownNone // pressing the visible panel's own key hides it
+	}
+
+	// Leg 1 of a sequential swap is already in flight. A press here must NOT
+	// re-arm — it only rewrites where leg 2 will land, so the outgoing slide
+	// continues uninterrupted.
+	//
+	// The guard is `pendingBreakdown != breakdownNone` and nothing more.
+	// Widening it to "sliding toward zero" (springActive && kind==breakdown &&
+	// breakdown==none && slideTo==0) would ALSO match a plain hide, turning
+	// #416's reverse-from-current-height re-arm into a down-then-up bounce and
+	// breaking TestBreakdownKey_RearmMidSlide_ReversesFromCurrentHeight.
+	if m.pendingBreakdown != breakdownNone {
+		m.pendingBreakdown = target
+		return nil
 	}
 
 	if m.deps.ReduceMotion || m.breakdownTargetHeight() == 0 || m.lastCanvasW == 0 {
@@ -806,6 +821,16 @@ func (m *Model) handleBreakdownKey(want breakdownKind) tea.Cmd {
 		m.viewport.Height = m.chartHeight()
 		m.refreshChart()
 		return nil
+	}
+
+	// A swap: hide the current panel first, then bring `target` up (#475).
+	// Both legs run at the ordinary slide constants, so a swap reads as
+	// exactly what it is — `p` then `m`.
+	if cur != breakdownNone && target != breakdownNone {
+		m.pendingBreakdown = target
+		target = breakdownNone
+	} else {
+		m.pendingBreakdown = breakdownNone
 	}
 
 	m.beginBreakdownAnimation(target)

@@ -870,3 +870,222 @@ func TestEffectiveKind(t *testing.T) {
 		})
 	}
 }
+
+// driveToSettle advances the breakdown spring with constructed ticks until the
+// handler returns nil (settled) or the cap trips, and reports how many frames
+// that took. Never invokes a returned Cmd — the now-tick Cmd real-sleeps to the
+// next bucket boundary and would hang the test.
+func driveToSettle(t *testing.T, m *Model) (frames int) {
+	t.Helper()
+	for range 600 { // 10s at 60fps — far beyond any real settle
+		frames++
+		if m.handleBreakdownSpringTick(m.springGen) == nil {
+			return frames
+		}
+	}
+	t.Fatal("breakdown spring did not settle within 600 frames")
+	return frames
+}
+
+// TestBreakdownSwap_ChainsSecondLeg is the core of #475's sequential swap: leg
+// one must settle into leg two rather than stopping.
+func TestBreakdownSwap_ChainsSecondLeg(t *testing.T) {
+	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
+	defer c.Close()
+	m.breakdown = breakdownProjects
+	m.refreshBreakdown()
+
+	if cmd := m.handleBreakdownKey(breakdownModels); cmd == nil {
+		t.Fatal("swap keypress returned nil Cmd, want an armed slide")
+	}
+	if m.pendingBreakdown != breakdownModels {
+		t.Fatalf("pendingBreakdown = %v, want breakdownModels", m.pendingBreakdown)
+	}
+	if m.breakdownSlideTo != 0 {
+		t.Errorf("leg 1 target = %d, want 0 (outgoing panel slides fully down)", m.breakdownSlideTo)
+	}
+
+	genBefore := m.springGen
+	// Drive leg 1. The settle must NOT return nil — it chains leg 2.
+	var chained tea.Cmd
+	for range 600 {
+		cmd := m.handleBreakdownSpringTick(m.springGen)
+		if m.breakdown == breakdownModels {
+			chained = cmd
+			break
+		}
+		if cmd == nil {
+			t.Fatal("leg 1 settled to nil without chaining leg 2")
+		}
+	}
+	if chained == nil {
+		t.Fatal("leg 1 settle returned nil Cmd, want leg 2's tick")
+	}
+	if m.pendingBreakdown != breakdownNone {
+		t.Errorf("pendingBreakdown = %v after chaining, want breakdownNone (consumed)", m.pendingBreakdown)
+	}
+	if m.springGen == genBefore {
+		t.Error("springGen not bumped by leg 2's arm — leg 2's own ticks would be dropped by the generation guard")
+	}
+	if !m.springActive || m.springKind != springKindBreakdown {
+		t.Error("spring not active on breakdown kind after chaining")
+	}
+	if m.breakdownSlideFrom != 0 {
+		t.Errorf("leg 2 start = %d, want 0", m.breakdownSlideFrom)
+	}
+	if m.breakdownSlideTo <= 0 {
+		t.Errorf("leg 2 target = %d, want the models box height (>0)", m.breakdownSlideTo)
+	}
+	if m.viewport.Height != m.chartHeight() {
+		t.Errorf("viewport.Height = %d, want chartHeight() = %d — leg-2 frame 0 must be painted synchronously",
+			m.viewport.Height, m.chartHeight())
+	}
+
+	// Leg 2 settles normally.
+	if frames := driveToSettle(t, &m); frames == 0 {
+		t.Error("leg 2 produced no frames")
+	}
+	if m.breakdown != breakdownModels {
+		t.Errorf("final kind = %v, want breakdownModels", m.breakdown)
+	}
+	if m.springActive {
+		t.Error("spring still active after leg 2 settled — idle TUI must be zero-animation-cost")
+	}
+}
+
+// TestBreakdownSwap_ReduceMotionSnaps: no legs, no ticks, no visible zero state.
+func TestBreakdownSwap_ReduceMotionSnaps(t *testing.T) {
+	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
+	defer c.Close()
+	m.deps.ReduceMotion = true
+	m.breakdown = breakdownProjects
+	m.refreshBreakdown()
+
+	cmd := m.handleBreakdownKey(breakdownModels)
+	if cmd != nil {
+		t.Error("reduce_motion swap returned a Cmd, want nil (no ticks)")
+	}
+	if m.breakdown != breakdownModels {
+		t.Errorf("kind = %v, want breakdownModels immediately", m.breakdown)
+	}
+	if m.pendingBreakdown != breakdownNone {
+		t.Errorf("pendingBreakdown = %v, want breakdownNone (no queued leg)", m.pendingBreakdown)
+	}
+	if m.springActive {
+		t.Error("spring active under reduce_motion")
+	}
+}
+
+// TestBreakdownKey_MidAnimation covers the effectiveKind() resolution table:
+// during leg 1 a keypress only rewrites the destination and must NOT re-arm.
+func TestBreakdownKey_MidAnimation(t *testing.T) {
+	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+
+	t.Run("leg 1: pressing the pending panel's key cancels the swap", func(t *testing.T) {
+		m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
+		defer c.Close()
+		m.breakdown = breakdownProjects
+		m.refreshBreakdown()
+		m.handleBreakdownKey(breakdownModels) // swap armed, pending = models
+		m.handleBreakdownSpringTick(m.springGen)
+
+		genBefore, toBefore := m.springGen, m.breakdownSlideTo
+		m.handleBreakdownKey(breakdownModels) // effectiveKind == models → hide
+
+		if m.pendingBreakdown != breakdownNone {
+			t.Errorf("pendingBreakdown = %v, want breakdownNone (swap cancelled)", m.pendingBreakdown)
+		}
+		if m.springGen != genBefore || m.breakdownSlideTo != toBefore {
+			t.Error("re-armed during leg 1; a mid-leg-1 press must only rewrite the destination")
+		}
+	})
+
+	t.Run("leg 1: pressing the other key rewrites the destination", func(t *testing.T) {
+		m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
+		defer c.Close()
+		m.breakdown = breakdownProjects
+		m.refreshBreakdown()
+		m.handleBreakdownKey(breakdownModels)
+		m.handleBreakdownSpringTick(m.springGen)
+
+		genBefore := m.springGen
+		m.handleBreakdownKey(breakdownProjects) // effectiveKind == models → swap to projects
+
+		if m.pendingBreakdown != breakdownProjects {
+			t.Errorf("pendingBreakdown = %v, want breakdownProjects", m.pendingBreakdown)
+		}
+		if m.springGen != genBefore {
+			t.Error("re-armed during leg 1; only the destination should change")
+		}
+	})
+}
+
+// TestBreakdownSwap_HeightConservedAcrossBothLegs extends the #416 invariant
+// over the swap: View must emit exactly m.h rows at every animated height of
+// BOTH legs, including the handoff frame.
+func TestBreakdownSwap_HeightConservedAcrossBothLegs(t *testing.T) {
+	withForcedColor(t)
+	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
+	defer c.Close()
+	m.breakdown = breakdownProjects
+	m.refreshBreakdown()
+	// Production's re-sync order (same as handleWindowSize / view_fit_test):
+	// kind and rows first, viewport.Height = chartHeight() last. Without it the
+	// pre-swap frame is already over-tall and every assertion below is bogus.
+	m.viewport.Height = m.chartHeight()
+	m.renderWindow()
+
+	if got := strings.Count(m.View(), "\n") + 1; got != m.h {
+		t.Fatalf("setup: steady projects-up View() rows = %d, want %d", got, m.h)
+	}
+	m.handleBreakdownKey(breakdownModels)
+
+	for i := range 600 {
+		got := strings.Count(m.View(), "\n") + 1
+		if got != m.h {
+			t.Fatalf("frame %d: View() rows = %d, want %d (kind=%v animH=%d)",
+				i, got, m.h, m.breakdown, m.breakdownAnimH)
+		}
+		if m.handleBreakdownSpringTick(m.springGen) == nil {
+			break
+		}
+	}
+}
+
+// TestBreakdownSwap_QueryCount pins the per-frame DB contract across a whole
+// swap: two queries total (leg 2's arm and leg 2's settle). Leg 1 targets
+// breakdownNone so it queries nothing, and its chained settle skips
+// refreshChart. Identity of the rows slice is the proxy — it is reassigned only
+// inside refreshBreakdown, so a changed backing pointer means a query ran.
+func TestBreakdownSwap_QueryCount(t *testing.T) {
+	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
+	defer c.Close()
+	m.breakdown = breakdownProjects
+	m.refreshBreakdown()
+
+	queries := 0
+	prev := breakdownRowsBackingPtr(m.breakdownRows)
+	note := func() {
+		if p := breakdownRowsBackingPtr(m.breakdownRows); p != prev {
+			queries++
+			prev = p
+		}
+	}
+
+	m.handleBreakdownKey(breakdownModels)
+	note()
+	for range 1200 {
+		cmd := m.handleBreakdownSpringTick(m.springGen)
+		note()
+		if cmd == nil {
+			break
+		}
+	}
+	if queries != 2 {
+		t.Errorf("queries across the swap = %d, want 2 (leg-2 arm + leg-2 settle)", queries)
+	}
+}

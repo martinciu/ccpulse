@@ -82,7 +82,8 @@ func (m *Model) renderBreakdownFrame() {
 // settle when within phaseTransitionThreshold. On settle it commits the height,
 // clears the spring, and restores steady state via refreshChart (which chains
 // refreshBreakdown — the 1 settle query on show; a no-op on hide since
-// m.breakdown was committed to none at arm). Returns nil to stop the loop.
+// m.breakdown was committed to none at arm). Returns nil to stop the loop,
+// except when a sequential swap has a second leg queued — see below.
 func (m *Model) handleBreakdownSpringTick(gen int) tea.Cmd {
 	r, vel := m.breakdownSpring.Update(m.breakdownSpringR, m.breakdownSpringVel, 1.0)
 	m.breakdownSpringR, m.breakdownSpringVel = r, vel
@@ -90,6 +91,26 @@ func (m *Model) handleBreakdownSpringTick(gen int) tea.Cmd {
 
 	if math.Abs(1.0-r) < phaseTransitionThreshold {
 		m.breakdownAnimH = m.breakdownSlideTo
+
+		// Sequential swap (#475): leg one has reached zero — arm leg two
+		// instead of restoring steady state. refreshChart is deliberately NOT
+		// called here: it would requery buckets and paint a full-height chart
+		// that leg two immediately overwrites.
+		if m.pendingBreakdown != breakdownNone {
+			next := m.pendingBreakdown
+			m.pendingBreakdown = breakdownNone
+			m.beginBreakdownAnimation(next)
+			m.viewport.Height = m.chartHeight()
+			// Paint leg-2 frame 0 synchronously so no View() can land between
+			// this settle and the first tick with stale content at a
+			// mismatched height (same guard handleUnitKey uses).
+			m.renderBreakdownFrame()
+			nextGen := m.springGen // the NEW generation — beginBreakdownAnimation bumped it
+			return tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
+				return springTickMsg{gen: nextGen}
+			})
+		}
+
 		m.springActive = false
 		m.springKind = springKindNone
 		m.viewport.Height = m.chartHeight()
