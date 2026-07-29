@@ -6217,3 +6217,50 @@ func TestHandleWindowSize_RebuildsScopedBars(t *testing.T) {
 			"handleWindowSize must rebuild scoped bars at the new width", before)
 	}
 }
+
+// TestRefreshBreakdown_ModelsKindUsesModelAggregates pins that the models kind
+// queries the models rollup over the SAME window the projects kind uses.
+func TestRefreshBreakdown_ModelsKindUsesModelAggregates(t *testing.T) {
+	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
+	defer c.Close()
+
+	m.breakdown = breakdownModels
+	m.refreshBreakdown()
+
+	from, to := m.breakdownWindow()
+	want, err := m.deps.Cache.ModelAggregates(t.Context(), from, to)
+	if err != nil {
+		t.Fatalf("ModelAggregates: %v", err)
+	}
+	wantRows := rowsFromModels(want)
+	if len(wantRows) == 0 {
+		t.Fatal("fixture produced no model rows — the assertion below would be vacuous")
+	}
+	got := m.breakdownRows
+	if len(got) != len(wantRows) {
+		t.Fatalf("breakdownRows len = %d, want %d", len(got), len(wantRows))
+	}
+	for i, r := range wantRows {
+		if got[i] != r {
+			t.Errorf("row %d = %+v, want %+v", i, got[i], r)
+		}
+	}
+}
+
+// TestBreakdownWindow_MatchesProjectsAndModels pins that both kinds read the
+// identical [from, to) — the #430 fix must not fork per kind.
+func TestBreakdownWindow_MatchesProjectsAndModels(t *testing.T) {
+	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
+	defer c.Close()
+
+	m.breakdown = breakdownProjects
+	pFrom, pTo := m.breakdownWindow()
+	m.breakdown = breakdownModels
+	mFrom, mTo := m.breakdownWindow()
+
+	if !pFrom.Equal(mFrom) || !pTo.Equal(mTo) {
+		t.Errorf("window differs by kind: projects [%v,%v), models [%v,%v)", pFrom, pTo, mFrom, mTo)
+	}
+}

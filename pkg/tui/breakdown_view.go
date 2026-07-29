@@ -60,6 +60,19 @@ func rowsFromProjects(aggs []cache.ProjectAggregate) []breakdownRow {
 	return rows
 }
 
+// rowsFromModels adapts model aggregates into renderer rows, preserving order
+// (ModelAggregates already sorts, with "(unknown model)" forced last).
+func rowsFromModels(aggs []cache.ModelAggregate) []breakdownRow {
+	if len(aggs) == 0 {
+		return nil
+	}
+	rows := make([]breakdownRow, len(aggs))
+	for i, a := range aggs {
+		rows[i] = breakdownRow{Label: a.Label, CostUSD: a.CostUSD, Tokens: a.Tokens, CostPct: a.CostPct}
+	}
+	return rows
+}
+
 // breakdownCellCols returns how many project cells pack side-by-side into an
 // outer box width (border + 1 col padding each side subtracted). Shared by
 // renderBreakdownBox (column layout) and breakdownHeight (rows needed) so the

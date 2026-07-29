@@ -1155,27 +1155,47 @@ func (m *Model) rebuildScopedBars() {
 	}
 }
 
-// refreshBreakdown recomputes the rollup for the chart's currently-visible
-// window and stores it in m.breakdownRows. Cheap: the
-// window is bounded by what's on screen. Safe when the cache is nil or the
-// chart has no data (clears to empty → placeholder — including remaining
-// mode with zero usage samples, where the warming-up chart and an empty
-// box tell the same no-data story).
+// breakdownWindow is the [from, to) the breakdown panel rolls up: exactly the
+// time range the chart is currently showing. Mode-aware (#430) and shared by
+// every kind, so the fix lives in one place:
 //
-// The [from, to) window is mode-aware (#430):
-//
-//   - Bar modes (tokens/cost): derived from the same lastStarts/
-//     viewportXOffset/visibleBuckets the bar chart renders — exact bucket
+//   - Bar modes (tokens/cost): derived from the same lastStarts /
+//     viewportXOffset / visibleBuckets the bar chart renders — exact bucket
 //     edges, so the box reconciles with the visible bars.
 //
-//   - Remaining mode: taken from visibleWindow(), the single source of
-//     truth for the on-screen time range. Here lastStarts holds sparse
-//     usage_samples timestamps (one per usage-API fetch) while
-//     viewportXOffset stays a canvas bucket index, so the bar-mode
-//     indexing would clamp onto the latest sample and query a window of
-//     minutes — empty unless a message landed after the newest sample
-//     (the "no activity in this window" symptom). setX already
-//     special-cases the same sparse-lastStarts mismatch for its clamp.
+//   - Remaining mode: taken from visibleWindow(), the single source of truth
+//     for the on-screen time range. Here lastStarts holds sparse usage_samples
+//     timestamps while viewportXOffset stays a canvas bucket index, so bar-mode
+//     indexing would clamp onto the latest sample and query a window of minutes
+//     — empty unless a message landed after the newest sample (the "no activity
+//     in this window" symptom). setX special-cases the same mismatch.
+//
+// Callers must check len(m.lastStarts) > 0 first; the bar-mode branch indexes it.
+func (m Model) breakdownWindow() (from, to time.Time) {
+	if chartUnit(m.unitIdx) == chartUnitRemaining {
+		return m.visibleWindow()
+	}
+	start := max(0, m.viewportXOffset)
+	if start >= len(m.lastStarts) {
+		start = len(m.lastStarts) - 1
+	}
+	end := min(start+m.visibleBuckets(), len(m.lastStarts))
+	from = m.lastStarts[start]
+	to = m.lastChartTo
+	if end < len(m.lastStarts) {
+		to = m.lastStarts[end]
+	}
+	return from, to
+}
+
+// refreshBreakdown recomputes the rollup for the chart's currently-visible
+// window and stores it in m.breakdownRows, dispatching to whichever aggregate
+// query the active kind names. Cheap: the window is bounded by what's on
+// screen. Safe when the cache is nil or the chart has no data (clears to empty
+// → placeholder — including remaining mode with zero usage samples, where the
+// warming-up chart and an empty box tell the same no-data story).
+//
+// See breakdownWindow for the mode-aware [from, to) derivation (#430).
 func (m *Model) refreshBreakdown() {
 	if m.breakdown == breakdownNone {
 		m.breakdownRows = nil
@@ -1185,28 +1205,26 @@ func (m *Model) refreshBreakdown() {
 		m.breakdownRows = nil
 		return
 	}
-	var from, to time.Time
-	if chartUnit(m.unitIdx) == chartUnitRemaining {
-		from, to = m.visibleWindow()
-	} else {
-		start := max(0, m.viewportXOffset)
-		if start >= len(m.lastStarts) {
-			start = len(m.lastStarts) - 1
+	from, to := m.breakdownWindow()
+	switch m.breakdown {
+	case breakdownProjects:
+		aggs, err := m.deps.Cache.ProjectAggregates(m.ctx, from, to)
+		if err != nil {
+			slog.Debug("tui.refreshBreakdown", "kind", "projects", "err", err)
+			m.breakdownRows = nil
+			return
 		}
-		end := min(start+m.visibleBuckets(), len(m.lastStarts))
-		from = m.lastStarts[start]
-		to = m.lastChartTo
-		if end < len(m.lastStarts) {
-			to = m.lastStarts[end]
+		m.breakdownRows = rowsFromProjects(aggs)
+	case breakdownModels:
+		aggs, err := m.deps.Cache.ModelAggregates(m.ctx, from, to)
+		if err != nil {
+			slog.Debug("tui.refreshBreakdown", "kind", "models", "err", err)
+			m.breakdownRows = nil
+			return
 		}
+		m.breakdownRows = rowsFromModels(aggs)
 	}
-	aggs, err := m.deps.Cache.ProjectAggregates(m.ctx, from, to)
-	if err != nil {
-		slog.Debug("tui.refreshBreakdown", "err", err)
-		m.breakdownRows = nil
-		return
-	}
-	m.breakdownRows, m.breakdownRowsKind = rowsFromProjects(aggs), m.breakdown
+	m.breakdownRowsKind = m.breakdown
 }
 
 // applyBreakdownResize re-syncs the viewport height and chart content after a
