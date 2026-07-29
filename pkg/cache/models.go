@@ -37,9 +37,15 @@ type ModelAggregate struct {
 // rows would swap between refreshes and make the box flicker.
 //
 // The "unknown model" bucket (empty model) is forced last regardless of cost,
-// mirroring ProjectAggregates' "(no project)". Models absent from pricing.json
-// are NOT dropped — they carry real token counts at zero cost, and filtering
-// them would make this box's token total silently disagree with the projects box.
+// mirroring ProjectAggregates' "(no project)" — but only when it carries real
+// usage; like any other canonical row it is dropped if it contributes nothing.
+// Models absent from pricing.json are NOT dropped for that reason alone — they
+// carry real token counts at zero cost, and filtering them would make this
+// box's token total silently disagree with the projects box. What IS dropped,
+// post-fold, is any canonical row that contributes zero tokens AND zero cost
+// (see the loop below) — that is Claude Code's own zero-contribution markers
+// (e.g. its "<synthetic>" id for locally-produced assistant turns), not
+// unpriced-but-used models.
 func (c *Cache) ModelAggregates(ctx context.Context, from, to time.Time) ([]ModelAggregate, error) {
 	const q = `
 SELECT model,
@@ -82,6 +88,30 @@ GROUP BY model`
 
 	out := make([]ModelAggregate, 0, len(byModel))
 	for _, a := range byModel {
+		// Drop canonical rows that contribute nothing: zero tokens AND zero
+		// cost. This hides zero-contribution markers like Claude Code's own
+		// "<synthetic>" model id (assistant turns produced locally, not via
+		// an API call) without hardcoding that or any other magic id — a
+		// magic-id list is exactly the tabulation pkg/models was built to
+		// avoid, and it would go stale the moment a new marker appears.
+		//
+		// This MUST run here, after the models.Canonical fold above, and
+		// never as a SQL HAVING clause: a canonical model can be assembled
+		// from several raw ids, so filtering pre-fold could drop a
+		// zero-token dated variant that should have merged into a non-zero
+		// canonical row. Post-fold, the decision is made on the row the
+		// user actually sees.
+		//
+		// Safe for panel reconciliation: a dropped row's (CostUSD, Tokens)
+		// is (0, 0) by construction, so it was already contributing zero to
+		// `total` above and to the token sum a caller derives from `out`.
+		// Neither total moves whether the row is kept or dropped, so
+		// ProjectAggregates — which has no equivalent filter — still sums
+		// to the same totals (TestModelAggregates_ReconcilesWithProjectAggregates)
+		// and needs no matching change.
+		if a.CostUSD == 0 && a.Tokens == 0 {
+			continue
+		}
 		if total > 0 {
 			// Clamp to [0, 100]: token counts are never validated on
 			// ingest, so a mixed-sign cost_usd_estimate (e.g. a negative

@@ -128,6 +128,11 @@ func TestModelAggregates_SortOrderAndUnknownLast(t *testing.T) {
 	}
 }
 
+// TestModelAggregates_UnpricedModelRetained also guards against
+// over-filtering by the #484 zero-contribution drop: gpt-oss:20b has zero
+// cost but non-zero tokens, so it fails the "zero tokens AND zero cost"
+// condition and must survive the filter — unlike a true zero-contribution
+// row (TestModelAggregates_DropsZeroContributionRow), which is zero on both.
 func TestModelAggregates_UnpricedModelRetained(t *testing.T) {
 	t.Parallel()
 	c := newModelTestCache(t)
@@ -272,6 +277,56 @@ func TestModelAggregates_DeterministicOrder(t *testing.T) {
 				t.Fatalf("order not deterministic: got %+v, first run %+v", got, first)
 			}
 		}
+	}
+}
+
+// TestModelAggregates_DropsZeroContributionRow guards issue #484: a canonical
+// row that contributes zero tokens AND zero cost (Claude Code's own
+// "<synthetic>" marker for locally-produced assistant turns is the real-world
+// case, but the rule is purely "contributes nothing" — no id is hardcoded)
+// must be absent from the result, while a real model in the same window is
+// still present.
+func TestModelAggregates_DropsZeroContributionRow(t *testing.T) {
+	t.Parallel()
+	c := newModelTestCache(t)
+	base := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	insertModelRow(t, c, "claude-opus-4-7", base, 100, 200, 5.00)
+	insertModelRow(t, c, "<synthetic>", base.Add(time.Minute), 0, 0, 0)
+
+	got, err := c.ModelAggregates(t.Context(), base.Add(-time.Hour), base.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("rows = %d, want 1 (zero-contribution row dropped), got %+v", len(got), got)
+	}
+	if got[0].Model != "claude-opus-4-7" {
+		t.Errorf("Model = %q, want claude-opus-4-7", got[0].Model)
+	}
+	for _, a := range got {
+		if a.Label == "<synthetic>" {
+			t.Errorf("zero-contribution row %+v present in result, want dropped", a)
+		}
+	}
+}
+
+// TestModelAggregates_OnlyZeroContributionRowsYieldsEmpty covers the "no
+// activity in this window" placeholder path: a window containing ONLY
+// zero-contribution rows must return an empty (not nil-panicking, not
+// single-row-unknown-bucket) result.
+func TestModelAggregates_OnlyZeroContributionRowsYieldsEmpty(t *testing.T) {
+	t.Parallel()
+	c := newModelTestCache(t)
+	base := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	insertModelRow(t, c, "<synthetic>", base, 0, 0, 0)
+	insertModelRow(t, c, "<synthetic>", base.Add(time.Minute), 0, 0, 0)
+
+	got, err := c.ModelAggregates(t.Context(), base.Add(-time.Hour), base.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("rows = %d, want 0 (only zero-contribution rows in window), got %+v", len(got), got)
 	}
 }
 
