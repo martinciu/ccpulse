@@ -1,14 +1,24 @@
 package tui
 
 import (
+	"database/sql"
+	"database/sql/driver"
+	"fmt"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/martinciu/ccpulse/pkg/cache"
+	"github.com/martinciu/ccpulse/pkg/parse"
+	"github.com/martinciu/ccpulse/pkg/pricing"
+	modernsqlite "modernc.org/sqlite"
 )
 
 func TestLerpInt(t *testing.T) {
@@ -749,6 +759,142 @@ func TestNowTick_MidSlide_ViewportHeightSynced(t *testing.T) {
 	}
 }
 
+// assertSwapRecovered is the shared postcondition for the
+// TestWindowSize_MidSwapAbort_ClearsPending / TestRefreshMsg_MidSwapAbort_ClearsPending /
+// TestNowTick_MidSwapAbort_ClearsPending trio below: pendingBreakdown must be
+// cleared by the abort, and a single subsequent keypress must actually arm a
+// slide rather than being swallowed by handleBreakdownKey's
+// `pendingBreakdown != breakdownNone` guard (ccpulse-475.1).
+func assertSwapRecovered(t *testing.T, m *Model) {
+	t.Helper()
+	if m.pendingBreakdown != breakdownNone {
+		t.Fatalf("pendingBreakdown=%d after abort, want breakdownNone (stranded — every subsequent p/m press would no-op)", m.pendingBreakdown)
+	}
+	cmd := m.handleBreakdownKey(breakdownModels)
+	if cmd == nil && m.breakdownHeight() == 0 {
+		t.Error("single keypress after abort: cmd=nil and breakdownHeight()=0, want a re-armed slide (press was swallowed)")
+	}
+}
+
+// TestWindowSize_MidSwapAbort_ClearsPending is the ccpulse-475.1 regression
+// test: refreshChart's spring-abort block (pkg/tui/series.go) clears
+// springActive/springIntro/springPhase/springKind but, before the fix, left
+// m.pendingBreakdown untouched. A sequential swap (#475) queues leg 2's
+// destination in pendingBreakdown while leg 1 (hiding the current panel) is
+// in flight; handleWindowSize calls refreshChart on every resize, so a resize
+// mid-swap aborted leg 1 without clearing the queued leg 2 — stranding
+// pendingBreakdown. handleBreakdownKey's first guard is
+// `if m.pendingBreakdown != breakdownNone { rewrite and return nil }`, so
+// every subsequent p/m press silently rewrote the stranded destination
+// instead of arming a new slide.
+func TestWindowSize_MidSwapAbort_ClearsPending(t *testing.T) {
+	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
+	defer c.Close()
+	m.breakdown = breakdownProjects
+	m.refreshBreakdown()
+
+	// Arm a swap: 'm' while projects is showing hides projects (leg 1) and
+	// queues models as leg 2 in pendingBreakdown.
+	if cmd := m.handleBreakdownKey(breakdownModels); cmd == nil {
+		t.Fatal("setup: arming the swap returned a nil cmd")
+	}
+	if !m.springActive || m.springKind != springKindBreakdown {
+		t.Fatalf("setup: springActive=%v springKind=%d, want true/breakdown", m.springActive, m.springKind)
+	}
+	if m.pendingBreakdown != breakdownModels {
+		t.Fatalf("setup: pendingBreakdown=%d, want breakdownModels (leg 2 queued)", m.pendingBreakdown)
+	}
+
+	// Advance into leg 1 (never invoke the real tea.Tick Cmd — it real-sleeps;
+	// drive via direct handleBreakdownSpringTick calls).
+	for range 3 {
+		m.handleBreakdownSpringTick(m.springGen)
+	}
+	if !m.springActive {
+		t.Fatal("leg 1 settled in 3 ticks; cannot probe mid-swap behaviour")
+	}
+
+	// Fire a resize mid-swap. handleWindowSize's refreshChart call must abort
+	// leg 1 AND clear the queued leg 2.
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	mm := updated.(Model)
+	assertSwapRecovered(t, &mm)
+}
+
+// TestRefreshMsg_MidSwapAbort_ClearsPending is the RefreshMsg sibling of
+// TestWindowSize_MidSwapAbort_ClearsPending — same stranded-pendingBreakdown
+// bug (ccpulse-475.1), reached via the watcher-driven refresh path
+// (handleRefresh fires on every debounced .jsonl write) instead of a resize.
+func TestRefreshMsg_MidSwapAbort_ClearsPending(t *testing.T) {
+	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
+	defer c.Close()
+	m.breakdown = breakdownProjects
+	m.refreshBreakdown()
+
+	if cmd := m.handleBreakdownKey(breakdownModels); cmd == nil {
+		t.Fatal("setup: arming the swap returned a nil cmd")
+	}
+	if !m.springActive || m.springKind != springKindBreakdown {
+		t.Fatalf("setup: springActive=%v springKind=%d, want true/breakdown", m.springActive, m.springKind)
+	}
+	if m.pendingBreakdown != breakdownModels {
+		t.Fatalf("setup: pendingBreakdown=%d, want breakdownModels (leg 2 queued)", m.pendingBreakdown)
+	}
+
+	for range 3 {
+		m.handleBreakdownSpringTick(m.springGen)
+	}
+	if !m.springActive {
+		t.Fatal("leg 1 settled in 3 ticks; cannot probe mid-swap behaviour")
+	}
+
+	// Fire a RefreshMsg mid-swap. refreshChart's abort block must clear the
+	// queued leg 2 alongside springActive/springKind.
+	updated, _ := m.Update(RefreshMsg{})
+	mm := updated.(Model)
+	assertSwapRecovered(t, &mm)
+}
+
+// TestNowTick_MidSwapAbort_ClearsPending is the nowTickMsg sibling of
+// TestWindowSize_MidSwapAbort_ClearsPending — same stranded-pendingBreakdown
+// bug (ccpulse-475.1), reached via the live-advance path (handleNowTick's
+// animatingViewport guard excludes springKindBreakdown, so nowTickMsg still
+// calls refreshChart during a projects/models slide). Note: handleNowTick
+// returns a non-nil Cmd to reschedule the next tick — never invoke it (it
+// real-sleeps up to 1h); ignore.
+func TestNowTick_MidSwapAbort_ClearsPending(t *testing.T) {
+	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
+	defer c.Close()
+	m.breakdown = breakdownProjects
+	m.refreshBreakdown()
+
+	if cmd := m.handleBreakdownKey(breakdownModels); cmd == nil {
+		t.Fatal("setup: arming the swap returned a nil cmd")
+	}
+	if !m.springActive || m.springKind != springKindBreakdown {
+		t.Fatalf("setup: springActive=%v springKind=%d, want true/breakdown", m.springActive, m.springKind)
+	}
+	if m.pendingBreakdown != breakdownModels {
+		t.Fatalf("setup: pendingBreakdown=%d, want breakdownModels (leg 2 queued)", m.pendingBreakdown)
+	}
+
+	for range 3 {
+		m.handleBreakdownSpringTick(m.springGen)
+	}
+	if !m.springActive {
+		t.Fatal("leg 1 settled in 3 ticks; cannot probe mid-swap behaviour")
+	}
+
+	// Fire nowTickMsg mid-swap. Ignore the returned Cmd — it reschedules a
+	// real tea.Tick that would real-sleep.
+	updated, _ := m.Update(nowTickMsg{gen: m.nowGen})
+	mm := updated.(Model)
+	assertSwapRecovered(t, &mm)
+}
+
 // breakdownRowsBackingPtr returns the backing-array address of a breakdownRow
 // slice, or 0 if empty. refreshBreakdown reassigns m.breakdownRows to a fresh slice
 // from ProjectAggregates, so a changed pointer ⇒ a query ran. Used to prove the
@@ -889,12 +1035,22 @@ func driveToSettle(t *testing.T, m *Model) (frames int) {
 
 // TestBreakdownSwap_ChainsSecondLeg is the core of #475's sequential swap: leg
 // one must settle into leg two rather than stopping.
+//
+// Uses seedBarModelWithVariedModels (not seedBarModelWithMessages) so the
+// projects and models panels need DIFFERENT content-aware heights (#475.13):
+// with a single-model fixture, leg 2's target is only ever asserted as ">0",
+// which a bug that armed leg 2 against the OUTGOING kind's height (projects,
+// also 4 rows) would pass just as easily as the correct implementation.
 func TestBreakdownSwap_ChainsSecondLeg(t *testing.T) {
 	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
-	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
+	m, c := seedBarModelWithVariedModels(t, int(chartUnitCost), now)
 	defer c.Close()
 	m.breakdown = breakdownProjects
 	m.refreshBreakdown()
+	projectsTarget := m.breakdownTargetHeight()
+	if projectsTarget != 4 {
+		t.Fatalf("setup: projects target = %d, want 4 (fixture's single project, #420 floor)", projectsTarget)
+	}
 
 	if cmd := m.handleBreakdownKey(breakdownModels); cmd == nil {
 		t.Fatal("swap keypress returned nil Cmd, want an armed slide")
@@ -934,8 +1090,18 @@ func TestBreakdownSwap_ChainsSecondLeg(t *testing.T) {
 	if m.breakdownSlideFrom != 0 {
 		t.Errorf("leg 2 start = %d, want 0", m.breakdownSlideFrom)
 	}
-	if m.breakdownSlideTo <= 0 {
-		t.Errorf("leg 2 target = %d, want the models box height (>0)", m.breakdownSlideTo)
+	// leg 2's target must be the INCOMING kind's (models) content-aware
+	// height: the fixture's 6 model rows at breakdownCellCols(122)=2 cols
+	// need border(2)+title(1)+⌈6/2⌉=6 outer rows — strictly more than the
+	// projects panel's 4, so a leg 2 armed against the OUTGOING kind's
+	// height (a stale-height bug) fails this exact-value check instead of
+	// slipping through a bare ">0".
+	const wantModelsTarget = 6
+	if m.breakdownSlideTo != wantModelsTarget {
+		t.Errorf("leg 2 target = %d, want %d (models' content-aware height)", m.breakdownSlideTo, wantModelsTarget)
+	}
+	if m.breakdownSlideTo == projectsTarget {
+		t.Error("leg 2 target equals the OUTGOING (projects) height — must be the incoming (models) height")
 	}
 	if m.viewport.Height != m.chartHeight() {
 		t.Errorf("viewport.Height = %d, want chartHeight() = %d — leg-2 frame 0 must be painted synchronously",
@@ -979,7 +1145,11 @@ func TestBreakdownSwap_ReduceMotionSnaps(t *testing.T) {
 }
 
 // TestBreakdownKey_MidAnimation covers the effectiveKind() resolution table:
-// during leg 1 a keypress only rewrites the destination and must NOT re-arm.
+// during leg 1 a keypress only rewrites the destination and must NOT re-arm;
+// during leg 2 (pendingBreakdown already consumed) a keypress DOES re-arm,
+// behaving as an ordinary reverse-from-current-height re-arm — the same
+// contract TestProjectsKey_RearmMidSlide_ReversesFromCurrentHeight pins
+// outside a swap.
 func TestBreakdownKey_MidAnimation(t *testing.T) {
 	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
 
@@ -991,14 +1161,22 @@ func TestBreakdownKey_MidAnimation(t *testing.T) {
 		m.handleBreakdownKey(breakdownModels) // swap armed, pending = models
 		m.handleBreakdownSpringTick(m.springGen)
 
-		genBefore, toBefore := m.springGen, m.breakdownSlideTo
+		genBefore, breakdownBefore := m.springGen, m.breakdown
 		m.handleBreakdownKey(breakdownModels) // effectiveKind == models → hide
 
 		if m.pendingBreakdown != breakdownNone {
 			t.Errorf("pendingBreakdown = %v, want breakdownNone (swap cancelled)", m.pendingBreakdown)
 		}
-		if m.springGen != genBefore || m.breakdownSlideTo != toBefore {
+		// breakdownSlideTo is deliberately NOT asserted here: leg 1's target
+		// is always 0, whether this press is correctly guarded (no-op) or a
+		// bug re-armed a "hide" (also targets 0) — it cannot distinguish the
+		// two. springGen is the load-bearing check: beginBreakdownAnimation
+		// always bumps it, guarded or not.
+		if m.springGen != genBefore {
 			t.Error("re-armed during leg 1; a mid-leg-1 press must only rewrite the destination")
+		}
+		if m.breakdown != breakdownBefore {
+			t.Errorf("breakdown changed mid-leg-1: %v → %v, want unchanged (committed only at arm)", breakdownBefore, m.breakdown)
 		}
 	})
 
@@ -1010,7 +1188,7 @@ func TestBreakdownKey_MidAnimation(t *testing.T) {
 		m.handleBreakdownKey(breakdownModels)
 		m.handleBreakdownSpringTick(m.springGen)
 
-		genBefore := m.springGen
+		genBefore, breakdownBefore := m.springGen, m.breakdown
 		m.handleBreakdownKey(breakdownProjects) // effectiveKind == models → swap to projects
 
 		if m.pendingBreakdown != breakdownProjects {
@@ -1018,6 +1196,73 @@ func TestBreakdownKey_MidAnimation(t *testing.T) {
 		}
 		if m.springGen != genBefore {
 			t.Error("re-armed during leg 1; only the destination should change")
+		}
+		if m.breakdown != breakdownBefore {
+			t.Errorf("breakdown changed mid-leg-1: %v → %v, want unchanged (committed only at arm)", breakdownBefore, m.breakdown)
+		}
+	})
+
+	t.Run("leg 2: keypress re-arms as a normal reverse-from-current-height", func(t *testing.T) {
+		m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
+		defer c.Close()
+		m.breakdown = breakdownProjects
+		m.refreshBreakdown()
+		m.handleBreakdownKey(breakdownModels) // arm the swap: hide projects, queue models
+
+		// Drive leg 1 to settle and chain into leg 2 (mirrors
+		// TestBreakdownSwap_ChainsSecondLeg's drive loop).
+		for i := 0; ; i++ {
+			if i > 600 {
+				t.Fatal("leg 1 did not chain into leg 2 within 600 ticks")
+			}
+			cmd := m.handleBreakdownSpringTick(m.springGen)
+			if m.breakdown == breakdownModels {
+				break
+			}
+			if cmd == nil {
+				t.Fatal("leg 1 settled without chaining leg 2")
+			}
+		}
+		if m.pendingBreakdown != breakdownNone {
+			t.Fatalf("setup: pendingBreakdown=%v after chaining, want breakdownNone (consumed)", m.pendingBreakdown)
+		}
+
+		// Advance further until leg 2 is strictly mid-flight (mirrors
+		// TestProjectsKey_RearmMidSlide_ReversesFromCurrentHeight).
+		for i := 0; m.breakdownAnimH <= 0 || m.breakdownAnimH >= m.breakdownTargetHeight(); i++ {
+			if i > 600 || !m.springActive {
+				t.Fatalf("no strictly-mid-flight leg-2 frame observed (tick %d, animH=%d, target=%d, active=%v)",
+					i, m.breakdownAnimH, m.breakdownTargetHeight(), m.springActive)
+			}
+			m.handleBreakdownSpringTick(m.springGen)
+		}
+		mid := m.breakdownAnimH
+		genBefore := m.springGen
+
+		// Pending is already consumed, so this press must NOT be swallowed by
+		// handleBreakdownKey's pendingBreakdown-!=-none guard — it must
+		// re-arm, reversing from the current leg-2 height exactly as a plain
+		// (non-swap) mid-slide re-arm does.
+		cmd := m.handleBreakdownKey(breakdownModels) // effectiveKind == models (pending consumed) → hide
+
+		if cmd == nil {
+			t.Fatal("leg-2 re-arm: cmd=nil, want a new tick loop")
+		}
+		if m.breakdown != breakdownNone {
+			t.Errorf("leg-2 re-arm: breakdown=%v, want breakdownNone (reversed to hide)", m.breakdown)
+		}
+		if m.pendingBreakdown != breakdownNone {
+			t.Errorf("leg-2 re-arm: pendingBreakdown=%v, want breakdownNone (no further swap queued)", m.pendingBreakdown)
+		}
+		if m.springGen == genBefore {
+			t.Error("leg-2 re-arm: springGen not bumped — stale leg-2 ticks would still apply")
+		}
+		if m.breakdownSlideFrom != mid || m.breakdownSlideTo != 0 {
+			t.Errorf("leg-2 re-arm from/to = (%d,%d), want (%d,0) — must reverse from the current leg-2 height",
+				m.breakdownSlideFrom, m.breakdownSlideTo, mid)
+		}
+		if m.breakdownAnimH != mid {
+			t.Errorf("leg-2 re-arm animH=%d, want %d (frame 0 of the reversal = current frame)", m.breakdownAnimH, mid)
 		}
 	})
 }
@@ -1055,37 +1300,141 @@ func TestBreakdownSwap_HeightConservedAcrossBothLegs(t *testing.T) {
 	}
 }
 
+// breakdownQueryCounter wraps modernc.org/sqlite's driver so
+// TestBreakdownSwap_QueryCount can count exactly how many times a query
+// matching `match` reached the database — a real counter, not the
+// backing-pointer-changed proxy breakdownRowsBackingPtr provides elsewhere in
+// this file. That proxy only samples BETWEEN whole handleBreakdownSpringTick
+// calls (so two refreshBreakdown calls landing inside a single tick would
+// register as one) and the uintptr it compares does not keep the slice's
+// backing array reachable, so the allocator could in principle hand a later,
+// genuinely distinct allocation the same address (#475.24).
+type breakdownQueryCounter struct {
+	inner driver.Driver
+	n     atomic.Int64
+	match func(query string) bool
+}
+
+func (d *breakdownQueryCounter) Open(name string) (driver.Conn, error) {
+	c, err := d.inner.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	return &breakdownCountingConn{Conn: c, counter: d}, nil
+}
+
+// breakdownCountingConn embeds driver.Conn so Prepare/Close/Begin delegate to
+// the real connection unchanged; only Query is intercepted.
+// database/sql.QueryContext prefers a conn's driver.Queryer over the
+// prepare+stmt path whenever the conn implements it, and modernc.org/sqlite's
+// conn does (as the legacy driver.Queryer, not driver.QueryerContext) — so
+// this is the single choke point every ProjectAggregates/ModelAggregates
+// SELECT issued via *sql.DB.QueryContext passes through.
+type breakdownCountingConn struct {
+	driver.Conn
+	counter *breakdownQueryCounter
+}
+
+func (c *breakdownCountingConn) Query(query string, args []driver.Value) (driver.Rows, error) {
+	if c.counter.match(query) {
+		c.counter.n.Add(1)
+	}
+	//nolint:staticcheck // SA1019: driver.Queryer is what modernc.org/sqlite's
+	// conn actually implements (not driver.QueryerContext); this Query method
+	// exists to intercept that exact interface, not to call a newer one.
+	return c.Conn.(driver.Queryer).Query(query, args)
+}
+
+// newBreakdownSwapFixtureWithQueryCounter builds the same single-model swap
+// fixture as seedBarModelWithMessages, backed by a *cache.Cache whose
+// underlying *sql.DB is wrapped in a breakdownQueryCounter matching
+// ModelAggregates' query text: "GROUP BY model" is unique to it (neither
+// ProjectAggregates' "GROUP BY repo_root" nor the chart bucket queries'
+// "GROUP BY bucket_epoch"/"GROUP BY day" share that clause), so the counter
+// tracks exactly the queries refreshBreakdown issues on the models kind.
+// Pre-warms the schema through a throwaway cache.Open (the real "sqlite"
+// driver, unwrapped) so the counting driver only ever sees the queries this
+// test cares about.
+func newBreakdownSwapFixtureWithQueryCounter(t *testing.T, now time.Time) (Model, *cache.Cache, *breakdownQueryCounter) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "state.db")
+	warm, err := cache.Open(t.Context(), path)
+	if err != nil {
+		t.Fatalf("prewarm cache.Open: %v", err)
+	}
+	if err := warm.Close(); err != nil {
+		t.Fatalf("prewarm close: %v", err)
+	}
+
+	drvName := fmt.Sprintf("sqlite-querycount-%d", time.Now().UnixNano())
+	counter := &breakdownQueryCounter{
+		inner: &modernsqlite.Driver{},
+		match: func(q string) bool { return strings.Contains(q, "GROUP BY model") },
+	}
+	sql.Register(drvName, counter)
+
+	db, err := sql.Open(drvName, path+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	c := cache.NewFromDB(db)
+
+	tab, err := pricing.Load()
+	if err != nil {
+		t.Fatalf("pricing.Load: %v", err)
+	}
+	var msgs []parse.Message
+	for i := range 60 {
+		msgs = append(msgs, parse.Message{
+			SessionID:   "s",
+			ProjectSlug: "p",
+			Model:       "claude-opus-4-7",
+			Timestamp:   now.Add(-time.Duration(i) * 15 * time.Minute),
+			InputTokens: 5000,
+		})
+	}
+	if err := c.InsertMessages(t.Context(), msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	m := New(Deps{Cache: c})
+	m.unitIdx = int(chartUnitCost)
+	m.zoomIdx = 0 // 15m
+	m.w, m.h = 122, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	m.now = func() time.Time { return now }
+	m.introPending = false
+	m.quotaIntroPending = false
+	m.refreshChart()
+	return m, c, counter
+}
+
 // TestBreakdownSwap_QueryCount pins the per-frame DB contract across a whole
 // swap: two queries total (leg 2's arm and leg 2's settle). Leg 1 targets
 // breakdownNone so it queries nothing, and its chained settle skips
-// refreshChart. Identity of the rows slice is the proxy — it is reassigned only
-// inside refreshBreakdown, so a changed backing pointer means a query ran.
+// refreshChart. Counts real ModelAggregates invocations via
+// breakdownQueryCounter rather than sampling the breakdownRows backing
+// pointer between ticks (#475.24 — see that type's doc comment for why the
+// pointer proxy cannot make "want 2" exact).
 func TestBreakdownSwap_QueryCount(t *testing.T) {
 	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
-	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
+	m, c, counter := newBreakdownSwapFixtureWithQueryCounter(t, now)
 	defer c.Close()
 	m.breakdown = breakdownProjects
-	m.refreshBreakdown()
+	m.refreshBreakdown() // ProjectAggregates — "GROUP BY repo_root" must not match
 
-	queries := 0
-	prev := breakdownRowsBackingPtr(m.breakdownRows)
-	note := func() {
-		if p := breakdownRowsBackingPtr(m.breakdownRows); p != prev {
-			queries++
-			prev = p
-		}
+	if n := counter.n.Load(); n != 0 {
+		t.Fatalf("setup: query counter = %d after the projects setup query, want 0", n)
 	}
 
 	m.handleBreakdownKey(breakdownModels)
-	note()
 	for range 1200 {
-		cmd := m.handleBreakdownSpringTick(m.springGen)
-		note()
-		if cmd == nil {
+		if m.handleBreakdownSpringTick(m.springGen) == nil {
 			break
 		}
 	}
-	if queries != 2 {
-		t.Errorf("queries across the swap = %d, want 2 (leg-2 arm + leg-2 settle)", queries)
+	if got := counter.n.Load(); got != 2 {
+		t.Errorf("ModelAggregates queries across the swap = %d, want 2 (leg-2 arm + leg-2 settle)", got)
 	}
 }

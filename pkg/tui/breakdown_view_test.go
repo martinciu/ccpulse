@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 // stripANSI removes ANSI escape sequences from s so position arithmetic on
@@ -246,17 +247,45 @@ func TestBreakdownTitle(t *testing.T) {
 // breakdownNone at arm while the box is still full-height and rendering the
 // retained rows, so titling by m.breakdown would blank the title mid-slide and
 // break #416's frame-0 endpoint identity.
+//
+// Drives the real hide-arm path (handleBreakdownKey) and asserts on the
+// PAINTED frame from m.View() — not a hand-rewritten copy of View()'s title
+// expression (breakdownTitle(m.breakdownRowsKind) at model.go's View — that
+// version pinned its own copy of the decision and stayed green even when the
+// View() call site itself was mutated to read m.breakdown instead).
 func TestBreakdownRowsKind_TitleSurvivesHideArm(t *testing.T) {
-	m := Model{
-		breakdown:         breakdownNone, // committed at hide-arm
-		breakdownRowsKind: breakdownProjects,
-		breakdownRows:     []breakdownRow{{Label: "ccpulse", CostUSD: 1, Tokens: 2, CostPct: 100}},
+	withForcedColor(t)
+	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
+	defer c.Close()
+	m.breakdown = breakdownProjects
+	m.refreshBreakdown()
+	if m.breakdownRowsKind != breakdownProjects {
+		t.Fatalf("setup: breakdownRowsKind=%v, want breakdownProjects", m.breakdownRowsKind)
 	}
-	got := renderBreakdownBox(breakdownTitle(m.breakdownRowsKind), m.breakdownRows, 80, 6)
-	if !strings.Contains(stripANSI(got), breakdownProjectsTitle) {
-		t.Errorf("mid-hide box lost its title\ngot:\n%s", got)
+
+	// Arm the hide: pressing the visible panel's own key commits m.breakdown
+	// to breakdownNone at arm (handleBreakdownKey → beginBreakdownAnimation)
+	// while breakdownRowsKind and breakdownRows still hold the retained
+	// projects data and breakdownAnimH sits at the full pre-hide height —
+	// exactly the mid-hide state the doc comment describes: frame 0 of the
+	// hide slide, box still full-height, kind already committed to none.
+	cmd := m.handleBreakdownKey(breakdownProjects)
+	if cmd == nil {
+		t.Fatal("setup: hide arm returned nil cmd, want a scheduled tick")
 	}
-	if breakdownTitle(m.breakdown) != "" {
-		t.Fatal("precondition: breakdownTitle(breakdownNone) must be empty — that is the trap this guards")
+	if m.breakdown != breakdownNone {
+		t.Fatalf("setup: breakdown=%v after hide-arm, want breakdownNone (committed at arm)", m.breakdown)
+	}
+	if m.breakdownRowsKind != breakdownProjects {
+		t.Fatalf("setup: breakdownRowsKind=%v after hide-arm, want breakdownProjects (retained)", m.breakdownRowsKind)
+	}
+	if m.breakdownHeight() == 0 {
+		t.Fatal("setup: breakdownHeight()=0 at hide-arm frame 0, want the full pre-hide height")
+	}
+
+	frame := m.View()
+	if !strings.Contains(stripANSI(frame), breakdownProjectsTitle) {
+		t.Errorf("hide-arm frame 0 lost its title\ngot:\n%s", frame)
 	}
 }

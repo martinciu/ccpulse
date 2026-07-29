@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,6 +15,13 @@ import (
 	"github.com/martinciu/ccpulse/pkg/pricing"
 	"github.com/martinciu/ccpulse/pkg/status"
 )
+
+// longModelLabel is a Bedrock/Vertex model id (44 chars) that overflows
+// labelW at every width in fitWidths — models.Canonical only strips a
+// trailing -YYYYMMDD, so ids in this shape are not folded any shorter
+// (#475.2). Used in place of a 1-char label anywhere a breakdown row needs
+// to genuinely exercise the box's label-truncation path.
+const longModelLabel = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
 
 // fitNow is a fixed clock for every matrix cell, so reset timers, chart
 // windows, and seeded-cache timestamps line up deterministically.
@@ -279,7 +287,7 @@ func TestViewFitsWithScopedLimits_ProjectsBox(t *testing.T) {
 				m := newScopedTestModel(t, 100, h, n)
 				m.breakdown = breakdownProjects
 				for range 3 {
-					m.breakdownRows = append(m.breakdownRows, breakdownRow{Label: "p"})
+					m.breakdownRows = append(m.breakdownRows, breakdownRow{Label: longModelLabel})
 				}
 				m.viewport.Width = m.chartWidth()
 				m.viewport.Height = m.chartHeight()
@@ -303,7 +311,7 @@ func TestProjectsTargetHeight_WithScopedRows(t *testing.T) {
 	m := newScopedTestModel(t, 100, 24, 2) // headerContentRows() == 4
 	m.breakdown = breakdownProjects
 	for range 8 { // enough that `needed` exceeds avail/2, so the cap binds
-		m.breakdownRows = append(m.breakdownRows, breakdownRow{Label: "p"})
+		m.breakdownRows = append(m.breakdownRows, breakdownRow{Label: longModelLabel})
 	}
 	avail := m.h - 5 - m.headerContentRows()
 	cols := breakdownCellCols(m.w)
@@ -321,5 +329,62 @@ func TestHeaderContentRows(t *testing.T) {
 		if got := m.headerContentRows(); got != tt.want {
 			t.Errorf("n=%d: headerContentRows = %d, want %d", tt.n, got, tt.want)
 		}
+	}
+}
+
+// TestRenderBreakdownBox_LongLabelHeightConserved pins #475.2: a label wider
+// than the cell's labelW must truncate (Inline(true) + MaxWidth), never
+// wrap, or the box renders taller than the declared height and breaks
+// View()'s per-frame height-conservation invariant that assertFits checks
+// above. Verified failing before the fix at w=120/160/200 with 6 rows of
+// longModelLabel; must render exactly the declared height at every width in
+// fitWidths and every height the box actually occupies (4: minimum
+// title+body shell, up to breakdownMaxRows).
+func TestRenderBreakdownBox_LongLabelHeightConserved(t *testing.T) {
+	rows := make([]breakdownRow, 6)
+	for i := range rows {
+		rows[i] = breakdownRow{Label: longModelLabel, CostUSD: float64(100 - i), Tokens: 1000, CostPct: 10}
+	}
+	for _, w := range fitWidths {
+		for _, h := range []int{4, 5, 6, 8, 12} {
+			t.Run(fmt.Sprintf("w%d_h%d", w, h), func(t *testing.T) {
+				got := renderBreakdownBox(breakdownModelsTitle, rows, w, h)
+				if height := lipgloss.Height(got); height != h {
+					t.Errorf("renderBreakdownBox(w=%d, h=%d) rendered height %d, want exactly %d\n%s",
+						w, h, height, h, got)
+				}
+			})
+		}
+	}
+}
+
+// TestBreakdownCell_StripsControlChars pins #475.10: messages.model is
+// written verbatim from on-disk JSONL with no validation and flows into
+// breakdownCell's Render(r.Label) call. lipgloss Width/MaxWidth treat ANSI
+// escapes as zero-width, so without sanitizing at the render boundary,
+// control bytes survive into the painted cell — an unterminated SGR would
+// recolor every row below the box, a bare \a would ring the terminal bell,
+// and a bare \r would overwrite the box's left border. Confirmed present
+// before the fix; must be absent from the rendered cell after it.
+func TestBreakdownCell_StripsControlChars(t *testing.T) {
+	cases := []struct {
+		name  string
+		label string
+	}{
+		{"ansi_color", "claude-\x1b[31mopus\x1b[0m-4-5"},
+		{"osc_bell", "\x1b]0;pwned\aclaude-opus-4-5"},
+		{"carriage_return", "claude-opus\r4-5"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := breakdownRow{Label: tc.label, CostUSD: 1, Tokens: 100, CostPct: 10}
+			rendered := breakdownCell(r, 60)
+			for _, bad := range []rune{'\x1b', '\a', '\r'} {
+				if strings.ContainsRune(rendered, bad) {
+					t.Errorf("breakdownCell(%q) retained control rune %q in rendered output: %q",
+						tc.label, bad, rendered)
+				}
+			}
+		})
 	}
 }

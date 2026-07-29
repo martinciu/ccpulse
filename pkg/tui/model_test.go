@@ -6248,19 +6248,144 @@ func TestRefreshBreakdown_ModelsKindUsesModelAggregates(t *testing.T) {
 	}
 }
 
-// TestBreakdownWindow_MatchesProjectsAndModels pins that both kinds read the
-// identical [from, to) — the #430 fix must not fork per kind.
-func TestBreakdownWindow_MatchesProjectsAndModels(t *testing.T) {
+// TestBreakdownWindow_BarMode_MatchesBucketEdges pins breakdownWindow's
+// bar-mode branch (chart unit != remaining) against hand-computed bucket
+// edges — not a second breakdownWindow() call under a different m.breakdown,
+// which never reads m.breakdown at all (#430: it's shared by every kind by
+// construction) and so could never fail for any implementation, correct or
+// not. Each case is built directly from Model fields — no cache, no
+// seedBarModelWithMessages — so "want" is arithmetic on the fixture,
+// independent of breakdownWindow's own clamp logic.
+func TestBreakdownWindow_BarMode_MatchesBucketEdges(t *testing.T) {
+	t.Parallel()
+	from := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+	bucketsOf := func(n int) []time.Time {
+		s := make([]time.Time, n)
+		for i := range s {
+			s[i] = from.Add(time.Duration(i) * 15 * time.Minute)
+		}
+		return s
+	}
+	sentinelTo := from.Add(999 * time.Hour) // distinct from any lastStarts entry
+
+	tests := []struct {
+		name             string
+		nBuckets         int
+		viewportXOffset  int
+		wantFrom, wantTo time.Time
+	}{
+		{
+			// visibleBuckets()=10 (chartWidth floors at 10 with m.w unset);
+			// start=3 stays in range, end=3+10=13 < 15 → to comes from
+			// lastStarts[13], not the lastChartTo fallback.
+			name:            "mid-range window uses lastStarts[end]",
+			nBuckets:        15,
+			viewportXOffset: 3,
+			wantFrom:        from.Add(3 * 15 * time.Minute),
+			wantTo:          from.Add(13 * 15 * time.Minute),
+		},
+		{
+			// end=0+10=10 >= len(8) → to falls back to lastChartTo.
+			name:            "window reaching the data edge falls back to lastChartTo",
+			nBuckets:        8,
+			viewportXOffset: 0,
+			wantFrom:        from,
+			wantTo:          sentinelTo,
+		},
+		{
+			// viewportXOffset(99) overshoots len(5); start clamps to len-1=4.
+			name:            "out-of-range offset clamps start to the last bucket",
+			nBuckets:        5,
+			viewportXOffset: 99,
+			wantFrom:        from.Add(4 * 15 * time.Minute),
+			wantTo:          sentinelTo,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			m := Model{
+				unitIdx:         int(chartUnitCost),
+				lastStarts:      bucketsOf(tt.nBuckets),
+				viewportXOffset: tt.viewportXOffset,
+				lastChartTo:     sentinelTo,
+			}
+			gotFrom, gotTo := m.breakdownWindow()
+			if !gotFrom.Equal(tt.wantFrom) {
+				t.Errorf("breakdownWindow from = %v, want %v", gotFrom, tt.wantFrom)
+			}
+			if !gotTo.Equal(tt.wantTo) {
+				t.Errorf("breakdownWindow to = %v, want %v", gotTo, tt.wantTo)
+			}
+		})
+	}
+}
+
+// TestBreakdownWindow_RemainingMode_ReturnsVisibleWindow pins breakdownWindow's
+// remaining-mode branch against visibleWindow() itself — the single source of
+// truth for the on-screen time range in that mode per breakdownWindow's own
+// doc comment — rather than a second breakdownWindow() call, which never
+// exercises this branch's actual delegation.
+func TestBreakdownWindow_RemainingMode_ReturnsVisibleWindow(t *testing.T) {
+	t.Parallel()
+	from := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+	pts5h := []cache.UtilizationPoint{{At: from.Add(12 * time.Hour)}}
+	m := remainingModeModel(pts5h)
+	m.setX(60) // in-range position, mirrors TestSetX_RemainingMode_InRangePreservesPosition
+
+	wantFrom, wantTo := m.visibleWindow()
+	gotFrom, gotTo := m.breakdownWindow()
+	if !gotFrom.Equal(wantFrom) || !gotTo.Equal(wantTo) {
+		t.Errorf("remaining-mode breakdownWindow = [%v,%v), want visibleWindow() = [%v,%v)",
+			gotFrom, gotTo, wantFrom, wantTo)
+	}
+}
+
+// TestModelsBreakdown_RendersThroughView pins that the models panel actually
+// reaches a painted frame. Before this test, "Models (visible window)" was
+// asserted only in the breakdownTitle unit table (breakdown_view_test.go),
+// never against real m.View() output, and nothing asserted that
+// refreshBreakdown records breakdownRowsKind = breakdownModels — only that it
+// populates the right ROWS (TestRefreshBreakdown_ModelsKindUsesModelAggregates
+// above). A models box that painted with the projects title, a blank title,
+// or missing labels would not have failed anything (#475.12).
+func TestModelsBreakdown_RendersThroughView(t *testing.T) {
+	withForcedColor(t)
 	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
-	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
+	m, c := seedBarModelWithVariedModels(t, int(chartUnitCost), now)
 	defer c.Close()
+	m.deps.ReduceMotion = true // synchronous snap: no ticks to drive to settle
+	m.breakdown = breakdownNone
+	m.refreshChart()
 
-	m.breakdown = breakdownProjects
-	pFrom, pTo := m.breakdownWindow()
-	m.breakdown = breakdownModels
-	mFrom, mTo := m.breakdownWindow()
+	// Drive the real key-press path (mirrors TestModelsKey_RoutesThroughUpdate
+	// in keys_test.go, which pins the routing itself; this test pins what
+	// lands on screen once the models kind is armed).
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
+	m = updated.(Model)
+	if cmd != nil {
+		t.Fatalf("reduce_motion 'm': cmd=%v, want nil (synchronous snap)", cmd)
+	}
+	if m.breakdown != breakdownModels {
+		t.Fatalf("setup: breakdown=%v, want breakdownModels", m.breakdown)
+	}
+	if m.breakdownRowsKind != breakdownModels {
+		t.Errorf("refreshBreakdown: breakdownRowsKind=%v, want breakdownModels", m.breakdownRowsKind)
+	}
+	if len(m.breakdownRows) < 2 {
+		t.Fatalf("setup: breakdownRows=%d, want >=2 (fixture seeds several models)", len(m.breakdownRows))
+	}
+	topLabel := m.breakdownRows[0].Label
+	lastLabel := m.breakdownRows[len(m.breakdownRows)-1].Label
 
-	if !pFrom.Equal(mFrom) || !pTo.Equal(mTo) {
-		t.Errorf("window differs by kind: projects [%v,%v), models [%v,%v)", pFrom, pTo, mFrom, mTo)
+	frame := stripANSI(m.View())
+	if !strings.Contains(frame, breakdownModelsTitle) {
+		t.Errorf("View() missing %q\ngot:\n%s", breakdownModelsTitle, frame)
+	}
+	if !strings.Contains(frame, topLabel) {
+		t.Errorf("View() missing top model label %q\ngot:\n%s", topLabel, frame)
+	}
+	if !strings.Contains(frame, lastLabel) {
+		t.Errorf("View() missing %q (unknown-model bucket)\ngot:\n%s", lastLabel, frame)
 	}
 }
