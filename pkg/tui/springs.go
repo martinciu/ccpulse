@@ -35,8 +35,8 @@ func (m *Model) handleSpringTick(msg springTickMsg) tea.Cmd {
 	if m.springKind == springKindZoom {
 		return m.handleZoomSpringTick(m.springGen)
 	}
-	if m.springKind == springKindProjects {
-		return m.handleProjectsSpringTick(m.springGen)
+	if m.springKind == springKindBreakdown {
+		return m.handleBreakdownSpringTick(m.springGen)
 	}
 	gen := m.springGen
 	switch m.springPhase {

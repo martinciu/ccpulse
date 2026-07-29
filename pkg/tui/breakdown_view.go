@@ -16,21 +16,21 @@ const (
 	minCellW = 48
 	// columnDivider separates packed columns; also used by tests to count
 	// columns.
-	columnDivider = " │ "
-	projectsTitle = "Projects (visible window)"
+	columnDivider          = " │ "
+	breakdownProjectsTitle = "Projects (visible window)"
 )
 
-// projectCellCols returns how many project cells pack side-by-side into an
+// breakdownCellCols returns how many project cells pack side-by-side into an
 // outer box width (border + 1 col padding each side subtracted). Shared by
-// renderProjectsBox (column layout) and projectsHeight (rows needed) so the
+// renderBreakdownBox (column layout) and breakdownHeight (rows needed) so the
 // packing math cannot drift between the renderer and the height calc (#420).
-func projectCellCols(outerWidth int) int {
+func breakdownCellCols(outerWidth int) int {
 	inner := max(outerWidth-4, 1)
 	divW := lipgloss.Width(columnDivider)
 	return max(1, (inner+divW)/(minCellW+divW))
 }
 
-// renderProjectsBox renders aggs as a bordered, multi-column table sized to
+// renderBreakdownBox renders aggs as a bordered, multi-column table sized to
 // width×height (outer dimensions, including border). Columns are packed to
 // fit width (≥1); cells fill column-major (top spender top-left, read down
 // then right). The synthetic "(no project)" row is expected last in aggs
@@ -42,9 +42,9 @@ func projectCellCols(outerWidth int) int {
 // degrade gracefully — 1: top border, 2: closed border shell, 3: shell around
 // the title row — always exactly `height` rows so View's per-frame height
 // conservation holds at every animated height.
-func renderProjectsBox(aggs []cache.ProjectAggregate, width, height int) string {
+func renderBreakdownBox(aggs []cache.ProjectAggregate, width, height int) string {
 	if height <= 2 {
-		return projectsBoxShell(width, height)
+		return breakdownBoxShell(width, height)
 	}
 
 	box := lipgloss.NewStyle().
@@ -66,13 +66,13 @@ func renderProjectsBox(aggs []cache.ProjectAggregate, width, height int) string 
 	// below always emits title + ≥1 body row (≥4 rows total), which would
 	// overflow the box.
 	if innerH < 2 {
-		return box.Render(lipgloss.NewStyle().Foreground(colorMuted).Render(projectsTitle))
+		return box.Render(lipgloss.NewStyle().Foreground(colorMuted).Render(breakdownProjectsTitle))
 	}
 
 	// One row is spent on the title, so cells share the remaining innerH-1.
 	bodyRows := max(innerH-1, 1)
 
-	cols := projectCellCols(width)
+	cols := breakdownCellCols(width)
 	cellW := (inner - (cols-1)*lipgloss.Width(columnDivider)) / cols
 
 	capacity := cols * bodyRows
@@ -84,7 +84,7 @@ func renderProjectsBox(aggs []cache.ProjectAggregate, width, height int) string 
 
 	cells := make([]string, 0, len(aggs)+1)
 	for _, a := range aggs {
-		cells = append(cells, projectCell(a, cellW))
+		cells = append(cells, breakdownCell(a, cellW))
 	}
 	if overflow > 0 {
 		cells = append(cells, lipgloss.NewStyle().Width(cellW).
@@ -117,16 +117,16 @@ func renderProjectsBox(aggs []cache.ProjectAggregate, width, height int) string 
 	body := lipgloss.JoinHorizontal(lipgloss.Top, joined...)
 
 	// Title via a styled top line inside the box.
-	title := lipgloss.NewStyle().Foreground(colorMuted).Render(projectsTitle)
+	title := lipgloss.NewStyle().Foreground(colorMuted).Render(breakdownProjectsTitle)
 	return box.Render(lipgloss.JoinVertical(lipgloss.Left, title, body))
 }
 
-// projectsBoxShell renders the box's border rows alone at the degenerate
+// breakdownBoxShell renders the box's border rows alone at the degenerate
 // heights the slide passes through (1: top border, 2: top+bottom — the fully
-// squashed box), matching renderProjectsBox's RoundedBorder + colorMuted so
+// squashed box), matching renderBreakdownBox's RoundedBorder + colorMuted so
 // the shell reads as the same box. lipgloss cannot emit a bordered block
 // with zero content rows, hence the manual border rows.
-func projectsBoxShell(width, height int) string {
+func breakdownBoxShell(width, height int) string {
 	b := lipgloss.RoundedBorder()
 	inner := max(width-2, 0)
 	style := lipgloss.NewStyle().Foreground(colorMuted)
@@ -153,11 +153,11 @@ const (
 	pctSlotW   = 4
 )
 
-// projectCell renders one project's row into a fixed-width cell: label
+// breakdownCell renders one project's row into a fixed-width cell: label
 // (left, truncated) + cost + tokens + pct (right-aligned, in that order).
 // The cost/tokens/pct values each sit in a fixed-width right-aligned slot
 // so they line up vertically across stacked cells.
-func projectCell(a cache.ProjectAggregate, w int) string {
+func breakdownCell(a cache.ProjectAggregate, w int) string {
 	if w < 8 {
 		w = 8
 	}

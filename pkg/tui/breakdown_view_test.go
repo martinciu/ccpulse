@@ -41,8 +41,8 @@ func sampleAggs() []cache.ProjectAggregate {
 }
 
 func TestRenderProjectsBox_PacksColumnsByWidth(t *testing.T) {
-	wide := renderProjectsBox(sampleAggs(), 200, 8)
-	narrow := renderProjectsBox(sampleAggs(), 60, 8)
+	wide := renderBreakdownBox(sampleAggs(), 200, 8)
+	narrow := renderBreakdownBox(sampleAggs(), 60, 8)
 	if lipglossCols(wide) <= lipglossCols(narrow) {
 		t.Errorf("wide terminal should pack >= columns than narrow")
 	}
@@ -55,7 +55,7 @@ func TestRenderProjectsBox_PacksColumnsByWidth(t *testing.T) {
 }
 
 func TestRenderProjectsBox_EmptyPlaceholder(t *testing.T) {
-	got := renderProjectsBox(nil, 80, 6)
+	got := renderBreakdownBox(nil, 80, 6)
 	if !strings.Contains(got, "no activity in this window") {
 		t.Errorf("empty aggs should render placeholder, got:\n%s", got)
 	}
@@ -64,7 +64,7 @@ func TestRenderProjectsBox_EmptyPlaceholder(t *testing.T) {
 func TestRenderProjectsBox_NoProjectLast(t *testing.T) {
 	// Single column (narrow) → reading order is top-to-bottom; "(no project)"
 	// must be the last non-border line with content.
-	got := renderProjectsBox(sampleAggs(), 50, 8)
+	got := renderBreakdownBox(sampleAggs(), 50, 8)
 	idxNoProj := strings.Index(got, "(no project)")
 	idxCcpulse := strings.Index(got, "ccpulse")
 	if idxNoProj < idxCcpulse {
@@ -79,7 +79,7 @@ func TestRenderProjectsBox_NoProjectLast(t *testing.T) {
 // title+body layout.
 func TestRenderProjectsBox_DegenerateHeights(t *testing.T) {
 	for h := 1; h <= 5; h++ {
-		got := renderProjectsBox(sampleAggs(), 80, h)
+		got := renderBreakdownBox(sampleAggs(), 80, h)
 		rows := strings.Split(got, "\n")
 		if len(rows) != h {
 			t.Errorf("height %d: rendered %d rows, want exactly %d:\n%s", h, len(rows), h, got)
@@ -94,7 +94,7 @@ func TestRenderProjectsBox_DegenerateHeights(t *testing.T) {
 				t.Errorf("height %d: last row is not a bottom border: %q", h, last)
 			}
 		}
-		if h >= 3 && !strings.Contains(got, projectsTitle) {
+		if h >= 3 && !strings.Contains(got, breakdownProjectsTitle) {
 			t.Errorf("height %d: title missing", h)
 		}
 		if h >= 5 && !strings.Contains(got, "dotfiles") {
@@ -110,7 +110,7 @@ func TestRenderProjectsBox_Overflow(t *testing.T) {
 	for i := range many {
 		many[i] = cache.ProjectAggregate{Label: fmt.Sprintf("proj%d", i), CostUSD: float64(10 - i)}
 	}
-	got := renderProjectsBox(many, 50, 5)
+	got := renderBreakdownBox(many, 50, 5)
 	if !strings.Contains(got, "more") {
 		t.Errorf("overflow should render a “…N more” cell, got:\n%s", got)
 	}
@@ -152,13 +152,13 @@ func TestProjectCell_TokenCompactSuffix(t *testing.T) {
 				Tokens:  tc.tokens,
 				CostPct: 5,
 			}
-			rendered := stripANSI(projectCell(a, cellW))
+			rendered := stripANSI(breakdownCell(a, cellW))
 			if !strings.Contains(rendered, tc.wantSub) {
-				t.Errorf("projectCell(%d tokens): want %q in rendered output\ngot: %q",
+				t.Errorf("breakdownCell(%d tokens): want %q in rendered output\ngot: %q",
 					tc.tokens, tc.wantSub, rendered)
 			}
 			if tc.wantNot != "" && strings.Contains(rendered, tc.wantNot) {
-				t.Errorf("projectCell(%d tokens): must NOT contain %q in rendered output\ngot: %q",
+				t.Errorf("breakdownCell(%d tokens): must NOT contain %q in rendered output\ngot: %q",
 					tc.tokens, tc.wantNot, rendered)
 			}
 		})
@@ -193,7 +193,7 @@ func TestProjectCell_TokenColumnAlignment(t *testing.T) {
 	tokenRightEdge := (cellW - rightWidth) + costSlotW + 2 + tokenSlotW
 
 	for _, a := range aggs {
-		rendered := stripANSI(projectCell(a, cellW))
+		rendered := stripANSI(breakdownCell(a, cellW))
 		// rendered is a single line of exactly cellW visual columns.
 		if len(rendered) < tokenRightEdge+2 {
 			t.Fatalf("cell for %q too short: len=%d, need %d", a.Label, len(rendered), tokenRightEdge+2)
@@ -206,8 +206,8 @@ func TestProjectCell_TokenColumnAlignment(t *testing.T) {
 	}
 }
 
-// TestProjectCellCols pins the packing math shared by renderProjectsBox and
-// projectsHeight (#420): cells of minCellW packed with columnDivider gaps
+// TestProjectCellCols pins the packing math shared by renderBreakdownBox and
+// breakdownHeight (#420): cells of minCellW packed with columnDivider gaps
 // into the box's inner width (outer minus border + padding = 4).
 func TestProjectCellCols(t *testing.T) {
 	cases := []struct{ w, want int }{
@@ -218,8 +218,8 @@ func TestProjectCellCols(t *testing.T) {
 		{200, 3}, // inner=196: three columns, not four
 	}
 	for _, tc := range cases {
-		if got := projectCellCols(tc.w); got != tc.want {
-			t.Errorf("projectCellCols(%d) = %d, want %d", tc.w, got, tc.want)
+		if got := breakdownCellCols(tc.w); got != tc.want {
+			t.Errorf("breakdownCellCols(%d) = %d, want %d", tc.w, got, tc.want)
 		}
 	}
 }

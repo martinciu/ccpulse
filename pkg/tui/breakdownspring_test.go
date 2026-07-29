@@ -46,27 +46,27 @@ func TestProjectsHeight_SpringBranchOverridesTarget(t *testing.T) {
 	// (m.h-7=33 → upper min(16,12)=12). The empty-aggs floor is also 4, so
 	// the value holds whether or not refreshProjects ran.
 	m.showProjects = true
-	if got, want := m.projectsHeight(), m.projectsTargetHeight(); got != want {
-		t.Fatalf("steady projectsHeight()=%d, want projectsTargetHeight()=%d", got, want)
+	if got, want := m.breakdownHeight(), m.breakdownTargetHeight(); got != want {
+		t.Fatalf("steady breakdownHeight()=%d, want breakdownTargetHeight()=%d", got, want)
 	}
-	if m.projectsTargetHeight() != 4 {
-		t.Fatalf("projectsTargetHeight()=%d, want 4 (content-aware, 1 project) at 122x40", m.projectsTargetHeight())
+	if m.breakdownTargetHeight() != 4 {
+		t.Fatalf("breakdownTargetHeight()=%d, want 4 (content-aware, 1 project) at 122x40", m.breakdownTargetHeight())
 	}
 
-	// Spring branch: returns projectsAnimH regardless of showProjects.
+	// Spring branch: returns breakdownAnimH regardless of showProjects.
 	m.springActive = true
-	m.springKind = springKindProjects
-	m.projectsAnimH = 7
-	if got := m.projectsHeight(); got != 7 {
-		t.Errorf("in-slide projectsHeight()=%d, want 7 (animated)", got)
+	m.springKind = springKindBreakdown
+	m.breakdownAnimH = 7
+	if got := m.breakdownHeight(); got != 7 {
+		t.Errorf("in-slide breakdownHeight()=%d, want 7 (animated)", got)
 	}
 	m.showProjects = false
-	if got := m.projectsHeight(); got != 7 {
-		t.Errorf("in-slide projectsHeight() with showProjects=false=%d, want 7", got)
+	if got := m.breakdownHeight(); got != 7 {
+		t.Errorf("in-slide breakdownHeight() with showProjects=false=%d, want 7", got)
 	}
 }
 
-// renderProjectsFrame must keep viewport.Height in lockstep with the
+// renderBreakdownFrame must keep viewport.Height in lockstep with the
 // lever-derived chartHeight every frame (round-one finding ccpulse-416.1).
 func TestRenderProjectsFrame_SetsViewportHeightToChartHeight(t *testing.T) {
 	withForcedColor(t)
@@ -78,7 +78,7 @@ func TestRenderProjectsFrame_SetsViewportHeightToChartHeight(t *testing.T) {
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
 	m = updated.(Model)
-	for range 4 { // advance a few frames so projectsAnimH is mid-flight
+	for range 4 { // advance a few frames so breakdownAnimH is mid-flight
 		updated, _ = m.Update(springTickMsg{gen: m.springGen})
 		m = updated.(Model)
 	}
@@ -91,9 +91,9 @@ func TestRenderProjectsFrame_SetsViewportHeightToChartHeight(t *testing.T) {
 }
 
 // TestView_DuringSlide_HeightConservedRealBorder probes a mid-flight frame:
-// total height is conserved (chartHeight() + projectsHeight() == m.h - 7 and
+// total height is conserved (chartHeight() + breakdownHeight() == m.h - 7 and
 // the rendered frame is exactly m.h rows), and the box band carries the REAL
-// renderProjectsBox top border + title — re-flowed at the animated height,
+// renderBreakdownBox top border + title — re-flowed at the animated height,
 // not a phantom-topped bottom slice (#416 round two).
 func TestView_DuringSlide_HeightConservedRealBorder(t *testing.T) {
 	withForcedColor(t)
@@ -102,14 +102,14 @@ func TestView_DuringSlide_HeightConservedRealBorder(t *testing.T) {
 	defer c.Close()
 	m.showProjects = true
 	m.refreshProjects()
-	m.projectsSlideFrom, m.projectsSlideTo = 0, 12
+	m.breakdownSlideFrom, m.breakdownSlideTo = 0, 12
 	m.springActive = true
-	m.springKind = springKindProjects
-	m.projectsAnimH = 5
-	m.renderProjectsFrame()
+	m.springKind = springKindBreakdown
+	m.breakdownAnimH = 5
+	m.renderBreakdownFrame()
 
-	if got, want := m.chartHeight()+m.projectsHeight(), m.h-7; got != want {
-		t.Errorf("chartHeight+projectsHeight=%d, want %d (height lever conserved)", got, want)
+	if got, want := m.chartHeight()+m.breakdownHeight(), m.h-7; got != want {
+		t.Errorf("chartHeight+breakdownHeight=%d, want %d (height lever conserved)", got, want)
 	}
 	frame := m.View()
 	if got := lipgloss.Height(frame); got != m.h {
@@ -129,18 +129,18 @@ func TestView_DuringSlide_HeightConservedRealBorder(t *testing.T) {
 	if topIdx == -1 {
 		t.Fatal("mid-slide frame missing the box top border")
 	}
-	if topIdx+1 >= len(lines) || !strings.Contains(lines[topIdx+1], projectsTitle) {
-		t.Errorf("row beneath the top border lacks the title %q (box not re-flowed)", projectsTitle)
+	if topIdx+1 >= len(lines) || !strings.Contains(lines[topIdx+1], breakdownProjectsTitle) {
+		t.Errorf("row beneath the top border lacks the title %q (box not re-flowed)", breakdownProjectsTitle)
 	}
 }
 
 // armProjectsShowForTest arms a SHOW slide through the production arm path
-// (the box starts hidden; beginProjectsAnimation toggles it on, pays the
+// (the box starts hidden; beginBreakdownAnimation toggles it on, pays the
 // arm-time aggs query, and seeds the spring without repainting frame 0).
 func armProjectsShowForTest(t testing.TB, m *Model) {
 	t.Helper()
 	m.showProjects = false
-	m.beginProjectsAnimation()
+	m.beginBreakdownAnimation()
 }
 
 func TestProjectsSpringTick_AdvancesThenSettles(t *testing.T) {
@@ -149,19 +149,19 @@ func TestProjectsSpringTick_AdvancesThenSettles(t *testing.T) {
 	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
 	defer c.Close()
 	armProjectsShowForTest(t, &m)
-	target := m.projectsSlideTo
+	target := m.breakdownSlideTo
 
 	// One tick: ratio moves off 0, animH advances toward target.
 	updated, cmd := m.Update(springTickMsg{gen: m.springGen})
 	m = updated.(Model)
-	if m.projectsSpringR <= 0 {
-		t.Errorf("after one tick: projectsSpringR=%g, want >0", m.projectsSpringR)
+	if m.breakdownSpringR <= 0 {
+		t.Errorf("after one tick: breakdownSpringR=%g, want >0", m.breakdownSpringR)
 	}
 	if cmd == nil {
 		t.Error("mid-slide tick returned nil cmd, want next tick scheduled")
 	}
-	if m.projectsAnimH < 0 || m.projectsAnimH > target {
-		t.Errorf("projectsAnimH=%d out of [0,%d]", m.projectsAnimH, target)
+	if m.breakdownAnimH < 0 || m.breakdownAnimH > target {
+		t.Errorf("breakdownAnimH=%d out of [0,%d]", m.breakdownAnimH, target)
 	}
 
 	// Drive to settle (never invoke the tick Cmd — it real-sleeps; construct msgs).
@@ -180,8 +180,8 @@ func TestProjectsSpringTick_AdvancesThenSettles(t *testing.T) {
 	if lastCmd != nil {
 		t.Errorf("settle: cmd=%v, want nil (loop stops — idle TUI zero-cost)", lastCmd)
 	}
-	if m.projectsAnimH != target {
-		t.Errorf("after settle: projectsAnimH=%d, want target %d", m.projectsAnimH, target)
+	if m.breakdownAnimH != target {
+		t.Errorf("after settle: breakdownAnimH=%d, want target %d", m.breakdownAnimH, target)
 	}
 	if !m.showProjects {
 		t.Error("after show settle: showProjects=false, want true (committed)")
@@ -218,14 +218,14 @@ func TestProjectsKey_ShowFromIdle_ArmsAndQueriesOnce(t *testing.T) {
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
 	m = updated.(Model)
 
-	if !m.springActive || m.springKind != springKindProjects {
+	if !m.springActive || m.springKind != springKindBreakdown {
 		t.Fatalf("show 'p': springActive=%v springKind=%d, want true/projects", m.springActive, m.springKind)
 	}
 	if !m.showProjects {
 		t.Error("show 'p': showProjects=false, want true (committed at arm)")
 	}
-	if m.projectsSlideFrom != 0 || m.projectsSlideTo != m.projectsTargetHeight() {
-		t.Errorf("show slide from/to = (%d,%d), want (0,%d)", m.projectsSlideFrom, m.projectsSlideTo, m.projectsTargetHeight())
+	if m.breakdownSlideFrom != 0 || m.breakdownSlideTo != m.breakdownTargetHeight() {
+		t.Errorf("show slide from/to = (%d,%d), want (0,%d)", m.breakdownSlideFrom, m.breakdownSlideTo, m.breakdownTargetHeight())
 	}
 	if len(m.projectAggs) == 0 {
 		t.Error("show 'p': projectAggs empty after arm (requery missing)")
@@ -265,14 +265,14 @@ func TestProjectsKey_HideFromIdle_NoArmQuery(t *testing.T) {
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
 	m = updated.(Model)
 
-	if !m.springActive || m.springKind != springKindProjects {
+	if !m.springActive || m.springKind != springKindBreakdown {
 		t.Fatalf("hide 'p': springActive=%v springKind=%d", m.springActive, m.springKind)
 	}
 	if m.showProjects {
 		t.Error("hide 'p': showProjects=true, want false (committed at arm)")
 	}
-	if m.projectsSlideFrom != m.projectsTargetHeight() || m.projectsSlideTo != 0 {
-		t.Errorf("hide slide from/to=(%d,%d), want (%d,0)", m.projectsSlideFrom, m.projectsSlideTo, m.projectsTargetHeight())
+	if m.breakdownSlideFrom != m.breakdownTargetHeight() || m.breakdownSlideTo != 0 {
+		t.Errorf("hide slide from/to=(%d,%d), want (%d,0)", m.breakdownSlideFrom, m.breakdownSlideTo, m.breakdownTargetHeight())
 	}
 	// No arm requery on hide: the snapshot reused the already-populated aggs.
 	if projectAggsBackingPtr(m.projectAggs) != beforePtr {
@@ -308,7 +308,7 @@ func TestProjectsKey_TooShort_Snaps(t *testing.T) {
 	now := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
 	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
 	defer c.Close()
-	m.h = 12 // m.h-7=5 < 9 → projectsTargetHeight()==0
+	m.h = 12 // m.h-7=5 < 9 → breakdownTargetHeight()==0
 	m.viewport.Height = m.chartHeight()
 	m.showProjects = false
 
@@ -338,7 +338,7 @@ func TestProjectsKey_AbortsInflightZoom(t *testing.T) {
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
 	m = updated.(Model)
 
-	if m.springKind != springKindProjects || !m.springActive {
+	if m.springKind != springKindBreakdown || !m.springActive {
 		t.Errorf("'p' during zoom: springKind=%d active=%v, want projects/true (zoom aborted, slide armed)", m.springKind, m.springActive)
 	}
 }
@@ -351,7 +351,7 @@ func TestZoomKey_AbortsInflightProjectsSlide(t *testing.T) {
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}}) // arm show slide
 	m = updated.(Model)
-	if m.springKind != springKindProjects {
+	if m.springKind != springKindBreakdown {
 		t.Fatalf("setup: springKind=%d, want projects", m.springKind)
 	}
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
@@ -394,7 +394,7 @@ func assertSlideEndpoints(t *testing.T, m Model, dir string) Model {
 	if cmd == nil {
 		t.Fatalf("%s: 'p' returned nil cmd, want first tick scheduled", dir)
 	}
-	if !m.springActive || m.springKind != springKindProjects {
+	if !m.springActive || m.springKind != springKindBreakdown {
 		t.Fatalf("%s: springActive=%v kind=%d, want true/projects", dir, m.springActive, m.springKind)
 	}
 	if got := m.View(); got != pre {
@@ -438,7 +438,7 @@ func TestProjectsSlide_EndpointIdentity_LineMode(t *testing.T) {
 // empty" defect: as soon as the box band is a few rows tall it must carry
 // the real top border, the title (height 3: shell around the title row, per
 // the degenerate-heights contract), and one row later the top spender —
-// renderProjectsBox re-flowed at the animated height, not a blank-padded
+// renderBreakdownBox re-flowed at the animated height, not a blank-padded
 // pre-render sliced bottom-first. Thresholds are 3/4 rather than 4/5 so the
 // assertions stay non-vacuous with the content-aware target (#420): the
 // single-project fixture's target is only 4 rows.
@@ -465,14 +465,14 @@ func TestProjectsSlide_BoxContentPresentEarly(t *testing.T) {
 		if lipgloss.Height(frame) != m.h {
 			t.Fatalf("tick %d: frame height %d != terminal height %d", i, lipgloss.Height(frame), m.h)
 		}
-		if m.springActive && m.projectsAnimH >= 3 {
-			if !strings.Contains(frame, projectsTitle) {
-				t.Fatalf("animH=%d: frame lacks box title %q — box rendering empty", m.projectsAnimH, projectsTitle)
+		if m.springActive && m.breakdownAnimH >= 3 {
+			if !strings.Contains(frame, breakdownProjectsTitle) {
+				t.Fatalf("animH=%d: frame lacks box title %q — box rendering empty", m.breakdownAnimH, breakdownProjectsTitle)
 			}
 			sawTitle = true
 		}
-		if m.springActive && m.projectsAnimH >= 4 && !strings.Contains(frame, topLabel) {
-			t.Fatalf("animH=%d: frame lacks top spender %q — content not re-flowed", m.projectsAnimH, topLabel)
+		if m.springActive && m.breakdownAnimH >= 4 && !strings.Contains(frame, topLabel) {
+			t.Fatalf("animH=%d: frame lacks top spender %q — content not re-flowed", m.breakdownAnimH, topLabel)
 		}
 	}
 	if !sawTitle {
@@ -509,7 +509,7 @@ func TestProjectsSlide_XLabelRowStable(t *testing.T) {
 // TestProjectsSlide_XLabelRowStable_LineMode is the remaining-mode (line chart)
 // sibling of TestProjectsSlide_XLabelRowStable. It pins the windowed per-frame
 // buildLineChart fidelity: every mid-flight frame rendered by the WINDOWED
-// renderProjectsFrame remaining branch (slicePointsInRange + viewport.Width +
+// renderBreakdownFrame remaining branch (slicePointsInRange + viewport.Width +
 // SetXOffset(0)) must keep the steady label row verbatim and must preserve the
 // terminal frame height. The endpoint-identity test (TestProjectsSlide_EndpointIdentity_LineMode)
 // sees only frame-0 and the settle frame — this test covers the frames in between.
@@ -577,15 +577,15 @@ func TestProjectsKey_RearmMidSlide_ReversesFromCurrentHeight(t *testing.T) {
 	// tick count is fragile: too few ticks round the lerp to 0, too many land
 	// on the target. Driving on the observed height is robust to both the
 	// spring constants and the fixture's target size.
-	for i := 0; m.projectsAnimH <= 0 || m.projectsAnimH >= m.projectsTargetHeight(); i++ {
+	for i := 0; m.breakdownAnimH <= 0 || m.breakdownAnimH >= m.breakdownTargetHeight(); i++ {
 		if i > 600 || !m.springActive {
 			t.Fatalf("no strictly-mid-flight frame observed (tick %d, animH=%d, target=%d, active=%v)",
-				i, m.projectsAnimH, m.projectsTargetHeight(), m.springActive)
+				i, m.breakdownAnimH, m.breakdownTargetHeight(), m.springActive)
 		}
 		updated, _ = m.Update(springTickMsg{gen: m.springGen})
 		m = updated.(Model)
 	}
-	mid := m.projectsAnimH
+	mid := m.breakdownAnimH
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
 	m = updated.(Model)
@@ -598,12 +598,12 @@ func TestProjectsKey_RearmMidSlide_ReversesFromCurrentHeight(t *testing.T) {
 	if m.springGen == genShow {
 		t.Error("re-arm 'p': springGen not bumped — stale show ticks would still apply")
 	}
-	if m.projectsSlideFrom != mid || m.projectsSlideTo != 0 {
+	if m.breakdownSlideFrom != mid || m.breakdownSlideTo != 0 {
 		t.Errorf("re-arm from/to = (%d,%d), want (%d,0) — must reverse from current height",
-			m.projectsSlideFrom, m.projectsSlideTo, mid)
+			m.breakdownSlideFrom, m.breakdownSlideTo, mid)
 	}
-	if m.projectsAnimH != mid {
-		t.Errorf("re-arm animH=%d, want %d (frame 0 of the reversal = current frame)", m.projectsAnimH, mid)
+	if m.breakdownAnimH != mid {
+		t.Errorf("re-arm animH=%d, want %d (frame 0 of the reversal = current frame)", m.breakdownAnimH, mid)
 	}
 }
 
@@ -611,10 +611,10 @@ func TestProjectsKey_RearmMidSlide_ReversesFromCurrentHeight(t *testing.T) {
 // handleWindowSize desync found in ccpulse-416.17: before the fix, viewport.Height
 // was assigned from chartHeight() BEFORE refreshChart() aborted the in-flight
 // projects spring. refreshChart sets springActive=false and springKind=None, which
-// changes projectsHeight() (and therefore chartHeight()), so the pre-abort
+// changes breakdownHeight() (and therefore chartHeight()), so the pre-abort
 // assignment baked the mid-slide animated value into the viewport. Every frame
 // until the next resize or 'p' press over- or under-filled the terminal by up to
-// projectsMaxRows rows. The fix moves the Height assignment to after refreshChart.
+// breakdownMaxRows rows. The fix moves the Height assignment to after refreshChart.
 func TestWindowSize_MidSlide_ViewportHeightSynced(t *testing.T) {
 	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
 	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
@@ -625,11 +625,11 @@ func TestWindowSize_MidSlide_ViewportHeightSynced(t *testing.T) {
 	// Arm the show slide.
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
 	m = updated.(Model)
-	if !m.springActive || m.springKind != springKindProjects {
+	if !m.springActive || m.springKind != springKindBreakdown {
 		t.Fatalf("setup: springActive=%v springKind=%d, want true/projects", m.springActive, m.springKind)
 	}
 
-	// Advance 3-4 ticks so projectsAnimH is mid-flight (never invoke the real
+	// Advance 3-4 ticks so breakdownAnimH is mid-flight (never invoke the real
 	// tea.Tick Cmd — it real-sleeps; drive via constructed springTickMsg).
 	for range 4 {
 		updated, _ = m.Update(springTickMsg{gen: m.springGen})
@@ -655,8 +655,8 @@ func TestWindowSize_MidSlide_ViewportHeightSynced(t *testing.T) {
 // TestRefreshMsg_MidSlide_ViewportHeightSynced is the RefreshMsg sibling of
 // TestWindowSize_MidSlide_ViewportHeightSynced. Before the fix, refreshChart's
 // spring-abort block cleared springActive/springKind, which changed
-// projectsHeight() (and therefore chartHeight()), but nothing re-assigned
-// m.viewport.Height — it kept the per-frame value renderProjectsFrame had
+// breakdownHeight() (and therefore chartHeight()), but nothing re-assigned
+// m.viewport.Height — it kept the per-frame value renderBreakdownFrame had
 // last written. Every subsequent View() would paint more or fewer rows than
 // m.h until the next resize or 'p'. The fix adds m.viewport.Height =
 // m.chartHeight() inside the abort block (same desync class, watcher-refresh
@@ -671,11 +671,11 @@ func TestRefreshMsg_MidSlide_ViewportHeightSynced(t *testing.T) {
 	// Arm the show slide.
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
 	m = updated.(Model)
-	if !m.springActive || m.springKind != springKindProjects {
+	if !m.springActive || m.springKind != springKindBreakdown {
 		t.Fatalf("setup: springActive=%v springKind=%d, want true/projects", m.springActive, m.springKind)
 	}
 
-	// Advance 4 ticks so projectsAnimH is mid-flight (never invoke the real
+	// Advance 4 ticks so breakdownAnimH is mid-flight (never invoke the real
 	// tea.Tick Cmd — it real-sleeps; drive via constructed springTickMsg).
 	for range 4 {
 		updated, _ = m.Update(springTickMsg{gen: m.springGen})
@@ -703,7 +703,7 @@ func TestRefreshMsg_MidSlide_ViewportHeightSynced(t *testing.T) {
 
 // TestNowTick_MidSlide_ViewportHeightSynced is the nowTickMsg sibling of
 // TestWindowSize_MidSlide_ViewportHeightSynced. Before the fix, handleNowTick's
-// animatingViewport guard excluded springKindProjects, so nowTickMsg called
+// animatingViewport guard excluded springKindBreakdown, so nowTickMsg called
 // refreshChart during a projects slide; the abort block cleared springActive/Kind
 // but left viewport.Height at the mid-slide per-frame value. The fix adds
 // m.viewport.Height = m.chartHeight() inside the abort block (same desync class,
@@ -719,11 +719,11 @@ func TestNowTick_MidSlide_ViewportHeightSynced(t *testing.T) {
 	// Arm the show slide.
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
 	m = updated.(Model)
-	if !m.springActive || m.springKind != springKindProjects {
+	if !m.springActive || m.springKind != springKindBreakdown {
 		t.Fatalf("setup: springActive=%v springKind=%d, want true/projects", m.springActive, m.springKind)
 	}
 
-	// Advance 4 ticks so projectsAnimH is mid-flight (never invoke the real
+	// Advance 4 ticks so breakdownAnimH is mid-flight (never invoke the real
 	// tea.Tick Cmd — it real-sleeps; drive via constructed springTickMsg).
 	for range 4 {
 		updated, _ = m.Update(springTickMsg{gen: m.springGen})
@@ -734,7 +734,7 @@ func TestNowTick_MidSlide_ViewportHeightSynced(t *testing.T) {
 	}
 
 	// Fire nowTickMsg mid-slide. handleNowTick calls refreshChart (not guarded
-	// for springKindProjects), which must abort the spring and re-assign
+	// for springKindBreakdown), which must abort the spring and re-assign
 	// viewport.Height from the post-abort chartHeight(). Ignore the returned
 	// Cmd — it reschedules a real tea.Tick that would real-sleep.
 	updated, _ = m.Update(nowTickMsg{gen: m.nowGen})
@@ -766,7 +766,7 @@ func projectAggsBackingPtr(a []cache.ProjectAggregate) uintptr {
 // slide tick-by-tick and asserts on the PAINTED BOUNDARY in View() output
 // (withForcedColor → real ANSI), not on internal counters.
 //
-// Property: as the box grows (mid-flight, animH in (0, projectsSlideTo)), the
+// Property: as the box grows (mid-flight, animH in (0, breakdownSlideTo)), the
 // row index of the box's top border — the LAST "╭" row in the frame — must
 // move UP monotonically (decreasing or equal row index). The header is also a
 // rounded-bordered block, so the box's top border is always the last ╭ row;
@@ -777,7 +777,7 @@ func projectAggsBackingPtr(a []cache.ProjectAggregate) uintptr {
 // avoid a spurious first sample against the header-only frame.
 //
 // Cheap riders: per-tick height conservation (Fatalf), and settle assertions
-// (title present, animH == projectsSlideTo).
+// (title present, animH == breakdownSlideTo).
 func TestProjectsSlide_RealFrame_BoundaryMovesMonotonically(t *testing.T) {
 	withForcedColor(t)
 	now := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
@@ -810,8 +810,8 @@ func TestProjectsSlide_RealFrame_BoundaryMovesMonotonically(t *testing.T) {
 		if h := lipgloss.Height(frame); h != m.h {
 			t.Fatalf("tick %d: frame height=%d, want %d (conserved)", i, h, m.h)
 		}
-		band := m.projectsAnimH
-		if band > 0 && band < m.projectsSlideTo { // mid-slide, box is present
+		band := m.breakdownAnimH
+		if band > 0 && band < m.breakdownSlideTo { // mid-slide, box is present
 			boxTopRow := lastRoundedTopRow(frame)
 			if boxTopRow == -1 {
 				t.Errorf("tick %d (animH=%d): no ╭ row found in frame (box top border missing)", i, band)
@@ -832,10 +832,10 @@ func TestProjectsSlide_RealFrame_BoundaryMovesMonotonically(t *testing.T) {
 	}
 	// Settle frame: full box present (title visible), at the steady target height.
 	final := m.View()
-	if !strings.Contains(final, projectsTitle) {
+	if !strings.Contains(final, breakdownProjectsTitle) {
 		t.Error("settle frame missing the projects box title (full box not restored)")
 	}
-	if m.projectsAnimH != m.projectsSlideTo {
-		t.Errorf("settle animH=%d, want target %d", m.projectsAnimH, m.projectsSlideTo)
+	if m.breakdownAnimH != m.breakdownSlideTo {
+		t.Errorf("settle animH=%d, want target %d", m.breakdownAnimH, m.breakdownSlideTo)
 	}
 }

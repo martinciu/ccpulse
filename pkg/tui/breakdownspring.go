@@ -1,14 +1,14 @@
-// Package tui — projects-box slide animation (issue #416).
+// Package tui — breakdown-panel slide animation (issues #416, #475).
 //
 // Sibling of the zoom-transition machine in zoomspring.go: it reuses the master
 // springActive flag and the shared springGen counter (the unit/zoom/projects
 // animations are mutually exclusive — refreshChart aborts any in-flight one) and
-// is disambiguated by Model.springKind == springKindProjects.
+// is disambiguated by Model.springKind == springKindBreakdown.
 //
 // The crux (round two, see spec): every frame is produced by the STEADY
 // rendering pipelines at the animated height — the chart via renderWindow /
 // buildLineChart at the lever-derived chartHeight, the box re-flowed by the
-// steady View path at projectsHeight(). Endpoint frames are byte-identical to
+// steady View path at breakdownHeight(). Endpoint frames are byte-identical to
 // the steady views by construction. All per-frame inputs are in-memory — no
 // DB per frame.
 package tui
@@ -31,7 +31,7 @@ func lerpInt(a, b int, r float64) int {
 	return int(math.Round(float64(a) + (float64(b)-float64(a))*r))
 }
 
-// renderProjectsFrame paints one slide frame entirely through the STEADY
+// renderBreakdownFrame paints one slide frame entirely through the STEADY
 // rendering pipelines at the lever-derived (animated) chart height — the
 // property that makes the slide's endpoint frames byte-identical to the
 // steady views (#416 round two; round one's parallel skyline/snapshot path
@@ -51,7 +51,7 @@ func lerpInt(a, b int, r float64) int {
 // position must survive to the settle frame, where refreshChart restores
 // the full canvas and re-applies the offset via setX). All inputs are
 // in-memory — zero DB per frame.
-func (m *Model) renderProjectsFrame() {
+func (m *Model) renderBreakdownFrame() {
 	chartH := m.chartHeight()
 	m.viewport.Height = chartH
 	if chartUnit(m.unitIdx) == chartUnitRemaining {
@@ -70,26 +70,26 @@ func (m *Model) renderProjectsFrame() {
 			xOff, xOff+vpW)
 		m.viewport.SetContent(buildLineChart(slicedPts5h, slicedPts7d,
 			viewFrom, viewTo, vpW, chartH,
-			m.now(), zoom, m.dateOrder, "projects", labelRow))
+			m.now(), zoom, m.dateOrder, "breakdown", labelRow))
 		m.viewport.SetXOffset(0)
 		return
 	}
 	m.renderWindow()
 }
 
-// handleProjectsSpringTick advances one frame of the box slide: step the spring
+// handleBreakdownSpringTick advances one frame of the box slide: step the spring
 // toward r=1, lerp the outer box height startH→targetH, re-render the frame, and
 // settle when within phaseTransitionThreshold. On settle it commits the height,
 // clears the spring, and restores steady state via refreshChart (which chains
 // refreshProjects — the 1 settle query on show; a no-op on hide since
 // showProjects was committed to false at arm). Returns nil to stop the loop.
-func (m *Model) handleProjectsSpringTick(gen int) tea.Cmd {
-	r, vel := m.projectsSpring.Update(m.projectsSpringR, m.projectsSpringVel, 1.0)
-	m.projectsSpringR, m.projectsSpringVel = r, vel
-	m.projectsAnimH = lerpInt(m.projectsSlideFrom, m.projectsSlideTo, r)
+func (m *Model) handleBreakdownSpringTick(gen int) tea.Cmd {
+	r, vel := m.breakdownSpring.Update(m.breakdownSpringR, m.breakdownSpringVel, 1.0)
+	m.breakdownSpringR, m.breakdownSpringVel = r, vel
+	m.breakdownAnimH = lerpInt(m.breakdownSlideFrom, m.breakdownSlideTo, r)
 
 	if math.Abs(1.0-r) < phaseTransitionThreshold {
-		m.projectsAnimH = m.projectsSlideTo
+		m.breakdownAnimH = m.breakdownSlideTo
 		m.springActive = false
 		m.springKind = springKindNone
 		m.viewport.Height = m.chartHeight()
@@ -97,13 +97,13 @@ func (m *Model) handleProjectsSpringTick(gen int) tea.Cmd {
 		return nil       // stop the loop — idle TUI is zero-animation-cost
 	}
 
-	m.renderProjectsFrame()
+	m.renderBreakdownFrame()
 	return tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
 		return springTickMsg{gen: gen}
 	})
 }
 
-// beginProjectsAnimation arms the box slide. A re-arm mid-slide reverses
+// beginBreakdownAnimation arms the box slide. A re-arm mid-slide reverses
 // from the CURRENT animated height (every intermediate height renders
 // correctly under re-flow — no snap to an extreme first); an in-flight u/z
 // is hard-cut via refreshChart exactly as u and z do to each other.
@@ -114,28 +114,28 @@ func (m *Model) handleProjectsSpringTick(gen int) tea.Cmd {
 // IS the current steady frame (show starts at height 0 = the box-hidden
 // layout; hide starts at the current target; re-arm wherever the slide
 // was) — that no-touch property is half of endpoint identity.
-func (m *Model) beginProjectsAnimation() {
-	from := m.projectsHeight() // animH mid-slide, steady extreme otherwise
-	if m.springActive && m.springKind != springKindProjects {
+func (m *Model) beginBreakdownAnimation() {
+	from := m.breakdownHeight() // animH mid-slide, steady extreme otherwise
+	if m.springActive && m.springKind != springKindBreakdown {
 		m.refreshChart() // abort in-flight u/z; restores steady chart content
 	}
 
 	m.showProjects = !m.showProjects
 	to := 0
 	if m.showProjects {
-		// Query BEFORE reading the target: projectsTargetHeight is
+		// Query BEFORE reading the target: breakdownTargetHeight is
 		// content-aware (#420), and on a show the aggs are still nil from
 		// the hidden state (#414) — reading first would arm a slide to the
 		// 4-row empty floor and jump to the real height at settle.
 		m.refreshProjects() // THE one arm-time query on the show path
-		to = m.projectsTargetHeight()
+		to = m.breakdownTargetHeight()
 	}
-	m.projectsSlideFrom, m.projectsSlideTo = from, to
-	m.projectsAnimH = from
+	m.breakdownSlideFrom, m.breakdownSlideTo = from, to
+	m.breakdownAnimH = from
 
-	m.projectsSpring = harmonica.NewSpring(harmonica.FPS(springFPS), phase2Frequency, phase2Damping)
-	m.projectsSpringR, m.projectsSpringVel = 0, 0
+	m.breakdownSpring = harmonica.NewSpring(harmonica.FPS(springFPS), phase2Frequency, phase2Damping)
+	m.breakdownSpringR, m.breakdownSpringVel = 0, 0
 	m.springActive = true
-	m.springKind = springKindProjects
+	m.springKind = springKindBreakdown
 	m.springGen++
 }

@@ -247,7 +247,7 @@ func TestViewFitsTerminal_HelpOverlay(t *testing.T) {
 func TestViewFitsWithScopedLimits(t *testing.T) {
 	t.Parallel()
 	// A scoped-limit row grows the header box by one line; chartHeight and
-	// projectsTargetHeight must both absorb it or the frame overflows m.h.
+	// breakdownTargetHeight must both absorb it or the frame overflows m.h.
 	for _, n := range []int{1, 2} {
 		for _, h := range []int{24, 30, 40} {
 			name := fmt.Sprintf("n%d_h%d", n, h)
@@ -262,7 +262,7 @@ func TestViewFitsWithScopedLimits(t *testing.T) {
 }
 
 // TestViewFitsWithScopedLimits_ProjectsBox extends the scoped-limit sweep to
-// exercise projectsTargetHeight's headerContentRows-derived overhead
+// exercise breakdownTargetHeight's headerContentRows-derived overhead
 // (viewport.go:224) with the projects box visible and populated. The sweep
 // above runs with showProjects default-false and no projectAggs, so it never
 // touches that path — reintroducing the flat `m.h - 7` there alone (the
@@ -289,12 +289,12 @@ func TestViewFitsWithScopedLimits_ProjectsBox(t *testing.T) {
 	}
 }
 
-// TestProjectsTargetHeight_WithScopedRows pins projectsTargetHeight's avail
+// TestProjectsTargetHeight_WithScopedRows pins breakdownTargetHeight's avail
 // computation (viewport.go:224) once scoped-limit rows have grown
 // headerContentRows() above its 0-scoped baseline of 2. The coarse "does it
 // fit" check in TestViewFitsWithScopedLimits_ProjectsBox can't distinguish the
 // correct avail (m.h - 5 - headerContentRows()) from the flat pre-#463
-// `m.h - 7` at every n/h/aggs combination — projectsMaxRows and chartHeight's
+// `m.h - 7` at every n/h/aggs combination — breakdownMaxRows and chartHeight's
 // own 5-row floor absorb small discrepancies — so this pins the exact
 // returned height instead, with enough aggs that the avail/2 cap binds and
 // the two formulas' 1-row difference becomes visible in the return value.
@@ -306,11 +306,11 @@ func TestProjectsTargetHeight_WithScopedRows(t *testing.T) {
 		m.projectAggs = append(m.projectAggs, cache.ProjectAggregate{Label: "p"})
 	}
 	avail := m.h - 5 - m.headerContentRows()
-	cols := projectCellCols(m.w)
+	cols := breakdownCellCols(m.w)
 	needed := 3 + (len(m.projectAggs)+cols-1)/cols
-	want := min(needed, min(avail/2, projectsMaxRows))
-	if got := m.projectsTargetHeight(); got != want {
-		t.Errorf("projectsTargetHeight() = %d, want %d (avail=%d cols=%d needed=%d)",
+	want := min(needed, min(avail/2, breakdownMaxRows))
+	if got := m.breakdownTargetHeight(); got != want {
+		t.Errorf("breakdownTargetHeight() = %d, want %d (avail=%d cols=%d needed=%d)",
 			got, want, avail, cols, needed)
 	}
 }

@@ -48,13 +48,13 @@ func BenchmarkProjectsAnimFrame(b *testing.B) {
 		defer c.Close()
 		m.showProjects = false
 		m.refreshChart()
-		m.beginProjectsAnimation() // show: arm + 1 aggs query (outside the loop)
-		target := m.projectsTargetHeight()
+		m.beginBreakdownAnimation() // show: arm + 1 aggs query (outside the loop)
+		target := m.breakdownTargetHeight()
 		b.ReportAllocs()
 		i := 0
 		for b.Loop() {
-			m.projectsAnimH = 1 + (i % max(target, 2)) // sweep mid-slide heights
-			m.renderProjectsFrame()
+			m.breakdownAnimH = 1 + (i % max(target, 2)) // sweep mid-slide heights
+			m.renderBreakdownFrame()
 			i++
 		}
 	})
@@ -63,13 +63,13 @@ func BenchmarkProjectsAnimFrame(b *testing.B) {
 		defer c.Close()
 		m.showProjects = false
 		m.refreshChart()
-		m.beginProjectsAnimation()
-		target := m.projectsTargetHeight()
+		m.beginBreakdownAnimation()
+		target := m.breakdownTargetHeight()
 		b.ReportAllocs()
 		i := 0
 		for b.Loop() {
-			m.projectsAnimH = 1 + (i % max(target, 2))
-			m.renderProjectsFrame()
+			m.breakdownAnimH = 1 + (i % max(target, 2))
+			m.renderBreakdownFrame()
 			i++
 		}
 	})
@@ -82,13 +82,13 @@ func BenchmarkProjectsAnimFrame(b *testing.B) {
 		}
 		m.showProjects = false
 		m.refreshChart()
-		m.beginProjectsAnimation()
-		target := m.projectsTargetHeight()
+		m.beginBreakdownAnimation()
+		target := m.breakdownTargetHeight()
 		b.ReportAllocs()
 		i := 0
 		for b.Loop() {
-			m.projectsAnimH = 1 + (i % max(target, 2))
-			m.renderProjectsFrame()
+			m.breakdownAnimH = 1 + (i % max(target, 2))
+			m.renderBreakdownFrame()
 			i++
 		}
 	})

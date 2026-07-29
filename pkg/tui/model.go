@@ -77,10 +77,10 @@ type springTickMsg struct{ gen int }
 // (mirrors springTickMsg / springGen).
 type nowTickMsg struct{ gen int }
 
-// projectsTickMsg fires after scroll settles; the projects box recomputes
-// only if gen still matches m.projectsGen (i.e. no later scroll superseded
+// breakdownTickMsg fires after scroll settles; the projects box recomputes
+// only if gen still matches m.breakdownGen (i.e. no later scroll superseded
 // it). Mirrors the nowTickMsg generation guard (#311).
-type projectsTickMsg struct{ gen int }
+type breakdownTickMsg struct{ gen int }
 
 // projectsDebounce is the scroll-settle delay before the projects box
 // re-queries. The chart itself scrolls live; only the box is debounced.
@@ -136,7 +136,7 @@ const (
 	springKindNone springKind = iota
 	springKindUnit
 	springKindZoom
-	springKindProjects
+	springKindBreakdown
 )
 
 // Model is the root Bubble Tea model for the chart view.
@@ -272,28 +272,28 @@ type Model struct {
 	zoomSpringVel float64
 	zoomSnap      zoomAnimSnapshot
 	// Projects-box slide (#416): single-phase spring on the box's OUTER
-	// height. projectsAnimH is the animated height the projectsHeight()
-	// lever returns mid-slide; projectsSlideFrom/To are the endpoints of
+	// height. breakdownAnimH is the animated height the breakdownHeight()
+	// lever returns mid-slide; breakdownSlideFrom/To are the endpoints of
 	// the in-flight slide (re-arm starts From at the current height).
-	// Frames render through the STEADY pipelines (renderProjectsFrame), so
+	// Frames render through the STEADY pipelines (renderBreakdownFrame), so
 	// no snapshot state exists — endpoint frames equal the steady views by
 	// construction. Mutually exclusive with the unit/zoom springs via the
 	// shared springActive flag + springKind tag.
-	projectsSpring    harmonica.Spring
-	projectsSpringR   float64
-	projectsSpringVel float64
-	projectsAnimH     int
-	projectsSlideFrom int
-	projectsSlideTo   int
+	breakdownSpring    harmonica.Spring
+	breakdownSpringR   float64
+	breakdownSpringVel float64
+	breakdownAnimH     int
+	breakdownSlideFrom int
+	breakdownSlideTo   int
 	// nowGen is bumped each time the live-advance tick is re-armed (zoom
 	// change). scheduleNowTick captures the current value into the scheduled
 	// nowTickMsg; the handler drops ticks whose gen doesn't match, so a zoom
 	// switch can't leave a previous cadence's tick chain running (#311).
 	nowGen int
-	// projectsGen is bumped on every scroll; scheduleProjectsTick captures
+	// breakdownGen is bumped on every scroll; scheduleBreakdownTick captures
 	// it so a settled tick runs refreshProjects only when not superseded by
 	// a later scroll (#311 generation-guard pattern).
-	projectsGen int
+	breakdownGen int
 	// springXOffset is the leftmost bucket index visible in the viewport
 	// when animation started. The spring runs over all bucket ratios but
 	// only the visible window is re-rendered each tick — full-canvas
@@ -383,7 +383,7 @@ type Model struct {
 	peak float64
 
 	// showProjects toggles the projects breakdown box (the `p` key). Default
-	// true. When false, projectsHeight() returns 0 — the box is not rendered
+	// true. When false, breakdownHeight() returns 0 — the box is not rendered
 	// and the chart reclaims its rows. Session-only; not persisted.
 	showProjects bool
 
@@ -449,8 +449,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.handleRefresh()
 	case nowTickMsg:
 		return m, m.handleNowTick(msg)
-	case projectsTickMsg:
-		m.handleProjectsTick(msg)
+	case breakdownTickMsg:
+		m.handleBreakdownTick(msg)
 		return m, nil
 	case tea.KeyMsg:
 		return m, m.handleKey(msg)
@@ -478,8 +478,8 @@ func (m *Model) handleWindowSize(msg tea.WindowSizeMsg) tea.Cmd {
 	m.rebuildScopedBars()
 	m.refreshChart()
 	// Assign after refreshChart so the abort of any in-flight spring is
-	// reflected in the height (chartHeight() reads projectsHeight(), which
-	// reads projectsAnimH when springKind==springKindProjects).
+	// reflected in the height (chartHeight() reads breakdownHeight(), which
+	// reads breakdownAnimH when springKind==springKindBreakdown).
 	m.viewport.Height = m.chartHeight()
 	return m.maybeArmIntro()
 }
@@ -589,33 +589,33 @@ func (m *Model) handleNowTick(msg nowTickMsg) tea.Cmd {
 	return m.scheduleNowTick()
 }
 
-// scheduleProjectsTick bumps the generation and arms a settle tick. The
+// scheduleBreakdownTick bumps the generation and arms a settle tick. The
 // pointer receiver makes the bump persist after Update returns, so the
 // captured gen identifies this scroll burst; a later scroll bumps the gen
 // again and supersedes this tick. The chart scrolls live — only the
 // projects box recompute is debounced.
-func (m *Model) scheduleProjectsTick() tea.Cmd {
+func (m *Model) scheduleBreakdownTick() tea.Cmd {
 	if !m.showProjects {
 		return nil
 	}
-	m.projectsGen++
-	gen := m.projectsGen
+	m.breakdownGen++
+	gen := m.breakdownGen
 	return tea.Tick(projectsDebounce, func(time.Time) tea.Msg {
-		return projectsTickMsg{gen: gen}
+		return breakdownTickMsg{gen: gen}
 	})
 }
 
-// handleProjectsTick recomputes the projects box if this tick is the latest
+// handleBreakdownTick recomputes the projects box if this tick is the latest
 // scheduled (gen matches); otherwise it was superseded by a later scroll and
 // is dropped. The settle is also where the content-aware box height reflows
 // (#420): refreshProjects may change the row count, so re-sync the layout.
 // No Cmd to return — the settle chain ends here.
-func (m *Model) handleProjectsTick(msg projectsTickMsg) {
-	if msg.gen != m.projectsGen {
+func (m *Model) handleBreakdownTick(msg breakdownTickMsg) {
+	if msg.gen != m.breakdownGen {
 		return
 	}
 	// Do not reflow mid-spring: a unit or zoom spring in flight owns m.peak as
-	// the bar-height normalization base, and applyProjectsResize calls
+	// the bar-height normalization base, and applyBreakdownResize calls
 	// renderWindow (bar mode) / buildLineChart (remaining mode) which would
 	// overwrite it, corrupting the spring frames and flashing steady-state
 	// content (#420). The deferred recompute is never lost — every spring
@@ -626,7 +626,7 @@ func (m *Model) handleProjectsTick(msg projectsTickMsg) {
 		return
 	}
 	m.refreshProjects()
-	m.applyProjectsResize()
+	m.applyBreakdownResize()
 }
 
 // handleQuotaMsg records fresh usage, recomputes the window, and resolves the
@@ -648,7 +648,7 @@ func (m *Model) handleQuotaMsg(msg QuotaMsg) tea.Cmd {
 	// path (springs.go, zoomspring.go, projectsspring.go) already calls
 	// refreshChart, which re-syncs.
 	if !m.springActive {
-		m.applyProjectsResize()
+		m.applyBreakdownResize()
 	}
 	// (#192) Quota arrival timing fix. Two paths:
 	//
@@ -696,13 +696,13 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 	case key.Matches(msg, m.keys.Unit):
 		return m.handleUnitKey()
 	case key.Matches(msg, m.keys.Projects):
-		return m.handleProjectsKey()
+		return m.handleBreakdownKey()
 	case key.Matches(msg, m.keys.ScrollLeft):
 		m.scrollLeft(ZoomLevels[m.zoomIdx].ScrollStep)
-		return m.scheduleProjectsTick()
+		return m.scheduleBreakdownTick()
 	case key.Matches(msg, m.keys.ScrollRight):
 		m.scrollRight(ZoomLevels[m.zoomIdx].ScrollStep)
-		return m.scheduleProjectsTick()
+		return m.scheduleBreakdownTick()
 	}
 	return nil
 }
@@ -740,18 +740,18 @@ func (m *Model) handleUnitKey() tea.Cmd {
 	})
 }
 
-// handleProjectsKey slides the projects box up (show) / down (hide) via a
+// handleBreakdownKey slides the projects box up (show) / down (hide) via a
 // harmonica spring (#416). reduce_motion, a too-short terminal (no room for
 // a box), or an empty/cleared chart (renderWindow would no-op against no
 // content) → snap, the pre-#416 hard cut.
-func (m *Model) handleProjectsKey() tea.Cmd {
-	if m.deps.ReduceMotion || m.projectsTargetHeight() == 0 || m.lastCanvasW == 0 {
+func (m *Model) handleBreakdownKey() tea.Cmd {
+	if m.deps.ReduceMotion || m.breakdownTargetHeight() == 0 || m.lastCanvasW == 0 {
 		m.showProjects = !m.showProjects
 		m.viewport.Height = m.chartHeight()
 		m.refreshChart()
 		return nil
 	}
-	m.beginProjectsAnimation()
+	m.beginBreakdownAnimation()
 	if !m.springActive {
 		return nil
 	}
@@ -783,15 +783,15 @@ func (m Model) View() string {
 	parts := []string{header, sep, body}
 	// The projects box sits between chart and footer, suppressed while the
 	// help overlay is up (help replaces the chart body, so the box would be
-	// out of place). projectsHeight() returns the animated height mid-slide,
+	// out of place). breakdownHeight() returns the animated height mid-slide,
 	// so the SAME render path produces steady and slide frames — the box
 	// re-flows at each height: real borders and title from the first frames,
 	// cells filling top-down, the "…N more" overflow recounting as rows fit
 	// (#416 round two; round one's pre-rendered bottom-slice revealed blank
 	// padding first).
 	if !m.showHelp {
-		if ph := m.projectsHeight(); ph > 0 {
-			parts = append(parts, renderProjectsBox(m.projectAggs, m.w, ph))
+		if ph := m.breakdownHeight(); ph > 0 {
+			parts = append(parts, renderBreakdownBox(m.projectAggs, m.w, ph))
 		}
 	}
 	parts = append(parts, sep, footer)
@@ -829,7 +829,7 @@ func (m Model) renderChartBody(rawBody string) string {
 			return overlayYTicks(rawBody, m.chartHeight(), 1.0)
 		}
 		return barZoomYLabel(rawBody, m.zoomSnap, ZoomLevels[m.zoomIdx], m.chartHeight(), m.zoomSpringR)
-	case m.springActive && m.springKind == springKindProjects:
+	case m.springActive && m.springKind == springKindBreakdown:
 		// Height-only animation: the y-overlay is EXACTLY the steady-state
 		// overlay at the frame's (animated) chartHeight — same live inputs
 		// as the steady cases below, so endpoint frames match them
@@ -1094,7 +1094,7 @@ func (m Model) scopedRowCount() int {
 
 // headerContentRows is the number of content rows inside the bordered
 // header box: bars row + burn-rate row + one per rendered scoped-limit
-// row. chartHeight and projectsTargetHeight derive their overhead from
+// row. chartHeight and breakdownTargetHeight derive their overhead from
 // this so the frame never overflows when scoped rows are present.
 func (m Model) headerContentRows() int {
 	return 2 + m.scopedRowCount()
@@ -1183,14 +1183,14 @@ func (m *Model) refreshProjects() {
 	m.projectAggs = aggs
 }
 
-// applyProjectsResize re-syncs the viewport height and chart content after a
-// projectAggs change moved the content-aware projectsHeight (#420). No-op
+// applyBreakdownResize re-syncs the viewport height and chart content after a
+// projectAggs change moved the content-aware breakdownHeight (#420). No-op
 // when the height is already in sync — the common case; most scroll-settles
 // don't cross a row-count boundary. Never re-queries the cache: bar mode
 // re-renders the in-memory visible window; remaining mode rebuilds the line
 // chart from lastPts5h/7d. Height is a fixed point after one call (resizing
 // never changes projectAggs), so callers never loop.
-func (m *Model) applyProjectsResize() {
+func (m *Model) applyBreakdownResize() {
 	nh := m.chartHeight()
 	if m.viewport.Height == nh {
 		return
@@ -1202,7 +1202,7 @@ func (m *Model) applyProjectsResize() {
 	if chartUnit(m.unitIdx) == chartUnitRemaining {
 		m.viewport.SetContent(buildLineChart(m.lastPts5h, m.lastPts7d,
 			m.lastChartFrom, m.lastChartTo, m.lastCanvasW, nh, m.now(),
-			ZoomLevels[m.zoomIdx], m.dateOrder, "projects-resize", ""))
+			ZoomLevels[m.zoomIdx], m.dateOrder, "breakdown-resize", ""))
 		m.setX(m.viewportXOffset)
 	} else {
 		m.renderWindow()
