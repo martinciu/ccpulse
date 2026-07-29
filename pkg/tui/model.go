@@ -648,7 +648,7 @@ func (m *Model) handleBreakdownTick(msg breakdownTickMsg) {
 	// overwrite it, corrupting the spring frames and flashing steady-state
 	// content (#420). The deferred recompute is never lost — every spring
 	// settle path calls refreshChart (pkg/tui/springs.go, pkg/tui/zoomspring.go,
-	// and the projects slide in pkg/tui/projectsspring.go, #416), whose
+	// and the projects slide in pkg/tui/breakdownspring.go, #416), whose
 	// pre-paint refreshBreakdown + height re-sync catches it.
 	if m.springActive {
 		return
@@ -673,7 +673,7 @@ func (m *Model) handleQuotaMsg(msg QuotaMsg) tea.Cmd {
 	// header and View() overflows m.h until the next watcher event or
 	// chart-affecting keypress. Skipped while a spring is active:
 	// mid-spring heights are owned by the animation, and every settle
-	// path (springs.go, zoomspring.go, projectsspring.go) already calls
+	// path (springs.go, zoomspring.go, breakdownspring.go) already calls
 	// refreshChart, which re-syncs.
 	if !m.springActive {
 		m.applyBreakdownResize()
@@ -808,7 +808,7 @@ func (m *Model) handleBreakdownKey(want breakdownKind) tea.Cmd {
 	// Widening it to "sliding toward zero" (springActive && kind==breakdown &&
 	// breakdown==none && slideTo==0) would ALSO match a plain hide, turning
 	// #416's reverse-from-current-height re-arm into a down-then-up bounce and
-	// breaking TestBreakdownKey_RearmMidSlide_ReversesFromCurrentHeight.
+	// breaking TestProjectsKey_RearmMidSlide_ReversesFromCurrentHeight.
 	if m.pendingBreakdown != breakdownNone {
 		m.pendingBreakdown = target
 		return nil
@@ -817,7 +817,6 @@ func (m *Model) handleBreakdownKey(want breakdownKind) tea.Cmd {
 	if m.deps.ReduceMotion || m.breakdownTargetHeight() == 0 || m.lastCanvasW == 0 {
 		m.pendingBreakdown = breakdownNone
 		m.breakdown = target
-		m.refreshBreakdown()
 		m.viewport.Height = m.chartHeight()
 		m.refreshChart()
 		return nil

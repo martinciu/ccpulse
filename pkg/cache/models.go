@@ -83,7 +83,14 @@ GROUP BY model`
 	out := make([]ModelAggregate, 0, len(byModel))
 	for _, a := range byModel {
 		if total > 0 {
-			a.CostPct = a.CostUSD / total * 100
+			// Clamp to [0, 100]: token counts are never validated on
+			// ingest, so a mixed-sign cost_usd_estimate (e.g. a negative
+			// output_tokens value) can drive total toward zero while an
+			// individual CostUSD stays large, producing a raw ratio in
+			// the 1e16+ range. Unclamped, that overflows breakdownCell's
+			// fixed-width pct slot into a multi-line cell, breaking the
+			// same height invariant a wrapping label breaks (#475.2).
+			a.CostPct = max(0, min(100, a.CostUSD/total*100))
 		}
 		out = append(out, *a)
 	}

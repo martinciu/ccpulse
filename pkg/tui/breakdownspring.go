@@ -100,7 +100,6 @@ func (m *Model) handleBreakdownSpringTick(gen int) tea.Cmd {
 			next := m.pendingBreakdown
 			m.pendingBreakdown = breakdownNone
 			m.beginBreakdownAnimation(next)
-			m.viewport.Height = m.chartHeight()
 			// Paint leg-2 frame 0 synchronously so no View() can land between
 			// this settle and the first tick with stale content at a
 			// mismatched height (same guard handleUnitKey uses).
@@ -129,12 +128,14 @@ func (m *Model) handleBreakdownSpringTick(gen int) tea.Cmd {
 // correctly under re-flow — no snap to an extreme first); an in-flight u/z
 // is hard-cut via refreshChart exactly as u and z do to each other.
 // m.breakdown commits to `to` at arm (keeps u/z aborts free of
-// breakdown-specific wiring). A show pays THE one arm-time aggregate query via
-// refreshBreakdown (the box was unloaded while hidden, #414); a hide pays
-// none. The viewport is deliberately NOT repainted: frame 0 of the slide
-// IS the current steady frame (show starts at height 0 = the box-hidden
-// layout; hide starts at the current target; re-arm wherever the slide
-// was) — that no-touch property is half of endpoint identity.
+// breakdown-specific wiring). A show normally pays one arm-time aggregate
+// query via refreshBreakdown (the box was unloaded while hidden, #414), but a
+// show that aborts an in-flight u/z spring pays two — refreshChart re-queries
+// the outgoing kind first; a hide pays none. The viewport is deliberately NOT
+// repainted: frame 0 of the slide IS the current steady frame (show starts at
+// height 0 = the box-hidden layout; hide starts at the current target; re-arm
+// wherever the slide was) — that no-touch property is half of endpoint
+// identity.
 func (m *Model) beginBreakdownAnimation(to breakdownKind) {
 	from := m.breakdownHeight() // animH mid-slide, steady extreme otherwise
 	if m.springActive && m.springKind != springKindBreakdown {

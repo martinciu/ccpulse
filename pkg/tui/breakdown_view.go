@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"unicode"
 
 	"github.com/charmbracelet/lipgloss"
 
@@ -207,6 +208,24 @@ const (
 	pctSlotW   = 4
 )
 
+// sanitizeLabel strips non-printable runes from a breakdown row's label
+// before it flows into the terminal via breakdownCell. Labels ultimately
+// originate from messages.model (written verbatim from on-disk JSONL, with
+// no validation — CCPULSE_PROJECTS_ROOT can point anywhere) or a project's
+// cwd, and lipgloss Width/MaxWidth treat ANSI escapes as zero-width, so an
+// unsanitized label could recolor rows below the box, ring the terminal
+// bell, or overwrite the box's border with a bare \r. Mirrors
+// sanitizeDisplayName in pkg/status/scoped.go. unicode.IsPrint keeps
+// spaces, so ordinary labels round-trip unchanged.
+func sanitizeLabel(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsPrint(r) {
+			return r
+		}
+		return -1
+	}, s)
+}
+
 // breakdownCell renders one row into a fixed-width cell: label
 // (left, truncated) + cost + tokens + pct (right-aligned, in that order).
 // The cost/tokens/pct values each sit in a fixed-width right-aligned slot
@@ -225,7 +244,12 @@ func breakdownCell(r breakdownRow, w int) string {
 	right := cost + "  " + tokens + "  " + pct
 	rw := lipgloss.Width(right)
 	labelW := max(w-rw-1, 3)
-	label := lipgloss.NewStyle().Width(labelW).MaxWidth(labelW).Render(r.Label)
+	// Inline(true) keeps the label on a single line: Width() alone would
+	// word-wrap BEFORE MaxWidth() truncates, and nothing else caps line
+	// count, so a label wider than labelW would render a multi-row cell
+	// while callers budget exactly one row per cell (#475.2).
+	label := lipgloss.NewStyle().Width(labelW).MaxWidth(labelW).Inline(true).
+		Render(sanitizeLabel(r.Label))
 	return lipgloss.NewStyle().Width(w).Render(
 		label + lipgloss.PlaceHorizontal(w-labelW, lipgloss.Right, right))
 }
