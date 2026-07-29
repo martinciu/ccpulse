@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"math"
 	"strings"
-	"unicode"
 
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/martinciu/ccpulse/pkg/cache"
+	"github.com/martinciu/ccpulse/pkg/termsafe"
 )
 
 const (
@@ -208,24 +208,6 @@ const (
 	pctSlotW   = 4
 )
 
-// sanitizeLabel strips non-printable runes from a breakdown row's label
-// before it flows into the terminal via breakdownCell. Labels ultimately
-// originate from messages.model (written verbatim from on-disk JSONL, with
-// no validation — CCPULSE_PROJECTS_ROOT can point anywhere) or a project's
-// cwd, and lipgloss Width/MaxWidth treat ANSI escapes as zero-width, so an
-// unsanitized label could recolor rows below the box, ring the terminal
-// bell, or overwrite the box's border with a bare \r. Mirrors
-// sanitizeDisplayName in pkg/status/scoped.go. unicode.IsPrint keeps
-// spaces, so ordinary labels round-trip unchanged.
-func sanitizeLabel(s string) string {
-	return strings.Map(func(r rune) rune {
-		if unicode.IsPrint(r) {
-			return r
-		}
-		return -1
-	}, s)
-}
-
 // breakdownCell renders one row into a fixed-width cell: label
 // (left, truncated) + cost + tokens + pct (right-aligned, in that order).
 // The cost/tokens/pct values each sit in a fixed-width right-aligned slot
@@ -234,14 +216,36 @@ func breakdownCell(r breakdownRow, w int) string {
 	if w < 8 {
 		w = 8
 	}
-	slotStyle := lipgloss.NewStyle()
-	cost := slotStyle.Width(costSlotW).Align(lipgloss.Right).Render(
+	// Clamp the percentage here too, even though both aggregate queries
+	// already clamp CostPct to [0, 100] (pkg/cache/models.go,
+	// pkg/cache/projects.go): the renderer is the one place that sees
+	// every row from every current and future aggregate kind, so pinning
+	// the invariant here makes it structural rather than dependent on each
+	// producer remembering to clamp. min/max do NOT bound NaN in Go —
+	// min(100, NaN) is NaN — so an explicit IsNaN check is required; a NaN
+	// CostPct is reachable via +Inf in cost_usd_estimate (#475.30).
+	pct := r.CostPct
+	switch {
+	case math.IsNaN(pct) || pct < 0:
+		pct = 0
+	case pct > 100:
+		pct = 100
+	}
+
+	// MaxWidth(N).Inline(true) on every fixed-width slot (not just the
+	// label) guarantees the one-row-per-cell budget structurally: Width()
+	// alone is a minimum, not a cap, so an over-wide value (e.g.
+	// formatBarValue's "$100,000" into costSlotW=7, or
+	// formatTokenCount(math.MaxInt64) into tokenSlotW=4) would otherwise
+	// wrap the cell across multiple rows (#475.31).
+	slotStyle := lipgloss.NewStyle().Inline(true)
+	cost := slotStyle.Width(costSlotW).MaxWidth(costSlotW).Align(lipgloss.Right).Render(
 		formatBarValue(r.CostUSD, chartUnitCost))
-	tokens := slotStyle.Width(tokenSlotW).Align(lipgloss.Right).Render(
+	tokens := slotStyle.Width(tokenSlotW).MaxWidth(tokenSlotW).Align(lipgloss.Right).Render(
 		formatTokenCount(r.Tokens))
-	pct := slotStyle.Width(pctSlotW).Align(lipgloss.Right).Render(
-		fmt.Sprintf("%d%%", int(math.Round(r.CostPct))))
-	right := cost + "  " + tokens + "  " + pct
+	pctCell := slotStyle.Width(pctSlotW).MaxWidth(pctSlotW).Align(lipgloss.Right).Render(
+		fmt.Sprintf("%d%%", int(math.Round(pct))))
+	right := cost + "  " + tokens + "  " + pctCell
 	rw := lipgloss.Width(right)
 	labelW := max(w-rw-1, 3)
 	// Inline(true) keeps the label on a single line: Width() alone would
@@ -249,7 +253,11 @@ func breakdownCell(r breakdownRow, w int) string {
 	// count, so a label wider than labelW would render a multi-row cell
 	// while callers budget exactly one row per cell (#475.2).
 	label := lipgloss.NewStyle().Width(labelW).MaxWidth(labelW).Inline(true).
-		Render(sanitizeLabel(r.Label))
-	return lipgloss.NewStyle().Width(w).Render(
+		Render(termsafe.Printable(r.Label))
+	// Inline(true).MaxWidth(w) on the outer cell style makes the one-row
+	// guarantee hold even if a future change to the slots/label above
+	// regresses — the outer cap is a backstop, not a substitute for the
+	// inner ones (#475.31).
+	return lipgloss.NewStyle().Width(w).Inline(true).MaxWidth(w).Render(
 		label + lipgloss.PlaceHorizontal(w-labelW, lipgloss.Right, right))
 }

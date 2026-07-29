@@ -2,11 +2,10 @@ package status
 
 import (
 	"math"
-	"strings"
 	"time"
-	"unicode"
 
 	"github.com/martinciu/ccpulse/pkg/anthro"
+	"github.com/martinciu/ccpulse/pkg/termsafe"
 )
 
 // ScopedLimit is the distilled projection of one weekly_scoped entry from
@@ -41,7 +40,7 @@ func distillScopedLimits(u *anthro.Usage, now time.Time) []ScopedLimit {
 			l.Scope.Model.DisplayName == nil || *l.Scope.Model.DisplayName == "" {
 			continue
 		}
-		model := sanitizeDisplayName(*l.Scope.Model.DisplayName)
+		model := termsafe.Printable(*l.Scope.Model.DisplayName)
 		if model == "" {
 			continue
 		}
@@ -59,22 +58,4 @@ func distillScopedLimits(u *anthro.Usage, now time.Time) []ScopedLimit {
 		out = append(out, sl)
 	}
 	return out
-}
-
-// sanitizeDisplayName strips non-printable runes from an API-sourced
-// display_name before it flows into the TUI header or `status --json`.
-// display_name is attacker-controlled the moment the usage API response
-// is MitM'd or spoofed, and both the TUI and the JSON consumer render it
-// into a terminal — an unsanitized value could carry ANSI escape
-// sequences, control characters, or CR/LF that execute terminal commands
-// or corrupt the header layout, mirroring the body_snippet quoting in
-// pkg/anthro/usage.go. unicode.IsPrint keeps spaces, so ordinary display
-// names round-trip unchanged.
-func sanitizeDisplayName(s string) string {
-	return strings.Map(func(r rune) rune {
-		if unicode.IsPrint(r) {
-			return r
-		}
-		return -1
-	}, s)
 }

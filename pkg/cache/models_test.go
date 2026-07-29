@@ -193,6 +193,34 @@ func TestModelAggregates_CostPct(t *testing.T) {
 	}
 }
 
+// TestModelAggregates_CostPctClamped guards the max(0, min(100, ...)) clamp at
+// models.go:93. Two rows whose costs nearly cancel drive the window total
+// toward zero while an individual model's CostUSD stays large, so the
+// unclamped ratio a.CostUSD/total*100 blows out to roughly +/-1e15 (see the
+// clamp comment at models.go:86-92: token counts are never validated on
+// ingest, so a mixed-sign cost_usd_estimate can produce exactly this shape).
+// Reverting the clamp to the plain division must fail this test.
+func TestModelAggregates_CostPctClamped(t *testing.T) {
+	t.Parallel()
+	c := newModelTestCache(t)
+	base := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	insertModelRow(t, c, "claude-opus-4-7", base, 100, 200, 1000)
+	insertModelRow(t, c, "claude-haiku-4-5", base.Add(time.Minute), 50, 50, -999.9999999999)
+
+	got, err := c.ModelAggregates(t.Context(), base.Add(-time.Hour), base.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("rows = %d, want 2", len(got))
+	}
+	for _, a := range got {
+		if a.CostPct < 0 || a.CostPct > 100 {
+			t.Errorf("CostPct for %q = %v, want within [0, 100] (near-zero window total must not blow the ratio out of range)", a.Model, a.CostPct)
+		}
+	}
+}
+
 // TestModelAggregates_DeterministicOrder guards the Label sort key: the fold
 // runs through a Go map, whose iteration order is randomised per run, so
 // equal-cost rows need a total order or the box would flicker across

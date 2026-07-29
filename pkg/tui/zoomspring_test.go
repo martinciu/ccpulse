@@ -186,10 +186,16 @@ func seedBarModelWithMessages(t testing.TB, unitIdx int, now time.Time) (Model, 
 // ProjectAggregates still returns exactly one row (every message shares
 // ProjectSlug "p"), so this fixture's projects target stays 4 (the #420
 // single-row floor) while its models target is 6 — a real, non-contrived
-// height difference. The empty-model bucket also pins ModelAggregates'
-// "(unknown model)"-sorts-last rule at the TUI layer, not just in
-// pkg/cache/models_test.go.
-func seedBarModelWithVariedModels(t testing.TB, unitIdx int, now time.Time) (Model, *cache.Cache) {
+// height difference. The empty-model bucket is present but has 0.0 cost,
+// so it naturally sorts last by the cost comparison alone; the
+// sentinel-last logic is pinned in pkg/cache/models_test.go and by a
+// dedicated TUI test with a fixture where unknown has highest cost.
+// The unit index is fixed to cost mode rather than taken as a parameter: this
+// fixture exists for its distinct PER-MODEL COSTS, so every caller wants cost
+// mode. Its sibling seedBarModelWithMessages does take one, because that one is
+// used across units.
+func seedBarModelWithVariedModels(t testing.TB, now time.Time) (Model, *cache.Cache) {
+	unitIdx := int(chartUnitCost)
 	t.Helper()
 	c, err := cache.Open(t.Context(), filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {

@@ -1043,7 +1043,7 @@ func driveToSettle(t *testing.T, m *Model) (frames int) {
 // also 4 rows) would pass just as easily as the correct implementation.
 func TestBreakdownSwap_ChainsSecondLeg(t *testing.T) {
 	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
-	m, c := seedBarModelWithVariedModels(t, int(chartUnitCost), now)
+	m, c := seedBarModelWithVariedModels(t, now)
 	defer c.Close()
 	m.breakdown = breakdownProjects
 	m.refreshBreakdown()
@@ -1117,6 +1117,53 @@ func TestBreakdownSwap_ChainsSecondLeg(t *testing.T) {
 	}
 	if m.springActive {
 		t.Error("spring still active after leg 2 settled — idle TUI must be zero-animation-cost")
+	}
+}
+
+// TestBreakdownSwap_ArmedDuringZoomSpring is the regression test for
+// ccpulse-475.25. handleBreakdownKey used to write m.pendingBreakdown =
+// target and ONLY THEN call beginBreakdownAnimation. When a unit/zoom spring
+// was in flight, beginBreakdownAnimation aborts it via m.refreshChart()
+// (breakdownspring.go), and refreshChart unconditionally zeroes
+// pendingBreakdown (series.go) to drop a STRANDED pending left by one of the
+// three Update-driven abort paths. That cleared the just-written queue one
+// statement after it was set: leg 1 (hiding the current panel) would settle
+// with nothing to chain into, so pressing `m` (or `p`) while a `u`/`z` spring
+// was still in flight (~1.1s window) made the visible panel slide away and
+// never return. Covers both trigger keys.
+func TestBreakdownSwap_ArmedDuringZoomSpring(t *testing.T) {
+	for _, key := range []string{"u", "z"} {
+		t.Run(key, func(t *testing.T) {
+			now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+			m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
+			defer c.Close()
+			m.breakdown = breakdownProjects
+			m.refreshBreakdown()
+			m.viewport.Height = m.chartHeight()
+
+			// Arm the unit/zoom spring: the projects panel is steady and
+			// visible, only the chart's unit/zoom axis is animating.
+			updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
+			m = updated.(Model)
+			if !m.springActive || m.springKind == springKindBreakdown {
+				t.Fatalf("setup: springActive=%v springKind=%d, want a non-breakdown spring in flight", m.springActive, m.springKind)
+			}
+
+			// Press 'm' mid-flight: swap toward models. Under the bug this
+			// silently drops the queued leg 2.
+			updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
+			m = updated.(Model)
+
+			if frames := driveToSettle(t, &m); frames == 0 {
+				t.Fatal("breakdown spring produced no frames")
+			}
+			if m.breakdown != breakdownModels {
+				t.Fatalf("breakdown = %v after settle, want breakdownModels (panel must arrive, not vanish)", m.breakdown)
+			}
+			if m.breakdownHeight() == 0 {
+				t.Error("breakdownHeight() = 0 after settle, want > 0 (models panel must be visible)")
+			}
+		})
 	}
 }
 
@@ -1203,10 +1250,17 @@ func TestBreakdownKey_MidAnimation(t *testing.T) {
 	})
 
 	t.Run("leg 2: keypress re-arms as a normal reverse-from-current-height", func(t *testing.T) {
-		m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
+		// seedBarModelWithVariedModels (not seedBarModelWithMessages, #475.28):
+		// with the single-model fixture, projects target == models target ==
+		// 4, so leg 2's target can't be distinguished from the outgoing
+		// panel's height. The exact-value check below closes that gap.
+		m, c := seedBarModelWithVariedModels(t, now)
 		defer c.Close()
 		m.breakdown = breakdownProjects
 		m.refreshBreakdown()
+		if projectsTarget := m.breakdownTargetHeight(); projectsTarget != 4 {
+			t.Fatalf("setup: projects target = %d, want 4 (fixture's single project, #420 floor)", projectsTarget)
+		}
 		m.handleBreakdownKey(breakdownModels) // arm the swap: hide projects, queue models
 
 		// Drive leg 1 to settle and chain into leg 2 (mirrors
@@ -1225,6 +1279,17 @@ func TestBreakdownKey_MidAnimation(t *testing.T) {
 		}
 		if m.pendingBreakdown != breakdownNone {
 			t.Fatalf("setup: pendingBreakdown=%v after chaining, want breakdownNone (consumed)", m.pendingBreakdown)
+		}
+		// leg 2's ARMED slide target (breakdownSlideTo — what the spring
+		// actually animates toward) must be the INCOMING kind's (models)
+		// content-aware height, not the OUTGOING (projects) panel's 4 rows —
+		// the same exact-value guard TestBreakdownSwap_ChainsSecondLeg pins.
+		// breakdownTargetHeight() is deliberately NOT asserted here: it is a
+		// pure recomputation from current content and would still report the
+		// correct value even if a bug corrupted breakdownSlideTo itself.
+		const wantModelsTarget = 6
+		if got := m.breakdownSlideTo; got != wantModelsTarget {
+			t.Fatalf("leg 2 armed target (breakdownSlideTo) = %d, want %d (models' content-aware height)", got, wantModelsTarget)
 		}
 
 		// Advance further until leg 2 is strictly mid-flight (mirrors
@@ -1270,13 +1335,23 @@ func TestBreakdownKey_MidAnimation(t *testing.T) {
 // TestBreakdownSwap_HeightConservedAcrossBothLegs extends the #416 invariant
 // over the swap: View must emit exactly m.h rows at every animated height of
 // BOTH legs, including the handoff frame.
+//
+// Uses seedBarModelWithVariedModels (not seedBarModelWithMessages, #475.28)
+// so the projects and models panels need DIFFERENT content-aware heights:
+// with the single-model fixture, projects target == models target == 4, and
+// a bug that armed leg 2 against the OUTGOING kind's height instead of the
+// incoming one would still satisfy a bare per-frame height-conservation
+// check. The final-height assertion below pins the exact incoming value.
 func TestBreakdownSwap_HeightConservedAcrossBothLegs(t *testing.T) {
 	withForcedColor(t)
 	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
-	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
+	m, c := seedBarModelWithVariedModels(t, now)
 	defer c.Close()
 	m.breakdown = breakdownProjects
 	m.refreshBreakdown()
+	if projectsTarget := m.breakdownTargetHeight(); projectsTarget != 4 {
+		t.Fatalf("setup: projects target = %d, want 4 (fixture's single project, #420 floor)", projectsTarget)
+	}
 	// Production's re-sync order (same as handleWindowSize / view_fit_test):
 	// kind and rows first, viewport.Height = chartHeight() last. Without it the
 	// pre-swap frame is already over-tall and every assertion below is bogus.
@@ -1297,6 +1372,22 @@ func TestBreakdownSwap_HeightConservedAcrossBothLegs(t *testing.T) {
 		if m.handleBreakdownSpringTick(m.springGen) == nil {
 			break
 		}
+	}
+
+	if m.springActive {
+		t.Fatal("swap did not settle within 600 frames")
+	}
+	if m.breakdown != breakdownModels {
+		t.Fatalf("final kind = %v, want breakdownModels", m.breakdown)
+	}
+	// leg 2's settled height must be the INCOMING kind's (models)
+	// content-aware height — strictly more than the outgoing (projects)
+	// panel's 4 rows — so a leg 2 armed against the outgoing kind's height
+	// fails this exact-value check instead of slipping through the bare
+	// per-frame conservation loop above.
+	const wantModelsTarget = 6
+	if m.breakdownAnimH != wantModelsTarget {
+		t.Errorf("final breakdownAnimH = %d, want %d (models' content-aware height)", m.breakdownAnimH, wantModelsTarget)
 	}
 }
 
@@ -1323,13 +1414,33 @@ func (d *breakdownQueryCounter) Open(name string) (driver.Conn, error) {
 	return &breakdownCountingConn{Conn: c, counter: d}, nil
 }
 
-// breakdownCountingConn embeds driver.Conn so Prepare/Close/Begin delegate to
-// the real connection unchanged; only Query is intercepted.
-// database/sql.QueryContext prefers a conn's driver.Queryer over the
-// prepare+stmt path whenever the conn implements it, and modernc.org/sqlite's
-// conn does (as the legacy driver.Queryer, not driver.QueryerContext) — so
-// this is the single choke point every ProjectAggregates/ModelAggregates
-// SELECT issued via *sql.DB.QueryContext passes through.
+// breakdownCountingConn wraps the real connection by embedding the
+// driver.Conn INTERFACE (not the concrete modernc.org/sqlite conn struct) so
+// Prepare/Close/Begin delegate to it unchanged while only Query is
+// intercepted. Measured directly against modernc.org/sqlite's conn (opened
+// via modernsqlite.Driver{}.Open): it implements the full modern optional-
+// interface set — QueryerContext, Queryer, ExecerContext, Execer,
+// ConnBeginTx, ConnPrepareContext, Pinger, SessionResetter, and Validator.
+// Embedding the bare driver.Conn interface type hides ALL of those from
+// database/sql's runtime type assertions (a struct embedding only reveals
+// the interface's declared method set, not the concrete type's), so
+// database/sql falls back to the deprecated driver.Queryer path for every
+// query. That forced fallback — not any limitation of the underlying driver
+// — is the actual choke point this type intercepts.
+//
+// Consequences of forcing that fallback, worth knowing before reusing this
+// pattern elsewhere:
+//   - ctx is NOT propagated into the driver for queries on this fixture's
+//     DB: driver.Queryer.Query takes no context.Context, and QueryerContext
+//     is never reached because it's hidden.
+//   - ConnBeginTx is hidden too, so BeginTx degrades to Begin() and would
+//     error on any non-default sql.TxOptions.
+//   - Every Exec on this connection also goes through the legacy
+//     Prepare/Exec/Close path rather than ExecerContext/Execer.
+//   - The counted path is therefore NOT the path production code takes
+//     (*sql.DB.QueryContext → driver.QueryerContext) — it's a legacy
+//     fallback this wrapper forces on purpose to get a single, simple
+//     interception point for the test.
 type breakdownCountingConn struct {
 	driver.Conn
 	counter *breakdownQueryCounter
@@ -1339,11 +1450,34 @@ func (c *breakdownCountingConn) Query(query string, args []driver.Value) (driver
 	if c.counter.match(query) {
 		c.counter.n.Add(1)
 	}
-	//nolint:staticcheck // SA1019: driver.Queryer is what modernc.org/sqlite's
-	// conn actually implements (not driver.QueryerContext); this Query method
-	// exists to intercept that exact interface, not to call a newer one.
+	//nolint:staticcheck // SA1019: driver.Queryer is deprecated, but it's the
+	// exact interface database/sql falls back to once embedding driver.Conn
+	// hides the modern Queryer/QueryerContext set (see the type doc above).
+	// This call reaches the fallback deliberately, not accidentally.
 	return c.Conn.(driver.Queryer).Query(query, args)
 }
+
+// breakdownQueryCounterDriverSeq generates deterministic, collision-free
+// names for sql.Register calls made by newBreakdownSwapFixtureWithQueryCounter
+// (#475.33). sql.Register PANICS the whole test binary on a duplicate name;
+// a wall-clock-derived name (time.Now().UnixNano()) is not actually
+// guaranteed unique — a backwards NTP step, or any future t.Parallel()/
+// -count change landing two calls in the same nanosecond, would panic
+// instead of failing one test. A package-level atomic counter is
+// deterministic and costs nothing.
+var breakdownQueryCounterDriverSeq atomic.Int64
+
+// breakdownQueryCounterFixturePragmas mirrors cachePragmas (pkg/cache/cache.go)
+// verbatim (#475.34). cachePragmas itself is unexported and unreachable from
+// pkg/tui, so it can't be imported directly; this fixture restates its exact
+// value rather than a subset, per cachePragmas' own comment warning that
+// connections started with driver defaults (un-tuned busy_timeout=0,
+// synchronous=FULL, no WAL, no temp_store tuning) behave differently from
+// production connections.
+const breakdownQueryCounterFixturePragmas = "_pragma=busy_timeout(5000)" +
+	"&_pragma=journal_mode(wal)" +
+	"&_pragma=synchronous(normal)" +
+	"&_pragma=temp_store(memory)"
 
 // newBreakdownSwapFixtureWithQueryCounter builds the same single-model swap
 // fixture as seedBarModelWithMessages, backed by a *cache.Cache whose
@@ -1366,14 +1500,14 @@ func newBreakdownSwapFixtureWithQueryCounter(t *testing.T, now time.Time) (Model
 		t.Fatalf("prewarm close: %v", err)
 	}
 
-	drvName := fmt.Sprintf("sqlite-querycount-%d", time.Now().UnixNano())
+	drvName := fmt.Sprintf("sqlite-querycount-%d", breakdownQueryCounterDriverSeq.Add(1))
 	counter := &breakdownQueryCounter{
 		inner: &modernsqlite.Driver{},
 		match: func(q string) bool { return strings.Contains(q, "GROUP BY model") },
 	}
 	sql.Register(drvName, counter)
 
-	db, err := sql.Open(drvName, path+"?_pragma=busy_timeout(5000)")
+	db, err := sql.Open(drvName, path+"?"+breakdownQueryCounterFixturePragmas)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

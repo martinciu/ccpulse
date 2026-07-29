@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"math"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -358,6 +359,17 @@ func TestRenderBreakdownBox_LongLabelHeightConserved(t *testing.T) {
 	}
 }
 
+// c1CSI, del, and bidiRLO are built from their code points rather than
+// embedded as literal characters in source — keeps the test file free of
+// raw control/bidi bytes while still exercising the exact runes #475.35
+// called out: U+009B (single-byte C1 CSI), U+007F (DEL), and U+202E
+// (RIGHT-TO-LEFT OVERRIDE).
+const (
+	c1CSI   = rune(0x9b)
+	del     = rune(0x7f)
+	bidiRLO = rune(0x202e)
+)
+
 // TestBreakdownCell_StripsControlChars pins #475.10: messages.model is
 // written verbatim from on-disk JSONL with no validation and flows into
 // breakdownCell's Render(r.Label) call. lipgloss Width/MaxWidth treat ANSI
@@ -366,23 +378,79 @@ func TestRenderBreakdownBox_LongLabelHeightConserved(t *testing.T) {
 // recolor every row below the box, a bare \a would ring the terminal bell,
 // and a bare \r would overwrite the box's left border. Confirmed present
 // before the fix; must be absent from the rendered cell after it.
+//
+// The case set covers more than the original C0 trio (#475.35): a narrower
+// implementation such as `if r < 0x20 { return -1 }` would pass a C0-only
+// test while letting U+009B (single-byte C1 CSI), U+007F (DEL), and
+// U+202E (bidi override) through — each of those can retarget rendering
+// or reorder displayed text just as effectively as an ESC sequence.
 func TestBreakdownCell_StripsControlChars(t *testing.T) {
 	cases := []struct {
 		name  string
 		label string
+		bad   rune
 	}{
-		{"ansi_color", "claude-\x1b[31mopus\x1b[0m-4-5"},
-		{"osc_bell", "\x1b]0;pwned\aclaude-opus-4-5"},
-		{"carriage_return", "claude-opus\r4-5"},
+		{"ansi_color", "claude-\x1b[31mopus\x1b[0m-4-5", '\x1b'},
+		{"osc_bell", "\x1b]0;pwned\aclaude-opus-4-5", '\a'},
+		{"carriage_return", "claude-opus\r4-5", '\r'},
+		{"line_feed", "claude-opus\n4-5", '\n'},
+		{"c1_csi", "claude-" + string(c1CSI) + "31mopus", c1CSI},
+		{"del", "claude-opus" + string(del) + "4-5", del},
+		{"bidi_override", "claude-opus" + string(bidiRLO) + "4-5", bidiRLO},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			r := breakdownRow{Label: tc.label, CostUSD: 1, Tokens: 100, CostPct: 10}
 			rendered := breakdownCell(r, 60)
-			for _, bad := range []rune{'\x1b', '\a', '\r'} {
-				if strings.ContainsRune(rendered, bad) {
-					t.Errorf("breakdownCell(%q) retained control rune %q in rendered output: %q",
-						tc.label, bad, rendered)
+			if strings.ContainsRune(rendered, tc.bad) {
+				t.Errorf("breakdownCell(%q) retained control rune %U in rendered output: %q",
+					tc.label, tc.bad, rendered)
+			}
+		})
+	}
+}
+
+// TestBreakdownCell_OverflowValuesHeightConserved pins #475.29/#475.30/#475.31:
+// the cost/tokens/pct slots must cap an over-wide rendered value instead of
+// wrapping the cell, and CostPct must be clamped (including NaN, which
+// Go's min/max builtins do NOT bound: min(100, NaN) is NaN) before it reaches
+// the pct slot. Every case below was measured to overflow breakdownCell(row,
+// 48) into 2–5 lines before the MaxWidth(N).Inline(true) treatment landed on
+// all three slots (#475.31) and the NaN-safe clamp landed in breakdownCell
+// (#475.30). The +/-1e16 CostPct cases are fed straight to the renderer
+// rather than produced via a real ProjectAggregate: the renderer is the
+// layer required to hold the invariant regardless of which aggregate kind
+// produced the row (#475.29), and both cache-layer clamps (models.go,
+// projects.go) are covered by their own package's tests.
+func TestBreakdownCell_OverflowValuesHeightConserved(t *testing.T) {
+	cases := []struct {
+		name string
+		row  breakdownRow
+	}{
+		{"cost_100000", breakdownRow{Label: "x", CostUSD: 100000, Tokens: 1000, CostPct: 50}},
+		{"tokens_maxint64", breakdownRow{Label: "x", CostUSD: 1, Tokens: math.MaxInt64, CostPct: 50}},
+		{"pct_1e16", breakdownRow{Label: "x", CostUSD: 1, Tokens: 1000, CostPct: 1e16}},
+		{"pct_neg_1e16", breakdownRow{Label: "x", CostUSD: 1, Tokens: 1000, CostPct: -1e16}},
+		{"pct_nan", breakdownRow{Label: "x", CostUSD: 1, Tokens: 1000, CostPct: math.NaN()}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := breakdownCell(tc.row, minCellW)
+			if h := lipgloss.Height(got); h != 1 {
+				t.Errorf("breakdownCell(%+v, %d) rendered height %d, want exactly 1\n%q",
+					tc.row, minCellW, h, got)
+			}
+
+			// Exercise the full box too, at every width in fitWidths, so the
+			// box-level invariant (renderBreakdownBox's doc comment: "always
+			// exactly `height` rows") holds end-to-end and not just for the
+			// isolated cell.
+			const boxH = 8
+			for _, w := range fitWidths {
+				box := renderBreakdownBox(breakdownModelsTitle, []breakdownRow{tc.row}, w, boxH)
+				if h := lipgloss.Height(box); h != boxH {
+					t.Errorf("renderBreakdownBox(w=%d, h=%d) with %s rendered height %d, want exactly %d\n%s",
+						w, boxH, tc.name, h, boxH, box)
 				}
 			}
 		})

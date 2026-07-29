@@ -6352,7 +6352,7 @@ func TestBreakdownWindow_RemainingMode_ReturnsVisibleWindow(t *testing.T) {
 func TestModelsBreakdown_RendersThroughView(t *testing.T) {
 	withForcedColor(t)
 	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
-	m, c := seedBarModelWithVariedModels(t, int(chartUnitCost), now)
+	m, c := seedBarModelWithVariedModels(t, now)
 	defer c.Close()
 	m.deps.ReduceMotion = true // synchronous snap: no ticks to drive to settle
 	m.breakdown = breakdownNone
@@ -6387,5 +6387,101 @@ func TestModelsBreakdown_RendersThroughView(t *testing.T) {
 	}
 	if !strings.Contains(frame, lastLabel) {
 		t.Errorf("View() missing %q (unknown-model bucket)\ngot:\n%s", lastLabel, frame)
+	}
+	if lastLabel != "(unknown model)" {
+		t.Errorf("last breakdown row label = %q, want \"(unknown model)\" (the unknown bucket must sort last)", lastLabel)
+	}
+}
+
+// TestModelsBreakdown_UnknownSortsLastThroughView pins that the models
+// breakdown renders with (unknown model) as the last row even when the
+// unknown bucket has the HIGHEST cost in the window. This mirrors
+// TestModelAggregates_SortOrderAndUnknownLast at the cache layer and
+// proves the sentinel-last block in pkg/cache/models.go is load-bearing
+// at the TUI layer (other tests use fixtures where unknown naturally
+// sorts last by cost, which would hide a regression).
+func TestModelsBreakdown_UnknownSortsLastThroughView(t *testing.T) {
+	withForcedColor(t)
+	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+
+	// Seed: real models with low cost, empty-model bucket with highest cost.
+	// This forces reliance on the sentinel-last logic.
+	c, err := cache.Open(t.Context(), filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	defer c.Close()
+
+	// Use raw inserts with explicit costs to force the unknown model to have
+	// highest cost. This mirrors TestModelAggregates_SortOrderAndUnknownLast
+	// at the cache layer.
+	const (
+		cacheRead    = 700
+		cacheWrite5m = 70
+		cacheWrite1h = 7
+		tsFormat     = "2006-01-02T15:04:05.000Z07:00"
+	)
+	dbExec := func(model string, ts time.Time, cost float64) {
+		t.Helper()
+		id := model + ts.String()
+		_, err := c.DB().ExecContext(t.Context(), `
+INSERT INTO messages
+(session_id, message_id, project_slug, ts, role, model,
+ input_tokens, output_tokens, cache_read_tokens,
+ cache_write_5m_tokens, cache_write_1h_tokens,
+ cost_usd_estimate, pricing_version, pricing_unknown,
+ is_subagent, parent_session_id, cwd, git_branch, repo_root)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			id, id, "p", ts.UTC().Format(tsFormat), "assistant", model,
+			100, 100, cacheRead, cacheWrite5m, cacheWrite1h, cost, "v1", 0, 0, "", "/cwd", "", "/code/ccpulse")
+		if err != nil {
+			t.Fatalf("InsertMessage: %v", err)
+		}
+	}
+
+	// Empty-model row with highest cost (like TestModelAggregates_SortOrderAndUnknownLast)
+	dbExec("", now.Add(-10*time.Minute), 99.00)
+	// Real models with lower costs
+	dbExec("claude-opus-4-7", now.Add(-9*time.Minute), 5.00)
+	dbExec("claude-haiku-4-5", now.Add(-8*time.Minute), 1.00)
+
+	m := New(Deps{Cache: c})
+	m.unitIdx = int(chartUnitCost)
+	m.zoomIdx = 0 // 15m
+	m.w, m.h = 122, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	m.now = func() time.Time { return now }
+	m.introPending = false
+	m.quotaIntroPending = false
+	m.deps.ReduceMotion = true // synchronous snap
+	m.breakdown = breakdownNone
+	m.refreshChart()
+
+	// Trigger models breakdown
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
+	m = updated.(Model)
+	if cmd != nil {
+		t.Fatalf("reduce_motion 'm': cmd=%v, want nil", cmd)
+	}
+	if m.breakdown != breakdownModels {
+		t.Fatalf("breakdown=%v, want breakdownModels", m.breakdown)
+	}
+	if len(m.breakdownRows) < 2 {
+		t.Fatalf("breakdownRows=%d, want >=2 (fixture has real + unknown)", len(m.breakdownRows))
+	}
+
+	// The critical assertion: (unknown model) must be last, even though it
+	// has the highest cost. Without the sentinel-last block in
+	// pkg/cache/models.go, it would sort first.
+	lastLabel := m.breakdownRows[len(m.breakdownRows)-1].Label
+	if lastLabel != "(unknown model)" {
+		t.Errorf("last breakdown row label = %q, want \"(unknown model)\" (sentinel-last must be load-bearing)", lastLabel)
+	}
+
+	// Also render it to ensure it appears in the frame
+	frame := stripANSI(m.View())
+	if !strings.Contains(frame, lastLabel) {
+		t.Errorf("View() missing %q\ngot:\n%s", lastLabel, frame)
 	}
 }

@@ -825,14 +825,26 @@ func (m *Model) handleBreakdownKey(want breakdownKind) tea.Cmd {
 	// A swap: hide the current panel first, then bring `target` up (#475).
 	// Both legs run at the ordinary slide constants, so a swap reads as
 	// exactly what it is — `p` then `m`.
+	pending := breakdownNone
 	if cur != breakdownNone && target != breakdownNone {
-		m.pendingBreakdown = target
+		pending = target
 		target = breakdownNone
-	} else {
-		m.pendingBreakdown = breakdownNone
 	}
 
+	// pendingBreakdown must be cleared BEFORE beginBreakdownAnimation and the
+	// real value written AFTER it returns — never set-then-call. When a u/z
+	// spring is in flight, beginBreakdownAnimation aborts it through
+	// refreshChart (breakdownspring.go), and refreshChart unconditionally
+	// zeroes pendingBreakdown to drop a *stranded* pending from one of the
+	// three Update-driven abort paths (series.go). If leg 2's destination
+	// were already sitting in pendingBreakdown at that point, this call would
+	// wipe it out one statement after writing it, and the swap would vanish
+	// (ccpulse-475.25). Writing pending only after the arm call returns keeps
+	// it out of refreshChart's blast radius entirely.
+	m.pendingBreakdown = breakdownNone
 	m.beginBreakdownAnimation(target)
+	m.pendingBreakdown = pending
+
 	if !m.springActive {
 		return nil
 	}
