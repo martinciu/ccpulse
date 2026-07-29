@@ -25,3 +25,35 @@ func TestProjectsKeyInHelp(t *testing.T) {
 		t.Errorf("help overlay missing 'projects' binding:\n%s", overlay)
 	}
 }
+
+func TestKeyMap_ModelsBinding(t *testing.T) {
+	k := defaultKeyMap()
+	if got := k.Models.Help().Key; got != "m" {
+		t.Errorf("Models help key = %q, want m", got)
+	}
+	if got := k.Models.Help().Desc; got != "models" {
+		t.Errorf("Models help desc = %q, want models", got)
+	}
+
+	var inShort bool
+	for _, b := range k.ShortHelp() {
+		if b.Help().Key == "m" {
+			inShort = true
+		}
+	}
+	if !inShort {
+		t.Error("Models missing from ShortHelp")
+	}
+
+	var inFull bool
+	for _, row := range k.FullHelp() {
+		for _, b := range row {
+			if b.Help().Key == "m" {
+				inFull = true
+			}
+		}
+	}
+	if !inFull {
+		t.Error("Models missing from FullHelp — the ? overlay is where the binding stays discoverable below ~89 cols")
+	}
+}

@@ -405,6 +405,12 @@ type Model struct {
 	// scroll-settle.
 	breakdownRows []breakdownRow
 
+	// pendingBreakdown is the destination of an in-flight sequential swap
+	// (#475): set when a keypress asks for the other panel while one is up,
+	// consumed by the spring's settle branch to arm the second leg.
+	// breakdownNone means no swap is queued.
+	pendingBreakdown breakdownKind
+
 	// breakdownRowsKind is the kind that produced breakdownRows, and therefore
 	// the kind the box is titled by. Deliberately NOT m.breakdown: a hide
 	// commits m.breakdown to breakdownNone at arm while the box is still
@@ -718,7 +724,9 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 	case key.Matches(msg, m.keys.Unit):
 		return m.handleUnitKey()
 	case key.Matches(msg, m.keys.Projects):
-		return m.handleBreakdownKey()
+		return m.handleBreakdownKey(breakdownProjects)
+	case key.Matches(msg, m.keys.Models):
+		return m.handleBreakdownKey(breakdownModels)
 	case key.Matches(msg, m.keys.ScrollLeft):
 		m.scrollLeft(ZoomLevels[m.zoomIdx].ScrollStep)
 		return m.scheduleBreakdownTick()
@@ -762,22 +770,45 @@ func (m *Model) handleUnitKey() tea.Cmd {
 	})
 }
 
-// handleBreakdownKey slides the projects box up (show) / down (hide) via a
-// harmonica spring (#416). reduce_motion, a too-short terminal (no room for
-// a box), or an empty/cleared chart (renderWindow would no-op against no
-// content) → snap, the pre-#416 hard cut.
-func (m *Model) handleBreakdownKey() tea.Cmd {
+// effectiveKind is the panel the model is heading toward: the queued swap
+// destination if there is one, otherwise the committed kind. Keypresses resolve
+// against this rather than m.breakdown, which is what makes mid-animation
+// presses behave without special-casing each animation phase (#475).
+func (m Model) effectiveKind() breakdownKind {
+	if m.pendingBreakdown != breakdownNone {
+		return m.pendingBreakdown
+	}
+	return m.breakdown
+}
+
+// handleBreakdownKey resolves a breakdown keypress to a target kind and slides
+// there. want is the panel the pressed key names (breakdownProjects for `p`,
+// breakdownModels for `m`).
+//
+// Resolution is against effectiveKind(), not m.breakdown, so a press landing
+// mid-animation is judged by where the model is HEADING: pressing the key for
+// the panel already arriving means "hide it", not "show it again".
+//
+// reduce_motion, a terminal too short to host a box, or an empty/cleared chart
+// (renderWindow would no-op against no content) → snap, the pre-#416 hard cut.
+// breakdownTargetHeight() is kind-independent with no rows loaded: it answers
+// "is there room for a box at all", the same question for either panel.
+func (m *Model) handleBreakdownKey(want breakdownKind) tea.Cmd {
+	target := want
+	if m.effectiveKind() == want {
+		target = breakdownNone // pressing the visible panel's own key hides it
+	}
+
 	if m.deps.ReduceMotion || m.breakdownTargetHeight() == 0 || m.lastCanvasW == 0 {
-		if m.breakdown == breakdownProjects {
-			m.breakdown = breakdownNone
-		} else {
-			m.breakdown = breakdownProjects
-		}
+		m.pendingBreakdown = breakdownNone
+		m.breakdown = target
+		m.refreshBreakdown()
 		m.viewport.Height = m.chartHeight()
 		m.refreshChart()
 		return nil
 	}
-	m.beginBreakdownAnimation()
+
+	m.beginBreakdownAnimation(target)
 	if !m.springActive {
 		return nil
 	}

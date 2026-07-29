@@ -48,7 +48,7 @@ func BenchmarkProjectsAnimFrame(b *testing.B) {
 		defer c.Close()
 		m.breakdown = breakdownNone
 		m.refreshChart()
-		m.beginBreakdownAnimation() // show: arm + 1 aggs query (outside the loop)
+		m.beginBreakdownAnimation(breakdownProjects) // show: arm + 1 aggs query (outside the loop)
 		target := m.breakdownTargetHeight()
 		b.ReportAllocs()
 		i := 0
@@ -63,7 +63,7 @@ func BenchmarkProjectsAnimFrame(b *testing.B) {
 		defer c.Close()
 		m.breakdown = breakdownNone
 		m.refreshChart()
-		m.beginBreakdownAnimation()
+		m.beginBreakdownAnimation(breakdownProjects)
 		target := m.breakdownTargetHeight()
 		b.ReportAllocs()
 		i := 0
@@ -82,7 +82,7 @@ func BenchmarkProjectsAnimFrame(b *testing.B) {
 		}
 		m.breakdown = breakdownNone
 		m.refreshChart()
-		m.beginBreakdownAnimation()
+		m.beginBreakdownAnimation(breakdownProjects)
 		target := m.breakdownTargetHeight()
 		b.ReportAllocs()
 		i := 0

@@ -107,34 +107,30 @@ func (m *Model) handleBreakdownSpringTick(gen int) tea.Cmd {
 // from the CURRENT animated height (every intermediate height renders
 // correctly under re-flow — no snap to an extreme first); an in-flight u/z
 // is hard-cut via refreshChart exactly as u and z do to each other.
-// m.breakdown commits at arm (keeps u/z aborts free of breakdown-specific
-// wiring). Show pays THE one arm-time ProjectAggregates query via
-// refreshBreakdown (the box was unloaded while hidden, #414); hide pays
+// m.breakdown commits to `to` at arm (keeps u/z aborts free of
+// breakdown-specific wiring). A show pays THE one arm-time aggregate query via
+// refreshBreakdown (the box was unloaded while hidden, #414); a hide pays
 // none. The viewport is deliberately NOT repainted: frame 0 of the slide
 // IS the current steady frame (show starts at height 0 = the box-hidden
 // layout; hide starts at the current target; re-arm wherever the slide
 // was) — that no-touch property is half of endpoint identity.
-func (m *Model) beginBreakdownAnimation() {
+func (m *Model) beginBreakdownAnimation(to breakdownKind) {
 	from := m.breakdownHeight() // animH mid-slide, steady extreme otherwise
 	if m.springActive && m.springKind != springKindBreakdown {
 		m.refreshChart() // abort in-flight u/z; restores steady chart content
 	}
 
-	if m.breakdown == breakdownProjects {
-		m.breakdown = breakdownNone
-	} else {
-		m.breakdown = breakdownProjects
-	}
-	to := 0
-	if m.breakdown != breakdownNone {
+	m.breakdown = to
+	target := 0
+	if to != breakdownNone {
 		// Query BEFORE reading the target: breakdownTargetHeight is
-		// content-aware (#420), and on a show the aggs are still nil from
+		// content-aware (#420), and on a show the rows are still nil from
 		// the hidden state (#414) — reading first would arm a slide to the
 		// 4-row empty floor and jump to the real height at settle.
 		m.refreshBreakdown() // THE one arm-time query on the show path
-		to = m.breakdownTargetHeight()
+		target = m.breakdownTargetHeight()
 	}
-	m.breakdownSlideFrom, m.breakdownSlideTo = from, to
+	m.breakdownSlideFrom, m.breakdownSlideTo = from, target
 	m.breakdownAnimH = from
 
 	m.breakdownSpring = harmonica.NewSpring(harmonica.FPS(springFPS), phase2Frequency, phase2Damping)

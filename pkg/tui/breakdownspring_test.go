@@ -133,12 +133,12 @@ func TestView_DuringSlide_HeightConservedRealBorder(t *testing.T) {
 }
 
 // armProjectsShowForTest arms a SHOW slide through the production arm path
-// (the box starts hidden; beginBreakdownAnimation toggles it on, pays the
+// (the box starts hidden; beginBreakdownAnimation commits the target, pays the
 // arm-time aggs query, and seeds the spring without repainting frame 0).
 func armProjectsShowForTest(t testing.TB, m *Model) {
 	t.Helper()
 	m.breakdown = breakdownNone
-	m.beginBreakdownAnimation()
+	m.beginBreakdownAnimation(breakdownProjects)
 }
 
 func TestProjectsSpringTick_AdvancesThenSettles(t *testing.T) {
@@ -847,5 +847,26 @@ func TestBreakdownKind_ZeroValueIsHidden(t *testing.T) {
 	}
 	if breakdownProjects == breakdownModels {
 		t.Fatal("breakdownProjects and breakdownModels must be distinct")
+	}
+}
+
+func TestEffectiveKind(t *testing.T) {
+	tests := []struct {
+		name    string
+		cur     breakdownKind
+		pending breakdownKind
+		want    breakdownKind
+	}{
+		{"no pending returns committed", breakdownProjects, breakdownNone, breakdownProjects},
+		{"pending wins", breakdownNone, breakdownModels, breakdownModels},
+		{"hidden and idle", breakdownNone, breakdownNone, breakdownNone},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := Model{breakdown: tt.cur, pendingBreakdown: tt.pending}
+			if got := m.effectiveKind(); got != tt.want {
+				t.Errorf("effectiveKind() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
