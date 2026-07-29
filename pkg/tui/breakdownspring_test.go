@@ -759,35 +759,54 @@ func TestNowTick_MidSlide_ViewportHeightSynced(t *testing.T) {
 	}
 }
 
-// assertSwapRecovered is the shared postcondition for the
-// TestWindowSize_MidSwapAbort_ClearsPending / TestRefreshMsg_MidSwapAbort_ClearsPending /
-// TestNowTick_MidSwapAbort_ClearsPending trio below: pendingBreakdown must be
-// cleared by the abort, and a single subsequent keypress must actually arm a
-// slide rather than being swallowed by handleBreakdownKey's
-// `pendingBreakdown != breakdownNone` guard (ccpulse-475.1).
-func assertSwapRecovered(t *testing.T, m *Model) {
+// assertSwapCompletesHardCut is the shared postcondition for the
+// TestWindowSize_MidSwapAbort_CompletesSwap / TestRefreshMsg_MidSwapAbort_CompletesSwap /
+// TestNowTick_MidSwapAbort_CompletesSwap trio below (ccpulse-485). An abort mid
+// leg-1 of a sequential swap must land the user on the panel they actually
+// asked for — a hard cut straight to breakdownModels, exactly like every
+// other refresh path hard-cuts an in-flight animation — not merely leave the
+// model in a state recoverable by a further keypress. That weaker postcondition
+// is what the pre-#485 tests checked, and it stayed true even when the swap
+// was silently abandoned (the original #485 bug): the panel never showed up,
+// but pendingBreakdown was still clear and a fresh press still armed a new
+// slide, so the tests passed while the user's keypress vanished.
+//
+// So this asserts the completed swap directly — m.breakdown is already
+// breakdownModels and the panel already has a nonzero on-screen height,
+// with no further keypress required — while ALSO keeping the original
+// anti-stranding assertion (pendingBreakdown == breakdownNone): that
+// property still matters on its own, since a stranded pendingBreakdown
+// would make every subsequent p/m press a no-op.
+func assertSwapCompletesHardCut(t *testing.T, m *Model) {
 	t.Helper()
 	if m.pendingBreakdown != breakdownNone {
 		t.Fatalf("pendingBreakdown=%d after abort, want breakdownNone (stranded — every subsequent p/m press would no-op)", m.pendingBreakdown)
 	}
-	cmd := m.handleBreakdownKey(breakdownModels)
-	if cmd == nil && m.breakdownHeight() == 0 {
-		t.Error("single keypress after abort: cmd=nil and breakdownHeight()=0, want a re-armed slide (press was swallowed)")
+	if m.breakdown != breakdownModels {
+		t.Fatalf("breakdown=%d after abort, want breakdownModels (swap must complete as a hard cut, not be abandoned — #485)", m.breakdown)
+	}
+	if m.breakdownHeight() == 0 {
+		t.Error("breakdownHeight()=0 after abort, want >0 (models panel must actually be showing, not just committed in state)")
 	}
 }
 
-// TestWindowSize_MidSwapAbort_ClearsPending is the ccpulse-475.1 regression
-// test: refreshChart's spring-abort block (pkg/tui/series.go) clears
-// springActive/springIntro/springPhase/springKind but, before the fix, left
-// m.pendingBreakdown untouched. A sequential swap (#475) queues leg 2's
-// destination in pendingBreakdown while leg 1 (hiding the current panel) is
-// in flight; handleWindowSize calls refreshChart on every resize, so a resize
-// mid-swap aborted leg 1 without clearing the queued leg 2 — stranding
-// pendingBreakdown. handleBreakdownKey's first guard is
-// `if m.pendingBreakdown != breakdownNone { rewrite and return nil }`, so
-// every subsequent p/m press silently rewrote the stranded destination
-// instead of arming a new slide.
-func TestWindowSize_MidSwapAbort_ClearsPending(t *testing.T) {
+// TestWindowSize_MidSwapAbort_CompletesSwap is the ccpulse-485 regression
+// test (strengthened from the original ccpulse-475.1 pendingBreakdown-clear
+// test — see assertSwapCompletesHardCut's doc comment for why the original
+// assertions were too weak to catch #485). refreshChart's spring-abort block
+// (pkg/tui/series.go) clears springActive/springIntro/springPhase/springKind
+// and pendingBreakdown; before the #485 fix it dropped the queued leg 2
+// destination along with the stale spring state. A sequential swap (#475)
+// queues leg 2's destination in pendingBreakdown while leg 1 (hiding the
+// current panel) is in flight; handleWindowSize calls refreshChart on every
+// resize, so a resize mid-swap silently abandoned the swap — the outgoing
+// panel slid away and the incoming one never appeared, even though
+// pendingBreakdown ended up clear and the model looked outwardly recovered.
+// The fix commits m.breakdown = m.pendingBreakdown before clearing it, so the
+// abort hard-cuts straight to the queued destination — matching what a plain
+// show already does when interrupted, since a plain show has already
+// committed m.breakdown at arm time.
+func TestWindowSize_MidSwapAbort_CompletesSwap(t *testing.T) {
 	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
 	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
 	defer c.Close()
@@ -816,17 +835,20 @@ func TestWindowSize_MidSwapAbort_ClearsPending(t *testing.T) {
 	}
 
 	// Fire a resize mid-swap. handleWindowSize's refreshChart call must abort
-	// leg 1 AND clear the queued leg 2.
+	// leg 1 AND commit the queued leg 2 as a hard cut (#485).
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	mm := updated.(Model)
-	assertSwapRecovered(t, &mm)
+	assertSwapCompletesHardCut(t, &mm)
 }
 
-// TestRefreshMsg_MidSwapAbort_ClearsPending is the RefreshMsg sibling of
-// TestWindowSize_MidSwapAbort_ClearsPending — same stranded-pendingBreakdown
-// bug (ccpulse-475.1), reached via the watcher-driven refresh path
-// (handleRefresh fires on every debounced .jsonl write) instead of a resize.
-func TestRefreshMsg_MidSwapAbort_ClearsPending(t *testing.T) {
+// TestRefreshMsg_MidSwapAbort_CompletesSwap is the RefreshMsg sibling of
+// TestWindowSize_MidSwapAbort_CompletesSwap — same abandoned-swap bug
+// (ccpulse-485), reached via the watcher-driven refresh path (handleRefresh
+// fires on every debounced .jsonl write) instead of a resize. This is the
+// path #485's real-binary capture actually exercised: a watcher RefreshMsg
+// landing ~0.4s into leg 1 of a `p` then `m` swap left no breakdown box at
+// all, while the plain-show control at the same timing rendered correctly.
+func TestRefreshMsg_MidSwapAbort_CompletesSwap(t *testing.T) {
 	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
 	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
 	defer c.Close()
@@ -850,21 +872,23 @@ func TestRefreshMsg_MidSwapAbort_ClearsPending(t *testing.T) {
 		t.Fatal("leg 1 settled in 3 ticks; cannot probe mid-swap behaviour")
 	}
 
-	// Fire a RefreshMsg mid-swap. refreshChart's abort block must clear the
-	// queued leg 2 alongside springActive/springKind.
+	// Fire a RefreshMsg mid-swap. refreshChart's abort block must commit the
+	// queued leg 2 (m.breakdown = m.pendingBreakdown) as a hard cut BEFORE
+	// clearing pendingBreakdown (#485) — so the models panel actually shows,
+	// instead of only ending up in a state a further keypress could recover.
 	updated, _ := m.Update(RefreshMsg{})
 	mm := updated.(Model)
-	assertSwapRecovered(t, &mm)
+	assertSwapCompletesHardCut(t, &mm)
 }
 
-// TestNowTick_MidSwapAbort_ClearsPending is the nowTickMsg sibling of
-// TestWindowSize_MidSwapAbort_ClearsPending — same stranded-pendingBreakdown
-// bug (ccpulse-475.1), reached via the live-advance path (handleNowTick's
+// TestNowTick_MidSwapAbort_CompletesSwap is the nowTickMsg sibling of
+// TestWindowSize_MidSwapAbort_CompletesSwap — same abandoned-swap bug
+// (ccpulse-485), reached via the live-advance path (handleNowTick's
 // animatingViewport guard excludes springKindBreakdown, so nowTickMsg still
 // calls refreshChart during a projects/models slide). Note: handleNowTick
 // returns a non-nil Cmd to reschedule the next tick — never invoke it (it
 // real-sleeps up to 1h); ignore.
-func TestNowTick_MidSwapAbort_ClearsPending(t *testing.T) {
+func TestNowTick_MidSwapAbort_CompletesSwap(t *testing.T) {
 	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
 	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
 	defer c.Close()
@@ -892,7 +916,7 @@ func TestNowTick_MidSwapAbort_ClearsPending(t *testing.T) {
 	// real tea.Tick that would real-sleep.
 	updated, _ := m.Update(nowTickMsg{gen: m.nowGen})
 	mm := updated.(Model)
-	assertSwapRecovered(t, &mm)
+	assertSwapCompletesHardCut(t, &mm)
 }
 
 // breakdownRowsBackingPtr returns the backing-array address of a breakdownRow

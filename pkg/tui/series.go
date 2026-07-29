@@ -143,11 +143,26 @@ func (m *Model) refreshChart() {
 		m.springPhase = springIdle
 		m.springKind = springKindNone
 		// A sequential swap (#475) may have leg 2 queued in pendingBreakdown.
-		// Clear it here too: leaving it stranded makes every subsequent p/m
-		// press a no-op, because handleBreakdownKey's first guard is
+		// Commit it before clearing (#485): honour the queued destination as a
+		// hard cut rather than dropping it. This mirrors what a plain show
+		// already does when interrupted — m.breakdown is committed to the
+		// destination at arm time (beginBreakdownAnimation), so THIS abort
+		// block finds it already correct and the chart rebuild below just
+		// paints it. A swap's leg 1 is different: m.breakdown is
+		// breakdownNone while leg 1 (hiding the outgoing panel) is in
+		// flight, and the real destination sits in pendingBreakdown waiting
+		// for leg 1 to settle — so without this line an abort here drops the
+		// user's `p`→`m` keypress on the floor instead of landing on models,
+		// the asymmetry #485 reports. Committing first, THEN clearing,
+		// preserves both properties: the panel the user asked for actually
+		// shows up, and pendingBreakdown still ends up breakdownNone, so it
+		// can never strand and turn a subsequent p/m press into a no-op —
+		// handleBreakdownKey's first guard is
 		// `if m.pendingBreakdown != breakdownNone { rewrite and return nil }`
-		// — it only checks pendingBreakdown, not springActive, so it can't
-		// tell a stranded pending from a legitimately in-flight leg 1.
+		// and only checks pendingBreakdown, not springActive.
+		if m.pendingBreakdown != breakdownNone {
+			m.breakdown = m.pendingBreakdown // honour the swap; hard-cut like every other refresh path
+		}
 		m.pendingBreakdown = breakdownNone
 		// springProjectiles, springFinalTargets, oldPeak, oldUnitIdx
 		// remain populated but unread — guarded by springActive=false.
