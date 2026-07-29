@@ -264,11 +264,11 @@ func TestViewFitsWithScopedLimits(t *testing.T) {
 // TestViewFitsWithScopedLimits_ProjectsBox extends the scoped-limit sweep to
 // exercise breakdownTargetHeight's headerContentRows-derived overhead
 // (viewport.go:224) with the projects box visible and populated. The sweep
-// above runs with breakdown default-none and no projectAggs, so it never
+// above runs with breakdown default-none and no breakdownRows, so it never
 // touches that path — reintroducing the flat `m.h - 7` there alone (the
 // pre-#463 formula, still pinned with zero scoped limits by
 // TestView_DuringSlide_HeightConservedRealBorder) would pass the whole
-// suite. Follows production's re-sync order: set breakdown/projectAggs
+// suite. Follows production's re-sync order: set breakdown/breakdownRows
 // first, then viewport.Height = chartHeight() last, same as handleWindowSize.
 func TestViewFitsWithScopedLimits_ProjectsBox(t *testing.T) {
 	t.Parallel()
@@ -279,7 +279,7 @@ func TestViewFitsWithScopedLimits_ProjectsBox(t *testing.T) {
 				m := newScopedTestModel(t, 100, h, n)
 				m.breakdown = breakdownProjects
 				for range 3 {
-					m.projectAggs = append(m.projectAggs, cache.ProjectAggregate{Label: "p"})
+					m.breakdownRows = append(m.breakdownRows, breakdownRow{Label: "p"})
 				}
 				m.viewport.Width = m.chartWidth()
 				m.viewport.Height = m.chartHeight()
@@ -303,11 +303,11 @@ func TestProjectsTargetHeight_WithScopedRows(t *testing.T) {
 	m := newScopedTestModel(t, 100, 24, 2) // headerContentRows() == 4
 	m.breakdown = breakdownProjects
 	for range 8 { // enough that `needed` exceeds avail/2, so the cap binds
-		m.projectAggs = append(m.projectAggs, cache.ProjectAggregate{Label: "p"})
+		m.breakdownRows = append(m.breakdownRows, breakdownRow{Label: "p"})
 	}
 	avail := m.h - 5 - m.headerContentRows()
 	cols := breakdownCellCols(m.w)
-	needed := 3 + (len(m.projectAggs)+cols-1)/cols
+	needed := 3 + (len(m.breakdownRows)+cols-1)/cols
 	want := min(needed, min(avail/2, breakdownMaxRows))
 	if got := m.breakdownTargetHeight(); got != want {
 		t.Errorf("breakdownTargetHeight() = %d, want %d (avail=%d cols=%d needed=%d)",

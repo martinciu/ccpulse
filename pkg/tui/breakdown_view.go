@@ -16,9 +16,49 @@ const (
 	minCellW = 48
 	// columnDivider separates packed columns; also used by tests to count
 	// columns.
-	columnDivider          = " │ "
-	breakdownProjectsTitle = "Projects (visible window)"
+	columnDivider = " │ "
 )
+
+const (
+	breakdownProjectsTitle = "Projects (visible window)"
+	breakdownModelsTitle   = "Models (visible window)"
+)
+
+// breakdownRow is one row of a breakdown panel: a label plus the cost/tokens/
+// share triple every panel reports. Both cache aggregate types map into it, so
+// one renderer serves every kind and the boxes cannot drift apart (#475).
+type breakdownRow struct {
+	Label   string
+	CostUSD float64
+	Tokens  int64
+	CostPct float64
+}
+
+// breakdownTitle is the box's title line for a kind. breakdownNone has no box,
+// so it returns "".
+func breakdownTitle(k breakdownKind) string {
+	switch k {
+	case breakdownProjects:
+		return breakdownProjectsTitle
+	case breakdownModels:
+		return breakdownModelsTitle
+	default:
+		return ""
+	}
+}
+
+// rowsFromProjects adapts project aggregates into renderer rows, preserving
+// order (ProjectAggregates already sorts, with "(no project)" forced last).
+func rowsFromProjects(aggs []cache.ProjectAggregate) []breakdownRow {
+	if len(aggs) == 0 {
+		return nil
+	}
+	rows := make([]breakdownRow, len(aggs))
+	for i, a := range aggs {
+		rows[i] = breakdownRow{Label: a.Label, CostUSD: a.CostUSD, Tokens: a.Tokens, CostPct: a.CostPct}
+	}
+	return rows
+}
 
 // breakdownCellCols returns how many project cells pack side-by-side into an
 // outer box width (border + 1 col padding each side subtracted). Shared by
@@ -30,19 +70,20 @@ func breakdownCellCols(outerWidth int) int {
 	return max(1, (inner+divW)/(minCellW+divW))
 }
 
-// renderBreakdownBox renders aggs as a bordered, multi-column table sized to
+// renderBreakdownBox renders rows as a bordered, multi-column table sized to
 // width×height (outer dimensions, including border). Columns are packed to
 // fit width (≥1); cells fill column-major (top spender top-left, read down
-// then right). The synthetic "(no project)" row is expected last in aggs
-// (ProjectAggregates guarantees this) and therefore lands in the final cell.
-// Empty aggs render a centered placeholder. When aggs exceed the cell budget
-// (cols × bodyRows), the final cell reads "…N more".
+// then right). The synthetic trailing row (the "(no project)" or "(unknown
+// model)" bucket) is expected last in rows — both aggregate queries guarantee
+// this — and therefore lands in the final cell. Empty rows render a centered
+// placeholder. When rows exceed the cell budget (cols × bodyRows), the final
+// cell reads "…N more".
 //
 // Heights 1–3 occur only mid-slide (#416: the steady target is ≥ 4 or 0) and
 // degrade gracefully — 1: top border, 2: closed border shell, 3: shell around
 // the title row — always exactly `height` rows so View's per-frame height
 // conservation holds at every animated height.
-func renderBreakdownBox(aggs []cache.ProjectAggregate, width, height int) string {
+func renderBreakdownBox(title string, rows []breakdownRow, width, height int) string {
 	if height <= 2 {
 		return breakdownBoxShell(width, height)
 	}
@@ -56,7 +97,7 @@ func renderBreakdownBox(aggs []cache.ProjectAggregate, width, height int) string
 	inner := max(width-4, 1)   // minus border + 1 col padding each side
 	innerH := max(height-2, 1) // rows inside the border (title + body)
 
-	if len(aggs) == 0 {
+	if len(rows) == 0 {
 		return box.Render(lipgloss.Place(inner, innerH,
 			lipgloss.Center, lipgloss.Center,
 			lipgloss.NewStyle().Foreground(colorMuted).Render("no activity in this window")))
@@ -66,7 +107,7 @@ func renderBreakdownBox(aggs []cache.ProjectAggregate, width, height int) string
 	// below always emits title + ≥1 body row (≥4 rows total), which would
 	// overflow the box.
 	if innerH < 2 {
-		return box.Render(lipgloss.NewStyle().Foreground(colorMuted).Render(breakdownProjectsTitle))
+		return box.Render(lipgloss.NewStyle().Foreground(colorMuted).Render(title))
 	}
 
 	// One row is spent on the title, so cells share the remaining innerH-1.
@@ -77,13 +118,13 @@ func renderBreakdownBox(aggs []cache.ProjectAggregate, width, height int) string
 
 	capacity := cols * bodyRows
 	overflow := 0
-	if len(aggs) > capacity {
-		overflow = len(aggs) - (capacity - 1) // reserve last cell for "…N more"
-		aggs = aggs[:capacity-1]
+	if len(rows) > capacity {
+		overflow = len(rows) - (capacity - 1) // reserve last cell for "…N more"
+		rows = rows[:capacity-1]
 	}
 
-	cells := make([]string, 0, len(aggs)+1)
-	for _, a := range aggs {
+	cells := make([]string, 0, len(rows)+1)
+	for _, a := range rows {
 		cells = append(cells, breakdownCell(a, cellW))
 	}
 	if overflow > 0 {
@@ -117,8 +158,8 @@ func renderBreakdownBox(aggs []cache.ProjectAggregate, width, height int) string
 	body := lipgloss.JoinHorizontal(lipgloss.Top, joined...)
 
 	// Title via a styled top line inside the box.
-	title := lipgloss.NewStyle().Foreground(colorMuted).Render(breakdownProjectsTitle)
-	return box.Render(lipgloss.JoinVertical(lipgloss.Left, title, body))
+	titleLine := lipgloss.NewStyle().Foreground(colorMuted).Render(title)
+	return box.Render(lipgloss.JoinVertical(lipgloss.Left, titleLine, body))
 }
 
 // breakdownBoxShell renders the box's border rows alone at the degenerate
@@ -153,25 +194,25 @@ const (
 	pctSlotW   = 4
 )
 
-// breakdownCell renders one project's row into a fixed-width cell: label
+// breakdownCell renders one row into a fixed-width cell: label
 // (left, truncated) + cost + tokens + pct (right-aligned, in that order).
 // The cost/tokens/pct values each sit in a fixed-width right-aligned slot
 // so they line up vertically across stacked cells.
-func breakdownCell(a cache.ProjectAggregate, w int) string {
+func breakdownCell(r breakdownRow, w int) string {
 	if w < 8 {
 		w = 8
 	}
 	slotStyle := lipgloss.NewStyle()
 	cost := slotStyle.Width(costSlotW).Align(lipgloss.Right).Render(
-		formatBarValue(a.CostUSD, chartUnitCost))
+		formatBarValue(r.CostUSD, chartUnitCost))
 	tokens := slotStyle.Width(tokenSlotW).Align(lipgloss.Right).Render(
-		formatTokenCount(a.Tokens))
+		formatTokenCount(r.Tokens))
 	pct := slotStyle.Width(pctSlotW).Align(lipgloss.Right).Render(
-		fmt.Sprintf("%d%%", int(math.Round(a.CostPct))))
+		fmt.Sprintf("%d%%", int(math.Round(r.CostPct))))
 	right := cost + "  " + tokens + "  " + pct
 	rw := lipgloss.Width(right)
 	labelW := max(w-rw-1, 3)
-	label := lipgloss.NewStyle().Width(labelW).MaxWidth(labelW).Render(a.Label)
+	label := lipgloss.NewStyle().Width(labelW).MaxWidth(labelW).Render(r.Label)
 	return lipgloss.NewStyle().Width(w).Render(
 		label + lipgloss.PlaceHorizontal(w-labelW, lipgloss.Right, right))
 }

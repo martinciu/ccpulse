@@ -209,17 +209,17 @@ func (m Model) breakdownHeight() int {
 }
 
 // breakdownTargetHeight is the steady-state outer box height: the rows its
-// content actually needs — border (2) + title (1) + ceil(len(projectAggs)/
+// content actually needs — border (2) + title (1) + ceil(len(breakdownRows)/
 // cols) body rows at the current column packing — capped at half the
 // post-header area and breakdownMaxRows, and 0 when the terminal is too short
 // to host both the chart's 5-row floor and a usable box. Content-aware since
 // #420: the box shrinks to its aggregates and chartHeight reclaims the rows.
 // Heights depend on aggs but never the reverse (refreshBreakdown derives its
-// window from width/scroll state), so there is no cycle; every projectAggs
+// window from width/scroll state), so there is no cycle; every breakdownRows
 // mutation re-syncs the viewport in one pass (refreshChart inline before its
 // paint, the debounced settle via applyBreakdownResize, clearChart
 // self-contained). The #416 slide arms against this target, so the arm must
-// populate projectAggs BEFORE reading it (beginBreakdownAnimation).
+// populate breakdownRows BEFORE reading it (beginBreakdownAnimation).
 func (m Model) breakdownTargetHeight() int {
 	avail := m.h - 5 - m.headerContentRows() // shared by chart + projects box (same overhead as chartHeight)
 	// Need the chart's 5-row floor + a minimum 4-row box (border+title+1 row).
@@ -228,7 +228,7 @@ func (m Model) breakdownTargetHeight() int {
 	}
 	upper := min(avail/2, breakdownMaxRows)
 	needed := 4 // empty aggs: the centered placeholder keeps the 4-row floor
-	if n := len(m.projectAggs); n > 0 {
+	if n := len(m.breakdownRows); n > 0 {
 		cols := breakdownCellCols(m.w)
 		needed = 3 + (n+cols-1)/cols // border(2) + title(1) + body rows
 	}

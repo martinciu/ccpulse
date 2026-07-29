@@ -9,8 +9,6 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-
-	"github.com/martinciu/ccpulse/pkg/cache"
 )
 
 func TestLerpInt(t *testing.T) {
@@ -213,7 +211,7 @@ func TestProjectsKey_ShowFromIdle_ArmsAndQueriesOnce(t *testing.T) {
 	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
 	defer c.Close()
 	m.breakdown = breakdownNone // hidden by default (#414) → first 'p' is a show
-	m.refreshChart()            // ensure steady chart inputs present; projectAggs stays nil (hidden)
+	m.refreshChart()            // ensure steady chart inputs present; breakdownRows stays nil (hidden)
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
 	m = updated.(Model)
@@ -227,17 +225,17 @@ func TestProjectsKey_ShowFromIdle_ArmsAndQueriesOnce(t *testing.T) {
 	if m.breakdownSlideFrom != 0 || m.breakdownSlideTo != m.breakdownTargetHeight() {
 		t.Errorf("show slide from/to = (%d,%d), want (0,%d)", m.breakdownSlideFrom, m.breakdownSlideTo, m.breakdownTargetHeight())
 	}
-	if len(m.projectAggs) == 0 {
-		t.Error("show 'p': projectAggs empty after arm (requery missing)")
+	if len(m.breakdownRows) == 0 {
+		t.Error("show 'p': breakdownRows empty after arm (requery missing)")
 	}
 	if cmd == nil {
 		t.Error("show 'p': cmd=nil, want first tick scheduled")
 	}
 
-	// Zero-DB-per-frame contract: the arm query repopulated projectAggs once;
+	// Zero-DB-per-frame contract: the arm query repopulated breakdownRows once;
 	// driving mid-flight ticks must NOT reissue ProjectAggregates (the slice's
 	// backing array is untouched), and settle reissues exactly once (new array).
-	armPtr := projectAggsBackingPtr(m.projectAggs)
+	armPtr := breakdownRowsBackingPtr(m.breakdownRows)
 	for range 3 { // safely mid-flight (critically-damped spring needs ~15+ ticks)
 		updated, _ = m.Update(springTickMsg{gen: m.springGen})
 		m = updated.(Model)
@@ -245,8 +243,8 @@ func TestProjectsKey_ShowFromIdle_ArmsAndQueriesOnce(t *testing.T) {
 	if !m.springActive {
 		t.Fatal("3 ticks settled the slide unexpectedly; can't probe mid-flight")
 	}
-	if projectAggsBackingPtr(m.projectAggs) != armPtr {
-		t.Error("projectAggs reassigned mid-slide → a per-tick refreshBreakdown ran (want zero DB per frame)")
+	if breakdownRowsBackingPtr(m.breakdownRows) != armPtr {
+		t.Error("breakdownRows reassigned mid-slide → a per-tick refreshBreakdown ran (want zero DB per frame)")
 	}
 }
 
@@ -256,11 +254,11 @@ func TestProjectsKey_HideFromIdle_NoArmQuery(t *testing.T) {
 	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
 	defer c.Close()
 	m.breakdown = breakdownProjects
-	m.refreshChart() // box shown → projectAggs populated
-	if len(m.projectAggs) == 0 {
-		t.Fatal("seed: projectAggs empty, want populated before hide")
+	m.refreshChart() // box shown → breakdownRows populated
+	if len(m.breakdownRows) == 0 {
+		t.Fatal("seed: breakdownRows empty, want populated before hide")
 	}
-	beforePtr := projectAggsBackingPtr(m.projectAggs)
+	beforePtr := breakdownRowsBackingPtr(m.breakdownRows)
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
 	m = updated.(Model)
@@ -275,7 +273,7 @@ func TestProjectsKey_HideFromIdle_NoArmQuery(t *testing.T) {
 		t.Errorf("hide slide from/to=(%d,%d), want (%d,0)", m.breakdownSlideFrom, m.breakdownSlideTo, m.breakdownTargetHeight())
 	}
 	// No arm requery on hide: the snapshot reused the already-populated aggs.
-	if projectAggsBackingPtr(m.projectAggs) != beforePtr {
+	if breakdownRowsBackingPtr(m.breakdownRows) != beforePtr {
 		t.Error("hide 'p' reissued ProjectAggregates at arm, want 0 queries (reuse in-memory aggs)")
 	}
 }
@@ -452,10 +450,10 @@ func TestProjectsSlide_BoxContentPresentEarly(t *testing.T) {
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
 	m = updated.(Model)
-	if len(m.projectAggs) == 0 {
-		t.Fatal("arm did not populate projectAggs (show-path requery missing)")
+	if len(m.breakdownRows) == 0 {
+		t.Fatal("arm did not populate breakdownRows (show-path requery missing)")
 	}
-	topLabel := m.projectAggs[0].Label
+	topLabel := m.breakdownRows[0].Label
 
 	sawTitle := false
 	for i := 0; m.springActive && i < 600; i++ {
@@ -751,11 +749,11 @@ func TestNowTick_MidSlide_ViewportHeightSynced(t *testing.T) {
 	}
 }
 
-// projectAggsBackingPtr returns the backing-array address of a ProjectAggregate
-// slice, or 0 if empty. refreshBreakdown reassigns m.projectAggs to a fresh slice
+// breakdownRowsBackingPtr returns the backing-array address of a breakdownRow
+// slice, or 0 if empty. refreshBreakdown reassigns m.breakdownRows to a fresh slice
 // from ProjectAggregates, so a changed pointer ⇒ a query ran. Used to prove the
 // zero-DB-per-frame contract without a cache interface seam.
-func projectAggsBackingPtr(a []cache.ProjectAggregate) uintptr {
+func breakdownRowsBackingPtr(a []breakdownRow) uintptr {
 	if len(a) == 0 {
 		return 0
 	}

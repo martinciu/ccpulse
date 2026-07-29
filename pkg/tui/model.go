@@ -398,10 +398,21 @@ type Model struct {
 	// is not rendered and the chart gets those rows (#416, #475).
 	breakdown breakdownKind
 
-	// projectAggs is the last per-project rollup for the visible window,
-	// rendered in the projects box below the chart. Recomputed by
-	// refreshBreakdown on refresh/zoom and on the debounced scroll-settle.
-	projectAggs []cache.ProjectAggregate
+	// breakdownRows is the rendered content of the visible breakdown panel,
+	// adapted from whichever aggregate query the current kind runs. Reassigned
+	// (never resliced) so bubbletea's value-copies stay independent.
+	// Recomputed by refreshBreakdown on refresh/zoom and on the debounced
+	// scroll-settle.
+	breakdownRows []breakdownRow
+
+	// breakdownRowsKind is the kind that produced breakdownRows, and therefore
+	// the kind the box is titled by. Deliberately NOT m.breakdown: a hide
+	// commits m.breakdown to breakdownNone at arm while the box is still
+	// full-height and rendering the retained rows (hide pays no query, #416),
+	// so titling by m.breakdown would blank the title mid-slide and break
+	// endpoint identity. Titling by whatever produced the visible rows keeps
+	// the header truthful for every frame of both legs of a swap (#475).
+	breakdownRowsKind breakdownKind
 
 	w, h int
 
@@ -806,7 +817,7 @@ func (m Model) View() string {
 	// padding first).
 	if !m.showHelp {
 		if ph := m.breakdownHeight(); ph > 0 {
-			parts = append(parts, renderBreakdownBox(m.projectAggs, m.w, ph))
+			parts = append(parts, renderBreakdownBox(breakdownTitle(m.breakdownRowsKind), m.breakdownRows, m.w, ph))
 		}
 	}
 	parts = append(parts, sep, footer)
@@ -1145,7 +1156,7 @@ func (m *Model) rebuildScopedBars() {
 }
 
 // refreshBreakdown recomputes the rollup for the chart's currently-visible
-// window and stores it in m.projectAggs. Cheap: the
+// window and stores it in m.breakdownRows. Cheap: the
 // window is bounded by what's on screen. Safe when the cache is nil or the
 // chart has no data (clears to empty → placeholder — including remaining
 // mode with zero usage samples, where the warming-up chart and an empty
@@ -1167,11 +1178,11 @@ func (m *Model) rebuildScopedBars() {
 //     special-cases the same sparse-lastStarts mismatch for its clamp.
 func (m *Model) refreshBreakdown() {
 	if m.breakdown == breakdownNone {
-		m.projectAggs = nil
+		m.breakdownRows = nil
 		return
 	}
 	if m.deps.Cache == nil || len(m.lastStarts) == 0 {
-		m.projectAggs = nil
+		m.breakdownRows = nil
 		return
 	}
 	var from, to time.Time
@@ -1192,19 +1203,19 @@ func (m *Model) refreshBreakdown() {
 	aggs, err := m.deps.Cache.ProjectAggregates(m.ctx, from, to)
 	if err != nil {
 		slog.Debug("tui.refreshBreakdown", "err", err)
-		m.projectAggs = nil
+		m.breakdownRows = nil
 		return
 	}
-	m.projectAggs = aggs
+	m.breakdownRows, m.breakdownRowsKind = rowsFromProjects(aggs), m.breakdown
 }
 
 // applyBreakdownResize re-syncs the viewport height and chart content after a
-// projectAggs change moved the content-aware breakdownHeight (#420). No-op
+// breakdownRows change moved the content-aware breakdownHeight (#420). No-op
 // when the height is already in sync — the common case; most scroll-settles
 // don't cross a row-count boundary. Never re-queries the cache: bar mode
 // re-renders the in-memory visible window; remaining mode rebuilds the line
 // chart from lastPts5h/7d. Height is a fixed point after one call (resizing
-// never changes projectAggs), so callers never loop.
+// never changes breakdownRows), so callers never loop.
 func (m *Model) applyBreakdownResize() {
 	nh := m.chartHeight()
 	if m.viewport.Height == nh {

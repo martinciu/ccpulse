@@ -106,7 +106,7 @@ func (m *Model) clearChart() {
 	// render at the post-clear box height (#420). Self-contained on purpose —
 	// refreshChart's error/empty paths return right after clearChart, never
 	// reaching the tail resize hook.
-	m.projectAggs = nil
+	m.breakdownRows = nil
 	m.viewport.Height = m.chartHeight()
 	m.viewport.SetContent(emptyPlaceholder(m.chartWidth(), m.chartHeight()))
 	m.lastValues = nil

@@ -5496,8 +5496,8 @@ func TestView_ShowsProjectsBox(t *testing.T) {
 	if !strings.Contains(m.View(), breakdownProjectsTitle) {
 		t.Errorf("View should contain the projects box title %q", breakdownProjectsTitle)
 	}
-	if len(m.projectAggs) == 0 {
-		t.Errorf("projectAggs should be populated after refreshChart")
+	if len(m.breakdownRows) == 0 {
+		t.Errorf("breakdownRows should be populated after refreshChart")
 	}
 }
 
@@ -5508,7 +5508,7 @@ func TestProjectsDebounce_StaleTickDropped(t *testing.T) {
 	m, cleanup := seedScrollTestModel(t, 200)
 	defer cleanup()
 	// breakdown defaults to none; enable it so scheduleBreakdownTick returns
-	// a Cmd and handleBreakdownTick can repopulate projectAggs.
+	// a Cmd and handleBreakdownTick can repopulate breakdownRows.
 	m.breakdown = breakdownProjects
 
 	// Two scrolls in quick succession → gen advanced twice.
@@ -5523,16 +5523,16 @@ func TestProjectsDebounce_StaleTickDropped(t *testing.T) {
 	}
 
 	// Stale tick (gen1) is superseded: it must not recompute the box.
-	m.projectAggs = nil
+	m.breakdownRows = nil
 	m.handleBreakdownTick(breakdownTickMsg{gen: gen1})
-	if m.projectAggs != nil {
+	if m.breakdownRows != nil {
 		t.Errorf("stale tick must not recompute the box")
 	}
 
 	// Current tick (latest gen) recomputes the visible-window rollup.
 	m.handleBreakdownTick(breakdownTickMsg{gen: m.breakdownGen})
-	if len(m.projectAggs) == 0 {
-		t.Errorf("current-gen tick should have repopulated projectAggs")
+	if len(m.breakdownRows) == 0 {
+		t.Errorf("current-gen tick should have repopulated breakdownRows")
 	}
 }
 
@@ -5604,8 +5604,8 @@ func TestRefreshProjects_RemainingModeUsesVisibleWindow(t *testing.T) {
 
 	m.refreshChart() // first load pins to the right edge
 
-	if len(m.projectAggs) == 0 {
-		t.Fatalf("projectAggs empty after refreshChart in remaining mode "+
+	if len(m.breakdownRows) == 0 {
+		t.Fatalf("breakdownRows empty after refreshChart in remaining mode "+
 			"(#430): viewportXOffset=%d len(lastStarts)=%d — window was "+
 			"derived by bucket-indexing sparse usage-sample timestamps",
 			m.viewportXOffset, len(m.lastStarts))
@@ -5615,9 +5615,9 @@ func TestRefreshProjects_RemainingModeUsesVisibleWindow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProjectAggregates: %v", err)
 	}
-	if !slices.Equal(m.projectAggs, want) {
-		t.Errorf("projectAggs = %+v, want ProjectAggregates(visibleWindow()) = %+v",
-			m.projectAggs, want)
+	if !slices.Equal(m.breakdownRows, rowsFromProjects(want)) {
+		t.Errorf("breakdownRows = %+v, want rowsFromProjects(ProjectAggregates(visibleWindow())) = %+v",
+			m.breakdownRows, want)
 	}
 }
 
@@ -5643,11 +5643,11 @@ func TestProjectsTick_RemainingModeScrolledWindow(t *testing.T) {
 	if cmd := m.scheduleBreakdownTick(); cmd == nil {
 		t.Fatal("scheduleBreakdownTick must return a Cmd when the box is shown")
 	}
-	m.projectAggs = nil // prove the settle recomputes, not a refreshChart leftover
+	m.breakdownRows = nil // prove the settle recomputes, not a refreshChart leftover
 	m.handleBreakdownTick(breakdownTickMsg{gen: m.breakdownGen})
 
-	if len(m.projectAggs) == 0 {
-		t.Fatalf("projectAggs empty after scroll-settle in remaining mode "+
+	if len(m.breakdownRows) == 0 {
+		t.Fatalf("breakdownRows empty after scroll-settle in remaining mode "+
 			"(#430): viewportXOffset=%d len(lastStarts)=%d",
 			m.viewportXOffset, len(m.lastStarts))
 	}
@@ -5656,9 +5656,9 @@ func TestProjectsTick_RemainingModeScrolledWindow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProjectAggregates: %v", err)
 	}
-	if !slices.Equal(m.projectAggs, want) {
-		t.Errorf("settled projectAggs = %+v, want ProjectAggregates(visibleWindow()) = %+v",
-			m.projectAggs, want)
+	if !slices.Equal(m.breakdownRows, rowsFromProjects(want)) {
+		t.Errorf("settled breakdownRows = %+v, want rowsFromProjects(ProjectAggregates(visibleWindow())) = %+v",
+			m.breakdownRows, want)
 	}
 }
 
@@ -5764,21 +5764,21 @@ func TestProjectsToggle_InertUnderHelp(t *testing.T) {
 func TestProjectsToggle_ClearsAndRequeries(t *testing.T) {
 	m, cleanup := seedScrollTestModel(t, 200)
 	defer cleanup()
-	// Snap path (#416): on the animated hide path projectAggs is retained for
+	// Snap path (#416): on the animated hide path breakdownRows is retained for
 	// the slide-down and only cleared at settle. This test asserts the
 	// immediate clear-on-hide snap contract.
 	m.deps.ReduceMotion = true
 
 	// Show → requeried for the visible window.
 	m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
-	if len(m.projectAggs) == 0 {
-		t.Error("projectAggs should repopulate after toggling on")
+	if len(m.breakdownRows) == 0 {
+		t.Error("breakdownRows should repopulate after toggling on")
 	}
 
 	// Hide → the rollup is cleared (no stale aggs held while invisible).
 	m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
-	if m.projectAggs != nil {
-		t.Errorf("projectAggs should be nil while hidden, got %d entries", len(m.projectAggs))
+	if m.breakdownRows != nil {
+		t.Errorf("breakdownRows should be nil while hidden, got %d entries", len(m.breakdownRows))
 	}
 }
 
@@ -5796,7 +5796,7 @@ func TestProjectsTick_NotScheduledWhenHidden(t *testing.T) {
 // the rows its aggregates need — border(2) + title(1) + ceil(n/cols) — under
 // the pre-existing min(avail/2, breakdownMaxRows) cap; zero aggs keep the
 // 4-row placeholder floor. Bare Model construction is enough: breakdownHeight
-// reads only breakdown/w/h/projectAggs.
+// reads only breakdown/w/h/breakdownRows.
 func TestProjectsHeight_ContentAware(t *testing.T) {
 	cases := []struct {
 		desc string
@@ -5815,7 +5815,7 @@ func TestProjectsHeight_ContentAware(t *testing.T) {
 		t.Run(tc.desc, func(t *testing.T) {
 			m := Model{w: tc.w, h: tc.h, breakdown: breakdownProjects}
 			for range tc.n {
-				m.projectAggs = append(m.projectAggs, cache.ProjectAggregate{Label: "p"})
+				m.breakdownRows = append(m.breakdownRows, breakdownRow{Label: "p"})
 			}
 			if got := m.breakdownHeight(); got != tc.want {
 				t.Errorf("breakdownHeight(w=%d h=%d n=%d) = %d, want %d",
@@ -5839,11 +5839,11 @@ func TestProjectsSettleReflow_ChartReclaimsRows(t *testing.T) {
 
 	// Simulate "the previous window showed 8 projects": inflate the aggs and
 	// re-sync the layout to that taller box.
-	fakes := make([]cache.ProjectAggregate, 8)
+	fakes := make([]breakdownRow, 8)
 	for i := range fakes {
-		fakes[i] = cache.ProjectAggregate{Label: fmt.Sprintf("p%d", i)}
+		fakes[i] = breakdownRow{Label: fmt.Sprintf("p%d", i)}
 	}
-	m.projectAggs = fakes
+	m.breakdownRows = fakes
 	m.viewport.Height = m.chartHeight()
 	tallBoxChartH := m.viewport.Height
 
@@ -5854,8 +5854,8 @@ func TestProjectsSettleReflow_ChartReclaimsRows(t *testing.T) {
 	}
 	m.handleBreakdownTick(breakdownTickMsg{gen: m.breakdownGen})
 
-	if len(m.projectAggs) >= 8 {
-		t.Fatalf("precondition: settled rollup = %d aggs, want < 8", len(m.projectAggs))
+	if len(m.breakdownRows) >= 8 {
+		t.Fatalf("precondition: settled rollup = %d aggs, want < 8", len(m.breakdownRows))
 	}
 	if got := m.chartHeight(); got <= tallBoxChartH {
 		t.Errorf("chartHeight = %d after settle, want > %d (reclaimed rows)", got, tallBoxChartH)
@@ -5874,7 +5874,7 @@ func TestRefreshChart_ViewportHeightFixedPoint(t *testing.T) {
 	defer cleanup()
 	m.breakdown = breakdownProjects
 	m.refreshChart()
-	if len(m.projectAggs) == 0 {
+	if len(m.breakdownRows) == 0 {
 		t.Fatal("precondition: fixture should produce aggs")
 	}
 	if m.viewport.Height != m.chartHeight() {
@@ -5893,16 +5893,16 @@ func TestClearChart_ResetsProjectsLayout(t *testing.T) {
 	m.breakdown = breakdownProjects
 	m.refreshChart()
 
-	fakes := make([]cache.ProjectAggregate, 8)
+	fakes := make([]breakdownRow, 8)
 	for i := range fakes {
-		fakes[i] = cache.ProjectAggregate{Label: fmt.Sprintf("p%d", i)}
+		fakes[i] = breakdownRow{Label: fmt.Sprintf("p%d", i)}
 	}
-	m.projectAggs = fakes
+	m.breakdownRows = fakes
 	m.viewport.Height = m.chartHeight()
 
 	m.clearChart()
-	if m.projectAggs != nil {
-		t.Error("clearChart must nil projectAggs")
+	if m.breakdownRows != nil {
+		t.Error("clearChart must nil breakdownRows")
 	}
 	if m.viewport.Height != m.chartHeight() {
 		t.Errorf("viewport.Height = %d after clearChart, want %d",
@@ -5929,17 +5929,17 @@ func TestHandleProjectsTick_NoOpMidSpring(t *testing.T) {
 
 	// Inflate aggs to simulate a window that previously had more projects, then
 	// re-sync the layout to the taller box — mirrors TestProjectsSettleReflow pattern.
-	fakes := make([]cache.ProjectAggregate, 8)
+	fakes := make([]breakdownRow, 8)
 	for i := range fakes {
-		fakes[i] = cache.ProjectAggregate{Label: fmt.Sprintf("p%d", i)}
+		fakes[i] = breakdownRow{Label: fmt.Sprintf("p%d", i)}
 	}
-	m.projectAggs = fakes
+	m.breakdownRows = fakes
 	m.viewport.Height = m.chartHeight()
 
 	// Record the stable state the spring is mid-flight with.
 	peakBefore := m.peak
 	heightBefore := m.viewport.Height
-	aggsBefore := len(m.projectAggs)
+	aggsBefore := len(m.breakdownRows)
 
 	// Arm a settle tick, then mark the spring active — simulates a scroll
 	// arriving while a unit/zoom spring is in flight.
@@ -5957,8 +5957,8 @@ func TestHandleProjectsTick_NoOpMidSpring(t *testing.T) {
 	if m.viewport.Height != heightBefore {
 		t.Errorf("mid-spring tick: viewport.Height changed from %d to %d, want no change", heightBefore, m.viewport.Height)
 	}
-	if len(m.projectAggs) != aggsBefore {
-		t.Errorf("mid-spring tick: projectAggs len changed from %d to %d, want no change", aggsBefore, len(m.projectAggs))
+	if len(m.breakdownRows) != aggsBefore {
+		t.Errorf("mid-spring tick: breakdownRows len changed from %d to %d, want no change", aggsBefore, len(m.breakdownRows))
 	}
 }
 

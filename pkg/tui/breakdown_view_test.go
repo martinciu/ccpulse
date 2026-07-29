@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-
-	"github.com/martinciu/ccpulse/pkg/cache"
 )
 
 // stripANSI removes ANSI escape sequences from s so position arithmetic on
@@ -31,18 +29,18 @@ func stripANSI(s string) string {
 	return out.String()
 }
 
-func sampleAggs() []cache.ProjectAggregate {
-	return []cache.ProjectAggregate{
-		{RepoRoot: "/c/dotfiles", Label: "dotfiles", CostUSD: 4451, Tokens: 19_200_000, CostPct: 38},
-		{RepoRoot: "/c/ccpulse", Label: "ccpulse", CostUSD: 3889, Tokens: 27_800_000, CostPct: 33},
-		{RepoRoot: "/c/gruppo", Label: "gruppo", CostUSD: 1119, Tokens: 4_500_000, CostPct: 9},
-		{RepoRoot: "", Label: "(no project)", CostUSD: 5, Tokens: 1000, CostPct: 0},
+func sampleAggs() []breakdownRow {
+	return []breakdownRow{
+		{Label: "dotfiles", CostUSD: 4451, Tokens: 19_200_000, CostPct: 38},
+		{Label: "ccpulse", CostUSD: 3889, Tokens: 27_800_000, CostPct: 33},
+		{Label: "gruppo", CostUSD: 1119, Tokens: 4_500_000, CostPct: 9},
+		{Label: "(no project)", CostUSD: 5, Tokens: 1000, CostPct: 0},
 	}
 }
 
 func TestRenderProjectsBox_PacksColumnsByWidth(t *testing.T) {
-	wide := renderBreakdownBox(sampleAggs(), 200, 8)
-	narrow := renderBreakdownBox(sampleAggs(), 60, 8)
+	wide := renderBreakdownBox(breakdownProjectsTitle, sampleAggs(), 200, 8)
+	narrow := renderBreakdownBox(breakdownProjectsTitle, sampleAggs(), 60, 8)
 	if lipglossCols(wide) <= lipglossCols(narrow) {
 		t.Errorf("wide terminal should pack >= columns than narrow")
 	}
@@ -55,7 +53,7 @@ func TestRenderProjectsBox_PacksColumnsByWidth(t *testing.T) {
 }
 
 func TestRenderProjectsBox_EmptyPlaceholder(t *testing.T) {
-	got := renderBreakdownBox(nil, 80, 6)
+	got := renderBreakdownBox(breakdownProjectsTitle, nil, 80, 6)
 	if !strings.Contains(got, "no activity in this window") {
 		t.Errorf("empty aggs should render placeholder, got:\n%s", got)
 	}
@@ -64,7 +62,7 @@ func TestRenderProjectsBox_EmptyPlaceholder(t *testing.T) {
 func TestRenderProjectsBox_NoProjectLast(t *testing.T) {
 	// Single column (narrow) → reading order is top-to-bottom; "(no project)"
 	// must be the last non-border line with content.
-	got := renderBreakdownBox(sampleAggs(), 50, 8)
+	got := renderBreakdownBox(breakdownProjectsTitle, sampleAggs(), 50, 8)
 	idxNoProj := strings.Index(got, "(no project)")
 	idxCcpulse := strings.Index(got, "ccpulse")
 	if idxNoProj < idxCcpulse {
@@ -79,7 +77,7 @@ func TestRenderProjectsBox_NoProjectLast(t *testing.T) {
 // title+body layout.
 func TestRenderProjectsBox_DegenerateHeights(t *testing.T) {
 	for h := 1; h <= 5; h++ {
-		got := renderBreakdownBox(sampleAggs(), 80, h)
+		got := renderBreakdownBox(breakdownProjectsTitle, sampleAggs(), 80, h)
 		rows := strings.Split(got, "\n")
 		if len(rows) != h {
 			t.Errorf("height %d: rendered %d rows, want exactly %d:\n%s", h, len(rows), h, got)
@@ -106,11 +104,11 @@ func TestRenderProjectsBox_DegenerateHeights(t *testing.T) {
 func TestRenderProjectsBox_Overflow(t *testing.T) {
 	// 1 column (narrow) × bodyRows=2 → capacity 2; 10 aggs must overflow
 	// into a "…N more" final cell rather than silently dropping rows.
-	many := make([]cache.ProjectAggregate, 10)
+	many := make([]breakdownRow, 10)
 	for i := range many {
-		many[i] = cache.ProjectAggregate{Label: fmt.Sprintf("proj%d", i), CostUSD: float64(10 - i)}
+		many[i] = breakdownRow{Label: fmt.Sprintf("proj%d", i), CostUSD: float64(10 - i)}
 	}
-	got := renderBreakdownBox(many, 50, 5)
+	got := renderBreakdownBox(breakdownProjectsTitle, many, 50, 5)
 	if !strings.Contains(got, "more") {
 		t.Errorf("overflow should render a “…N more” cell, got:\n%s", got)
 	}
@@ -146,7 +144,7 @@ func TestProjectCell_TokenCompactSuffix(t *testing.T) {
 	const cellW = 60
 	for _, tc := range cases {
 		t.Run(tc.desc, func(t *testing.T) {
-			a := cache.ProjectAggregate{
+			a := breakdownRow{
 				Label:   "testproj",
 				CostUSD: 1.23,
 				Tokens:  tc.tokens,
@@ -180,7 +178,7 @@ func TestProjectCell_TokenColumnAlignment(t *testing.T) {
 	// rightWidth = costSlotW + "  " + tokenSlotW + "  " + pctSlotW
 	rightWidth := costSlotW + 2 + tokenSlotW + 2 + pctSlotW
 
-	aggs := []cache.ProjectAggregate{
+	aggs := []breakdownRow{
 		{Label: "alpha", CostUSD: 10, Tokens: 65_000, CostPct: 40},  // "65k"  (3 chars → padded to 4)
 		{Label: "beta", CostUSD: 5, Tokens: 4_300_000, CostPct: 20}, // "4M"   (2 chars → padded to 4)
 		{Label: "gamma", CostUSD: 2, Tokens: 742, CostPct: 10},      // "742"  (3 chars → padded to 4)
@@ -221,5 +219,44 @@ func TestProjectCellCols(t *testing.T) {
 		if got := breakdownCellCols(tc.w); got != tc.want {
 			t.Errorf("breakdownCellCols(%d) = %d, want %d", tc.w, got, tc.want)
 		}
+	}
+}
+
+func TestBreakdownTitle(t *testing.T) {
+	tests := []struct {
+		name string
+		kind breakdownKind
+		want string
+	}{
+		{"projects", breakdownProjects, "Projects (visible window)"},
+		{"models", breakdownModels, "Models (visible window)"},
+		{"none has no box", breakdownNone, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := breakdownTitle(tt.kind); got != tt.want {
+				t.Errorf("breakdownTitle(%v) = %q, want %q", tt.kind, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestBreakdownRowsKind_TitleSurvivesHideArm pins why the box is titled by
+// breakdownRowsKind and not by m.breakdown: a hide commits m.breakdown to
+// breakdownNone at arm while the box is still full-height and rendering the
+// retained rows, so titling by m.breakdown would blank the title mid-slide and
+// break #416's frame-0 endpoint identity.
+func TestBreakdownRowsKind_TitleSurvivesHideArm(t *testing.T) {
+	m := Model{
+		breakdown:         breakdownNone, // committed at hide-arm
+		breakdownRowsKind: breakdownProjects,
+		breakdownRows:     []breakdownRow{{Label: "ccpulse", CostUSD: 1, Tokens: 2, CostPct: 100}},
+	}
+	got := renderBreakdownBox(breakdownTitle(m.breakdownRowsKind), m.breakdownRows, 80, 6)
+	if !strings.Contains(stripANSI(got), breakdownProjectsTitle) {
+		t.Errorf("mid-hide box lost its title\ngot:\n%s", got)
+	}
+	if breakdownTitle(m.breakdown) != "" {
+		t.Fatal("precondition: breakdownTitle(breakdownNone) must be empty — that is the trap this guards")
 	}
 }
