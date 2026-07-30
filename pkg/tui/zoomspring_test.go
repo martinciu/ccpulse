@@ -2,6 +2,7 @@ package tui
 
 import (
 	"math"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +12,8 @@ import (
 
 	"github.com/martinciu/ccpulse/pkg/anthro"
 	"github.com/martinciu/ccpulse/pkg/cache"
+	"github.com/martinciu/ccpulse/pkg/parse"
+	"github.com/martinciu/ccpulse/pkg/pricing"
 )
 
 func TestLerpTime(t *testing.T) {
@@ -165,6 +168,82 @@ func seedBarModelWithMessages(t testing.TB, unitIdx int, now time.Time) (Model, 
 	m, c := seedModelAt(t, unitIdx, 60, now)
 	m.introPending = false
 	m.quotaIntroPending = false
+	return m, c
+}
+
+// seedBarModelWithVariedModels is seedBarModelWithMessages' sibling for tests
+// that need the projects and models panels to need DIFFERENT content-aware
+// heights (#475.13). seedBarModelWithMessages seeds every message under the
+// same "claude-opus-4-7" id, so both panels always render exactly one row —
+// hiding any bug where a panel reads the WRONG kind's row count (e.g. leg 2
+// of a swap arming against the outgoing kind's target instead of the
+// incoming one, which a same-height fixture cannot catch).
+//
+// The 60 messages round-robin across 6 model buckets (5 real ids at
+// differing token counts, so CostUSD is strictly distinct per bucket, plus
+// one empty-model id) instead of seeding them in contiguous blocks, so every
+// bucket lands within the visible window regardless of scroll position.
+// ProjectAggregates still returns exactly one row (every message shares
+// ProjectSlug "p"), so this fixture's projects target stays 4 (the #420
+// single-row floor) while its models target is 6 — a real, non-contrived
+// height difference. The empty-model bucket is present but has 0.0 cost,
+// so it naturally sorts last by the cost comparison alone; the
+// sentinel-last logic is pinned in pkg/cache/models_test.go and by a
+// dedicated TUI test with a fixture where unknown has highest cost.
+// The unit index is fixed to cost mode rather than taken as a parameter: this
+// fixture exists for its distinct PER-MODEL COSTS, so every caller wants cost
+// mode. Its sibling seedBarModelWithMessages does take one, because that one is
+// used across units.
+func seedBarModelWithVariedModels(t testing.TB, now time.Time) (Model, *cache.Cache) {
+	unitIdx := int(chartUnitCost)
+	t.Helper()
+	c, err := cache.Open(t.Context(), filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	tab, err := pricing.Load()
+	if err != nil {
+		t.Fatalf("pricing.Load: %v", err)
+	}
+	// Token counts are chosen so each bucket's total cost (10 messages ×
+	// tokens × the model's input rate, per the 2026-06-09 pricing snapshot)
+	// is strictly distinct: 0.6, 0.27, 0.15, 0.06, 0.045, 0 (unknown, forced
+	// last by ModelAggregates regardless of cost).
+	seeds := []struct {
+		model  string
+		tokens int64
+	}{
+		{"claude-opus-4-7", 12_000},
+		{"claude-sonnet-4-5", 9_000},
+		{"claude-opus-4-5", 3_000},
+		{"claude-haiku-4-5", 6_000},
+		{"claude-sonnet-4-6", 1_500},
+		{"", 500}, // unknown-model bucket
+	}
+	var msgs []parse.Message
+	for i := range 60 {
+		s := seeds[i%len(seeds)]
+		msgs = append(msgs, parse.Message{
+			SessionID:   "s",
+			ProjectSlug: "p",
+			Model:       s.model,
+			Timestamp:   now.Add(-time.Duration(i) * 15 * time.Minute),
+			InputTokens: s.tokens,
+		})
+	}
+	if err := c.InsertMessages(t.Context(), msgs, tab); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+	m := New(Deps{Cache: c})
+	m.unitIdx = unitIdx
+	m.zoomIdx = 0 // 15m
+	m.w, m.h = 122, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	m.now = func() time.Time { return now }
+	m.introPending = false
+	m.quotaIntroPending = false
+	m.refreshChart()
 	return m, c
 }
 

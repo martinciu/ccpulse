@@ -5479,25 +5479,25 @@ func TestRefresh_RestoresRightEdgeAfterNarrowContent(t *testing.T) {
 
 func TestView_ShowsProjectsBox(t *testing.T) {
 	// seedScrollTestModel builds a 120×40 model and calls refreshChart.
-	// showProjects defaults to false, so we enable it explicitly to test the
+	// breakdown defaults to none, so we enable it explicitly to test the
 	// "box shown" state. The seeded messages carry no cwd, so they roll up
 	// into the "(no project)" bucket.
 	m, cleanup := seedScrollTestModel(t, 200)
 	defer cleanup()
-	m.showProjects = true
+	m.breakdown = breakdownProjects
 	m.refreshChart()
 
-	if m.projectsHeight() <= 0 {
-		t.Fatal("projectsHeight should be > 0 at h=40")
+	if m.breakdownHeight() <= 0 {
+		t.Fatal("breakdownHeight should be > 0 at h=40")
 	}
 	if got := m.chartHeight(); got >= m.h-7 {
-		t.Errorf("chartHeight %d should be reduced below m.h-7 (=%d) by projectsHeight", got, m.h-7)
+		t.Errorf("chartHeight %d should be reduced below m.h-7 (=%d) by breakdownHeight", got, m.h-7)
 	}
-	if !strings.Contains(m.View(), projectsTitle) {
-		t.Errorf("View should contain the projects box title %q", projectsTitle)
+	if !strings.Contains(m.View(), breakdownProjectsTitle) {
+		t.Errorf("View should contain the projects box title %q", breakdownProjectsTitle)
 	}
-	if len(m.projectAggs) == 0 {
-		t.Errorf("projectAggs should be populated after refreshChart")
+	if len(m.breakdownRows) == 0 {
+		t.Errorf("breakdownRows should be populated after refreshChart")
 	}
 }
 
@@ -5507,32 +5507,32 @@ func TestProjectsDebounce_StaleTickDropped(t *testing.T) {
 	// returns a Cmd, and drive the handler directly with constructed messages.
 	m, cleanup := seedScrollTestModel(t, 200)
 	defer cleanup()
-	// showProjects defaults to false; enable it so scheduleProjectsTick returns
-	// a Cmd and handleProjectsTick can repopulate projectAggs.
-	m.showProjects = true
+	// breakdown defaults to none; enable it so scheduleBreakdownTick returns
+	// a Cmd and handleBreakdownTick can repopulate breakdownRows.
+	m.breakdown = breakdownProjects
 
 	// Two scrolls in quick succession → gen advanced twice.
-	cmd1 := m.scheduleProjectsTick()
-	gen1 := m.projectsGen
-	cmd2 := m.scheduleProjectsTick()
+	cmd1 := m.scheduleBreakdownTick()
+	gen1 := m.breakdownGen
+	cmd2 := m.scheduleBreakdownTick()
 	if cmd1 == nil || cmd2 == nil {
-		t.Fatal("scheduleProjectsTick must return a Cmd")
+		t.Fatal("scheduleBreakdownTick must return a Cmd")
 	}
-	if m.projectsGen == gen1 {
+	if m.breakdownGen == gen1 {
 		t.Fatal("second schedule must bump gen")
 	}
 
 	// Stale tick (gen1) is superseded: it must not recompute the box.
-	m.projectAggs = nil
-	m.handleProjectsTick(projectsTickMsg{gen: gen1})
-	if m.projectAggs != nil {
+	m.breakdownRows = nil
+	m.handleBreakdownTick(breakdownTickMsg{gen: gen1})
+	if m.breakdownRows != nil {
 		t.Errorf("stale tick must not recompute the box")
 	}
 
 	// Current tick (latest gen) recomputes the visible-window rollup.
-	m.handleProjectsTick(projectsTickMsg{gen: m.projectsGen})
-	if len(m.projectAggs) == 0 {
-		t.Errorf("current-gen tick should have repopulated projectAggs")
+	m.handleBreakdownTick(breakdownTickMsg{gen: m.breakdownGen})
+	if len(m.breakdownRows) == 0 {
+		t.Errorf("current-gen tick should have repopulated breakdownRows")
 	}
 }
 
@@ -5587,7 +5587,7 @@ func seedRemainingProjectsModel(t *testing.T) (*Model, func()) {
 	m.w, m.h = 120, 40
 	m.zoomIdx = 0 // 15m zoom: ~208 buckets vs chartWidth=118 → scrollable
 	m.unitIdx = int(chartUnitRemaining)
-	m.showProjects = true
+	m.breakdown = breakdownProjects
 	m.viewport.Width = m.chartWidth()
 	m.viewport.Height = m.chartHeight()
 	return &m, func() { c.Close() }
@@ -5604,8 +5604,8 @@ func TestRefreshProjects_RemainingModeUsesVisibleWindow(t *testing.T) {
 
 	m.refreshChart() // first load pins to the right edge
 
-	if len(m.projectAggs) == 0 {
-		t.Fatalf("projectAggs empty after refreshChart in remaining mode "+
+	if len(m.breakdownRows) == 0 {
+		t.Fatalf("breakdownRows empty after refreshChart in remaining mode "+
 			"(#430): viewportXOffset=%d len(lastStarts)=%d — window was "+
 			"derived by bucket-indexing sparse usage-sample timestamps",
 			m.viewportXOffset, len(m.lastStarts))
@@ -5615,16 +5615,16 @@ func TestRefreshProjects_RemainingModeUsesVisibleWindow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProjectAggregates: %v", err)
 	}
-	if !slices.Equal(m.projectAggs, want) {
-		t.Errorf("projectAggs = %+v, want ProjectAggregates(visibleWindow()) = %+v",
-			m.projectAggs, want)
+	if !slices.Equal(m.breakdownRows, rowsFromProjects(want)) {
+		t.Errorf("breakdownRows = %+v, want rowsFromProjects(ProjectAggregates(visibleWindow())) = %+v",
+			m.breakdownRows, want)
 	}
 }
 
 // TestProjectsTick_RemainingModeScrolledWindow covers the debounced
 // scroll-settle path (#430): after scrolling left on the usage-line
 // view, the settled tick must recompute the box for the scrolled
-// visibleWindow. projectsTickMsg is constructed directly; never invoke
+// visibleWindow. breakdownTickMsg is constructed directly; never invoke
 // the real tea.Tick Cmd (it sleeps out the debounce).
 func TestProjectsTick_RemainingModeScrolledWindow(t *testing.T) {
 	m, cleanup := seedRemainingProjectsModel(t)
@@ -5640,14 +5640,14 @@ func TestProjectsTick_RemainingModeScrolledWindow(t *testing.T) {
 			"(%d → %d); the 48 h sample span should leave scroll room",
 			offBefore, m.viewportXOffset)
 	}
-	if cmd := m.scheduleProjectsTick(); cmd == nil {
-		t.Fatal("scheduleProjectsTick must return a Cmd when the box is shown")
+	if cmd := m.scheduleBreakdownTick(); cmd == nil {
+		t.Fatal("scheduleBreakdownTick must return a Cmd when the box is shown")
 	}
-	m.projectAggs = nil // prove the settle recomputes, not a refreshChart leftover
-	m.handleProjectsTick(projectsTickMsg{gen: m.projectsGen})
+	m.breakdownRows = nil // prove the settle recomputes, not a refreshChart leftover
+	m.handleBreakdownTick(breakdownTickMsg{gen: m.breakdownGen})
 
-	if len(m.projectAggs) == 0 {
-		t.Fatalf("projectAggs empty after scroll-settle in remaining mode "+
+	if len(m.breakdownRows) == 0 {
+		t.Fatalf("breakdownRows empty after scroll-settle in remaining mode "+
 			"(#430): viewportXOffset=%d len(lastStarts)=%d",
 			m.viewportXOffset, len(m.lastStarts))
 	}
@@ -5656,9 +5656,9 @@ func TestProjectsTick_RemainingModeScrolledWindow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProjectAggregates: %v", err)
 	}
-	if !slices.Equal(m.projectAggs, want) {
-		t.Errorf("settled projectAggs = %+v, want ProjectAggregates(visibleWindow()) = %+v",
-			m.projectAggs, want)
+	if !slices.Equal(m.breakdownRows, rowsFromProjects(want)) {
+		t.Errorf("settled breakdownRows = %+v, want rowsFromProjects(ProjectAggregates(visibleWindow())) = %+v",
+			m.breakdownRows, want)
 	}
 }
 
@@ -5667,22 +5667,22 @@ func TestProjectsHeight_HiddenWhenToggledOff(t *testing.T) {
 	defer cleanup()
 
 	// New default: box is hidden. Chart gets the full m.h-7 height.
-	if m.showProjects {
-		t.Fatal("showProjects should default to false")
+	if m.breakdown != breakdownNone {
+		t.Fatal("breakdown should default to breakdownNone")
 	}
 	full := m.h - 7 // chartHeight when the box reserves nothing
-	if got := m.projectsHeight(); got != 0 {
-		t.Errorf("projectsHeight = %d while hidden by default, want 0", got)
+	if got := m.breakdownHeight(); got != 0 {
+		t.Errorf("breakdownHeight = %d while hidden by default, want 0", got)
 	}
 	if got := m.chartHeight(); got != full {
 		t.Errorf("chartHeight = %d while hidden by default, want reclaimed %d", got, full)
 	}
 
 	// Show the box: it should now reserve rows and reduce chartHeight.
-	m.showProjects = true
+	m.breakdown = breakdownProjects
 	m.refreshChart()
-	if m.projectsHeight() <= 0 {
-		t.Fatal("projectsHeight should be > 0 at h=40 when shown")
+	if m.breakdownHeight() <= 0 {
+		t.Fatal("breakdownHeight should be > 0 at h=40 when shown")
 	}
 	if m.chartHeight() >= full {
 		t.Errorf("chartHeight %d should be < %d while box shown", m.chartHeight(), full)
@@ -5701,11 +5701,11 @@ func TestProjectsToggle_Key(t *testing.T) {
 
 	// Press 'p' → show (box is hidden by default).
 	m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
-	if !m.showProjects {
-		t.Fatal("first 'p' should toggle showProjects on")
+	if m.breakdown == breakdownNone {
+		t.Fatal("first 'p' should toggle breakdown to projects")
 	}
-	if m.projectsHeight() <= 0 {
-		t.Errorf("projectsHeight = %d after show, want > 0", m.projectsHeight())
+	if m.breakdownHeight() <= 0 {
+		t.Errorf("breakdownHeight = %d after show, want > 0", m.breakdownHeight())
 	}
 	if got := m.chartHeight(); got >= full {
 		t.Errorf("chartHeight = %d after show, want reduced below %d", got, full)
@@ -5716,11 +5716,11 @@ func TestProjectsToggle_Key(t *testing.T) {
 
 	// Press 'p' again → hide.
 	m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
-	if m.showProjects {
-		t.Fatal("second 'p' should toggle showProjects off")
+	if m.breakdown != breakdownNone {
+		t.Fatal("second 'p' should toggle breakdown to none")
 	}
-	if got := m.projectsHeight(); got != 0 {
-		t.Errorf("projectsHeight = %d after hide, want 0", got)
+	if got := m.breakdownHeight(); got != 0 {
+		t.Errorf("breakdownHeight = %d after hide, want 0", got)
 	}
 	if got := m.chartHeight(); got != full {
 		t.Errorf("chartHeight = %d after hide, want reclaimed %d", got, full)
@@ -5739,12 +5739,12 @@ func TestProjectsToggle_AddsBoxToFrame(t *testing.T) {
 	m.deps.ReduceMotion = true
 
 	// Box is absent by default.
-	if strings.Contains(m.View(), projectsTitle) {
+	if strings.Contains(m.View(), breakdownProjectsTitle) {
 		t.Fatal("projects box should be absent by default")
 	}
 	// Press 'p' → box appears.
 	m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
-	if !strings.Contains(m.View(), projectsTitle) {
+	if !strings.Contains(m.View(), breakdownProjectsTitle) {
 		t.Error("projects box title should appear after toggling on")
 	}
 }
@@ -5754,9 +5754,9 @@ func TestProjectsToggle_InertUnderHelp(t *testing.T) {
 	defer cleanup()
 
 	m.showHelp = true
-	before := m.showProjects
+	before := m.breakdown
 	m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
-	if m.showProjects != before {
+	if m.breakdown != before {
 		t.Errorf("'p' must be inert while the help overlay is open")
 	}
 }
@@ -5764,21 +5764,21 @@ func TestProjectsToggle_InertUnderHelp(t *testing.T) {
 func TestProjectsToggle_ClearsAndRequeries(t *testing.T) {
 	m, cleanup := seedScrollTestModel(t, 200)
 	defer cleanup()
-	// Snap path (#416): on the animated hide path projectAggs is retained for
+	// Snap path (#416): on the animated hide path breakdownRows is retained for
 	// the slide-down and only cleared at settle. This test asserts the
 	// immediate clear-on-hide snap contract.
 	m.deps.ReduceMotion = true
 
 	// Show → requeried for the visible window.
 	m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
-	if len(m.projectAggs) == 0 {
-		t.Error("projectAggs should repopulate after toggling on")
+	if len(m.breakdownRows) == 0 {
+		t.Error("breakdownRows should repopulate after toggling on")
 	}
 
 	// Hide → the rollup is cleared (no stale aggs held while invisible).
 	m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
-	if m.projectAggs != nil {
-		t.Errorf("projectAggs should be nil while hidden, got %d entries", len(m.projectAggs))
+	if m.breakdownRows != nil {
+		t.Errorf("breakdownRows should be nil while hidden, got %d entries", len(m.breakdownRows))
 	}
 }
 
@@ -5786,17 +5786,17 @@ func TestProjectsTick_NotScheduledWhenHidden(t *testing.T) {
 	m, cleanup := seedScrollTestModel(t, 200)
 	defer cleanup()
 
-	m.showProjects = false
-	if cmd := m.scheduleProjectsTick(); cmd != nil {
-		t.Error("scheduleProjectsTick should return nil while hidden")
+	m.breakdown = breakdownNone
+	if cmd := m.scheduleBreakdownTick(); cmd != nil {
+		t.Error("scheduleBreakdownTick should return nil while hidden")
 	}
 }
 
 // TestProjectsHeight_ContentAware pins the #420 formula: the box claims only
 // the rows its aggregates need — border(2) + title(1) + ceil(n/cols) — under
-// the pre-existing min(avail/2, projectsMaxRows) cap; zero aggs keep the
-// 4-row placeholder floor. Bare Model construction is enough: projectsHeight
-// reads only showProjects/w/h/projectAggs.
+// the pre-existing min(avail/2, breakdownMaxRows) cap; zero aggs keep the
+// 4-row placeholder floor. Bare Model construction is enough: breakdownHeight
+// reads only breakdown/w/h/breakdownRows.
 func TestProjectsHeight_ContentAware(t *testing.T) {
 	cases := []struct {
 		desc string
@@ -5808,17 +5808,17 @@ func TestProjectsHeight_ContentAware(t *testing.T) {
 		{"one agg single col", 60, 40, 1, 4},
 		{"two aggs single col (issue example: 5-row box)", 60, 40, 2, 5},
 		{"four aggs pack into two cols", 120, 40, 4, 5},
-		{"many aggs clamp to projectsMaxRows", 60, 40, 30, 12},
+		{"many aggs clamp to breakdownMaxRows", 60, 40, 30, 12},
 		{"many aggs clamp to half avail on short terminal", 60, 20, 30, 6},
 	}
 	for _, tc := range cases {
 		t.Run(tc.desc, func(t *testing.T) {
-			m := Model{w: tc.w, h: tc.h, showProjects: true}
+			m := Model{w: tc.w, h: tc.h, breakdown: breakdownProjects}
 			for range tc.n {
-				m.projectAggs = append(m.projectAggs, cache.ProjectAggregate{Label: "p"})
+				m.breakdownRows = append(m.breakdownRows, breakdownRow{Label: "p"})
 			}
-			if got := m.projectsHeight(); got != tc.want {
-				t.Errorf("projectsHeight(w=%d h=%d n=%d) = %d, want %d",
+			if got := m.breakdownHeight(); got != tc.want {
+				t.Errorf("breakdownHeight(w=%d h=%d n=%d) = %d, want %d",
 					tc.w, tc.h, tc.n, got, tc.want)
 			}
 		})
@@ -5828,34 +5828,34 @@ func TestProjectsHeight_ContentAware(t *testing.T) {
 // TestProjectsSettleReflow_ChartReclaimsRows drives the scroll-settle tick
 // (#420): when the settled window's rollup needs fewer rows than the box
 // currently shows, the box shrinks, chartHeight reclaims the rows, and
-// viewport.Height re-syncs — all in the same handleProjectsTick pass.
-// projectsTickMsg is constructed directly; never invoke the real tea.Tick
+// viewport.Height re-syncs — all in the same handleBreakdownTick pass.
+// breakdownTickMsg is constructed directly; never invoke the real tea.Tick
 // Cmd in tests (it sleeps).
 func TestProjectsSettleReflow_ChartReclaimsRows(t *testing.T) {
 	m, cleanup := seedScrollTestModel(t, 200)
 	defer cleanup()
-	m.showProjects = true
+	m.breakdown = breakdownProjects
 	m.refreshChart()
 
 	// Simulate "the previous window showed 8 projects": inflate the aggs and
 	// re-sync the layout to that taller box.
-	fakes := make([]cache.ProjectAggregate, 8)
+	fakes := make([]breakdownRow, 8)
 	for i := range fakes {
-		fakes[i] = cache.ProjectAggregate{Label: fmt.Sprintf("p%d", i)}
+		fakes[i] = breakdownRow{Label: fmt.Sprintf("p%d", i)}
 	}
-	m.projectAggs = fakes
+	m.breakdownRows = fakes
 	m.viewport.Height = m.chartHeight()
 	tallBoxChartH := m.viewport.Height
 
 	// Settle: the fixture's real rollup needs fewer rows (its messages carry
 	// no cwd → a single "(no project)" agg), so the chart must grow back.
-	if cmd := m.scheduleProjectsTick(); cmd == nil {
-		t.Fatal("scheduleProjectsTick must return a Cmd while shown")
+	if cmd := m.scheduleBreakdownTick(); cmd == nil {
+		t.Fatal("scheduleBreakdownTick must return a Cmd while shown")
 	}
-	m.handleProjectsTick(projectsTickMsg{gen: m.projectsGen})
+	m.handleBreakdownTick(breakdownTickMsg{gen: m.breakdownGen})
 
-	if len(m.projectAggs) >= 8 {
-		t.Fatalf("precondition: settled rollup = %d aggs, want < 8", len(m.projectAggs))
+	if len(m.breakdownRows) >= 8 {
+		t.Fatalf("precondition: settled rollup = %d aggs, want < 8", len(m.breakdownRows))
 	}
 	if got := m.chartHeight(); got <= tallBoxChartH {
 		t.Errorf("chartHeight = %d after settle, want > %d (reclaimed rows)", got, tallBoxChartH)
@@ -5867,14 +5867,14 @@ func TestProjectsSettleReflow_ChartReclaimsRows(t *testing.T) {
 }
 
 // TestRefreshChart_ViewportHeightFixedPoint asserts refreshChart leaves the
-// layout at its fixed point (#420): refreshProjects runs before the paint so
+// layout at its fixed point (#420): refreshBreakdown runs before the paint so
 // chartHeight is computed with the final aggs — no toggle-on double-render.
 func TestRefreshChart_ViewportHeightFixedPoint(t *testing.T) {
 	m, cleanup := seedScrollTestModel(t, 200)
 	defer cleanup()
-	m.showProjects = true
+	m.breakdown = breakdownProjects
 	m.refreshChart()
-	if len(m.projectAggs) == 0 {
+	if len(m.breakdownRows) == 0 {
 		t.Fatal("precondition: fixture should produce aggs")
 	}
 	if m.viewport.Height != m.chartHeight() {
@@ -5890,19 +5890,19 @@ func TestRefreshChart_ViewportHeightFixedPoint(t *testing.T) {
 func TestClearChart_ResetsProjectsLayout(t *testing.T) {
 	m, cleanup := seedScrollTestModel(t, 200)
 	defer cleanup()
-	m.showProjects = true
+	m.breakdown = breakdownProjects
 	m.refreshChart()
 
-	fakes := make([]cache.ProjectAggregate, 8)
+	fakes := make([]breakdownRow, 8)
 	for i := range fakes {
-		fakes[i] = cache.ProjectAggregate{Label: fmt.Sprintf("p%d", i)}
+		fakes[i] = breakdownRow{Label: fmt.Sprintf("p%d", i)}
 	}
-	m.projectAggs = fakes
+	m.breakdownRows = fakes
 	m.viewport.Height = m.chartHeight()
 
 	m.clearChart()
-	if m.projectAggs != nil {
-		t.Error("clearChart must nil projectAggs")
+	if m.breakdownRows != nil {
+		t.Error("clearChart must nil breakdownRows")
 	}
 	if m.viewport.Height != m.chartHeight() {
 		t.Errorf("viewport.Height = %d after clearChart, want %d",
@@ -5912,44 +5912,44 @@ func TestClearChart_ResetsProjectsLayout(t *testing.T) {
 
 // TestHandleProjectsTick_NoOpMidSpring asserts that a settle tick arriving
 // while a spring is in flight is silently ignored (#420). The spring owns
-// m.peak as the bar-height normalization base; allowing applyProjectsResize
+// m.peak as the bar-height normalization base; allowing applyBreakdownResize
 // to call renderWindow mid-spring would overwrite it and corrupt spring frames.
 // The deferred recompute is not lost — both settle paths (pkg/tui/springs.go,
-// pkg/tui/zoomspring.go) call refreshChart, which re-runs refreshProjects and
+// pkg/tui/zoomspring.go) call refreshChart, which re-runs refreshBreakdown and
 // re-syncs the height before the final paint.
 //
-// projectsTickMsg is constructed directly; never invoke the real tea.Tick Cmd
+// breakdownTickMsg is constructed directly; never invoke the real tea.Tick Cmd
 // in tests (it sleeps to the settle deadline — see reference_tui_tick_cmd_test_pattern).
 func TestHandleProjectsTick_NoOpMidSpring(t *testing.T) {
 	m, cleanup := seedScrollTestModel(t, 200)
 	defer cleanup()
 
-	m.showProjects = true
+	m.breakdown = breakdownProjects
 	m.refreshChart()
 
 	// Inflate aggs to simulate a window that previously had more projects, then
 	// re-sync the layout to the taller box — mirrors TestProjectsSettleReflow pattern.
-	fakes := make([]cache.ProjectAggregate, 8)
+	fakes := make([]breakdownRow, 8)
 	for i := range fakes {
-		fakes[i] = cache.ProjectAggregate{Label: fmt.Sprintf("p%d", i)}
+		fakes[i] = breakdownRow{Label: fmt.Sprintf("p%d", i)}
 	}
-	m.projectAggs = fakes
+	m.breakdownRows = fakes
 	m.viewport.Height = m.chartHeight()
 
 	// Record the stable state the spring is mid-flight with.
 	peakBefore := m.peak
 	heightBefore := m.viewport.Height
-	aggsBefore := len(m.projectAggs)
+	aggsBefore := len(m.breakdownRows)
 
 	// Arm a settle tick, then mark the spring active — simulates a scroll
 	// arriving while a unit/zoom spring is in flight.
-	if cmd := m.scheduleProjectsTick(); cmd == nil {
-		t.Fatal("scheduleProjectsTick must return a Cmd while shown")
+	if cmd := m.scheduleBreakdownTick(); cmd == nil {
+		t.Fatal("scheduleBreakdownTick must return a Cmd while shown")
 	}
 	m.springActive = true
 
 	// Deliver the current-gen tick mid-spring; the guard must short-circuit.
-	m.handleProjectsTick(projectsTickMsg{gen: m.projectsGen})
+	m.handleBreakdownTick(breakdownTickMsg{gen: m.breakdownGen})
 
 	if m.peak != peakBefore {
 		t.Errorf("mid-spring tick: peak changed from %v to %v, want no change", peakBefore, m.peak)
@@ -5957,8 +5957,8 @@ func TestHandleProjectsTick_NoOpMidSpring(t *testing.T) {
 	if m.viewport.Height != heightBefore {
 		t.Errorf("mid-spring tick: viewport.Height changed from %d to %d, want no change", heightBefore, m.viewport.Height)
 	}
-	if len(m.projectAggs) != aggsBefore {
-		t.Errorf("mid-spring tick: projectAggs len changed from %d to %d, want no change", aggsBefore, len(m.projectAggs))
+	if len(m.breakdownRows) != aggsBefore {
+		t.Errorf("mid-spring tick: breakdownRows len changed from %d to %d, want no change", aggsBefore, len(m.breakdownRows))
 	}
 }
 
@@ -6215,5 +6215,273 @@ func TestHandleWindowSize_RebuildsScopedBars(t *testing.T) {
 	if after == before {
 		t.Errorf("scoped bar width unchanged after resize 120→60 (got %d both times); "+
 			"handleWindowSize must rebuild scoped bars at the new width", before)
+	}
+}
+
+// TestRefreshBreakdown_ModelsKindUsesModelAggregates pins that the models kind
+// queries the models rollup over the SAME window the projects kind uses.
+func TestRefreshBreakdown_ModelsKindUsesModelAggregates(t *testing.T) {
+	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
+	defer c.Close()
+
+	m.breakdown = breakdownModels
+	m.refreshBreakdown()
+
+	from, to := m.breakdownWindow()
+	want, err := m.deps.Cache.ModelAggregates(t.Context(), from, to)
+	if err != nil {
+		t.Fatalf("ModelAggregates: %v", err)
+	}
+	wantRows := rowsFromModels(want)
+	if len(wantRows) == 0 {
+		t.Fatal("fixture produced no model rows — the assertion below would be vacuous")
+	}
+	got := m.breakdownRows
+	if len(got) != len(wantRows) {
+		t.Fatalf("breakdownRows len = %d, want %d", len(got), len(wantRows))
+	}
+	for i, r := range wantRows {
+		if got[i] != r {
+			t.Errorf("row %d = %+v, want %+v", i, got[i], r)
+		}
+	}
+}
+
+// TestBreakdownWindow_BarMode_MatchesBucketEdges pins breakdownWindow's
+// bar-mode branch (chart unit != remaining) against hand-computed bucket
+// edges — not a second breakdownWindow() call under a different m.breakdown,
+// which never reads m.breakdown at all (#430: it's shared by every kind by
+// construction) and so could never fail for any implementation, correct or
+// not. Each case is built directly from Model fields — no cache, no
+// seedBarModelWithMessages — so "want" is arithmetic on the fixture,
+// independent of breakdownWindow's own clamp logic.
+func TestBreakdownWindow_BarMode_MatchesBucketEdges(t *testing.T) {
+	t.Parallel()
+	from := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+	bucketsOf := func(n int) []time.Time {
+		s := make([]time.Time, n)
+		for i := range s {
+			s[i] = from.Add(time.Duration(i) * 15 * time.Minute)
+		}
+		return s
+	}
+	sentinelTo := from.Add(999 * time.Hour) // distinct from any lastStarts entry
+
+	tests := []struct {
+		name             string
+		nBuckets         int
+		viewportXOffset  int
+		wantFrom, wantTo time.Time
+	}{
+		{
+			// visibleBuckets()=10 (chartWidth floors at 10 with m.w unset);
+			// start=3 stays in range, end=3+10=13 < 15 → to comes from
+			// lastStarts[13], not the lastChartTo fallback.
+			name:            "mid-range window uses lastStarts[end]",
+			nBuckets:        15,
+			viewportXOffset: 3,
+			wantFrom:        from.Add(3 * 15 * time.Minute),
+			wantTo:          from.Add(13 * 15 * time.Minute),
+		},
+		{
+			// end=0+10=10 >= len(8) → to falls back to lastChartTo.
+			name:            "window reaching the data edge falls back to lastChartTo",
+			nBuckets:        8,
+			viewportXOffset: 0,
+			wantFrom:        from,
+			wantTo:          sentinelTo,
+		},
+		{
+			// viewportXOffset(99) overshoots len(5); start clamps to len-1=4.
+			name:            "out-of-range offset clamps start to the last bucket",
+			nBuckets:        5,
+			viewportXOffset: 99,
+			wantFrom:        from.Add(4 * 15 * time.Minute),
+			wantTo:          sentinelTo,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			m := Model{
+				unitIdx:         int(chartUnitCost),
+				lastStarts:      bucketsOf(tt.nBuckets),
+				viewportXOffset: tt.viewportXOffset,
+				lastChartTo:     sentinelTo,
+			}
+			gotFrom, gotTo := m.breakdownWindow()
+			if !gotFrom.Equal(tt.wantFrom) {
+				t.Errorf("breakdownWindow from = %v, want %v", gotFrom, tt.wantFrom)
+			}
+			if !gotTo.Equal(tt.wantTo) {
+				t.Errorf("breakdownWindow to = %v, want %v", gotTo, tt.wantTo)
+			}
+		})
+	}
+}
+
+// TestBreakdownWindow_RemainingMode_ReturnsVisibleWindow pins breakdownWindow's
+// remaining-mode branch against visibleWindow() itself — the single source of
+// truth for the on-screen time range in that mode per breakdownWindow's own
+// doc comment — rather than a second breakdownWindow() call, which never
+// exercises this branch's actual delegation.
+func TestBreakdownWindow_RemainingMode_ReturnsVisibleWindow(t *testing.T) {
+	t.Parallel()
+	from := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+	pts5h := []cache.UtilizationPoint{{At: from.Add(12 * time.Hour)}}
+	m := remainingModeModel(pts5h)
+	m.setX(60) // in-range position, mirrors TestSetX_RemainingMode_InRangePreservesPosition
+
+	wantFrom, wantTo := m.visibleWindow()
+	gotFrom, gotTo := m.breakdownWindow()
+	if !gotFrom.Equal(wantFrom) || !gotTo.Equal(wantTo) {
+		t.Errorf("remaining-mode breakdownWindow = [%v,%v), want visibleWindow() = [%v,%v)",
+			gotFrom, gotTo, wantFrom, wantTo)
+	}
+}
+
+// TestModelsBreakdown_RendersThroughView pins that the models panel actually
+// reaches a painted frame. Before this test, "Models (visible window)" was
+// asserted only in the breakdownTitle unit table (breakdown_view_test.go),
+// never against real m.View() output, and nothing asserted that
+// refreshBreakdown records breakdownRowsKind = breakdownModels — only that it
+// populates the right ROWS (TestRefreshBreakdown_ModelsKindUsesModelAggregates
+// above). A models box that painted with the projects title, a blank title,
+// or missing labels would not have failed anything (#475.12).
+func TestModelsBreakdown_RendersThroughView(t *testing.T) {
+	withForcedColor(t)
+	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	m, c := seedBarModelWithVariedModels(t, now)
+	defer c.Close()
+	m.deps.ReduceMotion = true // synchronous snap: no ticks to drive to settle
+	m.breakdown = breakdownNone
+	m.refreshChart()
+
+	// Drive the real key-press path (mirrors TestModelsKey_RoutesThroughUpdate
+	// in keys_test.go, which pins the routing itself; this test pins what
+	// lands on screen once the models kind is armed).
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
+	m = updated.(Model)
+	if cmd != nil {
+		t.Fatalf("reduce_motion 'm': cmd=%v, want nil (synchronous snap)", cmd)
+	}
+	if m.breakdown != breakdownModels {
+		t.Fatalf("setup: breakdown=%v, want breakdownModels", m.breakdown)
+	}
+	if m.breakdownRowsKind != breakdownModels {
+		t.Errorf("refreshBreakdown: breakdownRowsKind=%v, want breakdownModels", m.breakdownRowsKind)
+	}
+	if len(m.breakdownRows) < 2 {
+		t.Fatalf("setup: breakdownRows=%d, want >=2 (fixture seeds several models)", len(m.breakdownRows))
+	}
+	topLabel := m.breakdownRows[0].Label
+	lastLabel := m.breakdownRows[len(m.breakdownRows)-1].Label
+
+	frame := stripANSI(m.View())
+	if !strings.Contains(frame, breakdownModelsTitle) {
+		t.Errorf("View() missing %q\ngot:\n%s", breakdownModelsTitle, frame)
+	}
+	if !strings.Contains(frame, topLabel) {
+		t.Errorf("View() missing top model label %q\ngot:\n%s", topLabel, frame)
+	}
+	if !strings.Contains(frame, lastLabel) {
+		t.Errorf("View() missing %q (unknown-model bucket)\ngot:\n%s", lastLabel, frame)
+	}
+	if lastLabel != "(unknown model)" {
+		t.Errorf("last breakdown row label = %q, want \"(unknown model)\" (the unknown bucket must sort last)", lastLabel)
+	}
+}
+
+// TestModelsBreakdown_UnknownSortsLastThroughView pins that the models
+// breakdown renders with (unknown model) as the last row even when the
+// unknown bucket has the HIGHEST cost in the window. This mirrors
+// TestModelAggregates_SortOrderAndUnknownLast at the cache layer and
+// proves the sentinel-last block in pkg/cache/models.go is load-bearing
+// at the TUI layer (other tests use fixtures where unknown naturally
+// sorts last by cost, which would hide a regression).
+func TestModelsBreakdown_UnknownSortsLastThroughView(t *testing.T) {
+	withForcedColor(t)
+	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+
+	// Seed: real models with low cost, empty-model bucket with highest cost.
+	// This forces reliance on the sentinel-last logic.
+	c, err := cache.Open(t.Context(), filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	defer c.Close()
+
+	// Use raw inserts with explicit costs to force the unknown model to have
+	// highest cost. This mirrors TestModelAggregates_SortOrderAndUnknownLast
+	// at the cache layer.
+	const (
+		cacheRead    = 700
+		cacheWrite5m = 70
+		cacheWrite1h = 7
+		tsFormat     = "2006-01-02T15:04:05.000Z07:00"
+	)
+	dbExec := func(model string, ts time.Time, cost float64) {
+		t.Helper()
+		id := model + ts.String()
+		_, err := c.DB().ExecContext(t.Context(), `
+INSERT INTO messages
+(session_id, message_id, project_slug, ts, role, model,
+ input_tokens, output_tokens, cache_read_tokens,
+ cache_write_5m_tokens, cache_write_1h_tokens,
+ cost_usd_estimate, pricing_version, pricing_unknown,
+ is_subagent, parent_session_id, cwd, git_branch, repo_root)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			id, id, "p", ts.UTC().Format(tsFormat), "assistant", model,
+			100, 100, cacheRead, cacheWrite5m, cacheWrite1h, cost, "v1", 0, 0, "", "/cwd", "", "/code/ccpulse")
+		if err != nil {
+			t.Fatalf("InsertMessage: %v", err)
+		}
+	}
+
+	// Empty-model row with highest cost (like TestModelAggregates_SortOrderAndUnknownLast)
+	dbExec("", now.Add(-10*time.Minute), 99.00)
+	// Real models with lower costs
+	dbExec("claude-opus-4-7", now.Add(-9*time.Minute), 5.00)
+	dbExec("claude-haiku-4-5", now.Add(-8*time.Minute), 1.00)
+
+	m := New(Deps{Cache: c})
+	m.unitIdx = int(chartUnitCost)
+	m.zoomIdx = 0 // 15m
+	m.w, m.h = 122, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	m.now = func() time.Time { return now }
+	m.introPending = false
+	m.quotaIntroPending = false
+	m.deps.ReduceMotion = true // synchronous snap
+	m.breakdown = breakdownNone
+	m.refreshChart()
+
+	// Trigger models breakdown
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
+	m = updated.(Model)
+	if cmd != nil {
+		t.Fatalf("reduce_motion 'm': cmd=%v, want nil", cmd)
+	}
+	if m.breakdown != breakdownModels {
+		t.Fatalf("breakdown=%v, want breakdownModels", m.breakdown)
+	}
+	if len(m.breakdownRows) < 2 {
+		t.Fatalf("breakdownRows=%d, want >=2 (fixture has real + unknown)", len(m.breakdownRows))
+	}
+
+	// The critical assertion: (unknown model) must be last, even though it
+	// has the highest cost. Without the sentinel-last block in
+	// pkg/cache/models.go, it would sort first.
+	lastLabel := m.breakdownRows[len(m.breakdownRows)-1].Label
+	if lastLabel != "(unknown model)" {
+		t.Errorf("last breakdown row label = %q, want \"(unknown model)\" (sentinel-last must be load-bearing)", lastLabel)
+	}
+
+	// Also render it to ensure it appears in the frame
+	frame := stripANSI(m.View())
+	if !strings.Contains(frame, lastLabel) {
+		t.Errorf("View() missing %q\ngot:\n%s", lastLabel, frame)
 	}
 }

@@ -472,7 +472,7 @@ func TestProgram_EmptyToFirstChart(t *testing.T) {
 // TestProgram_ProjectsSlide_NoDeadlock drives the slide through a real program
 // loop (teatest PTY) to catch bubbletea ordering races the in-process Update
 // tests can't: press 'p', wait for a frame showing the projects title, quit
-// cleanly. Asserts showProjects committed via FinalModel.
+// cleanly. Asserts m.breakdown committed via FinalModel.
 func TestProgram_ProjectsSlide_NoDeadlock(t *testing.T) {
 	c := newSeededCache(t)
 	m := New(Deps{Cache: c})
@@ -496,7 +496,7 @@ func TestProgram_ProjectsSlide_NoDeadlock(t *testing.T) {
 	if !ok {
 		t.Fatalf("FinalModel: got %T", final)
 	}
-	if !fm.showProjects {
-		t.Error("after show slide: showProjects=false, want true")
+	if fm.breakdown == breakdownNone {
+		t.Error("after show slide: breakdown=none, want projects")
 	}
 }

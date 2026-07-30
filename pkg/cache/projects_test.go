@@ -91,6 +91,41 @@ func TestProjectAggregates_WindowFilter(t *testing.T) {
 	}
 }
 
+// TestProjectAggregates_CostPctClamped guards the max(0, min(100, ...)) clamp
+// at projects.go:63 (mirrors TestModelAggregates_CostPctClamped in
+// models_test.go, same fixture shape). Two rows whose costs nearly cancel
+// drive the window total toward zero while an individual project's CostUSD
+// stays large, so the unclamped ratio out[i].CostUSD/total*100 blows out to
+// roughly +/-1e15 (see the clamp comment at projects.go: token counts are
+// never validated on ingest, so a mixed-sign cost_usd_estimate can produce
+// exactly this shape — the real-world reproduction from #475.29). Reverting
+// the clamp to the plain division must fail this test.
+func TestProjectAggregates_CostPctClamped(t *testing.T) {
+	c, err := Open(context.Background(), filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	base := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	insertAggRow(t, c, "/a", base, 100, 200, 1000)
+	insertAggRow(t, c, "/b", base.Add(time.Minute), 50, 50, -999.9999999999)
+
+	got, err := c.ProjectAggregates(context.Background(),
+		base.Add(-time.Hour), base.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("rows = %d, want 2", len(got))
+	}
+	for _, a := range got {
+		if a.CostPct < 0 || a.CostPct > 100 {
+			t.Errorf("CostPct for %q = %v, want within [0, 100] (near-zero window total must not blow the ratio out of range)", a.RepoRoot, a.CostPct)
+		}
+	}
+}
+
 // insertAggRow writes one minimal messages row with the given repo_root,
 // timestamp, token split, and cost. Direct SQL keeps the test independent
 // of the ingest path.

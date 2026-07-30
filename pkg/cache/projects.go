@@ -60,7 +60,19 @@ GROUP BY repo_root`
 
 	for i := range out {
 		if total > 0 {
-			out[i].CostPct = out[i].CostUSD / total * 100
+			// Clamp to [0, 100]: mirrors ModelAggregates' clamp (models.go)
+			// verbatim. Token counts are never validated on ingest, so a
+			// mixed-sign cost_usd_estimate (e.g. a negative output_tokens
+			// value) can drive total toward zero while an individual
+			// CostUSD stays large, producing a raw ratio in the 1e16+
+			// range. Unclamped, that overflows breakdownCell's fixed-width
+			// pct slot into a multi-line cell, breaking the same height
+			// invariant a wrapping label breaks (#475.2). ProjectAggregates
+			// and ModelAggregates are deliberately kept identical in their
+			// shared parts — that symmetry is what lets the two panels
+			// reconcile — so this clamp must be mirrored here rather than
+			// living in only one of the two functions.
+			out[i].CostPct = max(0, min(100, out[i].CostUSD/total*100))
 		}
 	}
 

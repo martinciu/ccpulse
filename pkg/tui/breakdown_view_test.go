@@ -4,8 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-
-	"github.com/martinciu/ccpulse/pkg/cache"
+	"time"
 )
 
 // stripANSI removes ANSI escape sequences from s so position arithmetic on
@@ -31,18 +30,18 @@ func stripANSI(s string) string {
 	return out.String()
 }
 
-func sampleAggs() []cache.ProjectAggregate {
-	return []cache.ProjectAggregate{
-		{RepoRoot: "/c/dotfiles", Label: "dotfiles", CostUSD: 4451, Tokens: 19_200_000, CostPct: 38},
-		{RepoRoot: "/c/ccpulse", Label: "ccpulse", CostUSD: 3889, Tokens: 27_800_000, CostPct: 33},
-		{RepoRoot: "/c/gruppo", Label: "gruppo", CostUSD: 1119, Tokens: 4_500_000, CostPct: 9},
-		{RepoRoot: "", Label: "(no project)", CostUSD: 5, Tokens: 1000, CostPct: 0},
+func sampleAggs() []breakdownRow {
+	return []breakdownRow{
+		{Label: "dotfiles", CostUSD: 4451, Tokens: 19_200_000, CostPct: 38},
+		{Label: "ccpulse", CostUSD: 3889, Tokens: 27_800_000, CostPct: 33},
+		{Label: "gruppo", CostUSD: 1119, Tokens: 4_500_000, CostPct: 9},
+		{Label: "(no project)", CostUSD: 5, Tokens: 1000, CostPct: 0},
 	}
 }
 
 func TestRenderProjectsBox_PacksColumnsByWidth(t *testing.T) {
-	wide := renderProjectsBox(sampleAggs(), 200, 8)
-	narrow := renderProjectsBox(sampleAggs(), 60, 8)
+	wide := renderBreakdownBox(breakdownProjectsTitle, sampleAggs(), 200, 8)
+	narrow := renderBreakdownBox(breakdownProjectsTitle, sampleAggs(), 60, 8)
 	if lipglossCols(wide) <= lipglossCols(narrow) {
 		t.Errorf("wide terminal should pack >= columns than narrow")
 	}
@@ -55,7 +54,7 @@ func TestRenderProjectsBox_PacksColumnsByWidth(t *testing.T) {
 }
 
 func TestRenderProjectsBox_EmptyPlaceholder(t *testing.T) {
-	got := renderProjectsBox(nil, 80, 6)
+	got := renderBreakdownBox(breakdownProjectsTitle, nil, 80, 6)
 	if !strings.Contains(got, "no activity in this window") {
 		t.Errorf("empty aggs should render placeholder, got:\n%s", got)
 	}
@@ -64,7 +63,7 @@ func TestRenderProjectsBox_EmptyPlaceholder(t *testing.T) {
 func TestRenderProjectsBox_NoProjectLast(t *testing.T) {
 	// Single column (narrow) → reading order is top-to-bottom; "(no project)"
 	// must be the last non-border line with content.
-	got := renderProjectsBox(sampleAggs(), 50, 8)
+	got := renderBreakdownBox(breakdownProjectsTitle, sampleAggs(), 50, 8)
 	idxNoProj := strings.Index(got, "(no project)")
 	idxCcpulse := strings.Index(got, "ccpulse")
 	if idxNoProj < idxCcpulse {
@@ -79,7 +78,7 @@ func TestRenderProjectsBox_NoProjectLast(t *testing.T) {
 // title+body layout.
 func TestRenderProjectsBox_DegenerateHeights(t *testing.T) {
 	for h := 1; h <= 5; h++ {
-		got := renderProjectsBox(sampleAggs(), 80, h)
+		got := renderBreakdownBox(breakdownProjectsTitle, sampleAggs(), 80, h)
 		rows := strings.Split(got, "\n")
 		if len(rows) != h {
 			t.Errorf("height %d: rendered %d rows, want exactly %d:\n%s", h, len(rows), h, got)
@@ -94,7 +93,7 @@ func TestRenderProjectsBox_DegenerateHeights(t *testing.T) {
 				t.Errorf("height %d: last row is not a bottom border: %q", h, last)
 			}
 		}
-		if h >= 3 && !strings.Contains(got, projectsTitle) {
+		if h >= 3 && !strings.Contains(got, breakdownProjectsTitle) {
 			t.Errorf("height %d: title missing", h)
 		}
 		if h >= 5 && !strings.Contains(got, "dotfiles") {
@@ -106,11 +105,11 @@ func TestRenderProjectsBox_DegenerateHeights(t *testing.T) {
 func TestRenderProjectsBox_Overflow(t *testing.T) {
 	// 1 column (narrow) × bodyRows=2 → capacity 2; 10 aggs must overflow
 	// into a "…N more" final cell rather than silently dropping rows.
-	many := make([]cache.ProjectAggregate, 10)
+	many := make([]breakdownRow, 10)
 	for i := range many {
-		many[i] = cache.ProjectAggregate{Label: fmt.Sprintf("proj%d", i), CostUSD: float64(10 - i)}
+		many[i] = breakdownRow{Label: fmt.Sprintf("proj%d", i), CostUSD: float64(10 - i)}
 	}
-	got := renderProjectsBox(many, 50, 5)
+	got := renderBreakdownBox(breakdownProjectsTitle, many, 50, 5)
 	if !strings.Contains(got, "more") {
 		t.Errorf("overflow should render a “…N more” cell, got:\n%s", got)
 	}
@@ -146,19 +145,19 @@ func TestProjectCell_TokenCompactSuffix(t *testing.T) {
 	const cellW = 60
 	for _, tc := range cases {
 		t.Run(tc.desc, func(t *testing.T) {
-			a := cache.ProjectAggregate{
+			a := breakdownRow{
 				Label:   "testproj",
 				CostUSD: 1.23,
 				Tokens:  tc.tokens,
 				CostPct: 5,
 			}
-			rendered := stripANSI(projectCell(a, cellW))
+			rendered := stripANSI(breakdownCell(a, cellW))
 			if !strings.Contains(rendered, tc.wantSub) {
-				t.Errorf("projectCell(%d tokens): want %q in rendered output\ngot: %q",
+				t.Errorf("breakdownCell(%d tokens): want %q in rendered output\ngot: %q",
 					tc.tokens, tc.wantSub, rendered)
 			}
 			if tc.wantNot != "" && strings.Contains(rendered, tc.wantNot) {
-				t.Errorf("projectCell(%d tokens): must NOT contain %q in rendered output\ngot: %q",
+				t.Errorf("breakdownCell(%d tokens): must NOT contain %q in rendered output\ngot: %q",
 					tc.tokens, tc.wantNot, rendered)
 			}
 		})
@@ -180,7 +179,7 @@ func TestProjectCell_TokenColumnAlignment(t *testing.T) {
 	// rightWidth = costSlotW + "  " + tokenSlotW + "  " + pctSlotW
 	rightWidth := costSlotW + 2 + tokenSlotW + 2 + pctSlotW
 
-	aggs := []cache.ProjectAggregate{
+	aggs := []breakdownRow{
 		{Label: "alpha", CostUSD: 10, Tokens: 65_000, CostPct: 40},  // "65k"  (3 chars → padded to 4)
 		{Label: "beta", CostUSD: 5, Tokens: 4_300_000, CostPct: 20}, // "4M"   (2 chars → padded to 4)
 		{Label: "gamma", CostUSD: 2, Tokens: 742, CostPct: 10},      // "742"  (3 chars → padded to 4)
@@ -193,7 +192,7 @@ func TestProjectCell_TokenColumnAlignment(t *testing.T) {
 	tokenRightEdge := (cellW - rightWidth) + costSlotW + 2 + tokenSlotW
 
 	for _, a := range aggs {
-		rendered := stripANSI(projectCell(a, cellW))
+		rendered := stripANSI(breakdownCell(a, cellW))
 		// rendered is a single line of exactly cellW visual columns.
 		if len(rendered) < tokenRightEdge+2 {
 			t.Fatalf("cell for %q too short: len=%d, need %d", a.Label, len(rendered), tokenRightEdge+2)
@@ -206,8 +205,8 @@ func TestProjectCell_TokenColumnAlignment(t *testing.T) {
 	}
 }
 
-// TestProjectCellCols pins the packing math shared by renderProjectsBox and
-// projectsHeight (#420): cells of minCellW packed with columnDivider gaps
+// TestProjectCellCols pins the packing math shared by renderBreakdownBox and
+// breakdownHeight (#420): cells of minCellW packed with columnDivider gaps
 // into the box's inner width (outer minus border + padding = 4).
 func TestProjectCellCols(t *testing.T) {
 	cases := []struct{ w, want int }{
@@ -218,8 +217,75 @@ func TestProjectCellCols(t *testing.T) {
 		{200, 3}, // inner=196: three columns, not four
 	}
 	for _, tc := range cases {
-		if got := projectCellCols(tc.w); got != tc.want {
-			t.Errorf("projectCellCols(%d) = %d, want %d", tc.w, got, tc.want)
+		if got := breakdownCellCols(tc.w); got != tc.want {
+			t.Errorf("breakdownCellCols(%d) = %d, want %d", tc.w, got, tc.want)
 		}
+	}
+}
+
+func TestBreakdownTitle(t *testing.T) {
+	tests := []struct {
+		name string
+		kind breakdownKind
+		want string
+	}{
+		{"projects", breakdownProjects, "Projects (visible window)"},
+		{"models", breakdownModels, "Models (visible window)"},
+		{"none has no box", breakdownNone, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := breakdownTitle(tt.kind); got != tt.want {
+				t.Errorf("breakdownTitle(%v) = %q, want %q", tt.kind, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestBreakdownRowsKind_TitleSurvivesHideArm pins why the box is titled by
+// breakdownRowsKind and not by m.breakdown: a hide commits m.breakdown to
+// breakdownNone at arm while the box is still full-height and rendering the
+// retained rows, so titling by m.breakdown would blank the title mid-slide and
+// break #416's frame-0 endpoint identity.
+//
+// Drives the real hide-arm path (handleBreakdownKey) and asserts on the
+// PAINTED frame from m.View() — not a hand-rewritten copy of View()'s title
+// expression (breakdownTitle(m.breakdownRowsKind) at model.go's View — that
+// version pinned its own copy of the decision and stayed green even when the
+// View() call site itself was mutated to read m.breakdown instead).
+func TestBreakdownRowsKind_TitleSurvivesHideArm(t *testing.T) {
+	withForcedColor(t)
+	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
+	defer c.Close()
+	m.breakdown = breakdownProjects
+	m.refreshBreakdown()
+	if m.breakdownRowsKind != breakdownProjects {
+		t.Fatalf("setup: breakdownRowsKind=%v, want breakdownProjects", m.breakdownRowsKind)
+	}
+
+	// Arm the hide: pressing the visible panel's own key commits m.breakdown
+	// to breakdownNone at arm (handleBreakdownKey → beginBreakdownAnimation)
+	// while breakdownRowsKind and breakdownRows still hold the retained
+	// projects data and breakdownAnimH sits at the full pre-hide height —
+	// exactly the mid-hide state the doc comment describes: frame 0 of the
+	// hide slide, box still full-height, kind already committed to none.
+	cmd := m.handleBreakdownKey(breakdownProjects)
+	if cmd == nil {
+		t.Fatal("setup: hide arm returned nil cmd, want a scheduled tick")
+	}
+	if m.breakdown != breakdownNone {
+		t.Fatalf("setup: breakdown=%v after hide-arm, want breakdownNone (committed at arm)", m.breakdown)
+	}
+	if m.breakdownRowsKind != breakdownProjects {
+		t.Fatalf("setup: breakdownRowsKind=%v after hide-arm, want breakdownProjects (retained)", m.breakdownRowsKind)
+	}
+	if m.breakdownHeight() == 0 {
+		t.Fatal("setup: breakdownHeight()=0 at hide-arm frame 0, want the full pre-hide height")
+	}
+
+	frame := m.View()
+	if !strings.Contains(stripANSI(frame), breakdownProjectsTitle) {
+		t.Errorf("hide-arm frame 0 lost its title\ngot:\n%s", frame)
 	}
 }

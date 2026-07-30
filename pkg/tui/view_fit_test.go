@@ -2,7 +2,9 @@ package tui
 
 import (
 	"fmt"
+	"math"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,6 +16,13 @@ import (
 	"github.com/martinciu/ccpulse/pkg/pricing"
 	"github.com/martinciu/ccpulse/pkg/status"
 )
+
+// longModelLabel is a Bedrock/Vertex model id (44 chars) that overflows
+// labelW at every width in fitWidths — models.Canonical only strips a
+// trailing -YYYYMMDD, so ids in this shape are not folded any shorter
+// (#475.2). Used in place of a 1-char label anywhere a breakdown row needs
+// to genuinely exercise the box's label-truncation path.
+const longModelLabel = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
 
 // fitNow is a fixed clock for every matrix cell, so reset timers, chart
 // windows, and seeded-cache timestamps line up deterministically.
@@ -247,7 +256,7 @@ func TestViewFitsTerminal_HelpOverlay(t *testing.T) {
 func TestViewFitsWithScopedLimits(t *testing.T) {
 	t.Parallel()
 	// A scoped-limit row grows the header box by one line; chartHeight and
-	// projectsTargetHeight must both absorb it or the frame overflows m.h.
+	// breakdownTargetHeight must both absorb it or the frame overflows m.h.
 	for _, n := range []int{1, 2} {
 		for _, h := range []int{24, 30, 40} {
 			name := fmt.Sprintf("n%d_h%d", n, h)
@@ -262,13 +271,13 @@ func TestViewFitsWithScopedLimits(t *testing.T) {
 }
 
 // TestViewFitsWithScopedLimits_ProjectsBox extends the scoped-limit sweep to
-// exercise projectsTargetHeight's headerContentRows-derived overhead
+// exercise breakdownTargetHeight's headerContentRows-derived overhead
 // (viewport.go:224) with the projects box visible and populated. The sweep
-// above runs with showProjects default-false and no projectAggs, so it never
+// above runs with breakdown default-none and no breakdownRows, so it never
 // touches that path — reintroducing the flat `m.h - 7` there alone (the
 // pre-#463 formula, still pinned with zero scoped limits by
 // TestView_DuringSlide_HeightConservedRealBorder) would pass the whole
-// suite. Follows production's re-sync order: set showProjects/projectAggs
+// suite. Follows production's re-sync order: set breakdown/breakdownRows
 // first, then viewport.Height = chartHeight() last, same as handleWindowSize.
 func TestViewFitsWithScopedLimits_ProjectsBox(t *testing.T) {
 	t.Parallel()
@@ -277,9 +286,9 @@ func TestViewFitsWithScopedLimits_ProjectsBox(t *testing.T) {
 			name := fmt.Sprintf("n%d_h%d", n, h)
 			t.Run(name, func(t *testing.T) {
 				m := newScopedTestModel(t, 100, h, n)
-				m.showProjects = true
+				m.breakdown = breakdownProjects
 				for range 3 {
-					m.projectAggs = append(m.projectAggs, cache.ProjectAggregate{Label: "p"})
+					m.breakdownRows = append(m.breakdownRows, breakdownRow{Label: longModelLabel})
 				}
 				m.viewport.Width = m.chartWidth()
 				m.viewport.Height = m.chartHeight()
@@ -289,28 +298,28 @@ func TestViewFitsWithScopedLimits_ProjectsBox(t *testing.T) {
 	}
 }
 
-// TestProjectsTargetHeight_WithScopedRows pins projectsTargetHeight's avail
+// TestProjectsTargetHeight_WithScopedRows pins breakdownTargetHeight's avail
 // computation (viewport.go:224) once scoped-limit rows have grown
 // headerContentRows() above its 0-scoped baseline of 2. The coarse "does it
 // fit" check in TestViewFitsWithScopedLimits_ProjectsBox can't distinguish the
 // correct avail (m.h - 5 - headerContentRows()) from the flat pre-#463
-// `m.h - 7` at every n/h/aggs combination — projectsMaxRows and chartHeight's
+// `m.h - 7` at every n/h/aggs combination — breakdownMaxRows and chartHeight's
 // own 5-row floor absorb small discrepancies — so this pins the exact
 // returned height instead, with enough aggs that the avail/2 cap binds and
 // the two formulas' 1-row difference becomes visible in the return value.
 func TestProjectsTargetHeight_WithScopedRows(t *testing.T) {
 	t.Parallel()
 	m := newScopedTestModel(t, 100, 24, 2) // headerContentRows() == 4
-	m.showProjects = true
+	m.breakdown = breakdownProjects
 	for range 8 { // enough that `needed` exceeds avail/2, so the cap binds
-		m.projectAggs = append(m.projectAggs, cache.ProjectAggregate{Label: "p"})
+		m.breakdownRows = append(m.breakdownRows, breakdownRow{Label: longModelLabel})
 	}
 	avail := m.h - 5 - m.headerContentRows()
-	cols := projectCellCols(m.w)
-	needed := 3 + (len(m.projectAggs)+cols-1)/cols
-	want := min(needed, min(avail/2, projectsMaxRows))
-	if got := m.projectsTargetHeight(); got != want {
-		t.Errorf("projectsTargetHeight() = %d, want %d (avail=%d cols=%d needed=%d)",
+	cols := breakdownCellCols(m.w)
+	needed := 3 + (len(m.breakdownRows)+cols-1)/cols
+	want := min(needed, min(avail/2, breakdownMaxRows))
+	if got := m.breakdownTargetHeight(); got != want {
+		t.Errorf("breakdownTargetHeight() = %d, want %d (avail=%d cols=%d needed=%d)",
 			got, want, avail, cols, needed)
 	}
 }
@@ -321,5 +330,129 @@ func TestHeaderContentRows(t *testing.T) {
 		if got := m.headerContentRows(); got != tt.want {
 			t.Errorf("n=%d: headerContentRows = %d, want %d", tt.n, got, tt.want)
 		}
+	}
+}
+
+// TestRenderBreakdownBox_LongLabelHeightConserved pins #475.2: a label wider
+// than the cell's labelW must truncate (Inline(true) + MaxWidth), never
+// wrap, or the box renders taller than the declared height and breaks
+// View()'s per-frame height-conservation invariant that assertFits checks
+// above. Verified failing before the fix at w=120/160/200 with 6 rows of
+// longModelLabel; must render exactly the declared height at every width in
+// fitWidths and every height the box actually occupies (4: minimum
+// title+body shell, up to breakdownMaxRows).
+func TestRenderBreakdownBox_LongLabelHeightConserved(t *testing.T) {
+	rows := make([]breakdownRow, 6)
+	for i := range rows {
+		rows[i] = breakdownRow{Label: longModelLabel, CostUSD: float64(100 - i), Tokens: 1000, CostPct: 10}
+	}
+	for _, w := range fitWidths {
+		for _, h := range []int{4, 5, 6, 8, 12} {
+			t.Run(fmt.Sprintf("w%d_h%d", w, h), func(t *testing.T) {
+				got := renderBreakdownBox(breakdownModelsTitle, rows, w, h)
+				if height := lipgloss.Height(got); height != h {
+					t.Errorf("renderBreakdownBox(w=%d, h=%d) rendered height %d, want exactly %d\n%s",
+						w, h, height, h, got)
+				}
+			})
+		}
+	}
+}
+
+// c1CSI, del, and bidiRLO are built from their code points rather than
+// embedded as literal characters in source — keeps the test file free of
+// raw control/bidi bytes while still exercising the exact runes #475.35
+// called out: U+009B (single-byte C1 CSI), U+007F (DEL), and U+202E
+// (RIGHT-TO-LEFT OVERRIDE).
+const (
+	c1CSI   = rune(0x9b)
+	del     = rune(0x7f)
+	bidiRLO = rune(0x202e)
+)
+
+// TestBreakdownCell_StripsControlChars pins #475.10: messages.model is
+// written verbatim from on-disk JSONL with no validation and flows into
+// breakdownCell's Render(r.Label) call. lipgloss Width/MaxWidth treat ANSI
+// escapes as zero-width, so without sanitizing at the render boundary,
+// control bytes survive into the painted cell — an unterminated SGR would
+// recolor every row below the box, a bare \a would ring the terminal bell,
+// and a bare \r would overwrite the box's left border. Confirmed present
+// before the fix; must be absent from the rendered cell after it.
+//
+// The case set covers more than the original C0 trio (#475.35): a narrower
+// implementation such as `if r < 0x20 { return -1 }` would pass a C0-only
+// test while letting U+009B (single-byte C1 CSI), U+007F (DEL), and
+// U+202E (bidi override) through — each of those can retarget rendering
+// or reorder displayed text just as effectively as an ESC sequence.
+func TestBreakdownCell_StripsControlChars(t *testing.T) {
+	cases := []struct {
+		name  string
+		label string
+		bad   rune
+	}{
+		{"ansi_color", "claude-\x1b[31mopus\x1b[0m-4-5", '\x1b'},
+		{"osc_bell", "\x1b]0;pwned\aclaude-opus-4-5", '\a'},
+		{"carriage_return", "claude-opus\r4-5", '\r'},
+		{"line_feed", "claude-opus\n4-5", '\n'},
+		{"c1_csi", "claude-" + string(c1CSI) + "31mopus", c1CSI},
+		{"del", "claude-opus" + string(del) + "4-5", del},
+		{"bidi_override", "claude-opus" + string(bidiRLO) + "4-5", bidiRLO},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := breakdownRow{Label: tc.label, CostUSD: 1, Tokens: 100, CostPct: 10}
+			rendered := breakdownCell(r, 60)
+			if strings.ContainsRune(rendered, tc.bad) {
+				t.Errorf("breakdownCell(%q) retained control rune %U in rendered output: %q",
+					tc.label, tc.bad, rendered)
+			}
+		})
+	}
+}
+
+// TestBreakdownCell_OverflowValuesHeightConserved pins #475.29/#475.30/#475.31:
+// the cost/tokens/pct slots must cap an over-wide rendered value instead of
+// wrapping the cell, and CostPct must be clamped (including NaN, which
+// Go's min/max builtins do NOT bound: min(100, NaN) is NaN) before it reaches
+// the pct slot. Every case below was measured to overflow breakdownCell(row,
+// 48) into 2–5 lines before the MaxWidth(N).Inline(true) treatment landed on
+// all three slots (#475.31) and the NaN-safe clamp landed in breakdownCell
+// (#475.30). The +/-1e16 CostPct cases are fed straight to the renderer
+// rather than produced via a real ProjectAggregate: the renderer is the
+// layer required to hold the invariant regardless of which aggregate kind
+// produced the row (#475.29), and both cache-layer clamps (models.go,
+// projects.go) are covered by their own package's tests.
+func TestBreakdownCell_OverflowValuesHeightConserved(t *testing.T) {
+	cases := []struct {
+		name string
+		row  breakdownRow
+	}{
+		{"cost_100000", breakdownRow{Label: "x", CostUSD: 100000, Tokens: 1000, CostPct: 50}},
+		{"tokens_maxint64", breakdownRow{Label: "x", CostUSD: 1, Tokens: math.MaxInt64, CostPct: 50}},
+		{"pct_1e16", breakdownRow{Label: "x", CostUSD: 1, Tokens: 1000, CostPct: 1e16}},
+		{"pct_neg_1e16", breakdownRow{Label: "x", CostUSD: 1, Tokens: 1000, CostPct: -1e16}},
+		{"pct_nan", breakdownRow{Label: "x", CostUSD: 1, Tokens: 1000, CostPct: math.NaN()}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := breakdownCell(tc.row, minCellW)
+			if h := lipgloss.Height(got); h != 1 {
+				t.Errorf("breakdownCell(%+v, %d) rendered height %d, want exactly 1\n%q",
+					tc.row, minCellW, h, got)
+			}
+
+			// Exercise the full box too, at every width in fitWidths, so the
+			// box-level invariant (renderBreakdownBox's doc comment: "always
+			// exactly `height` rows") holds end-to-end and not just for the
+			// isolated cell.
+			const boxH = 8
+			for _, w := range fitWidths {
+				box := renderBreakdownBox(breakdownModelsTitle, []breakdownRow{tc.row}, w, boxH)
+				if h := lipgloss.Height(box); h != boxH {
+					t.Errorf("renderBreakdownBox(w=%d, h=%d) with %s rendered height %d, want exactly %d\n%s",
+						w, boxH, tc.name, h, boxH, box)
+				}
+			}
+		})
 	}
 }

@@ -106,7 +106,7 @@ func (m *Model) clearChart() {
 	// render at the post-clear box height (#420). Self-contained on purpose —
 	// refreshChart's error/empty paths return right after clearChart, never
 	// reaching the tail resize hook.
-	m.projectAggs = nil
+	m.breakdownRows = nil
 	m.viewport.Height = m.chartHeight()
 	m.viewport.SetContent(emptyPlaceholder(m.chartWidth(), m.chartHeight()))
 	m.lastValues = nil
@@ -142,19 +142,46 @@ func (m *Model) refreshChart() {
 		m.springIntro = false
 		m.springPhase = springIdle
 		m.springKind = springKindNone
+		// A sequential swap (#475) may have leg 2 queued in pendingBreakdown.
+		// Commit it before clearing (#485): honour the queued destination as a
+		// hard cut rather than dropping it. This mirrors what a plain show
+		// already does when interrupted — m.breakdown is committed to the
+		// destination at arm time (beginBreakdownAnimation), so THIS abort
+		// block finds it already correct and the chart rebuild below just
+		// paints it. A swap's leg 1 is different: m.breakdown is
+		// breakdownNone while leg 1 (hiding the outgoing panel) is in
+		// flight, and the real destination sits in pendingBreakdown waiting
+		// for leg 1 to settle — so without this line an abort here drops the
+		// user's `p`→`m` keypress on the floor instead of landing on models,
+		// the asymmetry #485 reports. Committing first, THEN clearing,
+		// preserves both properties: the panel the user asked for actually
+		// shows up, and pendingBreakdown still ends up breakdownNone, so it
+		// can never strand and turn a subsequent p/m press into a no-op —
+		// handleBreakdownKey's first guard is
+		// `if m.pendingBreakdown != breakdownNone { rewrite and return nil }`
+		// and only checks pendingBreakdown, not springActive.
+		if m.pendingBreakdown != breakdownNone {
+			m.breakdown = m.pendingBreakdown // honour the swap; hard-cut like every other refresh path
+		}
+		m.pendingBreakdown = breakdownNone
 		// springProjectiles, springFinalTargets, oldPeak, oldUnitIdx
 		// remain populated but unread — guarded by springActive=false.
 		// Next beginUnitAnimation re-makes the slices. Zoom scalars
 		// (zoomSpringR/Vel/zoomSnap) likewise stay set but unread (#373).
 		// The projects slide (#416) rides this same abort: springActive=false +
-		// springKind=springKindNone drops it; projectsAnimH and the slide
-		// from/to endpoints stay set but unread, and showProjects was already
-		// committed at arm so the chart rebuild below reads the correct
-		// chartHeight. Re-sync the viewport widget's Height here: aborting a
-		// projects slide changes what chartHeight() returns, and renderProjectsFrame
-		// last wrote a mid-slide value into viewport.Height; without this line every
-		// subsequent View() paints the wrong number of rows. For unit/zoom aborts
-		// the assignment is a no-op (their animations never change the height).
+		// springKind=springKindNone drops it; breakdownAnimH and the slide
+		// from/to endpoints stay set but unread. For a plain show/hide,
+		// m.breakdown was already committed at arm (beginBreakdownAnimation),
+		// so the chart rebuild below reads the correct chartHeight on its own.
+		// A swap's leg 1 does not share that property: m.breakdown sits at
+		// breakdownNone until the commit above runs, which is exactly why
+		// that commit exists — it's what makes this statement true by the
+		// time chartHeight() is read below. Re-sync the viewport widget's
+		// Height here: aborting a projects slide changes what chartHeight()
+		// returns, and renderBreakdownFrame last wrote a mid-slide value into
+		// viewport.Height; without this line every subsequent View() paints
+		// the wrong number of rows. For unit/zoom aborts the assignment is a
+		// no-op (their animations never change the height).
 		m.viewport.Height = m.chartHeight()
 	}
 
@@ -255,7 +282,7 @@ func (m *Model) refreshChart() {
 	// the stale height. The toggle-on path is the deterministic case: aggs were
 	// nil (4-row placeholder floor) at restoreAnchor time, so without this
 	// reorder every 'p' press fired two full-canvas paints.
-	m.refreshProjects()
+	m.refreshBreakdown()
 	m.viewport.Height = m.chartHeight()
 	chartH = m.chartHeight()
 

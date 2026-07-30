@@ -9,6 +9,7 @@ type KeyMap struct {
 	Zoom        key.Binding
 	Unit        key.Binding
 	Projects    key.Binding
+	Models      key.Binding
 	Help        key.Binding
 	Quit        key.Binding
 }
@@ -35,6 +36,10 @@ func defaultKeyMap() KeyMap {
 			key.WithKeys("p"),
 			key.WithHelp("p", "projects"),
 		),
+		Models: key.NewBinding(
+			key.WithKeys("m"),
+			key.WithHelp("m", "models"),
+		),
 		Help: key.NewBinding(
 			key.WithKeys("?"),
 			key.WithHelp("?", "help"),
@@ -46,17 +51,20 @@ func defaultKeyMap() KeyMap {
 	}
 }
 
-// ShortHelp implements help.KeyMap. Order: scroll, zoom, unit, projects, help, quit.
+// ShortHelp implements help.KeyMap. Order: scroll, zoom, unit, projects,
+// models, help, quit. Note that help.Model truncates from the right at the
+// first binding that does not fit, so "m models" is hidden below ~89 columns;
+// the ? overlay (FullHelp) is column-based and always shows it.
 func (k KeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.ScrollLeft, k.ScrollRight, k.Zoom, k.Unit, k.Projects, k.Help, k.Quit}
+	return []key.Binding{k.ScrollLeft, k.ScrollRight, k.Zoom, k.Unit, k.Projects, k.Models, k.Help, k.Quit}
 }
 
-// FullHelp implements help.KeyMap. Unit and Projects share a row with Zoom —
-// they're all "what the chart shows" toggles, distinct from "how the chart is
-// scrolled" (top row).
+// FullHelp implements help.KeyMap. Unit, Projects and Models share a row with
+// Zoom — they're all "what the chart shows" toggles, distinct from "how the
+// chart is scrolled" (top row).
 func (k KeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.ScrollLeft, k.ScrollRight},
-		{k.Zoom, k.Unit, k.Projects, k.Help, k.Quit},
+		{k.Zoom, k.Unit, k.Projects, k.Models, k.Help, k.Quit},
 	}
 }

@@ -35,8 +35,8 @@ func (m *Model) handleSpringTick(msg springTickMsg) tea.Cmd {
 	if m.springKind == springKindZoom {
 		return m.handleZoomSpringTick(m.springGen)
 	}
-	if m.springKind == springKindProjects {
-		return m.handleProjectsSpringTick(m.springGen)
+	if m.springKind == springKindBreakdown {
+		return m.handleBreakdownSpringTick(m.springGen)
 	}
 	gen := m.springGen
 	switch m.springPhase {
@@ -589,7 +589,7 @@ func (m *Model) renderSpringFrame() {
 // the viewport at the active zoom and scroll offset. It is the single source
 // of truth for "what time range is on screen", shared by renderSpringLineFrame
 // (the u-toggle line frame), the zoom squeeze's arm-time snapshot (#373), and
-// refreshProjects' remaining-mode window (#430).
+// refreshBreakdown' remaining-mode window (#430).
 //
 // Reads m.lastChartFrom/To, m.lastCanvasW (via the recomputed fullCanvasW),
 // m.viewportXOffset, and m.viewport.Width — all consistent with ZoomLevels[
