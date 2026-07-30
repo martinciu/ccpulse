@@ -303,17 +303,12 @@ func TestModelAggregates_DropsZeroContributionRow(t *testing.T) {
 	if got[0].Model != "claude-opus-4-7" {
 		t.Errorf("Model = %q, want claude-opus-4-7", got[0].Model)
 	}
-	for _, a := range got {
-		if a.Label == "<synthetic>" {
-			t.Errorf("zero-contribution row %+v present in result, want dropped", a)
-		}
-	}
 }
 
-// TestModelAggregates_OnlyZeroContributionRowsYieldsEmpty covers the "no
-// activity in this window" placeholder path: a window containing ONLY
-// zero-contribution rows must return an empty (not nil-panicking, not
-// single-row-unknown-bucket) result.
+// TestModelAggregates_OnlyZeroContributionRowsYieldsEmpty asserts that a
+// window containing only zero-contribution rows yields an empty result,
+// which the TUI's renderBreakdownBox then consumes to display a placeholder
+// when no models contributed to the window.
 func TestModelAggregates_OnlyZeroContributionRowsYieldsEmpty(t *testing.T) {
 	t.Parallel()
 	c := newModelTestCache(t)

@@ -170,13 +170,18 @@ func (m *Model) refreshChart() {
 		// (zoomSpringR/Vel/zoomSnap) likewise stay set but unread (#373).
 		// The projects slide (#416) rides this same abort: springActive=false +
 		// springKind=springKindNone drops it; breakdownAnimH and the slide
-		// from/to endpoints stay set but unread, and m.breakdown was already
-		// committed at arm so the chart rebuild below reads the correct
-		// chartHeight. Re-sync the viewport widget's Height here: aborting a
-		// projects slide changes what chartHeight() returns, and renderBreakdownFrame
-		// last wrote a mid-slide value into viewport.Height; without this line every
-		// subsequent View() paints the wrong number of rows. For unit/zoom aborts
-		// the assignment is a no-op (their animations never change the height).
+		// from/to endpoints stay set but unread. For a plain show/hide,
+		// m.breakdown was already committed at arm (beginBreakdownAnimation),
+		// so the chart rebuild below reads the correct chartHeight on its own.
+		// A swap's leg 1 does not share that property: m.breakdown sits at
+		// breakdownNone until the commit above runs, which is exactly why
+		// that commit exists — it's what makes this statement true by the
+		// time chartHeight() is read below. Re-sync the viewport widget's
+		// Height here: aborting a projects slide changes what chartHeight()
+		// returns, and renderBreakdownFrame last wrote a mid-slide value into
+		// viewport.Height; without this line every subsequent View() paints
+		// the wrong number of rows. For unit/zoom aborts the assignment is a
+		// no-op (their animations never change the height).
 		m.viewport.Height = m.chartHeight()
 	}
 

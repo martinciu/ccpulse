@@ -834,13 +834,18 @@ func (m *Model) handleBreakdownKey(want breakdownKind) tea.Cmd {
 	// pendingBreakdown must be cleared BEFORE beginBreakdownAnimation and the
 	// real value written AFTER it returns — never set-then-call. When a u/z
 	// spring is in flight, beginBreakdownAnimation aborts it through
-	// refreshChart (breakdownspring.go), and refreshChart unconditionally
-	// zeroes pendingBreakdown to drop a *stranded* pending from one of the
-	// three Update-driven abort paths (series.go). If leg 2's destination
-	// were already sitting in pendingBreakdown at that point, this call would
-	// wipe it out one statement after writing it, and the swap would vanish
-	// (ccpulse-475.25). Writing pending only after the arm call returns keeps
-	// it out of refreshChart's blast radius entirely.
+	// refreshChart (breakdownspring.go), and refreshChart commits-then-zeroes
+	// pendingBreakdown (#485): it first honours any *stranded* pending
+	// destination left by one of the three Update-driven abort paths
+	// (series.go) by writing it into m.breakdown, then clears pendingBreakdown
+	// to breakdownNone. Removing the defensive clear on the line below would
+	// let leg 2's destination reach that commit, but it wouldn't survive:
+	// beginBreakdownAnimation overwrites m.breakdown with `to` (breakdownNone
+	// for leg 1) one statement after refreshChart returns, so the swap still
+	// vanishes (ccpulse-475.25) — just now with an extra wasted
+	// ModelAggregates query and a viewport.Height flicker along the way,
+	// instead of a silent drop. Writing pending only after the arm call
+	// returns keeps it out of refreshChart's blast radius entirely.
 	m.pendingBreakdown = breakdownNone
 	m.beginBreakdownAnimation(target)
 	m.pendingBreakdown = pending

@@ -1242,9 +1242,12 @@ func TestBreakdownSwap_ChainsSecondLeg(t *testing.T) {
 // ccpulse-475.25. handleBreakdownKey used to write m.pendingBreakdown =
 // target and ONLY THEN call beginBreakdownAnimation. When a unit/zoom spring
 // was in flight, beginBreakdownAnimation aborts it via m.refreshChart()
-// (breakdownspring.go), and refreshChart unconditionally zeroes
-// pendingBreakdown (series.go) to drop a STRANDED pending left by one of the
-// three Update-driven abort paths. That cleared the just-written queue one
+// (breakdownspring.go), and refreshChart clears pendingBreakdown (series.go)
+// to drop a STRANDED pending left by one of the three Update-driven abort
+// paths. (Since #485 it commits the destination into m.breakdown before
+// clearing, but that does not rescue this path: beginBreakdownAnimation
+// overwrites m.breakdown with its own `to` one statement later.) That
+// cleared the just-written queue one
 // statement after it was set: leg 1 (hiding the current panel) would settle
 // with nothing to chain into, so pressing `m` (or `p`) while a `u`/`z` spring
 // was still in flight (~1.1s window) made the visible panel slide away and
