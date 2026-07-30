@@ -761,22 +761,32 @@ func TestNowTick_MidSlide_ViewportHeightSynced(t *testing.T) {
 
 // assertSwapCompletesHardCut is the shared postcondition for the
 // TestWindowSize_MidSwapAbort_CompletesSwap / TestRefreshMsg_MidSwapAbort_CompletesSwap /
-// TestNowTick_MidSwapAbort_CompletesSwap trio below (ccpulse-485). An abort mid
-// leg-1 of a sequential swap must land the user on the panel they actually
-// asked for — a hard cut straight to breakdownModels, exactly like every
-// other refresh path hard-cuts an in-flight animation — not merely leave the
-// model in a state recoverable by a further keypress. That weaker postcondition
-// is what the pre-#485 tests checked, and it stayed true even when the swap
-// was silently abandoned (the original #485 bug): the panel never showed up,
-// but pendingBreakdown was still clear and a fresh press still armed a new
-// slide, so the tests passed while the user's keypress vanished.
+// TestNowTick_MidSwapAbort_CompletesSwap / TestKeypress_MidSwapAbort_CompletesSwap
+// quartet below (ccpulse-485). An abort mid leg-1 of a sequential swap must
+// land the user on the panel they actually asked for — a hard cut straight to
+// breakdownModels, exactly like every other refresh path hard-cuts an
+// in-flight animation — not merely leave the model in a state recoverable by
+// a further keypress. That weaker postcondition is what the pre-#485 tests
+// checked, and it stayed true even when the swap was silently abandoned (the
+// original #485 bug): the panel never showed up, but pendingBreakdown was
+// still clear and a fresh press still armed a new slide, so the tests passed
+// while the user's keypress vanished.
 //
-// So this asserts the completed swap directly — m.breakdown is already
-// breakdownModels and the panel already has a nonzero on-screen height,
-// with no further keypress required — while ALSO keeping the original
-// anti-stranding assertion (pendingBreakdown == breakdownNone): that
-// property still matters on its own, since a stranded pendingBreakdown
-// would make every subsequent p/m press a no-op.
+// Round two (ccpulse-475.40) found this helper's own postcondition was STILL
+// too weak: breakdownHeight()!=0 is not an independent check once breakdown==
+// breakdownModels is already asserted — breakdownTargetHeight() floors at 4
+// even with zero rows (pkg/tui/viewport.go), so it follows mechanically from
+// the kind assertion above and a tall-enough terminal. Worse, the box's
+// TITLE is drawn from m.breakdownRowsKind (pkg/tui/model.go:887), not
+// m.breakdown — so a mutant that hard-cuts m.breakdown to breakdownModels but
+// leaves breakdownRowsKind/breakdownRows pointing at the stale projects data
+// (or nils them out) passed every assertion here while the user saw the
+// WRONG title, or no box at all. So this now asserts the panel the user sees,
+// not just the field that gates whether a box is drawn at all: breakdownRowsKind,
+// a nonempty breakdownRows, AND the painted frame carries the models title —
+// on top of the original hard-cut and anti-stranding checks (pendingBreakdown
+// == breakdownNone matters on its own, since a stranded pendingBreakdown
+// would make every subsequent p/m press a no-op).
 func assertSwapCompletesHardCut(t *testing.T, m *Model) {
 	t.Helper()
 	if m.pendingBreakdown != breakdownNone {
@@ -785,8 +795,17 @@ func assertSwapCompletesHardCut(t *testing.T, m *Model) {
 	if m.breakdown != breakdownModels {
 		t.Fatalf("breakdown=%d after abort, want breakdownModels (swap must complete as a hard cut, not be abandoned — #485)", m.breakdown)
 	}
-	if m.breakdownHeight() == 0 {
-		t.Error("breakdownHeight()=0 after abort, want >0 (models panel must actually be showing, not just committed in state)")
+	// Not "breakdownHeight()==0" — that follows mechanically from the check
+	// above (breakdownTargetHeight() floors at 4 with zero rows) and would
+	// pass even if the box were showing the OUTGOING kind's stale content.
+	if m.breakdownRowsKind != breakdownModels {
+		t.Fatalf("breakdownRowsKind=%d after abort, want breakdownModels (the box's title is drawn from this field, not m.breakdown — pkg/tui/model.go:887)", m.breakdownRowsKind)
+	}
+	if len(m.breakdownRows) == 0 {
+		t.Fatal("breakdownRows empty after abort, want populated (models panel must actually have content, not just a committed kind)")
+	}
+	if !strings.Contains(m.View(), breakdownModelsTitle) {
+		t.Error("View() after abort lacks the models title — models panel must actually be showing on screen, not just committed in state")
 	}
 }
 
@@ -806,9 +825,18 @@ func assertSwapCompletesHardCut(t *testing.T, m *Model) {
 // abort hard-cuts straight to the queued destination — matching what a plain
 // show already does when interrupted, since a plain show has already
 // committed m.breakdown at arm time.
+//
+// Uses seedBarModelWithVariedModels (not seedBarModelWithMessages, ccpulse-
+// 475.40): with the single-model fixture both the projects and models panels
+// render at exactly 4 rows (the #420 empty-aggs floor), so a regression that
+// hard-cuts m.breakdown to breakdownModels while leaving breakdownRowsKind /
+// breakdownRows pointing at the stale projects data would still satisfy a
+// bare height check. The varied fixture's models panel needs 6 rows,
+// discriminating "the right kind's content is actually showing" from "some
+// box of the right height is showing".
 func TestWindowSize_MidSwapAbort_CompletesSwap(t *testing.T) {
 	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
-	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
+	m, c := seedBarModelWithVariedModels(t, now)
 	defer c.Close()
 	m.breakdown = breakdownProjects
 	m.refreshBreakdown()
@@ -848,9 +876,13 @@ func TestWindowSize_MidSwapAbort_CompletesSwap(t *testing.T) {
 // path #485's real-binary capture actually exercised: a watcher RefreshMsg
 // landing ~0.4s into leg 1 of a `p` then `m` swap left no breakdown box at
 // all, while the plain-show control at the same timing rendered correctly.
+//
+// Uses seedBarModelWithVariedModels (not seedBarModelWithMessages, ccpulse-
+// 475.40) — see TestWindowSize_MidSwapAbort_CompletesSwap's doc comment for
+// why the single-model fixture cannot discriminate the two panels.
 func TestRefreshMsg_MidSwapAbort_CompletesSwap(t *testing.T) {
 	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
-	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
+	m, c := seedBarModelWithVariedModels(t, now)
 	defer c.Close()
 	m.breakdown = breakdownProjects
 	m.refreshBreakdown()
@@ -888,9 +920,13 @@ func TestRefreshMsg_MidSwapAbort_CompletesSwap(t *testing.T) {
 // calls refreshChart during a projects/models slide). Note: handleNowTick
 // returns a non-nil Cmd to reschedule the next tick — never invoke it (it
 // real-sleeps up to 1h); ignore.
+//
+// Uses seedBarModelWithVariedModels (not seedBarModelWithMessages, ccpulse-
+// 475.40) — see TestWindowSize_MidSwapAbort_CompletesSwap's doc comment for
+// why the single-model fixture cannot discriminate the two panels.
 func TestNowTick_MidSwapAbort_CompletesSwap(t *testing.T) {
 	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
-	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
+	m, c := seedBarModelWithVariedModels(t, now)
 	defer c.Close()
 	m.breakdown = breakdownProjects
 	m.refreshBreakdown()
@@ -917,6 +953,64 @@ func TestNowTick_MidSwapAbort_CompletesSwap(t *testing.T) {
 	updated, _ := m.Update(nowTickMsg{gen: m.nowGen})
 	mm := updated.(Model)
 	assertSwapCompletesHardCut(t, &mm)
+}
+
+// TestKeypress_MidSwapAbort_CompletesSwap is the keypress sibling of the
+// resize/refresh/now-tick trio above (ccpulse-475.44). refreshChart's
+// spring-abort block (pkg/tui/series.go) is reachable from five call sites;
+// the trio above covers the three non-keypress ones (handleWindowSize,
+// handleRefresh, handleNowTick). The remaining two are user keypresses that
+// reach the SAME abort block through a different route:
+//   - 'u' -> handleUnitKey -> beginUnitAnimation -> refreshChart (pkg/tui/springs.go:349)
+//   - 'z' -> handleZoomKey -> refreshChart directly (pkg/tui/zoomspring.go:122)
+//
+// Both had zero coverage of the mid-swap-abort interaction despite #485
+// changing user-visible behaviour on both paths: TestProjectsKey_AbortsInflightZoom
+// and TestZoomKey_AbortsInflightProjectsSlide (above) both start from
+// m.breakdown = breakdownNone, so neither ever has a queued leg 2 to abandon.
+// Table-driven over the two trigger keys, reusing the same swap-arming setup
+// and the strengthened assertSwapCompletesHardCut.
+func TestKeypress_MidSwapAbort_CompletesSwap(t *testing.T) {
+	for _, key := range []string{"u", "z"} {
+		t.Run(key, func(t *testing.T) {
+			now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+			m, c := seedBarModelWithVariedModels(t, now)
+			defer c.Close()
+			m.breakdown = breakdownProjects
+			m.refreshBreakdown()
+
+			// Arm a swap: 'm' while projects is showing hides projects (leg 1)
+			// and queues models as leg 2 in pendingBreakdown.
+			if cmd := m.handleBreakdownKey(breakdownModels); cmd == nil {
+				t.Fatal("setup: arming the swap returned a nil cmd")
+			}
+			if !m.springActive || m.springKind != springKindBreakdown {
+				t.Fatalf("setup: springActive=%v springKind=%d, want true/breakdown", m.springActive, m.springKind)
+			}
+			if m.pendingBreakdown != breakdownModels {
+				t.Fatalf("setup: pendingBreakdown=%d, want breakdownModels (leg 2 queued)", m.pendingBreakdown)
+			}
+
+			// Advance into leg 1 (never invoke the real tea.Tick Cmd — it
+			// real-sleeps; drive via direct handleBreakdownSpringTick calls).
+			for range 3 {
+				m.handleBreakdownSpringTick(m.springGen)
+			}
+			if !m.springActive {
+				t.Fatal("leg 1 settled in 3 ticks; cannot probe mid-swap behaviour")
+			}
+
+			// Fire the keypress mid-swap. handleUnitKey (via beginUnitAnimation)
+			// or handleZoomKey's own refreshChart call must abort leg 1 AND
+			// commit the queued leg 2 as a hard cut (#485) — exactly like the
+			// resize/refresh/now-tick paths above, even though this abort is
+			// reached on the way to arming the key's OWN (unit/zoom) animation
+			// rather than as the sole effect of the keypress.
+			updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
+			mm := updated.(Model)
+			assertSwapCompletesHardCut(t, &mm)
+		})
+	}
 }
 
 // breakdownRowsBackingPtr returns the backing-array address of a breakdownRow

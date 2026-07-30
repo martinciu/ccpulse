@@ -330,6 +330,95 @@ func TestModelAggregates_OnlyZeroContributionRowsYieldsEmpty(t *testing.T) {
 	}
 }
 
+// TestModelAggregates_CacheOnlyTurnRetained guards the OTHER half of the
+// zero-contribution filter's conjunction (a.CostUSD == 0 && a.Tokens == 0):
+// symmetric to TestModelAggregates_UnpricedModelRetained, which covers
+// tokens>0/cost==0, this covers tokens==0/cost>0. ModelAggregate.Tokens is
+// SUM(input_tokens + output_tokens) only, while cost_usd_estimate also prices
+// cache_read_tokens / cache_write_5m_tokens / cache_write_1h_tokens
+// (pkg/pricing/pricing.go:187-191), so a cache-read-dominated turn can have
+// zero I/O tokens and still carry real cost. Weakening the filter's condition
+// from `a.CostUSD == 0 && a.Tokens == 0` to `a.Tokens == 0` alone would drop
+// this row — this fixture is the one that catches it, since no other fixture
+// in this file has Tokens==0 with CostUSD!=0.
+func TestModelAggregates_CacheOnlyTurnRetained(t *testing.T) {
+	t.Parallel()
+	c := newModelTestCache(t)
+	base := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	insertModelRow(t, c, "claude-opus-4-7", base, 100, 200, 5.00)
+	insertModelRow(t, c, "claude-haiku-4-5", base.Add(time.Minute), 0, 0, 2.50)
+
+	got, err := c.ModelAggregates(t.Context(), base.Add(-time.Hour), base.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, a := range got {
+		if a.Label == "Haiku 4.5" {
+			found = true
+			if a.Tokens != 0 {
+				t.Errorf("cache-only turn Tokens = %d, want 0", a.Tokens)
+			}
+			if a.CostUSD != 2.50 {
+				t.Errorf("cache-only turn CostUSD = %v, want 2.50", a.CostUSD)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("cache-only turn (tokens=0, cost>0) dropped from %+v; it must render at its real cost with 0 I/O tokens", got)
+	}
+}
+
+// TestModelAggregates_DropsCancelledActivity pins the deliberate consequence
+// of the zero-contribution filter running post-fold rather than pre-fold: a
+// model with real activity on BOTH sides vanishes entirely if its folded sums
+// cancel to exactly (0, 0). Nothing validates token/cost signs on ingest, so
+// this shape is reachable from real (if malformed) transcript data, and
+// IEEE-754 makes exact negations sum to exactly 0.0 rather than some
+// near-zero residue.
+//
+// This is a recorded decision (see the comment at models.go:107-121), not an
+// accident of where the filter sits: such a row contributes zero to every
+// panel total whether shown or not, and mixed-sign token counts are already
+// malformed input — the same premise TestModelAggregates_CostPctClamped's
+// clamp rests on.
+//
+// The two rows deliberately use DIFFERENT raw ids (a base id and its dated
+// variant) that fold to the SAME canonical model, rather than one raw id
+// twice: `GROUP BY model` in the SQL already sums same-raw-id rows before any
+// Go code runs, so a same-raw-id fixture cancels before reaching either a
+// pre-fold or a post-fold filter and cannot tell the two placements apart.
+// With distinct raw ids, each SQL-grouped row is individually non-zero
+// (5.00/1500 and -5.00/-1500) and only cancels once Go's canonical fold
+// merges them — so this fixture fails if the filter is moved into the scan
+// loop (filtering each raw SQL row before the fold), proving placement still
+// matters for this one case even though it doesn't for the "zero-token dated
+// variant" case the corrected models.go comment addresses.
+func TestModelAggregates_DropsCancelledActivity(t *testing.T) {
+	t.Parallel()
+	c := newModelTestCache(t)
+	base := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	insertModelRow(t, c, "claude-opus-4-7", base, 1000, 500, 5.00)
+	insertModelRow(t, c, "claude-opus-4-7-20251001", base.Add(time.Minute), -1000, -500, -5.00)
+	insertModelRow(t, c, "claude-haiku-4-5", base.Add(2*time.Minute), 10, 10, 1.00)
+
+	got, err := c.ModelAggregates(t.Context(), base.Add(-time.Hour), base.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("rows = %d, want 1 (cancelled opus row dropped, haiku retained), got %+v", len(got), got)
+	}
+	if got[0].Model != "claude-haiku-4-5" {
+		t.Errorf("Model = %q, want claude-haiku-4-5", got[0].Model)
+	}
+	for _, a := range got {
+		if a.Model == "claude-opus-4-7" {
+			t.Errorf("cancelled-activity row %+v present in result, want dropped", a)
+		}
+	}
+}
+
 // TestModelAggregates_ReconcilesWithProjectAggregates is the contract that lets
 // a user trust flipping p<->m: identical WHERE and identical SUM expressions
 // mean both breakdowns must total the same for the same window.

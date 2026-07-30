@@ -96,11 +96,29 @@ GROUP BY model`
 		// avoid, and it would go stale the moment a new marker appears.
 		//
 		// This MUST run here, after the models.Canonical fold above, and
-		// never as a SQL HAVING clause: a canonical model can be assembled
-		// from several raw ids, so filtering pre-fold could drop a
-		// zero-token dated variant that should have merged into a non-zero
-		// canonical row. Post-fold, the decision is made on the row the
-		// user actually sees.
+		// never as a SQL HAVING clause. For a SUM aggregate, a raw row that
+		// itself satisfies (cost==0 && tokens==0) contributes exactly zero
+		// to its canonical group either way, so filtering it pre-fold can
+		// never drop a group that would otherwise have gone non-zero —
+		// that direction is mathematically impossible, not merely
+		// untested (a 400-fixture randomized differential against a
+		// pre-fold reimplementation found zero such cases).
+		//
+		// Post-fold placement is instead STRICTLY MORE AGGRESSIVE than
+		// pre-fold: it additionally drops canonical groups whose raw rows
+		// are each individually non-zero but CANCEL to (0, 0) once folded
+		// — e.g. a model billed at +1000/-1000 tokens and +$5.00/-$5.00
+		// across two raw rows. Filtering pre-fold would keep that group
+		// (neither raw row is (0,0) on its own); filtering here, post-fold,
+		// drops it.
+		//
+		// That cancellation drop is a deliberate choice, not an accidental
+		// side effect of where the filter sits (pinned by
+		// TestModelAggregates_DropsCancelledActivity): such a row
+		// contributes zero to every panel total regardless of whether it is
+		// shown, and a mixed-sign token/cost split is already malformed
+		// input — the same premise the CostPct clamp below rests on, since
+		// token counts are never validated on ingest.
 		//
 		// Safe for panel reconciliation: a dropped row's (CostUSD, Tokens)
 		// is (0, 0) by construction, so it was already contributing zero to
