@@ -353,6 +353,43 @@ func TestIterationsOversizedKeptWithoutProbe(t *testing.T) {
 	}
 }
 
+// TestIterationsOversizedKeptWithoutExpansion asserts the same size guard end
+// to end through Parse: an iterations array over maxIterationsProbe bytes
+// must never reach toMessages' expansion path. Parse should yield exactly the
+// parent message, outer usage untouched, with IterationsJSON holding the
+// oversized blob verbatim.
+func TestIterationsOversizedKeptWithoutExpansion(t *testing.T) {
+	var b strings.Builder
+	b.WriteString(`[{"input_tokens":1}`)
+	for b.Len() <= maxIterationsProbe {
+		b.WriteString(`,{"input_tokens":1}`)
+	}
+	b.WriteByte(']')
+	its := b.String()
+
+	if len(its) <= maxIterationsProbe {
+		t.Fatalf("fixture too small: len=%d, want > %d", len(its), maxIterationsProbe)
+	}
+
+	line := fmt.Sprintf(`{"type":"assistant","sessionId":"s1","timestamp":"2026-07-21T10:00:00.000Z","message":{"id":"m1","role":"assistant","model":"claude-fable-5","usage":{"input_tokens":2,"output_tokens":300,"cache_read_input_tokens":20000,"cache_creation_input_tokens":400,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":400},"iterations":%s}}}`, its) + "\n"
+
+	msgs, err := Parse(strings.NewReader(line), "test-slug")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("got %d messages, want 1 (oversized blob must skip expansion)", len(msgs))
+	}
+	if msgs[0].InputTokens != 2 || msgs[0].OutputTokens != 300 || msgs[0].CacheReadTokens != 20000 ||
+		msgs[0].CacheWrite5mTokens != 0 || msgs[0].CacheWrite1hTokens != 400 {
+		t.Errorf("outer usage = (in=%d out=%d cacheRead=%d cw5m=%d cw1h=%d), want (in=2 out=300 cacheRead=20000 cw5m=0 cw1h=400)",
+			msgs[0].InputTokens, msgs[0].OutputTokens, msgs[0].CacheReadTokens, msgs[0].CacheWrite5mTokens, msgs[0].CacheWrite1hTokens)
+	}
+	if msgs[0].IterationsJSON != its {
+		t.Errorf("IterationsJSON len=%d, want verbatim blob of len=%d", len(msgs[0].IterationsJSON), len(its))
+	}
+}
+
 // TestIterationsExpansion drives full JSONL lines through Parse and asserts
 // the attempt-row expansion: parent tokens become the sum of own-model
 // entries, and each non-zero foreign-model entry becomes an extra Message
@@ -432,6 +469,49 @@ func TestIterationsExpansion(t *testing.T) {
 				{messageID: "m1", model: "claude-fable-5", in: 2, out: 300, cacheRead: 20000, cw1h: 400},
 			},
 		},
+		{
+			name:       "all-zero single foreign entry keeps outer usage",
+			iterations: `[{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"type":"message","model":"claude-opus-4-8"}]`,
+			want: []wantMsg{
+				{messageID: "m1", model: "claude-fable-5", in: 2, out: 300, cacheRead: 20000, cw1h: 400},
+			},
+		},
+		{
+			name:       "all-zero single own entry keeps outer usage",
+			iterations: `[{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"type":"message"}]`,
+			want: []wantMsg{
+				{messageID: "m1", model: "claude-fable-5", in: 2, out: 300, cacheRead: 20000, cw1h: 400},
+			},
+		},
+		{
+			name: "cache-only foreign entry still becomes attempt row",
+			iterations: `[` +
+				`{"input_tokens":2,"output_tokens":300,"cache_read_input_tokens":20000,"cache_creation_input_tokens":400,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":400},"type":"message"},` +
+				`{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":50000,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"type":"message","model":"claude-opus-4-8"}]`,
+			want: []wantMsg{
+				{messageID: "m1", model: "claude-fable-5", in: 2, out: 300, cacheRead: 20000, cw1h: 400},
+				{messageID: "m1:it:1", model: "claude-opus-4-8", cacheRead: 50000},
+			},
+		},
+		{
+			name: "two foreign entries keep positional keys with a gap",
+			iterations: `[` +
+				`{"input_tokens":2,"output_tokens":434,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"type":"message","model":"claude-opus-4-8"},` +
+				`{"input_tokens":2,"output_tokens":300,"cache_read_input_tokens":20000,"cache_creation_input_tokens":400,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":400},"type":"message"},` +
+				`{"input_tokens":1,"output_tokens":50,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"type":"message","model":"claude-opus-4-7"}]`,
+			want: []wantMsg{
+				{messageID: "m1", model: "claude-fable-5", in: 2, out: 300, cacheRead: 20000, cw1h: 400},
+				{messageID: "m1:it:0", model: "claude-opus-4-8", in: 2, out: 434},
+				{messageID: "m1:it:2", model: "claude-opus-4-7", in: 1, out: 50},
+			},
+		},
+		{
+			name:       "explicit empty-string model classified as own",
+			iterations: `[{"input_tokens":2,"output_tokens":261,"cache_read_input_tokens":997513,"cache_creation_input_tokens":464,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":464},"type":"message","model":""}]`,
+			want: []wantMsg{
+				{messageID: "m1", model: "claude-fable-5", in: 2, out: 261, cacheRead: 997513, cw1h: 464},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -449,6 +529,9 @@ func TestIterationsExpansion(t *testing.T) {
 			if len(msgs) != len(tt.want) {
 				t.Fatalf("got %d messages, want %d: %+v", len(msgs), len(tt.want), msgs)
 			}
+			if msgs[0].IterationsJSON != tt.iterations {
+				t.Errorf("msgs[0].IterationsJSON = %q, want %q (verbatim parent blob)", msgs[0].IterationsJSON, tt.iterations)
+			}
 			for i, w := range tt.want {
 				g := msgs[i]
 				if g.MessageID != w.messageID || g.Model != w.model {
@@ -456,7 +539,7 @@ func TestIterationsExpansion(t *testing.T) {
 				}
 				if g.InputTokens != w.in || g.OutputTokens != w.out || g.CacheReadTokens != w.cacheRead ||
 					g.CacheWrite5mTokens != w.cw5m || g.CacheWrite1hTokens != w.cw1h {
-					t.Errorf("msg[%d] tokens = (%d,%d,%d,%d,%d), want (%d,%d,%d,%d,%d)", i,
+					t.Errorf("msg[%d] tokens = (in=%d out=%d cacheRead=%d cw5m=%d cw1h=%d), want (in=%d out=%d cacheRead=%d cw5m=%d cw1h=%d)", i,
 						g.InputTokens, g.OutputTokens, g.CacheReadTokens, g.CacheWrite5mTokens, g.CacheWrite1hTokens,
 						w.in, w.out, w.cacheRead, w.cw5m, w.cw1h)
 				}
@@ -471,11 +554,16 @@ func TestIterationsExpansion(t *testing.T) {
 	}
 }
 
+// noMessageIDIterations is the informative iterations array used by
+// TestIterationsExpansion_NoMessageID: one foreign-model entry plus one
+// serving-model fallback entry, neither of which restates the outer usage.
+const noMessageIDIterations = `[{"input_tokens":2,"output_tokens":434,"type":"message","model":"claude-opus-4-8"},{"input_tokens":2,"output_tokens":300,"type":"fallback_message","model":"claude-fable-5"}]`
+
 // TestIterationsExpansion_NoMessageID asserts expansion is skipped entirely
 // when the line has no message.id — a bare ":it:<idx>" key would collide
 // across turns in a session.
 func TestIterationsExpansion_NoMessageID(t *testing.T) {
-	line := `{"type":"assistant","sessionId":"s1","timestamp":"2026-07-21T10:00:00.000Z","message":{"role":"assistant","model":"claude-fable-5","usage":{"input_tokens":2,"output_tokens":300,"iterations":[{"input_tokens":2,"output_tokens":434,"type":"message","model":"claude-opus-4-8"},{"input_tokens":2,"output_tokens":300,"type":"fallback_message","model":"claude-fable-5"}]}}}` + "\n"
+	line := `{"type":"assistant","sessionId":"s1","timestamp":"2026-07-21T10:00:00.000Z","message":{"role":"assistant","model":"claude-fable-5","usage":{"input_tokens":2,"output_tokens":300,"iterations":` + noMessageIDIterations + `}}}` + "\n"
 
 	msgs, err := Parse(strings.NewReader(line), "test-slug")
 	if err != nil {
@@ -487,7 +575,7 @@ func TestIterationsExpansion_NoMessageID(t *testing.T) {
 	if msgs[0].InputTokens != 2 || msgs[0].OutputTokens != 300 {
 		t.Errorf("parent tokens = (%d,%d), want outer (2,300)", msgs[0].InputTokens, msgs[0].OutputTokens)
 	}
-	if msgs[0].IterationsJSON == "" {
-		t.Error("informative blob must still be kept verbatim")
+	if msgs[0].IterationsJSON != noMessageIDIterations {
+		t.Errorf("IterationsJSON = %q, want %q (verbatim blob)", msgs[0].IterationsJSON, noMessageIDIterations)
 	}
 }

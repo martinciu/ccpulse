@@ -254,6 +254,13 @@ func toMessages(raw rawLine, slug string) []Message {
 		a.IterationsJSON = ""
 		msgs = append(msgs, a)
 	}
+	if len(msgs) == 1 && own == (tokenSums{}) {
+		// Degenerate blob: every entry was zero (own folded to nothing,
+		// foreign entries skipped). Keep the outer usage — silently
+		// zeroing real billed tokens is worse than trusting the flat
+		// columns (fail open).
+		return msgs
+	}
 	msgs[0].InputTokens = own.in
 	msgs[0].OutputTokens = own.out
 	msgs[0].CacheReadTokens = own.cacheRead
