@@ -429,10 +429,14 @@ func TestRecost_AttemptRowRepricedAtOwnModel(t *testing.T) {
 
 	ts := time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC)
 	msgs := []parse.Message{
-		{SessionID: "s1", MessageID: "m1", ProjectSlug: "p", Timestamp: ts, Role: "assistant",
-			Model: "claude-opus-4-8", OutputTokens: 2299},
-		{SessionID: "s1", MessageID: "m1:it:0", ProjectSlug: "p", Timestamp: ts, Role: "assistant",
-			Model: "claude-fable-5", OutputTokens: 434},
+		{
+			SessionID: "s1", MessageID: "m1", ProjectSlug: "p", Timestamp: ts, Role: "assistant",
+			Model: "claude-opus-4-8", OutputTokens: 2299,
+		},
+		{
+			SessionID: "s1", MessageID: "m1:it:0", ProjectSlug: "p", Timestamp: ts, Role: "assistant",
+			Model: "claude-fable-5", OutputTokens: 434,
+		},
 	}
 
 	histV1, err := pricing.HistoryForTest([]pricing.Table{{
