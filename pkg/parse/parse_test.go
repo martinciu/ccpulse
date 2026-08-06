@@ -223,6 +223,7 @@ func TestIterationsInformativePredicate(t *testing.T) {
 		name       string
 		iterations string // raw JSON for the iterations value; "" = omit the key
 		want       string // expected Message.IterationsJSON
+		wantMsgs   int    // expected message count after expansion (#456); 0 means 1
 	}{
 		{name: "absent", iterations: "", want: ""},
 		{name: "json null", iterations: "null", want: ""},
@@ -237,6 +238,7 @@ func TestIterationsInformativePredicate(t *testing.T) {
 			name:       "single with differing model kept",
 			iterations: `[{"input_tokens":2,"output_tokens":300,"cache_read_input_tokens":20000,"cache_creation_input_tokens":400,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":400},"type":"message","model":"claude-opus-4-8"}]`,
 			want:       `[{"input_tokens":2,"output_tokens":300,"cache_read_input_tokens":20000,"cache_creation_input_tokens":400,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":400},"type":"message","model":"claude-opus-4-8"}]`,
+			wantMsgs:   2, // foreign entry expands into an attempt row (#456)
 		},
 		{
 			name:       "single non-message type kept",
@@ -287,6 +289,7 @@ func TestIterationsInformativePredicate(t *testing.T) {
 			name:       "multi-attempt kept",
 			iterations: "[" + redundantEntry + `,{"input_tokens":2,"output_tokens":2299,"cache_read_input_tokens":21000,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"type":"fallback_message","model":"claude-opus-4-8"}]`,
 			want:       "[" + redundantEntry + `,{"input_tokens":2,"output_tokens":2299,"cache_read_input_tokens":21000,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"type":"fallback_message","model":"claude-opus-4-8"}]`,
+			wantMsgs:   2, // foreign fallback entry expands into an attempt row (#456)
 		},
 		{
 			name:       "unparseable shape kept verbatim (fail open)",
@@ -307,8 +310,12 @@ func TestIterationsInformativePredicate(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(msgs) != 1 {
-				t.Fatalf("got %d messages, want 1", len(msgs))
+			wantN := tt.wantMsgs
+			if wantN == 0 {
+				wantN = 1
+			}
+			if len(msgs) != wantN {
+				t.Fatalf("got %d messages, want %d", len(msgs), wantN)
 			}
 			if msgs[0].IterationsJSON != tt.want {
 				t.Errorf("IterationsJSON = %q, want %q", msgs[0].IterationsJSON, tt.want)
@@ -343,5 +350,144 @@ func TestIterationsOversizedKeptWithoutProbe(t *testing.T) {
 	got := informativeIterations(raw)
 	if got != its {
 		t.Errorf("informativeIterations returned %d bytes, want verbatim input of %d bytes", len(got), len(its))
+	}
+}
+
+// TestIterationsExpansion drives full JSONL lines through Parse and asserts
+// the attempt-row expansion: parent tokens become the sum of own-model
+// entries, and each non-zero foreign-model entry becomes an extra Message
+// keyed "<id>:it:<idx>". Shapes are lifted from real cache blobs (issue #456).
+func TestIterationsExpansion(t *testing.T) {
+	type wantMsg struct {
+		messageID  string
+		model      string
+		in, out    int64
+		cacheRead  int64
+		cw5m, cw1h int64
+	}
+	tests := []struct {
+		name       string
+		iterations string // raw JSON for the iterations value; "" = omit the key
+		want       []wantMsg
+	}{
+		{
+			name: "fallback: refused foreign attempt plus serving fallback_message",
+			iterations: `[` +
+				`{"input_tokens":2,"output_tokens":434,"cache_read_input_tokens":686578,"cache_creation_input_tokens":62,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":62},"type":"message","model":"claude-opus-4-8"},` +
+				`{"input_tokens":2,"output_tokens":300,"cache_read_input_tokens":20000,"cache_creation_input_tokens":400,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":400},"type":"fallback_message","model":"claude-fable-5"}]`,
+			want: []wantMsg{
+				{messageID: "m1", model: "claude-fable-5", in: 2, out: 300, cacheRead: 20000, cw1h: 400},
+				{messageID: "m1:it:0", model: "claude-opus-4-8", in: 2, out: 434, cacheRead: 686578, cw1h: 62},
+			},
+		},
+		{
+			name: "advisor: cross-model advisor between two own message entries",
+			iterations: `[` +
+				`{"input_tokens":1,"output_tokens":100,"cache_read_input_tokens":8000,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"type":"message"},` +
+				`{"input_tokens":150970,"output_tokens":6758,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"type":"advisor_message","model":"claude-opus-4-7"},` +
+				`{"input_tokens":1,"output_tokens":200,"cache_read_input_tokens":12000,"cache_creation_input_tokens":400,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":400},"type":"message"}]`,
+			want: []wantMsg{
+				{messageID: "m1", model: "claude-fable-5", in: 2, out: 300, cacheRead: 20000, cw1h: 400},
+				{messageID: "m1:it:1", model: "claude-opus-4-7", in: 150970, out: 6758},
+			},
+		},
+		{
+			name: "advisor with serving model folds into parent, no attempt row",
+			iterations: `[` +
+				`{"input_tokens":1,"output_tokens":100,"cache_read_input_tokens":8000,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"type":"message"},` +
+				`{"input_tokens":131674,"output_tokens":4632,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"type":"advisor_message","model":"claude-fable-5"},` +
+				`{"input_tokens":1,"output_tokens":200,"cache_read_input_tokens":12000,"cache_creation_input_tokens":400,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":400},"type":"message"}]`,
+			want: []wantMsg{
+				{messageID: "m1", model: "claude-fable-5", in: 131676, out: 4932, cacheRead: 20000, cw1h: 400},
+			},
+		},
+		{
+			name:       "degenerate single own entry upgrades near-zeroed outer usage",
+			iterations: `[{"input_tokens":2,"output_tokens":261,"cache_read_input_tokens":997513,"cache_creation_input_tokens":464,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":464},"type":"message"}]`,
+			want: []wantMsg{
+				{messageID: "m1", model: "claude-fable-5", in: 2, out: 261, cacheRead: 997513, cw1h: 464},
+			},
+		},
+		{
+			name:       "single foreign entry moves all usage to its model",
+			iterations: `[{"input_tokens":2,"output_tokens":300,"cache_read_input_tokens":20000,"cache_creation_input_tokens":400,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":400},"type":"message","model":"claude-opus-4-8"}]`,
+			want: []wantMsg{
+				{messageID: "m1", model: "claude-fable-5"},
+				{messageID: "m1:it:0", model: "claude-opus-4-8", in: 2, out: 300, cacheRead: 20000, cw1h: 400},
+			},
+		},
+		{
+			name: "all-zero foreign entry skipped",
+			iterations: `[` +
+				`{"input_tokens":2,"output_tokens":300,"cache_read_input_tokens":20000,"cache_creation_input_tokens":400,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":400},"type":"message"},` +
+				`{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"type":"message","model":"claude-opus-4-8"}]`,
+			want: []wantMsg{
+				{messageID: "m1", model: "claude-fable-5", in: 2, out: 300, cacheRead: 20000, cw1h: 400},
+			},
+		},
+		{
+			name:       "fail-open unparseable blob keeps outer usage, no expansion",
+			iterations: `{"unexpected":"object"}`,
+			want: []wantMsg{
+				{messageID: "m1", model: "claude-fable-5", in: 2, out: 300, cacheRead: 20000, cw1h: 400},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			iterField := ""
+			if tt.iterations != "" {
+				iterField = `,"iterations":` + tt.iterations
+			}
+			line := fmt.Sprintf(`{"type":"assistant","sessionId":"s1","timestamp":"2026-07-21T10:00:00.000Z","effort":"high","message":{"id":"m1","role":"assistant","model":"claude-fable-5","usage":{"input_tokens":2,"output_tokens":300,"cache_read_input_tokens":20000,"cache_creation_input_tokens":400,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":400}%s}}}`, iterField) + "\n"
+
+			msgs, err := Parse(strings.NewReader(line), "test-slug")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(msgs) != len(tt.want) {
+				t.Fatalf("got %d messages, want %d: %+v", len(msgs), len(tt.want), msgs)
+			}
+			for i, w := range tt.want {
+				g := msgs[i]
+				if g.MessageID != w.messageID || g.Model != w.model {
+					t.Errorf("msg[%d] = (%q, %q), want (%q, %q)", i, g.MessageID, g.Model, w.messageID, w.model)
+				}
+				if g.InputTokens != w.in || g.OutputTokens != w.out || g.CacheReadTokens != w.cacheRead ||
+					g.CacheWrite5mTokens != w.cw5m || g.CacheWrite1hTokens != w.cw1h {
+					t.Errorf("msg[%d] tokens = (%d,%d,%d,%d,%d), want (%d,%d,%d,%d,%d)", i,
+						g.InputTokens, g.OutputTokens, g.CacheReadTokens, g.CacheWrite5mTokens, g.CacheWrite1hTokens,
+						w.in, w.out, w.cacheRead, w.cw5m, w.cw1h)
+				}
+				if g.SessionID != "s1" || g.Effort != "high" || g.ProjectSlug != "test-slug" {
+					t.Errorf("msg[%d] envelope not inherited: session=%q effort=%q slug=%q", i, g.SessionID, g.Effort, g.ProjectSlug)
+				}
+				if i > 0 && g.IterationsJSON != "" {
+					t.Errorf("msg[%d] attempt row must not carry IterationsJSON, got %q", i, g.IterationsJSON)
+				}
+			}
+		})
+	}
+}
+
+// TestIterationsExpansion_NoMessageID asserts expansion is skipped entirely
+// when the line has no message.id — a bare ":it:<idx>" key would collide
+// across turns in a session.
+func TestIterationsExpansion_NoMessageID(t *testing.T) {
+	line := `{"type":"assistant","sessionId":"s1","timestamp":"2026-07-21T10:00:00.000Z","message":{"role":"assistant","model":"claude-fable-5","usage":{"input_tokens":2,"output_tokens":300,"iterations":[{"input_tokens":2,"output_tokens":434,"type":"message","model":"claude-opus-4-8"},{"input_tokens":2,"output_tokens":300,"type":"fallback_message","model":"claude-fable-5"}]}}}` + "\n"
+
+	msgs, err := Parse(strings.NewReader(line), "test-slug")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("got %d messages, want 1 (no expansion without message.id)", len(msgs))
+	}
+	if msgs[0].InputTokens != 2 || msgs[0].OutputTokens != 300 {
+		t.Errorf("parent tokens = (%d,%d), want outer (2,300)", msgs[0].InputTokens, msgs[0].OutputTokens)
+	}
+	if msgs[0].IterationsJSON == "" {
+		t.Error("informative blob must still be kept verbatim")
 	}
 }
