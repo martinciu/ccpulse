@@ -652,3 +652,31 @@ func TestParseFromOffset(t *testing.T) {
 		t.Errorf("newLine = %d, want 2", newLine)
 	}
 }
+
+// TestParseFromOffsetWithErrors_ExpandsIterations pins that the incremental
+// tail path expands informative iterations into attempt rows exactly like
+// ParseWithErrors. Regression guard for #456: the indexer and watcher parse
+// through this entry point, not the io.Reader one — an expansion wired only
+// into ParseWithErrors would pass every reader-based test yet never produce
+// an attempt row from real JSONL.
+func TestParseFromOffsetWithErrors_ExpandsIterations(t *testing.T) {
+	line := `{"type":"assistant","sessionId":"s1","timestamp":"2026-07-21T10:00:00.000Z","message":{"id":"m1","role":"assistant","model":"claude-fable-5","usage":{"input_tokens":2,"output_tokens":300,"iterations":[{"input_tokens":2,"output_tokens":434,"type":"message","model":"claude-opus-4-8"},{"input_tokens":2,"output_tokens":300,"type":"fallback_message","model":"claude-fable-5"}]}}}` + "\n"
+	path := filepath.Join(t.TempDir(), "t.jsonl")
+	if err := os.WriteFile(path, []byte(line), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	msgs, errs, _, _, err := ParseFromOffsetWithErrors(path, "test-slug", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(errs) != 0 {
+		t.Fatalf("parse errors: %+v", errs)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("got %d messages, want 2 (parent + attempt)", len(msgs))
+	}
+	if msgs[1].MessageID != "m1:it:0" || msgs[1].Model != "claude-opus-4-8" || msgs[1].OutputTokens != 434 {
+		t.Errorf("attempt row = %+v, want m1:it:0 / claude-opus-4-8 / out 434", msgs[1])
+	}
+}
