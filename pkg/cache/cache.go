@@ -74,7 +74,9 @@ func init() {
 var schemaSQL string
 
 // SchemaVersion is the expected on-disk schema version; a mismatch triggers an auto-rebuild.
-const SchemaVersion = "11"
+// v12 changes no schema text — the bump forces the rebuild that backfills
+// per-model attempt rows from historic JSONL (issue #456).
+const SchemaVersion = "12"
 
 // normalizeResetsAtSQL flips legacy `0001-01-01T00:00:00Z` sentinels
 // (written before issue #189 landed) to SQL NULL across every

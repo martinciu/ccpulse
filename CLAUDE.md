@@ -54,7 +54,7 @@ These env vars override `config.toml` at runtime — useful for testing against 
 | Package | Responsibility |
 |---|---|
 | `cmd/ccpulse` | Cobra CLI wiring: `runTUI`, `status`, `index`, `config`, `doctor`, `version` |
-| `pkg/parse` | JSONL transcript → `[]Message`; `ParseFromOffsetWithErrors` for incremental tail |
+| `pkg/parse` | JSONL transcript → `[]Message`; `ParseFromOffsetWithErrors` for incremental tail; expands informative `usage.iterations` into per-model attempt rows (`:it:` message-id suffix) |
 | `pkg/cache` | SQLite via `modernc.org/sqlite`; schema embedded in `schema.sql`; tracks file cursors (`files` table), per-message rows in `messages` (including `cwd` / `git_branch` from JSONL), and time-bucketed output-token aggregates (`OutputTokenBuckets`) |
 | `pkg/watcher` | fsnotify wrapper with 100 ms debounce; auto-subscribes new subdirectories |
 | `pkg/pricing` | Embeds `pricing.json`; `Table.CostFor(Message)` returns USD cost |
@@ -69,7 +69,7 @@ These env vars override `config.toml` at runtime — useful for testing against 
 
 ### SQLite schema
 
-Five tables: `messages` (one row per assistant turn, including `cwd` and `git_branch` captured from each JSONL line's envelope), `files` (last byte offset and line number per JSONL file for incremental parsing), `meta` (schema version), `usage_samples` (one row per successful Anthropic usage-API fetch, one column pair per quota bucket), `usage_limits` (one row per entry of the usage-API `limits` array — per-model weekly limits live here — keyed to `usage_samples.ts` and written in the same transaction).
+Five tables: `messages` (one row per assistant turn *per billed model*: the parent row carries the serving model's usage, and informative `usage.iterations` entries billed to a different model — refused fallback attempts, cross-model advisors — become sibling rows keyed `message_id || ':it:' || <entry-idx>`, so every aggregation surface attributes tokens/cost to the model that consumed them; rows also include `cwd` and `git_branch` captured from each JSONL line's envelope), `files` (last byte offset and line number per JSONL file for incremental parsing), `meta` (schema version), `usage_samples` (one row per successful Anthropic usage-API fetch, one column pair per quota bucket), `usage_limits` (one row per entry of the usage-API `limits` array — per-model weekly limits live here — keyed to `usage_samples.ts` and written in the same transaction).
 
 ### Project metadata
 

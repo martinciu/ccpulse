@@ -3,8 +3,12 @@ package cache
 import (
 	"math"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/martinciu/ccpulse/pkg/parse"
+	"github.com/martinciu/ccpulse/pkg/pricing"
 )
 
 // insertModelRow inserts one assistant message with an explicit model. Sibling
@@ -457,5 +461,159 @@ func TestModelAggregates_ReconcilesWithProjectAggregates(t *testing.T) {
 	}
 	if mTok != pTok {
 		t.Errorf("token totals disagree: models %d, projects %d", mTok, pTok)
+	}
+}
+
+// TestModelAggregates_AttemptRowsRedistribute pins issue #456: a fallback
+// turn parsed into parent + attempt rows lands as two messages rows whose
+// tokens and cost group under their own models, and re-inserting the same
+// parse output is a no-op (idempotent upsert on identical input — not a
+// stand-in for real multi-line streaming, which is covered separately by
+// TestModelAggregates_MixedPresenceLinesNoDoubleCount).
+func TestModelAggregates_AttemptRowsRedistribute(t *testing.T) {
+	t.Parallel()
+	c := newModelTestCache(t)
+
+	line := `{"type":"assistant","sessionId":"s1","timestamp":"2026-07-21T10:00:00.000Z","message":{"id":"m1","role":"assistant","model":"claude-opus-4-8","usage":{"input_tokens":2,"output_tokens":2299,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"iterations":[{"input_tokens":2,"output_tokens":434,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"type":"message","model":"claude-fable-5"},{"input_tokens":2,"output_tokens":2299,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"type":"fallback_message","model":"claude-opus-4-8"}]}}}` + "\n"
+
+	msgs, err := parse.Parse(strings.NewReader(line), "slug")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("parsed %d messages, want 2 (parent + attempt)", len(msgs))
+	}
+
+	hist, err := pricing.HistoryForTest([]pricing.Table{{
+		Version: "2026-01-01", Currency: "USD",
+		Models: map[string]pricing.ModelRate{
+			"claude-opus-4-8": {InputPerMtok: 10, OutputPerMtok: 100},
+			"claude-fable-5":  {InputPerMtok: 20, OutputPerMtok: 200},
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for range 2 { // second insert must be a no-op (idempotent upsert)
+		if err := c.InsertMessages(t.Context(), msgs, hist); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	from := time.Date(2026, 7, 21, 0, 0, 0, 0, time.UTC)
+	got, err := c.ModelAggregates(t.Context(), from, from.Add(24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("aggregates = %d rows, want 2 (opus + fable): %+v", len(got), got)
+	}
+	byModel := map[string]ModelAggregate{}
+	for _, a := range got {
+		byModel[a.Model] = a
+	}
+	opus, fable := byModel["claude-opus-4-8"], byModel["claude-fable-5"]
+	if opus.Tokens != 2301 { // 2 + 2299
+		t.Errorf("opus tokens = %d, want 2301", opus.Tokens)
+	}
+	if fable.Tokens != 436 { // 2 + 434 — the refused attempt, invisible before #456
+		t.Errorf("fable tokens = %d, want 436", fable.Tokens)
+	}
+	const M = 1_000_000.0
+	wantOpus := 2.0/M*10 + 2299.0/M*100
+	wantFable := 2.0/M*20 + 434.0/M*200
+	if diff := opus.CostUSD - wantOpus; diff > 1e-12 || diff < -1e-12 {
+		t.Errorf("opus cost = %v, want %v", opus.CostUSD, wantOpus)
+	}
+	if diff := fable.CostUSD - wantFable; diff > 1e-12 || diff < -1e-12 {
+		t.Errorf("fable cost = %v, want %v", fable.CostUSD, wantFable)
+	}
+}
+
+// TestModelAggregates_MixedPresenceLinesNoDoubleCount pins issue #456's real
+// multi-line shape: Claude Code turns stream across several JSONL lines that
+// share one message.id, and usage.iterations only appears on the FINAL line
+// of that turn. Earlier lines carry PARTIAL outer usage and no
+// usage.iterations key at all — lower own-model tokens than the final line.
+// Because InsertMessages upserts MAX per token column, the partial line's
+// lower own-sums are superseded once the final (iterations-bearing) line
+// lands, so nothing double-counts and the partial line leaves no stray row
+// behind.
+func TestModelAggregates_MixedPresenceLinesNoDoubleCount(t *testing.T) {
+	t.Parallel()
+	c := newModelTestCache(t)
+
+	// line1: an early streamed line for message m1 — no usage.iterations key,
+	// partial own-model usage (out=100, well below the final line's out=2299).
+	line1 := `{"type":"assistant","sessionId":"s1","timestamp":"2026-07-21T10:00:00.000Z","message":{"id":"m1","role":"assistant","model":"claude-opus-4-8","usage":{"input_tokens":2,"output_tokens":100,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}}}` + "\n"
+	// line2: the final line for the same message — full own-model usage plus
+	// the iterations array (foreign claude-fable-5 out=434, own fallback
+	// claude-opus-4-8 out=2299).
+	line2 := `{"type":"assistant","sessionId":"s1","timestamp":"2026-07-21T10:00:00.000Z","message":{"id":"m1","role":"assistant","model":"claude-opus-4-8","usage":{"input_tokens":2,"output_tokens":2299,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"iterations":[{"input_tokens":2,"output_tokens":434,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"type":"message","model":"claude-fable-5"},{"input_tokens":2,"output_tokens":2299,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"type":"fallback_message","model":"claude-opus-4-8"}]}}}` + "\n"
+
+	msgs1, err := parse.Parse(strings.NewReader(line1), "slug")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs1) != 1 {
+		t.Fatalf("parsed line1 = %d messages, want 1 (no iterations key on the partial line)", len(msgs1))
+	}
+
+	msgs2, err := parse.Parse(strings.NewReader(line2), "slug")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs2) != 2 {
+		t.Fatalf("parsed line2 = %d messages, want 2 (parent + attempt)", len(msgs2))
+	}
+
+	hist, err := pricing.HistoryForTest([]pricing.Table{{
+		Version: "2026-01-01", Currency: "USD",
+		Models: map[string]pricing.ModelRate{
+			"claude-opus-4-8": {InputPerMtok: 10, OutputPerMtok: 100},
+			"claude-fable-5":  {InputPerMtok: 20, OutputPerMtok: 200},
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Insert the two lines separately and in order, as the watcher would tail
+	// them from the file: the absent-iterations partial line first, the
+	// iterations-bearing final line second.
+	if err := c.InsertMessages(t.Context(), msgs1, hist); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.InsertMessages(t.Context(), msgs2, hist); err != nil {
+		t.Fatal(err)
+	}
+
+	var rowCount int
+	if err := c.DB().QueryRowContext(t.Context(), `SELECT COUNT(*) FROM messages`).Scan(&rowCount); err != nil {
+		t.Fatal(err)
+	}
+	if rowCount != 2 {
+		t.Fatalf("messages row count = %d, want 2 (parent + attempt only — the partial line must not leave a stray row)", rowCount)
+	}
+
+	from := time.Date(2026, 7, 21, 0, 0, 0, 0, time.UTC)
+	got, err := c.ModelAggregates(t.Context(), from, from.Add(24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("aggregates = %d rows, want 2 (opus + fable): %+v", len(got), got)
+	}
+	byModel := map[string]ModelAggregate{}
+	for _, a := range got {
+		byModel[a.Model] = a
+	}
+	opus, fable := byModel["claude-opus-4-8"], byModel["claude-fable-5"]
+	if opus.Tokens != 2301 { // 2 + 2299 — MAX upsert lands on line2's own-sums, not 2+100 and not a doubled total
+		t.Errorf("opus tokens = %d, want 2301", opus.Tokens)
+	}
+	if fable.Tokens != 436 { // 2 + 434 — only ever inserted once, by line2
+		t.Errorf("fable tokens = %d, want 436", fable.Tokens)
 	}
 }

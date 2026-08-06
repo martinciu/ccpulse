@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"time"
 )
 
@@ -98,7 +99,7 @@ func ParseWithErrors(r io.Reader, projectSlug string) ([]Message, []ParseError, 
 		if raw.Type != "assistant" {
 			continue
 		}
-		msgs = append(msgs, toMessage(raw, projectSlug))
+		msgs = append(msgs, toMessages(raw, projectSlug)...)
 	}
 	err := sc.Err()
 	if err != nil && errors.Is(err, bufio.ErrTooLong) {
@@ -128,7 +129,6 @@ func toMessage(raw rawLine, slug string) Message {
 		Cwd:                raw.Cwd,
 		GitBranch:          raw.GitBranch,
 		Effort:             raw.Effort,
-		IterationsJSON:     informativeIterations(raw),
 	}
 }
 
@@ -158,36 +158,115 @@ type iterationEntry struct {
 // bounded by the input size, not by this constant).
 const maxIterationsProbe = 1 << 20 // 1 MiB
 
-// informativeIterations returns message.usage.iterations verbatim when the
-// array carries information the flat usage columns do not: more than one
-// attempt, a non-"message" entry type, an explicit model differing from the
-// outer message.model, or token counts differing from the outer usage.
-// Redundant single-attempt arrays (~99.9% of live data) return "" so the
-// cache stores NULL instead of duplicating the flat columns. Content that
-// fails to decode as []iterationEntry is kept verbatim (fail open): storing
-// an odd blob beats silently dropping attempt data.
-func informativeIterations(raw rawLine) string {
+// attemptKeySep joins a real message.id with an iterations index to form an
+// attempt row's message_id ("<id>:it:<idx>"). Reserved like the "synthetic:"
+// prefix: real message.id values must not embed it.
+const attemptKeySep = ":it:"
+
+// expandIterations classifies message.usage.iterations. blob is what the
+// parent stores ("" when absent or redundant — identical semantics to the
+// previous informativeIterations). entries is non-nil only when the blob is
+// informative AND decodable; nil means no expansion (absent, redundant,
+// oversized, or fail-open verbatim).
+func expandIterations(raw rawLine) (blob string, entries []iterationEntry) {
 	its := raw.Message.Usage.Iterations
 	if len(its) == 0 {
-		return "" // key absent
+		return "", nil // key absent
 	}
 	if len(its) > maxIterationsProbe {
-		return string(its) // too large to probe cheaply; keep verbatim (fail open)
+		return string(its), nil // too large to probe cheaply; keep verbatim (fail open)
 	}
-	var entries []iterationEntry
-	if err := json.Unmarshal(its, &entries); err != nil {
-		return string(its)
+	var es []iterationEntry
+	if err := json.Unmarshal(its, &es); err != nil {
+		return string(its), nil // fail open: store verbatim, never expand
 	}
-	if len(entries) == 0 {
-		return "" // JSON null or empty array
+	if len(es) == 0 {
+		return "", nil // JSON null or empty array
 	}
-	if len(entries) > 1 {
-		return string(its)
+	if len(es) == 1 && !informativeEntry(es[0], raw) {
+		return "", nil // restates the flat usage columns
 	}
-	if informativeEntry(entries[0], raw) {
-		return string(its)
+	return string(its), es
+}
+
+// informativeIterations returns the blob expandIterations would store on the
+// parent; kept as a named wrapper because the oversized-probe test targets it.
+func informativeIterations(raw rawLine) string {
+	blob, _ := expandIterations(raw)
+	return blob
+}
+
+// tokenSums accumulates the five stored token fields across iterations
+// entries. The cache_creation_input_tokens total is deliberately unused —
+// only the 5m/1h split is stored, exactly as outer usage is parsed.
+type tokenSums struct{ in, out, cacheRead, cw5m, cw1h int64 }
+
+func (s *tokenSums) add(e iterationEntry) {
+	s.in += e.InputTokens
+	s.out += e.OutputTokens
+	s.cacheRead += e.CacheReadInputTokens
+	s.cw5m += e.CacheCreation.Ephemeral5mInputTokens
+	s.cw1h += e.CacheCreation.Ephemeral1hInputTokens
+}
+
+// zeroTokens reports whether an entry carries no stored token usage at all.
+func zeroTokens(e iterationEntry) bool {
+	return e.InputTokens == 0 && e.OutputTokens == 0 && e.CacheReadInputTokens == 0 &&
+		e.CacheCreation.Ephemeral5mInputTokens == 0 && e.CacheCreation.Ephemeral1hInputTokens == 0
+}
+
+// toMessages converts a parsed JSONL line into one or more Messages: the
+// parent turn, plus one attempt row per iterations entry billed to a model
+// other than the serving one (refused fallback attempts, cross-model
+// advisors — see issue #456). When iterations are informative, they are
+// authoritative: the parent's tokens become the sum of the own-model
+// entries, which equals the outer usage on every verified live blob and
+// repairs the rare near-zeroed outer usage object.
+func toMessages(raw rawLine, slug string) []Message {
+	m := toMessage(raw, slug)
+	blob, entries := expandIterations(raw)
+	m.IterationsJSON = blob
+	if entries == nil || raw.Message.ID == "" {
+		// No expansion: blob not informative or not decodable, or the line
+		// has no message.id (a bare ":it:<idx>" key would collide across
+		// turns in a session; iterations imply CC >= 2.1.119, which always
+		// writes ids, so this guard is theoretical).
+		return []Message{m}
 	}
-	return ""
+	msgs := []Message{m}
+	var own tokenSums
+	for i, e := range entries {
+		if e.Model == "" || e.Model == raw.Message.Model {
+			own.add(e)
+			continue
+		}
+		if zeroTokens(e) {
+			continue
+		}
+		a := m
+		a.MessageID = raw.Message.ID + attemptKeySep + strconv.Itoa(i)
+		a.Model = e.Model
+		a.InputTokens = e.InputTokens
+		a.OutputTokens = e.OutputTokens
+		a.CacheReadTokens = e.CacheReadInputTokens
+		a.CacheWrite5mTokens = e.CacheCreation.Ephemeral5mInputTokens
+		a.CacheWrite1hTokens = e.CacheCreation.Ephemeral1hInputTokens
+		a.IterationsJSON = ""
+		msgs = append(msgs, a)
+	}
+	if len(msgs) == 1 && own == (tokenSums{}) {
+		// Degenerate blob: every entry was zero (own folded to nothing,
+		// foreign entries skipped). Keep the outer usage — silently
+		// zeroing real billed tokens is worse than trusting the flat
+		// columns (fail open).
+		return msgs
+	}
+	msgs[0].InputTokens = own.in
+	msgs[0].OutputTokens = own.out
+	msgs[0].CacheReadTokens = own.cacheRead
+	msgs[0].CacheWrite5mTokens = own.cw5m
+	msgs[0].CacheWrite1hTokens = own.cw1h
+	return msgs
 }
 
 // informativeEntry reports whether a single iterations entry differs from the
