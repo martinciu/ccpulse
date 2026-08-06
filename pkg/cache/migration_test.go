@@ -78,8 +78,8 @@ func TestOpen_UpgradesFromV7_RebuildsWithRepoRoot(t *testing.T) {
 		`SELECT value FROM meta WHERE key='schema_version'`).Scan(&ver); err != nil {
 		t.Fatal(err)
 	}
-	if ver != "11" {
-		t.Fatalf("schema_version = %q, want 11 after upgrade", ver)
+	if ver != "12" {
+		t.Fatalf("schema_version = %q, want 12 after upgrade", ver)
 	}
 
 	// Quota history preserved across the destroy+recreate rebuild.
@@ -130,8 +130,8 @@ func TestOpen_UpgradesFromV8_PreservesUsageHistory(t *testing.T) {
 		`SELECT value FROM meta WHERE key='schema_version'`).Scan(&ver); err != nil {
 		t.Fatal(err)
 	}
-	if ver != "11" {
-		t.Fatalf("schema_version = %q, want 11 after upgrade", ver)
+	if ver != "12" {
+		t.Fatalf("schema_version = %q, want 12 after upgrade", ver)
 	}
 
 	var pct float64
@@ -207,8 +207,8 @@ func TestOpen_UpgradesFromV9_PreservesUsageLimitsWithEmptyScopeModelID(t *testin
 		`SELECT value FROM meta WHERE key='schema_version'`).Scan(&ver); err != nil {
 		t.Fatal(err)
 	}
-	if ver != "11" {
-		t.Fatalf("schema_version = %q, want 11 after upgrade", ver)
+	if ver != "12" {
+		t.Fatalf("schema_version = %q, want 12 after upgrade", ver)
 	}
 
 	var pct float64
@@ -325,8 +325,8 @@ func TestOpen_UpgradesFromV10_AddsEffortAndIterations(t *testing.T) {
 		`SELECT value FROM meta WHERE key='schema_version'`).Scan(&ver); err != nil {
 		t.Fatal(err)
 	}
-	if ver != "11" {
-		t.Fatalf("schema_version = %q, want 11 after upgrade", ver)
+	if ver != "12" {
+		t.Fatalf("schema_version = %q, want 12 after upgrade", ver)
 	}
 
 	var n int
@@ -336,6 +336,83 @@ func TestOpen_UpgradesFromV10_AddsEffortAndIterations(t *testing.T) {
 	}
 	if n != 2 {
 		t.Fatalf("new column count = %d, want 2 (effort, iterations_json)", n)
+	}
+
+	var pct float64
+	if err := c.DB().QueryRowContext(ctx,
+		`SELECT five_hour_pct FROM usage_samples WHERE ts=1700000000`).Scan(&pct); err != nil {
+		t.Fatalf("usage_samples not preserved across rebuild: %v", err)
+	}
+	if pct != 42.5 {
+		t.Fatalf("preserved five_hour_pct = %v, want 42.5", pct)
+	}
+}
+
+// TestOpen_UpgradesFromV11_RebuildsForAttemptBackfill: v12 changes no schema
+// text; the bump exists to force a wipe-and-rebuild so historic JSONL is
+// re-parsed with the iterations expansion (#456). Assert the version moves,
+// messages are wiped (re-indexed later by the ingest layer), and quota
+// history survives.
+func TestOpen_UpgradesFromV11_RebuildsForAttemptBackfill(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "state.db")
+
+	old, err := sql.Open("sqlite", path+"?"+cachePragmas)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed := []string{
+		`CREATE TABLE messages (
+			id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, message_id TEXT NOT NULL,
+			project_slug TEXT NOT NULL, ts TEXT NOT NULL, role TEXT NOT NULL, model TEXT NOT NULL,
+			input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL,
+			cache_read_tokens INTEGER NOT NULL, cache_write_5m_tokens INTEGER NOT NULL,
+			cache_write_1h_tokens INTEGER NOT NULL, cost_usd_estimate REAL NOT NULL,
+			pricing_version TEXT NOT NULL, pricing_unknown INTEGER NOT NULL DEFAULT 0,
+			is_subagent INTEGER NOT NULL DEFAULT 0, parent_session_id TEXT,
+			cwd TEXT NOT NULL DEFAULT '', git_branch TEXT NOT NULL DEFAULT '',
+			repo_root TEXT NOT NULL DEFAULT '', effort TEXT NOT NULL DEFAULT '',
+			iterations_json TEXT,
+			UNIQUE(session_id, message_id))`,
+		`INSERT INTO messages(session_id, message_id, project_slug, ts, role, model,
+			input_tokens, output_tokens, cache_read_tokens, cache_write_5m_tokens,
+			cache_write_1h_tokens, cost_usd_estimate, pricing_version)
+			VALUES('s1','m1','slug','2026-07-21T10:00:00.000Z','assistant','claude-fable-5',2,300,0,0,0,0.01,'v1')`,
+		`CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+		`INSERT INTO meta(key,value) VALUES('schema_version','11')`,
+		`CREATE TABLE usage_samples (ts INTEGER PRIMARY KEY, source TEXT NOT NULL DEFAULT 'api', five_hour_pct REAL)`,
+		`INSERT INTO usage_samples(ts, five_hour_pct) VALUES(1700000000, 42.5)`,
+	}
+	for _, s := range seed {
+		if _, err := old.ExecContext(ctx, s); err != nil {
+			t.Fatalf("seed v11 db: %v\nstmt: %s", err, s)
+		}
+	}
+	if err := old.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	c, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("Open on v11 cache must rebuild, got: %v", err)
+	}
+	defer c.Close()
+
+	var ver string
+	if err := c.DB().QueryRowContext(ctx,
+		`SELECT value FROM meta WHERE key='schema_version'`).Scan(&ver); err != nil {
+		t.Fatal(err)
+	}
+	if ver != "12" {
+		t.Fatalf("schema_version = %q, want 12 after upgrade", ver)
+	}
+
+	var msgs int
+	if err := c.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM messages`).Scan(&msgs); err != nil {
+		t.Fatal(err)
+	}
+	if msgs != 0 {
+		t.Fatalf("messages rows = %d, want 0 (wiped for re-index)", msgs)
 	}
 
 	var pct float64
