@@ -421,3 +421,60 @@ func TestRecost_WritesFingerprintOnCommit(t *testing.T) {
 		t.Errorf("dry-run wrote fingerprint %q, want no row", dryGot)
 	}
 }
+
+// TestRecost_AttemptRowRepricedAtOwnModel pins that an attempt row (#456) is
+// re-costed against ITS model's new rate, independent of the parent's model.
+func TestRecost_AttemptRowRepricedAtOwnModel(t *testing.T) {
+	c := mustOpenTempCache(t)
+
+	ts := time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC)
+	msgs := []parse.Message{
+		{SessionID: "s1", MessageID: "m1", ProjectSlug: "p", Timestamp: ts, Role: "assistant",
+			Model: "claude-opus-4-8", OutputTokens: 2299},
+		{SessionID: "s1", MessageID: "m1:it:0", ProjectSlug: "p", Timestamp: ts, Role: "assistant",
+			Model: "claude-fable-5", OutputTokens: 434},
+	}
+
+	histV1, err := pricing.HistoryForTest([]pricing.Table{{
+		Version: "2026-01-01", Currency: "USD",
+		Models: map[string]pricing.ModelRate{
+			"claude-opus-4-8": {OutputPerMtok: 100},
+			"claude-fable-5":  {OutputPerMtok: 200},
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.InsertMessages(t.Context(), msgs, histV1); err != nil {
+		t.Fatal(err)
+	}
+
+	// New snapshot doubles ONLY the attempt model's rate.
+	histV2, err := pricing.HistoryForTest([]pricing.Table{{
+		Version: "2026-01-01", Currency: "USD",
+		Models: map[string]pricing.ModelRate{
+			"claude-opus-4-8": {OutputPerMtok: 100},
+			"claude-fable-5":  {OutputPerMtok: 400},
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats, err := c.Recost(t.Context(), histV2, cache.RecostOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Updated != 1 {
+		t.Fatalf("Updated = %d, want 1 (attempt row only)", stats.Updated)
+	}
+
+	var cost float64
+	if err := c.DB().QueryRowContext(t.Context(),
+		`SELECT cost_usd_estimate FROM messages WHERE message_id = 'm1:it:0'`).Scan(&cost); err != nil {
+		t.Fatal(err)
+	}
+	want := 434.0 / 1_000_000.0 * 400
+	if diff := cost - want; diff > 1e-12 || diff < -1e-12 {
+		t.Errorf("attempt row cost = %v, want %v (re-priced at claude-fable-5 rate)", cost, want)
+	}
+}
