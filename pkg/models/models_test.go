@@ -22,6 +22,7 @@ func TestCanonical(t *testing.T) {
 		{"short numeric tail is not a date", "qwen/qwen3-235b-a22b-04-28", "qwen/qwen3-235b-a22b-04-28"},
 		{"sentinel untouched", "<synthetic>", "<synthetic>"},
 		{"empty", "", ""},
+		{"leading-dash date returns verbatim", "-20250101", "-20250101"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -82,9 +83,21 @@ func TestLabel_IdempotentOverCanonical(t *testing.T) {
 // TestLabel_NeverEmptyForNonEmptyInput guards the fallback's totality: an id
 // shaped unlike anything anticipated must still render something readable.
 func TestLabel_NeverEmptyForNonEmptyInput(t *testing.T) {
-	for _, id := range []string{"x", "-", "claude-", "claude--1", "----", "a-b-c-d-e"} {
+	for _, id := range []string{"x", "-", "claude-", "claude--1", "----", "a-b-c-d-e", "-20250101"} {
 		if Label(id) == "" {
 			t.Errorf("Label(%q) = \"\", want non-empty", id)
+		}
+	}
+}
+
+// TestCanonical_NeverEmptyForNonEmptyInput guards Canonical's totality
+// directly: the fold must never produce the empty string — pkg/cache treats
+// "" as the unknown-model sentinel, so an empty result silently reclassifies
+// a real id. "-20250101" is the shape that used to do exactly that (#479).
+func TestCanonical_NeverEmptyForNonEmptyInput(t *testing.T) {
+	for _, id := range []string{"-20250101", "x", "-", "claude-", "claude--1", "----", "a-b-c-d-e"} {
+		if Canonical(id) == "" {
+			t.Errorf("Canonical(%q) = \"\", want non-empty", id)
 		}
 	}
 }

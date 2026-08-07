@@ -19,10 +19,12 @@ const unknownLabel = "(unknown model)"
 // stripping a trailing -YYYYMMDD release-date segment, so dated and undated
 // variants of the same model (claude-haiku-4-5-20251001 and claude-haiku-4-5)
 // aggregate as one. Ids without such a segment — third-party ids, sentinels
-// like <synthetic>, the empty string — are returned unchanged.
+// like <synthetic>, the empty string — are returned unchanged, as is an id
+// that is nothing but a dash and a date ("-20250101"), where stripping would
+// leave the empty string that pkg/cache reserves for its unknown-model bucket.
 func Canonical(id string) string {
 	i := strings.LastIndexByte(id, '-')
-	if i < 0 || !isReleaseDate(id[i+1:]) {
+	if i <= 0 || !isReleaseDate(id[i+1:]) {
 		return id
 	}
 	return id[:i]
