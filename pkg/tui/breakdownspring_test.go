@@ -239,6 +239,48 @@ func TestProjectsSpringTick_SettlesOnIntegerArrival(t *testing.T) {
 	}
 }
 
+// TestProjectsSpringTick_SkipsRenderAtUnchangedHeight (#477): mid-slide the
+// frame is a pure function of the integer height (every other input change
+// aborts the slide via refreshChart), so ticks that leave the height
+// unchanged must not repaint the viewport. Probe: plant a sentinel as the
+// viewport content; it must survive height-holding ticks and be replaced on
+// the first height-changing tick.
+func TestProjectsSpringTick_SkipsRenderAtUnchangedHeight(t *testing.T) {
+	withForcedColor(t)
+	now := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
+	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
+	defer c.Close()
+	armProjectsShowForTest(t, &m)
+
+	const sentinel = "__477_SENTINEL__"
+	m.viewport.SetContent(sentinel)
+
+	// The 0→4 fixture slide holds height 0 for ~6 ticks; the first tick is
+	// guaranteed height-preserving.
+	startH := m.breakdownAnimH
+	updated, _ := m.Update(springTickMsg{gen: m.springGen})
+	m = updated.(Model)
+	if m.breakdownAnimH != startH {
+		t.Fatalf("first tick moved height %d→%d; fixture no longer height-preserving, rework probe", startH, m.breakdownAnimH)
+	}
+	if !strings.Contains(m.viewport.View(), sentinel) {
+		t.Fatal("height-preserving tick repainted the viewport (render not skipped)")
+	}
+
+	// Drive until the height first moves; that tick must repaint.
+	const maxTicks = 600
+	for i := 0; i < maxTicks && m.springActive && m.breakdownAnimH == startH; i++ {
+		updated, _ = m.Update(springTickMsg{gen: m.springGen})
+		m = updated.(Model)
+	}
+	if m.breakdownAnimH == startH {
+		t.Fatal("height never moved; cannot probe the repaint tick")
+	}
+	if strings.Contains(m.viewport.View(), sentinel) {
+		t.Error("height-changing tick left the sentinel in place (frame not re-rendered)")
+	}
+}
+
 func TestProjectsSpringTick_StaleGenDropped(t *testing.T) {
 	now := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
 	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)

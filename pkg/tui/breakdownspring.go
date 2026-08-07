@@ -88,6 +88,7 @@ func (m *Model) renderBreakdownFrame() {
 func (m *Model) handleBreakdownSpringTick(gen int) tea.Cmd {
 	r, vel := m.breakdownSpring.Update(m.breakdownSpringR, m.breakdownSpringVel, 1.0)
 	m.breakdownSpringR, m.breakdownSpringVel = r, vel
+	prevH := m.breakdownAnimH
 	m.breakdownAnimH = lerpInt(m.breakdownSlideFrom, m.breakdownSlideTo, r)
 
 	if m.breakdownAnimH == m.breakdownSlideTo {
@@ -125,7 +126,15 @@ func (m *Model) handleBreakdownSpringTick(gen int) tea.Cmd {
 		return nil       // stop the loop — idle TUI is zero-animation-cost
 	}
 
-	m.renderBreakdownFrame()
+	// Render only when the integer height moved (#477): frames at an
+	// unchanged height are byte-identical — mid-slide every other frame
+	// input is frozen (any external change aborts the slide via
+	// refreshChart), so the skipped repaint is unobservable. Frame 0 is
+	// painted at arm on both legs (no-touch steady frame / synchronous
+	// leg-2 paint), so a height-holding first tick correctly skips.
+	if m.breakdownAnimH != prevH {
+		m.renderBreakdownFrame()
+	}
 	return tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
 		return springTickMsg{gen: gen}
 	})
