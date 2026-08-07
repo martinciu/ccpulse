@@ -23,6 +23,9 @@ func TestCanonical(t *testing.T) {
 		{"sentinel untouched", "<synthetic>", "<synthetic>"},
 		{"empty", "", ""},
 		{"leading-dash date returns verbatim", "-20250101", "-20250101"},
+		{"dash-prefixed date still folds", "--20250101", "-"},
+		{"empty family segment folds", "claude--20250101", "claude-"},
+		{"bare date has no dash to fold", "20250101", "20250101"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -54,6 +57,7 @@ func TestLabel(t *testing.T) {
 		{"slug id verbatim", "openai/gpt-oss-120b:free", "openai/gpt-oss-120b:free"},
 		{"qwen verbatim", "qwen/qwen3-235b-a22b-04-28", "qwen/qwen3-235b-a22b-04-28"},
 		{"sentinel verbatim", "<synthetic>", "<synthetic>"},
+		{"leading-dash date verbatim", "-20250101", "-20250101"},
 		{"old id order falls back, never mislabels", "claude-3-5-sonnet-20241022", "claude-3-5-sonnet"},
 		{"non-numeric version falls back", "claude-opus-4-latest", "claude-opus-4-latest"},
 		{"empty is the unknown bucket", "", "(unknown model)"},
