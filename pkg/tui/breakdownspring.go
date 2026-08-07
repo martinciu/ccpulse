@@ -78,9 +78,10 @@ func (m *Model) renderBreakdownFrame() {
 }
 
 // handleBreakdownSpringTick advances one frame of the box slide: step the spring
-// toward r=1, lerp the outer box height startH→targetH, re-render the frame, and
-// settle on the first tick the lerped integer height reaches breakdownSlideTo
-// (#477). On settle it commits the height,
+// toward r=1, lerp the outer box height startH→targetH, re-render the frame when
+// a painted-state input changed (integer height, or chart height under the box
+// — see the gate below), and settle on the first tick the lerped integer height
+// reaches breakdownSlideTo (#477). On settle it commits the height,
 // clears the spring, and restores steady state via refreshChart (which chains
 // refreshBreakdown — the 1 settle query on show; a no-op on hide since
 // m.breakdown was committed to none at arm). Returns nil to stop the loop,
@@ -126,13 +127,21 @@ func (m *Model) handleBreakdownSpringTick(gen int) tea.Cmd {
 		return nil       // stop the loop — idle TUI is zero-animation-cost
 	}
 
-	// Render only when the integer height moved (#477): frames at an
-	// unchanged height are byte-identical — mid-slide every other frame
-	// input is frozen (any external change aborts the slide via
-	// refreshChart), so the skipped repaint is unobservable. Frame 0 is
+	// Render only when a painted-state input changed (#477): frame 0 is
 	// painted at arm on both legs (no-touch steady frame / synchronous
-	// leg-2 paint), so a height-holding first tick correctly skips.
-	if m.breakdownAnimH != prevH {
+	// leg-2 paint), so a height-holding first tick correctly skips. Two
+	// mid-slide inputs change without aborting the slide: a scroll
+	// (scrollLeft/scrollRight repaint directly when springKind ==
+	// springKindBreakdown, since a scroll arrives as its own Update
+	// message — never inside this tick, so there is nothing for this gate
+	// to catch) and a quota-driven headerContentRows change
+	// (handleQuotaMsg → recomputeWindow can grow/shrink it mid-slide;
+	// caught here via the viewport.Height clause, which holds
+	// chartHeight()'s value as of the last paint, so a mismatch means the
+	// header moved under the slide). Every other frame input is still
+	// frozen mid-slide — any other external change aborts the slide via
+	// refreshChart.
+	if m.breakdownAnimH != prevH || m.viewport.Height != m.chartHeight() {
 		m.renderBreakdownFrame()
 	}
 	return tea.Tick(time.Second/time.Duration(springFPS), func(time.Time) tea.Msg {
