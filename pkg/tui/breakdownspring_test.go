@@ -199,6 +199,46 @@ func TestProjectsSpringTick_AdvancesThenSettles(t *testing.T) {
 	}
 }
 
+// TestProjectsSpringTick_SettlesOnIntegerArrival (#477): the settle branch
+// must fire on exactly the tick where lerpInt's integer output first reaches
+// breakdownSlideTo — not ~30 ticks later when the continuous spring parameter
+// crosses phaseTransitionThreshold. Invariant: the loop is never live with
+// the height already at target.
+func TestProjectsSpringTick_SettlesOnIntegerArrival(t *testing.T) {
+	withForcedColor(t)
+	now := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
+	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
+	defer c.Close()
+	armProjectsShowForTest(t, &m)
+	target := m.breakdownSlideTo
+	if target == 0 {
+		t.Fatal("fixture arm produced target 0; want a non-degenerate show slide")
+	}
+
+	const maxTicks = 600
+	ticks := 0
+	for i := 0; i < maxTicks && m.springActive; i++ {
+		updated, _ := m.Update(springTickMsg{gen: m.springGen})
+		m = updated.(Model)
+		ticks++
+		if m.springActive && m.breakdownAnimH == target {
+			t.Fatalf("tick %d: height reached target %d but the loop is still live (settle lagging integer arrival)", ticks, target)
+		}
+	}
+	if m.springActive {
+		t.Fatalf("slide did not settle within %d ticks", maxTicks)
+	}
+	if m.breakdownAnimH != target {
+		t.Errorf("settled at breakdownAnimH=%d, want %d", m.breakdownAnimH, target)
+	}
+	// The 0→4 fixture slide reached height 4 at ~tick 36 under the old
+	// threshold and settled at 67; integer-arrival settle must land well
+	// under that.
+	if ticks > 45 {
+		t.Errorf("settled in %d ticks, want ≤ 45 (integer arrival ≈ tick 36 for the 0→4 fixture)", ticks)
+	}
+}
+
 func TestProjectsSpringTick_StaleGenDropped(t *testing.T) {
 	now := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
 	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)

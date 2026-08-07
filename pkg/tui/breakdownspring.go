@@ -79,7 +79,8 @@ func (m *Model) renderBreakdownFrame() {
 
 // handleBreakdownSpringTick advances one frame of the box slide: step the spring
 // toward r=1, lerp the outer box height startH→targetH, re-render the frame, and
-// settle when within phaseTransitionThreshold. On settle it commits the height,
+// settle on the first tick the lerped integer height reaches breakdownSlideTo
+// (#477). On settle it commits the height,
 // clears the spring, and restores steady state via refreshChart (which chains
 // refreshBreakdown — the 1 settle query on show; a no-op on hide since
 // m.breakdown was committed to none at arm). Returns nil to stop the loop,
@@ -89,7 +90,14 @@ func (m *Model) handleBreakdownSpringTick(gen int) tea.Cmd {
 	m.breakdownSpringR, m.breakdownSpringVel = r, vel
 	m.breakdownAnimH = lerpInt(m.breakdownSlideFrom, m.breakdownSlideTo, r)
 
-	if math.Abs(1.0-r) < phaseTransitionThreshold {
+	if m.breakdownAnimH == m.breakdownSlideTo {
+		// Integer arrival (#477): the only animated quantity downstream is
+		// lerpInt's integer output, and it is monotonic (critically damped,
+		// v0=0 — no overshoot), so first arrival is final. Settling here
+		// instead of at |1−r| < phaseTransitionThreshold cuts the ~30-tick
+		// pixel-identical tail per leg and removes the accidental dead
+		// pause between swap legs. Degenerate from==to arms settle on the
+		// first tick. The snap is a no-op that documents the invariant.
 		m.breakdownAnimH = m.breakdownSlideTo
 
 		// Sequential swap (#475): leg one has reached zero — arm leg two
