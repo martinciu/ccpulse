@@ -239,6 +239,44 @@ func TestProjectsSpringTick_SettlesOnIntegerArrival(t *testing.T) {
 	}
 }
 
+// TestProjectsSpringTick_DegenerateArmSettlesFirstTick (#477): the settle
+// branch's doc comment (handleBreakdownSpringTick) claims "Degenerate
+// from==to arms settle on the first tick" — pin it. A mutation that only
+// fires settle on an arrival TRANSITION (m.breakdownAnimH != prevH earlier in
+// the same tick) rather than on the documented condition
+// (m.breakdownAnimH == m.breakdownSlideTo) would leave a degenerate arm's
+// spring loop live forever: prevH == breakdownAnimH == target from frame 0,
+// so no transition ever fires and the 60fps tick loop never stops. That
+// mutation survives every other test in this file — none of them re-arm a
+// slide whose from and to already match. Invariant: the loop is never live
+// once breakdownAnimH already equals breakdownSlideTo at arm time.
+func TestProjectsSpringTick_DegenerateArmSettlesFirstTick(t *testing.T) {
+	now := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
+	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
+	defer c.Close()
+
+	m.breakdown = breakdownProjects
+	m.refreshBreakdown()                         // loads rows so breakdownHeight() == breakdownTargetHeight()
+	m.beginBreakdownAnimation(breakdownProjects) // from==to: same kind, rows already loaded
+
+	if m.breakdownSlideFrom != m.breakdownSlideTo {
+		t.Fatalf("setup: breakdownSlideFrom=%d breakdownSlideTo=%d, want equal (degenerate arm)", m.breakdownSlideFrom, m.breakdownSlideTo)
+	}
+
+	updated, cmd := m.Update(springTickMsg{gen: m.springGen})
+	m = updated.(Model)
+
+	if cmd != nil {
+		t.Errorf("degenerate arm: cmd=%v, want nil (settle on first tick)", cmd)
+	}
+	if m.springActive {
+		t.Error("degenerate arm: springActive=true after first tick, want false (settled)")
+	}
+	if m.springKind != springKindNone {
+		t.Errorf("degenerate arm: springKind=%d after first tick, want springKindNone", m.springKind)
+	}
+}
+
 // TestProjectsSpringTick_SkipsRenderAtUnchangedHeight (#477): mid-slide the
 // frame is a pure function of the integer height (every other input change
 // aborts the slide via refreshChart), so ticks that leave the height
@@ -251,6 +289,10 @@ func TestProjectsSpringTick_SkipsRenderAtUnchangedHeight(t *testing.T) {
 	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
 	defer c.Close()
 	armProjectsShowForTest(t, &m)
+	target := m.breakdownSlideTo
+	if target == 0 {
+		t.Fatal("fixture arm produced target 0; want a non-degenerate show slide")
+	}
 
 	const sentinel = "__477_SENTINEL__"
 	m.viewport.SetContent(sentinel)
@@ -275,6 +317,9 @@ func TestProjectsSpringTick_SkipsRenderAtUnchangedHeight(t *testing.T) {
 	}
 	if m.breakdownAnimH == startH {
 		t.Fatal("height never moved; cannot probe the repaint tick")
+	}
+	if !m.springActive {
+		t.Fatal("first height move coincided with settle; rework probe")
 	}
 	if strings.Contains(m.viewport.View(), sentinel) {
 		t.Error("height-changing tick left the sentinel in place (frame not re-rendered)")
