@@ -199,6 +199,243 @@ func TestProjectsSpringTick_AdvancesThenSettles(t *testing.T) {
 	}
 }
 
+// TestProjectsSpringTick_SettlesOnIntegerArrival (#477): the settle branch
+// must fire on exactly the tick where lerpInt's integer output first reaches
+// breakdownSlideTo — not ~30 ticks later when the continuous spring parameter
+// crosses phaseTransitionThreshold. Invariant: the loop is never live with
+// the height already at target.
+func TestProjectsSpringTick_SettlesOnIntegerArrival(t *testing.T) {
+	withForcedColor(t)
+	now := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
+	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
+	defer c.Close()
+	armProjectsShowForTest(t, &m)
+	target := m.breakdownSlideTo
+	if target == 0 {
+		t.Fatal("fixture arm produced target 0; want a non-degenerate show slide")
+	}
+
+	const maxTicks = 600
+	ticks := 0
+	for i := 0; i < maxTicks && m.springActive; i++ {
+		updated, _ := m.Update(springTickMsg{gen: m.springGen})
+		m = updated.(Model)
+		ticks++
+		if m.springActive && m.breakdownAnimH == target {
+			t.Fatalf("tick %d: height reached target %d but the loop is still live (settle lagging integer arrival)", ticks, target)
+		}
+	}
+	if m.springActive {
+		t.Fatalf("slide did not settle within %d ticks", maxTicks)
+	}
+	if m.breakdownAnimH != target {
+		t.Errorf("settled at breakdownAnimH=%d, want %d", m.breakdownAnimH, target)
+	}
+	// The 0→4 fixture slide reached height 4 at ~tick 36 under the old
+	// threshold and settled at 67; integer-arrival settle must land well
+	// under that.
+	if ticks > 45 {
+		t.Errorf("settled in %d ticks, want ≤ 45 (integer arrival ≈ tick 36 for the 0→4 fixture)", ticks)
+	}
+}
+
+// TestProjectsSpringTick_DegenerateArmSettlesFirstTick (#477): the settle
+// branch's doc comment (handleBreakdownSpringTick) claims "Degenerate
+// from==to arms settle on the first tick" — pin it. A mutation that only
+// fires settle on an arrival TRANSITION (m.breakdownAnimH != prevH earlier in
+// the same tick) rather than on the documented condition
+// (m.breakdownAnimH == m.breakdownSlideTo) would leave a degenerate arm's
+// spring loop live forever: prevH == breakdownAnimH == target from frame 0,
+// so no transition ever fires and the 60fps tick loop never stops. That
+// mutation survives every other test in this file — none of them re-arm a
+// slide whose from and to already match. Invariant: the loop is never live
+// once breakdownAnimH already equals breakdownSlideTo at arm time.
+func TestProjectsSpringTick_DegenerateArmSettlesFirstTick(t *testing.T) {
+	now := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
+	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
+	defer c.Close()
+
+	m.breakdown = breakdownProjects
+	m.refreshBreakdown()                         // loads rows so breakdownHeight() == breakdownTargetHeight()
+	m.beginBreakdownAnimation(breakdownProjects) // from==to: same kind, rows already loaded
+
+	if m.breakdownSlideFrom != m.breakdownSlideTo {
+		t.Fatalf("setup: breakdownSlideFrom=%d breakdownSlideTo=%d, want equal (degenerate arm)", m.breakdownSlideFrom, m.breakdownSlideTo)
+	}
+
+	updated, cmd := m.Update(springTickMsg{gen: m.springGen})
+	m = updated.(Model)
+
+	if cmd != nil {
+		t.Errorf("degenerate arm: cmd=%v, want nil (settle on first tick)", cmd)
+	}
+	if m.springActive {
+		t.Error("degenerate arm: springActive=true after first tick, want false (settled)")
+	}
+	if m.springKind != springKindNone {
+		t.Errorf("degenerate arm: springKind=%d after first tick, want springKindNone", m.springKind)
+	}
+}
+
+// TestProjectsSpringTick_SkipsRenderAtUnchangedHeight (#477): mid-slide the
+// frame is a pure function of the integer height (every other input change
+// aborts the slide via refreshChart), so ticks that leave the height
+// unchanged must not repaint the viewport. Probe: plant a sentinel as the
+// viewport content; it must survive height-holding ticks and be replaced on
+// the first height-changing tick.
+func TestProjectsSpringTick_SkipsRenderAtUnchangedHeight(t *testing.T) {
+	withForcedColor(t)
+	now := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
+	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
+	defer c.Close()
+	armProjectsShowForTest(t, &m)
+	target := m.breakdownSlideTo
+	if target == 0 {
+		t.Fatal("fixture arm produced target 0; want a non-degenerate show slide")
+	}
+
+	const sentinel = "__477_SENTINEL__"
+	m.viewport.SetContent(sentinel)
+
+	// The 0→4 fixture slide holds height 0 for ~6 ticks; the first tick is
+	// guaranteed height-preserving.
+	startH := m.breakdownAnimH
+	updated, _ := m.Update(springTickMsg{gen: m.springGen})
+	m = updated.(Model)
+	if m.breakdownAnimH != startH {
+		t.Fatalf("first tick moved height %d→%d; fixture no longer height-preserving, rework probe", startH, m.breakdownAnimH)
+	}
+	if !strings.Contains(m.viewport.View(), sentinel) {
+		t.Fatal("height-preserving tick repainted the viewport (render not skipped)")
+	}
+
+	// Drive until the height first moves; that tick must repaint.
+	const maxTicks = 600
+	for i := 0; i < maxTicks && m.springActive && m.breakdownAnimH == startH; i++ {
+		updated, _ = m.Update(springTickMsg{gen: m.springGen})
+		m = updated.(Model)
+	}
+	if m.breakdownAnimH == startH {
+		t.Fatal("height never moved; cannot probe the repaint tick")
+	}
+	if !m.springActive {
+		t.Fatal("first height move coincided with settle; rework probe")
+	}
+	if strings.Contains(m.viewport.View(), sentinel) {
+		t.Error("height-changing tick left the sentinel in place (frame not re-rendered)")
+	}
+}
+
+// TestProjectsSpringTick_RepaintsOnHeaderHeightChange (#477): the render-gate
+// clause `|| m.viewport.Height != m.chartHeight()` (breakdownspring.go:144)
+// is the ONLY re-sync for a mid-slide header height change — handleQuotaMsg
+// skips applyBreakdownResize while a breakdown spring is active
+// (pkg/tui/model.go:678), so nothing else notices headerContentRows growing
+// or shrinking mid-slide until this gate fires on the next tick. Mutation-
+// verified uncovered: deleting the clause leaves the full suite green.
+//
+// Probe: arm a show slide (frame 0 is the no-touch steady frame, per
+// beginBreakdownAnimation's doc comment, so viewport.Height still reflects
+// the PRE-grow chartHeight()), plant a sentinel, then grow the header in
+// place — same lever newScopedTestModel uses (model_test.go:5967-5990):
+// headerContentRows 2→3. One constructed tick follows. Per the sibling test
+// above, the fixture's first tick is height-preserving for breakdownAnimH
+// (r moves off 0 but lerpInt still rounds to the starting height), so the
+// `breakdownAnimH != prevH` clause stays false — the repaint observed here
+// is attributable to the viewport.Height clause alone.
+func TestProjectsSpringTick_RepaintsOnHeaderHeightChange(t *testing.T) {
+	withForcedColor(t)
+	now := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
+	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
+	defer c.Close()
+	armProjectsShowForTest(t, &m)
+	target := m.breakdownSlideTo
+	if target == 0 {
+		t.Fatal("fixture arm produced target 0; want a non-degenerate show slide")
+	}
+
+	const sentinel = "__477_HEADER_SENTINEL__"
+	m.viewport.SetContent(sentinel)
+	staleHeight := m.viewport.Height
+
+	// Grow the header in place: headerContentRows 2→3, shrinking chartHeight()
+	// by 1 without touching breakdownAnimH.
+	m.window = scopedWindow(1)
+	m.rebuildScopedBars()
+	if m.chartHeight() == staleHeight {
+		t.Fatal("growing the header did not change chartHeight(); rework probe")
+	}
+
+	startH := m.breakdownAnimH
+	updated, _ := m.Update(springTickMsg{gen: m.springGen})
+	m = updated.(Model)
+	if m.breakdownAnimH != startH {
+		t.Fatalf("first tick moved height %d→%d; repaint no longer attributable to the viewport.Height clause — rework probe", startH, m.breakdownAnimH)
+	}
+
+	if strings.Contains(m.viewport.View(), sentinel) {
+		t.Error("header height change mid-slide left the sentinel in place (viewport.Height clause not firing)")
+	}
+	if m.viewport.Height != m.chartHeight() {
+		t.Errorf("viewport.Height=%d, want chartHeight()=%d after header change mid-slide", m.viewport.Height, m.chartHeight())
+	}
+	if !m.springActive {
+		t.Error("header change mid-slide: springActive=false, want true (a header change must repaint, not abort the slide)")
+	}
+}
+
+// TestProjectsSlide_ScrollRepaintsMidSlide (#477) covers the mid-slide
+// scroll repaint branches in scrollLeft/scrollRight (pkg/tui/viewport.go:114,
+// :130): a scroll arriving as its own Update message while springKind ==
+// springKindBreakdown must repaint the viewport immediately via
+// renderBreakdownFrame, since the tick's render-skip gate only fires on the
+// next integer-height step and never sees a scroll. Mutation-verified
+// uncovered: reverting both handlers to `if !m.springActive {
+// m.renderWindow() }` leaves the full suite green.
+//
+// The repaint in this branch is unconditional — it does not depend on setX
+// actually moving the offset — so the probe calls scrollLeft/scrollRight
+// DIRECTLY (established precedent throughout model_test.go, e.g.
+// model_test.go:2078-2080) and never asserts on m.viewportXOffset; whether
+// this fixture's offset is already clamp-pinned at an edge is irrelevant to
+// what's being pinned here and keeps the probe non-flaky regardless.
+func TestProjectsSlide_ScrollRepaintsMidSlide(t *testing.T) {
+	tests := []struct {
+		name string
+		fn   func(m *Model)
+	}{
+		{"left", func(m *Model) { m.scrollLeft(ZoomLevels[m.zoomIdx].ScrollStep) }},
+		{"right", func(m *Model) { m.scrollRight(ZoomLevels[m.zoomIdx].ScrollStep) }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			withForcedColor(t)
+			now := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
+			m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)
+			defer c.Close()
+			armProjectsShowForTest(t, &m)
+			if m.breakdownSlideTo == 0 {
+				t.Fatal("fixture arm produced target 0; want a non-degenerate show slide")
+			}
+
+			const sentinel = "__477_SCROLL_SENTINEL__"
+			m.viewport.SetContent(sentinel)
+
+			tc.fn(&m)
+
+			if strings.Contains(m.viewport.View(), sentinel) {
+				t.Error("mid-slide scroll left the sentinel in place (repaint branch not firing)")
+			}
+			if !m.springActive {
+				t.Error("mid-slide scroll: springActive=false, want true (a scroll must not abort the slide)")
+			}
+			if m.springKind != springKindBreakdown {
+				t.Errorf("mid-slide scroll: springKind=%d, want springKindBreakdown", m.springKind)
+			}
+		})
+	}
+}
+
 func TestProjectsSpringTick_StaleGenDropped(t *testing.T) {
 	now := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
 	m, c := seedBarModelWithMessages(t, int(chartUnitCost), now)

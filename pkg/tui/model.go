@@ -932,9 +932,11 @@ func (m Model) renderChartBody(rawBody string) string {
 		// overlay at the frame's (animated) chartHeight — same live inputs
 		// as the steady cases below, so endpoint frames match them
 		// byte-for-byte (#416 round two). m.peak is recomputed by
-		// renderWindow each frame from the same fixed window (constant
-		// during the slide). MUST precede the generic springActive case,
-		// which reads m.springRatios (unit-toggle state, unset here).
+		// renderWindow on each repaint from the visible window (which a
+		// mid-slide scroll can move since #477 — the scroll handlers repaint
+		// through renderBreakdownFrame). MUST precede the generic
+		// springActive case, which reads m.springRatios (unit-toggle state,
+		// unset here).
 		if chartUnit(m.unitIdx) == chartUnitRemaining {
 			return overlayYTicks(rawBody, m.chartHeight(), 1.0)
 		}

@@ -98,21 +98,38 @@ func (m *Model) setX(n int) {
 // bar mode, re-render the visible window live (#255 — no debounce; the
 // rebuild is now ~viewport width). renderWindow no-ops in remaining mode, so
 // line-mode scroll stays a pure offset over the full canvas. The
-// !springActive guard ports the old rescaleMsg gate: a scroll mid-animation
-// still advances the viewportXOffset shadow (so the post-settle refreshChart
-// picks up the new position) but must not recompute m.peak — the spring owns
-// it as the bar-height normalization base.
+// !springActive case ports the old rescaleMsg gate: a scroll during a u/z
+// spring still advances the viewportXOffset shadow (so the post-settle
+// refreshChart picks up the new position) but must not recompute m.peak —
+// those springs own it as the bar-height normalization base. A breakdown
+// slide is the exception (#477): its ticks already repaint through
+// renderWindow at each new height rather than a peak-anchored spring frame,
+// so it doesn't own m.peak and a mid-slide scroll repaints immediately
+// instead of going stale until settle.
 func (m *Model) scrollLeft(n int) {
 	m.setX(m.viewportXOffset - n)
-	if !m.springActive {
+	switch {
+	case !m.springActive:
 		m.renderWindow()
+	case m.springKind == springKindBreakdown:
+		// Mid-slide scroll (#477): setX already moved the offset above, but
+		// the tick's render-skip gate only repaints on integer-height
+		// change and never sees this. Repaint now so the frame isn't stale
+		// until the next integer-height step (up to ~300 ms near arrival).
+		// Other spring kinds own the viewport during their own slide and
+		// keep the no-render behavior.
+		m.renderBreakdownFrame()
 	}
 }
 
 func (m *Model) scrollRight(n int) {
 	m.setX(m.viewportXOffset + n)
-	if !m.springActive {
+	switch {
+	case !m.springActive:
 		m.renderWindow()
+	case m.springKind == springKindBreakdown:
+		// See scrollLeft (#477).
+		m.renderBreakdownFrame()
 	}
 }
 
