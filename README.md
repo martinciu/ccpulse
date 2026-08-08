@@ -126,7 +126,8 @@ The binary lives in `~/.local/bin/ccpulse`.
 Opens the interactive TUI: 5h + 7d quota bars and a horizontally-scrollable
 usage histogram. `←`/`→` (or `h`/`l`) scroll the chart, `z` cycles bucket
 zoom (15m / 1h / 24h), `u` toggles units (cost / output / usage), `?`
-toggles full help, `q` quits.
+toggles full help, `q` quits. The zoom and unit you pick are remembered
+across restarts.
 
 ### `ccpulse index`
 
@@ -319,6 +320,10 @@ TUI auto-rebuilds on launch. Manual: `ccpulse index --rebuild`.
 
 Parse errors are logged to `~/.cache/ccpulse/parse-errors.log`
 (rotated at 10 MB). Empty when everything is healthy.
+
+The TUI's chart zoom and view are remembered in
+`~/.cache/ccpulse/ui-state.toml`. Delete it to reset to the defaults
+(15m zoom, cost view). A missing or corrupt file is ignored silently.
 
 ## License
 

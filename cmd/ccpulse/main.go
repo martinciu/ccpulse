@@ -30,6 +30,7 @@ import (
 	"github.com/martinciu/ccpulse/pkg/pricing"
 	"github.com/martinciu/ccpulse/pkg/secfile"
 	"github.com/martinciu/ccpulse/pkg/tui"
+	"github.com/martinciu/ccpulse/pkg/uistate"
 	"github.com/martinciu/ccpulse/pkg/watcher"
 )
 
@@ -301,6 +302,7 @@ func runTUI(ctx context.Context, errOut io.Writer) error {
 		CacheDir:     env.cacheDir,
 		IsDev:        channel.IsDev(),
 		ReduceMotion: env.cfg.UI.ReduceMotion,
+		UIState:      uistate.Load(env.cacheDir),
 	})
 	p := newTeaProgram(m)
 

@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/martinciu/ccpulse/pkg/anthro"
 	"github.com/martinciu/ccpulse/pkg/cache"
 	"github.com/martinciu/ccpulse/pkg/status"
+	"github.com/martinciu/ccpulse/pkg/uistate"
 )
 
 // horizontalScrollStep is the default per-keypress shift in BUCKETS for the
@@ -113,6 +115,11 @@ type Deps struct {
 	// index-banner fade ladder. Zero value = false = animations on,
 	// preserving today's behaviour. Sourced from cfg.UI.ReduceMotion.
 	ReduceMotion bool
+	// UIState is the persisted UI state (zoom label + view name) loaded
+	// by runTUI from <cacheDir>/ui-state.toml (#490). The zero value
+	// (empty strings) means no preference — today's defaults (15m, cost).
+	// Unknown values fall back silently via zoomIdxForLabel / viewIdx.
+	UIState uistate.State
 }
 
 // quotaSide identifies which quota bar a per-frame ratio belongs to.
@@ -169,7 +176,7 @@ type Model struct {
 	showHelp       bool
 
 	zoomIdx int // index into ZoomLevels
-	unitIdx int // 0 = cost, 1 = tokens, 2 = remaining. Cycled by 'u'. Resets to cost on launch.
+	unitIdx int // 0 = cost, 1 = tokens, 2 = remaining. Cycled by 'u'; persisted + restored via ui-state.toml (#490).
 
 	// now returns the current wall-clock time. Defaults to time.Now in New;
 	// tests override it to drive deterministic bucket-boundary crossings
@@ -439,10 +446,19 @@ func New(d Deps) Model {
 		deps:      d,
 		keys:      defaultKeyMap(),
 		help:      help.New(),
-		zoomIdx:   0, // default: 15m
+		zoomIdx:   0, // default: 15m — a persisted zoom is restored below
 		dateOrder: detectDateOrder(),
 		now:       time.Now,
 		breakdown: breakdownNone,
+	}
+	// Restore persisted UI state (#490). Only these two ints are set —
+	// no key-handler runs, so no spring can fire from a restore. Unknown
+	// or empty values keep the defaults (15m, cost).
+	if idx, ok := zoomIdxForLabel(d.UIState.Zoom); ok {
+		m.zoomIdx = idx
+	}
+	if idx, ok := viewIdx(d.UIState.View); ok {
+		m.unitIdx = idx
 	}
 	m.progress = newProgressBar(40)
 	m.progress7d = newProgressBar(40)
@@ -720,9 +736,13 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		// so dismissing help returns the user to the same scroll/zoom
 		// state they left.
 	case key.Matches(msg, m.keys.Zoom):
-		return m.handleZoomKey()
+		cmd := m.handleZoomKey()
+		m.persistUIState()
+		return cmd
 	case key.Matches(msg, m.keys.Unit):
-		return m.handleUnitKey()
+		cmd := m.handleUnitKey()
+		m.persistUIState()
+		return cmd
 	case key.Matches(msg, m.keys.Projects):
 		return m.handleBreakdownKey(breakdownProjects)
 	case key.Matches(msg, m.keys.Models):
@@ -735,6 +755,26 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		return m.scheduleBreakdownTick()
 	}
 	return nil
+}
+
+// persistUIState writes the current zoom + view to <cacheDir>/ui-state.toml
+// so the next launch restores them (#490). Synchronous by design: tea.Cmds
+// run in goroutines, so two rapid presses could race their atomic renames
+// and persist the older value — a ~40-byte sync write keeps ordering
+// deterministic. Failures log at debug and never surface in the TUI.
+// No-op when CacheDir is empty (tests constructing bare Deps{} stay
+// write-free).
+func (m *Model) persistUIState() {
+	if m.deps.CacheDir == "" {
+		return
+	}
+	s := uistate.State{
+		Zoom: ZoomLevels[m.zoomIdx].Label,
+		View: viewName(chartUnit(m.unitIdx)),
+	}
+	if err := uistate.Save(m.deps.CacheDir, s); err != nil {
+		slog.Debug("uistate.save", "path", filepath.Join(m.deps.CacheDir, uistate.FileName), "err", err)
+	}
 }
 
 // handleUnitKey cycles the chart unit and arms the two-phase toggle animation

@@ -484,8 +484,9 @@ func (m *Model) beginIntroAnimation() {
 	// post-rebuild restore); preserve it.
 	m.springXOffset = m.viewportXOffset
 
-	// renderSpringFrame's default arm reads m.newIsLine; pin it for the
-	// intro (always bar mode at open since default unit is tokens).
+	// renderSpringFrame's default arm reads m.newIsLine; pin it from the
+	// launch unit — possibly restored from ui-state.toml (#490), so the
+	// intro renders line mode when the usage view was persisted.
 	m.newIsLine = isLineMode(chartUnit(m.unitIdx))
 
 	m.springActive = true
