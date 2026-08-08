@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -772,7 +773,7 @@ func (m *Model) persistUIState() {
 		View: viewName(chartUnit(m.unitIdx)),
 	}
 	if err := uistate.Save(m.deps.CacheDir, s); err != nil {
-		slog.Debug("uistate.save", "err", err)
+		slog.Debug("uistate.save", "path", filepath.Join(m.deps.CacheDir, uistate.FileName), "err", err)
 	}
 }
 

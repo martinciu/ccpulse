@@ -37,9 +37,10 @@ type State struct {
 // break older binaries.
 func Load(cacheDir string) State {
 	var s State
-	if _, err := toml.DecodeFile(filepath.Join(cacheDir, FileName), &s); err != nil {
+	path := filepath.Join(cacheDir, FileName)
+	if _, err := toml.DecodeFile(path, &s); err != nil {
 		if !errors.Is(err, fs.ErrNotExist) {
-			slog.Debug("uistate.load", "err", err)
+			slog.Debug("uistate.load", "path", path, "err", err)
 		}
 		return State{}
 	}
