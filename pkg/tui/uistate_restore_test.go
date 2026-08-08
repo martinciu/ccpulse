@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"os"
 	"testing"
 	"time"
 
@@ -119,7 +120,7 @@ func TestZoomAndUnitKeys_PersistUIState(t *testing.T) {
 		t.Errorf("view after second u = %q, want usage", got)
 	}
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
-	_ = updated
+	m = updated.(Model)
 	if got := uistate.Load(dir).View; got != "cost" {
 		t.Errorf("view after third u = %q, want cost", got)
 	}
@@ -158,13 +159,25 @@ func TestZoomKey_AnimatedPath_PersistsNewValue(t *testing.T) {
 }
 
 func TestPersistUIState_EmptyCacheDir_NoWrite(t *testing.T) {
-	// Bare Deps{} (the fixture most tui tests use) must stay write-free
-	// and must not panic.
+	// Bare Deps{} (the fixture most tui tests use) must not panic, and
+	// pressing 'z' must not write anything anywhere — Chdir into an empty
+	// temp dir so a stray write (including the atomic-write ".tmp-*" file)
+	// is directly observable via ReadDir below.
+	t.Chdir(t.TempDir())
+
 	m := New(Deps{ReduceMotion: true})
 	m.w, m.h = 120, 40
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
 	m = updated.(Model)
 	if m.zoomIdx != 1 {
-		t.Errorf("zoomIdx = %d, want 1 (z still cycles zoom)", m.zoomIdx)
+		t.Errorf("zoomIdx = %d, want 1 (z still cycles zoom even with no cache dir)", m.zoomIdx)
+	}
+
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("ReadDir(.): %v", err)
+	}
+	for _, e := range entries {
+		t.Errorf("unexpected entry in CWD after z with no CacheDir: %q", e.Name())
 	}
 }
