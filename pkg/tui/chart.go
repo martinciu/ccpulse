@@ -783,9 +783,10 @@ func formatXLabel(t time.Time, zoom ZoomLevel, now time.Time, order dateOrder) s
 // rendering also reads this through Model.unitIdx.
 //
 // Cost is declared first so the zero-value default of Model.unitIdx (0)
-// renders the cost histogram on launch; the `u` cycle then advances
+// renders the cost histogram on a fresh install; the `u` cycle advances
 // cost → tokens → remaining → cost via (unitIdx+1) % chartUnitCount.
-// Resets to cost on every launch — no persistence (see issue #209).
+// The active view is persisted to ui-state.toml and restored on launch
+// (#490); unknown/missing values fall back to cost.
 type chartUnit int
 
 const (
@@ -807,6 +808,47 @@ func (u chartUnit) String() string {
 	default:
 		return "unknown"
 	}
+}
+
+// viewName returns the persisted-state name for u — the value written
+// to ui-state.toml (#490). Distinct from String(): the third view is
+// stored as "usage" (the user-facing term), while String() returns
+// "remaining" for subtest names.
+func viewName(u chartUnit) string {
+	switch u {
+	case chartUnitTokens:
+		return "tokens"
+	case chartUnitRemaining:
+		return "usage"
+	default:
+		return "cost"
+	}
+}
+
+// viewIdx maps a persisted view name back to a chartUnit index. ok is
+// false for unknown/empty names; callers fall back to chartUnitCost.
+func viewIdx(name string) (int, bool) {
+	switch name {
+	case "cost":
+		return int(chartUnitCost), true
+	case "tokens":
+		return int(chartUnitTokens), true
+	case "usage":
+		return int(chartUnitRemaining), true
+	}
+	return 0, false
+}
+
+// zoomIdxForLabel maps a persisted zoom label ("15m"/"1h"/"24h") to its
+// ZoomLevels index. ok is false for unknown/empty labels; callers fall
+// back to index 0 (15m).
+func zoomIdxForLabel(label string) (int, bool) {
+	for i, z := range ZoomLevels {
+		if z.Label == label {
+			return i, true
+		}
+	}
+	return 0, false
 }
 
 // niceFloorFloat returns the largest "nice" value <= peak from the
