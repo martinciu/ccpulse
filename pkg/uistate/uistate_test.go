@@ -25,7 +25,12 @@ func TestLoad_MissingFile_ReturnsZero(t *testing.T) {
 
 func TestLoad_CorruptFile_ReturnsZero(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, FileName), []byte("not = [valid"), 0o600); err != nil {
+	// Deliberately partially decodable, not merely malformed: BurntSushi
+	// decodes Zoom = "24h" first, then fails on View (int64, wants string).
+	// A plain parse error (e.g. "not = [valid") never populates the local
+	// State, so return State{} and return s (a partial-decode leak) would
+	// be indistinguishable — this fixture forces the two apart.
+	if err := os.WriteFile(filepath.Join(dir, FileName), []byte("zoom = \"24h\"\nview = 42\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	if got := Load(dir); got != (State{}) {

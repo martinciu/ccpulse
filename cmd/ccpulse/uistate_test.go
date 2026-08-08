@@ -56,6 +56,11 @@ func uiStateEnv(t *testing.T) string {
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "config-empty"))
 	t.Setenv("CCPULSE_PROJECTS_ROOT", t.TempDir())
 	t.Setenv("CCPULSE_CACHE_DIR", cacheDir)
+	// Stub the quota poller with a synthetic sample so resolveQuotaStartup
+	// never calls anthro.LoadCredential/the usage API — without this, a
+	// machine with a real keychain credential fires a live HTTPS request
+	// to api.anthropic.com and leaves a TLS connection open past the test.
+	t.Setenv("CCPULSE_FAKE_QUOTA", "55,42")
 	return cacheDir
 }
 
@@ -113,9 +118,15 @@ func TestRunTUI_RestoresPersistedUIState(t *testing.T) {
 // TestRunTUI_CorruptUIStateFallsBackSilently asserts a malformed state
 // file neither fails the launch nor leaks into the restored state — the
 // TUI opens at its defaults (15m/cost), so 'z' advances 15m → 1h.
+//
+// The fixture is deliberately partially decodable, not merely malformed:
+// BurntSushi decodes Zoom = "24h" first, then fails on View (int64, wants
+// string). A plain parse error never populates the local State, so
+// falling back to defaults and leaking the partially-decoded Zoom would
+// be indistinguishable — this fixture forces the two apart.
 func TestRunTUI_CorruptUIStateFallsBackSilently(t *testing.T) {
 	cacheDir := uiStateEnv(t)
-	if err := os.WriteFile(filepath.Join(cacheDir, uistate.FileName), []byte("zoom = [broken"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(cacheDir, uistate.FileName), []byte("zoom = \"24h\"\nview = 42\n"), 0o600); err != nil {
 		t.Fatalf("seed corrupt ui-state.toml: %v", err)
 	}
 	injectKeys(t, "zq")
