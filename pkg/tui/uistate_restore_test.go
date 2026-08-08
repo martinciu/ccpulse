@@ -160,10 +160,16 @@ func TestZoomKey_AnimatedPath_PersistsNewValue(t *testing.T) {
 
 func TestPersistUIState_EmptyCacheDir_NoWrite(t *testing.T) {
 	// Bare Deps{} (the fixture most tui tests use) must not panic, and
-	// pressing 'z' must not write anything anywhere — Chdir into an empty
-	// temp dir so a stray write (including the atomic-write ".tmp-*" file)
-	// is directly observable via ReadDir below.
-	t.Chdir(t.TempDir())
+	// pressing 'z' must not write anything anywhere. Without persistUIState's
+	// empty-CacheDir guard the write is not skipped but *relocated*:
+	// filepath.Join("", FileName) is relative, so WriteFileAtomic resolves
+	// its directory to "." and drops ui-state.toml wherever ccpulse happens
+	// to be running. Chdir into an empty temp dir to make that observable.
+	//
+	// NOT SAFE WITH t.Parallel() — t.Chdir mutates process-wide CWD. It
+	// panics rather than corrupting a sibling test, so this is self-enforcing.
+	dir := t.TempDir()
+	t.Chdir(dir)
 
 	m := New(Deps{ReduceMotion: true})
 	m.w, m.h = 120, 40
@@ -173,11 +179,11 @@ func TestPersistUIState_EmptyCacheDir_NoWrite(t *testing.T) {
 		t.Errorf("zoomIdx = %d, want 1 (z still cycles zoom even with no cache dir)", m.zoomIdx)
 	}
 
-	entries, err := os.ReadDir(".")
+	entries, err := os.ReadDir(dir)
 	if err != nil {
-		t.Fatalf("ReadDir(.): %v", err)
+		t.Fatalf("ReadDir(%s): %v", dir, err)
 	}
 	for _, e := range entries {
-		t.Errorf("unexpected entry in CWD after z with no CacheDir: %q", e.Name())
+		t.Errorf("persistUIState wrote %q into %s; want no write when CacheDir is empty", e.Name(), dir)
 	}
 }

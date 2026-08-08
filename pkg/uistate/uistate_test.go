@@ -25,16 +25,24 @@ func TestLoad_MissingFile_ReturnsZero(t *testing.T) {
 
 func TestLoad_CorruptFile_ReturnsZero(t *testing.T) {
 	dir := t.TempDir()
-	// Deliberately partially decodable, not merely malformed: BurntSushi
-	// decodes Zoom = "24h" first, then fails on View (int64, wants string).
-	// A plain parse error (e.g. "not = [valid") never populates the local
-	// State, so return State{} and return s (a partial-decode leak) would
-	// be indistinguishable — this fixture forces the two apart.
+	// Deliberately partially decodable, not merely malformed. A plain parse
+	// error (e.g. "not = [valid") aborts before any field is unified, so the
+	// local State is still zero and `return State{}` vs `return s` (a
+	// partial-decode leak) are indistinguishable. Here View's type error can
+	// leave Zoom already populated, which tells the two apart.
+	//
+	// It only *can*: BurntSushi unifies by ranging the parsed map
+	// (decode.go's unifyStruct), and Go randomises map iteration, so View is
+	// hit before Zoom in roughly 1 run in 7. Loop so the guard is effectively
+	// certain rather than ~86% per run — a single pass would let a `return s`
+	// regression through often enough to look like a flake, not a bug.
 	if err := os.WriteFile(filepath.Join(dir, FileName), []byte("zoom = \"24h\"\nview = 42\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	if got := Load(dir); got != (State{}) {
-		t.Errorf("Load = %+v, want zero State", got)
+	for range 100 {
+		if got := Load(dir); got != (State{}) {
+			t.Fatalf("Load = %+v, want zero State", got)
+		}
 	}
 }
 

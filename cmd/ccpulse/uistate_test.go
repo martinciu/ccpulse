@@ -56,10 +56,16 @@ func uiStateEnv(t *testing.T) string {
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "config-empty"))
 	t.Setenv("CCPULSE_PROJECTS_ROOT", t.TempDir())
 	t.Setenv("CCPULSE_CACHE_DIR", cacheDir)
-	// Stub the quota poller with a synthetic sample so resolveQuotaStartup
-	// never calls anthro.LoadCredential/the usage API — without this, a
-	// machine with a real keychain credential fires a live HTTPS request
-	// to api.anthropic.com and leaves a TLS connection open past the test.
+	// Inject a synthetic quota so runTUI takes the fakeQuota branch instead
+	// of starting the usage-API poller. Without it, a machine with a real
+	// keychain credential fires a live HTTPS request at api.anthropic.com
+	// and leaves a TLS connection open past the test — so these tests would
+	// behave differently locally than in CI.
+	//
+	// Note this does NOT stub credential loading: resolveQuotaStartup calls
+	// anthro.LoadCredential unconditionally, before it ever reads this var.
+	// The keychain lookup and ~/.claude/.credentials.json read still happen;
+	// only the network poller is skipped.
 	t.Setenv("CCPULSE_FAKE_QUOTA", "55,42")
 	return cacheDir
 }
@@ -119,11 +125,14 @@ func TestRunTUI_RestoresPersistedUIState(t *testing.T) {
 // file neither fails the launch nor leaks into the restored state — the
 // TUI opens at its defaults (15m/cost), so 'z' advances 15m → 1h.
 //
-// The fixture is deliberately partially decodable, not merely malformed:
-// BurntSushi decodes Zoom = "24h" first, then fails on View (int64, wants
-// string). A plain parse error never populates the local State, so
-// falling back to defaults and leaking the partially-decoded Zoom would
-// be indistinguishable — this fixture forces the two apart.
+// The fixture is deliberately partially decodable rather than merely
+// malformed: View's type error can leave Zoom already populated, which a
+// plain parse error never does. Whether it actually does is up to Go's
+// randomised map iteration inside BurntSushi's unifyStruct, so this test
+// is not a reliable partial-decode guard on its own — TestLoad_CorruptFile_
+// ReturnsZero in pkg/uistate loops to cover that. What this one pins is the
+// end-to-end behaviour: a bad file neither fails the launch nor leaks into
+// the restored state.
 func TestRunTUI_CorruptUIStateFallsBackSilently(t *testing.T) {
 	cacheDir := uiStateEnv(t)
 	if err := os.WriteFile(filepath.Join(cacheDir, uistate.FileName), []byte("zoom = \"24h\"\nview = 42\n"), 0o600); err != nil {
