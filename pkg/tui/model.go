@@ -735,9 +735,13 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		// so dismissing help returns the user to the same scroll/zoom
 		// state they left.
 	case key.Matches(msg, m.keys.Zoom):
-		return m.handleZoomKey()
+		cmd := m.handleZoomKey()
+		m.persistUIState()
+		return cmd
 	case key.Matches(msg, m.keys.Unit):
-		return m.handleUnitKey()
+		cmd := m.handleUnitKey()
+		m.persistUIState()
+		return cmd
 	case key.Matches(msg, m.keys.Projects):
 		return m.handleBreakdownKey(breakdownProjects)
 	case key.Matches(msg, m.keys.Models):
@@ -750,6 +754,26 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		return m.scheduleBreakdownTick()
 	}
 	return nil
+}
+
+// persistUIState writes the current zoom + view to <cacheDir>/ui-state.toml
+// so the next launch restores them (#490). Synchronous by design: tea.Cmds
+// run in goroutines, so two rapid presses could race their atomic renames
+// and persist the older value — a ~40-byte sync write keeps ordering
+// deterministic. Failures log at debug and never surface in the TUI.
+// No-op when CacheDir is empty (tests constructing bare Deps{} stay
+// write-free).
+func (m *Model) persistUIState() {
+	if m.deps.CacheDir == "" {
+		return
+	}
+	s := uistate.State{
+		Zoom: ZoomLevels[m.zoomIdx].Label,
+		View: viewName(chartUnit(m.unitIdx)),
+	}
+	if err := uistate.Save(m.deps.CacheDir, s); err != nil {
+		slog.Debug("uistate.save", "err", err)
+	}
 }
 
 // handleUnitKey cycles the chart unit and arms the two-phase toggle animation

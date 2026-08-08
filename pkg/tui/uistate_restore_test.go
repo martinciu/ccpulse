@@ -91,3 +91,80 @@ func TestIntro_RestoredUsageView_ArmsLineMode(t *testing.T) {
 		t.Errorf("zoomIdx = %d, want 2 (24h)", m.zoomIdx)
 	}
 }
+
+func TestZoomAndUnitKeys_PersistUIState(t *testing.T) {
+	// Snap paths only (ReduceMotion) — no tick Cmds to leak. Cache is nil;
+	// refreshChart no-ops on nil cache, and persistence must not depend on
+	// a refresh succeeding.
+	dir := t.TempDir()
+	m := New(Deps{CacheDir: dir, ReduceMotion: true})
+	m.w, m.h = 120, 40
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
+	m = updated.(Model)
+	if got, want := uistate.Load(dir), (uistate.State{Zoom: "1h", View: "cost"}); got != want {
+		t.Errorf("state after z = %+v, want %+v", got, want)
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	m = updated.(Model)
+	if got, want := uistate.Load(dir), (uistate.State{Zoom: "1h", View: "tokens"}); got != want {
+		t.Errorf("state after u = %+v, want %+v", got, want)
+	}
+
+	// Full u-cycle: tokens → usage → cost; the file must track each press.
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	m = updated.(Model)
+	if got := uistate.Load(dir).View; got != "usage" {
+		t.Errorf("view after second u = %q, want usage", got)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	_ = updated
+	if got := uistate.Load(dir).View; got != "cost" {
+		t.Errorf("view after third u = %q, want cost", got)
+	}
+}
+
+func TestZoomKey_AnimatedPath_PersistsNewValue(t *testing.T) {
+	// The snap-path test above cannot catch an ordering bug on the
+	// ANIMATED branch, where handleZoomKey advances zoomIdx amid the
+	// spring setup rather than as its first statement. Press 'z' with
+	// motion on and assert the file already holds the NEW zoom — the
+	// invariant persistUIState depends on and that the plan only stated
+	// in prose (#490).
+	//
+	// The returned Cmd is deliberately discarded, never invoked: it is a
+	// spring tick, and invoking tick Cmds in tests leaks goroutines past
+	// the package's goleak guard.
+	dir := t.TempDir()
+	seed := seedIntroModel(t, false)
+	m := New(Deps{Cache: seed.deps.Cache, CacheDir: dir})
+
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+	if !m.hasData {
+		t.Fatal("hasData = false after WindowSizeMsg; animated path would not be exercised")
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
+	m = updated.(Model)
+
+	if !m.springActive || m.springKind != springKindZoom {
+		t.Fatalf("springActive=%v springKind=%v after z; want the animated zoom path", m.springActive, m.springKind)
+	}
+	if got, want := uistate.Load(dir), (uistate.State{Zoom: "1h", View: "cost"}); got != want {
+		t.Errorf("state after animated z = %+v, want %+v (stale value persisted?)", got, want)
+	}
+}
+
+func TestPersistUIState_EmptyCacheDir_NoWrite(t *testing.T) {
+	// Bare Deps{} (the fixture most tui tests use) must stay write-free
+	// and must not panic.
+	m := New(Deps{ReduceMotion: true})
+	m.w, m.h = 120, 40
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
+	m = updated.(Model)
+	if m.zoomIdx != 1 {
+		t.Errorf("zoomIdx = %d, want 1 (z still cycles zoom)", m.zoomIdx)
+	}
+}
