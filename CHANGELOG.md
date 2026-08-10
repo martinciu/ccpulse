@@ -3,6 +3,50 @@
 All notable changes to ccpulse are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.10.0] — 2026-08-10
+
+### Added
+- Models breakdown panel: `m` slides in a per-model breakdown — cost, tokens
+  and share over the chart's visible window — in the same box as the projects
+  panel, and `p`/`m` swap panels with a sequential down-then-up slide. Model
+  ids render as derived display names (`claude-opus-4-7` → `Opus 4.7`), dated
+  and undated variants folding into one row; ids that aren't unambiguously
+  modern Claude ids show verbatim. Zero-contribution rows (e.g. `<synthetic>`)
+  are hidden, and unpriced models are kept at $0 so the panel's token total
+  reconciles with the projects panel (#475, #476, #484, #485)
+- Zoom level and active view persist across restarts: `z`/`u` immediately
+  write `<cacheDir>/ui-state.toml` (0600, written atomically), and the next
+  launch opens where you left off. A missing or corrupt file falls back
+  silently to the defaults (15m / cost) (#490, #491)
+
+### Changed
+- Billed `usage.iterations` entries served by a different model than the
+  turn's — refused fallback attempts, cross-model advisor calls — now expand
+  at parse time into per-model attempt rows (`message_id` keyed
+  `<id>:it:<idx>`), so the models panel, projects panel, chart buckets and
+  recost all attribute those tokens and their cost to the model that actually
+  consumed them. Cache schema bumped v11 → v12 (no schema-text change): the
+  first launch after upgrading wipes and re-indexes the message cache from
+  JSONL to backfill attempt rows, preserving Anthropic quota history;
+  per-model totals shift accordingly (#456, #487)
+- The breakdown slide settles the moment its integer height arrives and skips
+  re-renders while the painted state is unchanged: a projects↔models swap
+  drops from 134 to ~74 ticks, eliminating ~660 ms of CPU and ~640 MB of
+  allocation churn per swap, and the dead pause at height 0 between swap legs
+  is gone. Mid-slide ←/→ scrolls and quota-driven header growth still repaint
+  immediately (#477, #489)
+
+### Fixed
+- A bare dated model id (e.g. `-20250101`) no longer folds to the empty
+  string — the cache's reserved unknown-model sentinel — so it renders as its
+  own row in the models panel instead of being reclassified as
+  "(unknown model)" and force-sorted last (#479, #488)
+
+### Internal
+- Bump `modernc.org/sqlite` 1.54.0 → 1.55.0 (#486) and the gha-deps group:
+  `actions/checkout` 7.0.0 → 7.0.1, `anthropics/claude-code-action`
+  1.0.178 → 1.0.183 (#474)
+
 ## [0.9.0] — 2026-07-25
 
 ### Added
