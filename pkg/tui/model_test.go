@@ -4798,6 +4798,66 @@ func TestIntro_QuotaBars_QuotaArrivesDuringGrow(t *testing.T) {
 	}
 }
 
+// quotaUsageScoped is quotaUsage plus one weekly_scoped limits entry per
+// model name, so recomputeWindow grows scopedRowCount() (#463) — the
+// header-height lever the mid-spring viewport re-sync tests need (#499).
+func quotaUsageScoped(utilFiveHour, utilSevenDay float64, models ...string) *anthro.Usage {
+	u := quotaUsage(utilFiveHour, utilSevenDay)
+	resets := time.Now().Add(5 * 24 * time.Hour)
+	for _, name := range models {
+		display := name
+		u.Limits = append(u.Limits, anthro.Limit{
+			Kind: "weekly_scoped", Percent: 35, Severity: "normal",
+			IsActive: true, ResetsAt: &resets,
+			Scope: &anthro.LimitScope{Model: &anthro.ScopeModel{DisplayName: &display}},
+		})
+	}
+	return u
+}
+
+func TestIntro_ScopedRowArrivesMidSpring_ViewportHeightTracks(t *testing.T) {
+	// The startup race behind #499: the intro arms with quota nil
+	// (headerContentRows()==2), then the poller's QuotaMsg lands mid-intro
+	// carrying a weekly_scoped limit. The scoped row renders immediately,
+	// shrinking chartHeight() by one — but handleQuotaMsg skips the height
+	// re-sync while a spring is active, and the spring frames must absorb
+	// it instead (mirroring renderBreakdownFrame). Without that, the
+	// viewport stays one row too tall: its bottom pad line floats the
+	// x-labels off the footer for the whole intro, then the settle re-sync
+	// snaps the chart down.
+	m := seedIntroModel(t, false)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+	if m.springPhase != springHolding {
+		t.Fatalf("springPhase = %d after WindowSize; want springHolding", m.springPhase)
+	}
+	if got := m.scopedRowCount(); got != 0 {
+		t.Fatalf("scopedRowCount = %d at arm; want 0 (no quota loaded yet)", got)
+	}
+
+	// Quota with one scoped limit arrives mid-intro.
+	updated, _ = m.Update(QuotaMsg{Usage: quotaUsageScoped(80, 25, "Fable"), Source: "api", UpdatedAt: time.Now()})
+	m = updated.(Model)
+	if got := m.scopedRowCount(); got != 1 {
+		t.Fatalf("scopedRowCount = %d after scoped QuotaMsg; want 1 (test setup)", got)
+	}
+	if !m.springActive {
+		t.Fatalf("springActive = false after mid-intro QuotaMsg; want true (intro still in flight)")
+	}
+
+	// The next spring frame must re-sync the viewport to the shrunken
+	// chartHeight so content and widget height stay in lockstep.
+	updated, _ = m.Update(springTickMsg{gen: m.springGen})
+	m = updated.(Model)
+	if m.viewport.Height != m.chartHeight() {
+		t.Errorf("viewport.Height = %d after mid-intro spring tick; want chartHeight() = %d",
+			m.viewport.Height, m.chartHeight())
+	}
+	if got := lipgloss.Height(m.View()); got > m.h {
+		t.Errorf("View() rendered %d lines mid-intro with scoped row; exceeds terminal height %d", got, m.h)
+	}
+}
+
 func TestIntro_QuotaBars_QuotaArrivesAfterSettle(t *testing.T) {
 	// Slow-network case: chart intro armed and settled with quota=nil
 	// (springs animated 0 → 0 invisibly), then QuotaMsg arrives. The

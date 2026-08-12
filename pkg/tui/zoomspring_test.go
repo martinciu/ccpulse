@@ -8,6 +8,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/martinciu/ccpulse/pkg/anthro"
@@ -915,5 +916,64 @@ func TestZoomBar_NowTickSuppressedMidMorph(t *testing.T) {
 	}
 	if cmd == nil {
 		t.Errorf("now-tick mid-morph: cmd=nil, want a reschedule keeping the chain alive")
+	}
+}
+
+func TestZoom_ScopedRowArrivesMidSqueeze_ViewportHeightTracks(t *testing.T) {
+	// The zoom-squeeze twin of the #499 intro race: a quota poll landing
+	// mid-'z' can change scopedRowCount(), shrinking chartHeight() while
+	// handleQuotaMsg's height re-sync is skipped (spring active). The next
+	// zoom frame must re-sync viewport.Height itself — mirroring
+	// renderBreakdownFrame — or the viewport pads a blank line above the
+	// footer until settle. Covers both frame families: the bar skyline
+	// morph and the remaining-mode line squeeze.
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	arm := map[string]func(t *testing.T) (Model, *cache.Cache){
+		"bar": func(t *testing.T) (Model, *cache.Cache) {
+			t.Helper()
+			return armBarZoom(t, int(chartUnitCost), now)
+		},
+		"line": func(t *testing.T) (Model, *cache.Cache) {
+			t.Helper()
+			m, c := seedRemainingModelWithSamples(t, 40, now)
+			m.introPending = false
+			m.quotaIntroPending = false
+			updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
+			m = updated.(Model)
+			if !m.springActive || m.springKind != springKindZoom {
+				t.Fatalf("line arm sanity: springActive=%v springKind=%d", m.springActive, m.springKind)
+			}
+			return m, c
+		},
+	}
+	for name, seed := range arm {
+		t.Run(name, func(t *testing.T) {
+			m, c := seed(t)
+			defer c.Close()
+			if got := m.scopedRowCount(); got != 0 {
+				t.Fatalf("scopedRowCount = %d at arm; want 0 (test setup)", got)
+			}
+
+			// Quota with one scoped limit arrives mid-squeeze.
+			updated, _ := m.Update(QuotaMsg{Usage: quotaUsageScoped(80, 25, "Fable"), Source: "api", UpdatedAt: time.Now()})
+			m = updated.(Model)
+			if got := m.scopedRowCount(); got != 1 {
+				t.Fatalf("scopedRowCount = %d after scoped QuotaMsg; want 1 (test setup)", got)
+			}
+			if !m.springActive || m.springKind != springKindZoom {
+				t.Fatalf("mid-squeeze QuotaMsg tore down the squeeze: springActive=%v springKind=%d",
+					m.springActive, m.springKind)
+			}
+
+			updated, _ = m.Update(springTickMsg{gen: m.springGen})
+			m = updated.(Model)
+			if m.viewport.Height != m.chartHeight() {
+				t.Errorf("viewport.Height = %d after mid-squeeze tick; want chartHeight() = %d",
+					m.viewport.Height, m.chartHeight())
+			}
+			if got := lipgloss.Height(m.View()); got > m.h {
+				t.Errorf("View() rendered %d lines mid-squeeze with scoped row; exceeds terminal height %d", got, m.h)
+			}
+		})
 	}
 }
