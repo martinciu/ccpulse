@@ -227,6 +227,10 @@ func lerpSkyline(a, b []float64, r float64) []float64 {
 func (m *Model) renderZoomBarFrame(r float64) {
 	zoom := ZoomLevels[m.zoomIdx]
 	chartH := m.chartHeight()
+	// Same mid-spring height re-sync as renderSpringFrame (#499): a quota
+	// poll can change chartHeight() mid-squeeze while handleQuotaMsg's
+	// re-sync is skipped.
+	m.viewport.Height = chartH
 	vpW := m.viewport.Width
 	barsH := chartH
 	if chartH >= 6 {
@@ -263,6 +267,8 @@ func (m *Model) snapZoom() tea.Cmd {
 func (m *Model) renderZoomFrame(viewFrom, viewTo time.Time) {
 	zoom := ZoomLevels[m.zoomIdx]
 	chartH := m.chartHeight()
+	// Same mid-spring height re-sync as renderSpringFrame (#499).
+	m.viewport.Height = chartH
 	vpW := m.viewport.Width
 	sliced5h := slicePointsInRange(m.zoomSnap.pts5h, viewFrom, viewTo)
 	sliced7d := slicePointsInRange(m.zoomSnap.pts7d, viewFrom, viewTo)

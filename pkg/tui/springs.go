@@ -568,6 +568,13 @@ func (m *Model) renderSpringFrame() {
 	}
 	zoom := ZoomLevels[m.zoomIdx]
 	chartH := m.chartHeight()
+	// Re-sync the widget height every frame (mirrors renderBreakdownFrame):
+	// a quota poll landing mid-spring can change scopedRowCount() and thus
+	// chartHeight(), and handleQuotaMsg skips its re-sync while a spring is
+	// active. Without this the viewport stays one row too tall, bottom-pads
+	// a blank line above the footer for the rest of the animation, and the
+	// settle re-sync shows up as a visible jump (#499).
+	m.viewport.Height = chartH
 
 	// Determine whether the current frame renders as a line chart (remaining
 	// mode). Exit phase shows the OLD chart type; enter phase shows the NEW.
