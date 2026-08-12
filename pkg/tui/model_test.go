@@ -6370,6 +6370,9 @@ func TestBreakdownWindow_BarMode_MatchesBucketEdges(t *testing.T) {
 				viewportXOffset: tt.viewportXOffset,
 				lastChartTo:     sentinelTo,
 			}
+			if got := m.visibleBuckets(); got != 10 {
+				t.Fatalf("fixture assumes visibleBuckets() == 10 (chartWidth floor on a zero-width Model), got %d", got)
+			}
 			gotFrom, gotTo := m.breakdownWindow()
 			if !gotFrom.Equal(tt.wantFrom) {
 				t.Errorf("breakdownWindow from = %v, want %v", gotFrom, tt.wantFrom)

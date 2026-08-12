@@ -1452,6 +1452,9 @@ func TestBreakdownSwap_ChainsSecondLeg(t *testing.T) {
 	// height (a stale-height bug) fails this exact-value check instead of
 	// slipping through a bare ">0".
 	const wantModelsTarget = 6
+	if cols := breakdownCellCols(m.w); cols != 2 {
+		t.Fatalf("fixture assumes breakdownCellCols(%d) == 2 (wantModelsTarget builds on it), got %d", m.w, cols)
+	}
 	if m.breakdownSlideTo != wantModelsTarget {
 		t.Errorf("leg 2 target = %d, want %d (models' content-aware height)", m.breakdownSlideTo, wantModelsTarget)
 	}
@@ -1646,6 +1649,9 @@ func TestBreakdownKey_MidAnimation(t *testing.T) {
 		// pure recomputation from current content and would still report the
 		// correct value even if a bug corrupted breakdownSlideTo itself.
 		const wantModelsTarget = 6
+		if cols := breakdownCellCols(m.w); cols != 2 {
+			t.Fatalf("fixture assumes breakdownCellCols(%d) == 2 (wantModelsTarget builds on it), got %d", m.w, cols)
+		}
 		if got := m.breakdownSlideTo; got != wantModelsTarget {
 			t.Fatalf("leg 2 armed target (breakdownSlideTo) = %d, want %d (models' content-aware height)", got, wantModelsTarget)
 		}
@@ -1744,6 +1750,9 @@ func TestBreakdownSwap_HeightConservedAcrossBothLegs(t *testing.T) {
 	// fails this exact-value check instead of slipping through the bare
 	// per-frame conservation loop above.
 	const wantModelsTarget = 6
+	if cols := breakdownCellCols(m.w); cols != 2 {
+		t.Fatalf("fixture assumes breakdownCellCols(%d) == 2 (wantModelsTarget builds on it), got %d", m.w, cols)
+	}
 	if m.breakdownAnimH != wantModelsTarget {
 		t.Errorf("final breakdownAnimH = %d, want %d (models' content-aware height)", m.breakdownAnimH, wantModelsTarget)
 	}
