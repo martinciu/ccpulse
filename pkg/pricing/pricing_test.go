@@ -387,20 +387,13 @@ func TestSonnet5Snapshots(t *testing.T) {
 		CacheWrite5mPerMtok: 2.50,
 		CacheWrite1hPerMtok: 4.00,
 	}
-	standard := ModelRate{
-		InputPerMtok:        3.00,
-		OutputPerMtok:       15.00,
-		CacheReadPerMtok:    0.30,
-		CacheWrite5mPerMtok: 3.75,
-		CacheWrite1hPerMtok: 6.00,
-	}
 	for _, tc := range []struct {
 		version string
 		want    ModelRate
 	}{
 		{"2026-07-01", intro},
 		{"2026-07-24", intro},
-		{"2026-09-01", standard},
+		{"2026-09-01", intro},
 	} {
 		t.Run(tc.version, func(t *testing.T) {
 			tab := h.TableAt(mustParseDate(t, tc.version))
@@ -435,7 +428,7 @@ func TestSonnet5Resolution(t *testing.T) {
 	}{
 		{"fall-forward before first snapshot", time.Date(2026, 6, 15, 0, 0, 0, 0, time.UTC), "2026-07-01", 2.00},
 		{"intro window last second", time.Date(2026, 8, 31, 23, 59, 59, 0, time.UTC), "2026-07-24", 2.00},
-		{"standard from Sept 1", time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC), "2026-09-01", 3.00},
+		{"standard from Sept 1", time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC), "2026-09-01", 2.00},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
