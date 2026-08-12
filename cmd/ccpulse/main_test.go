@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"log/slog"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BurntSushi/toml"
 	tea "github.com/charmbracelet/bubbletea"
@@ -155,6 +157,27 @@ func TestRunTUI_MalformedConfig(t *testing.T) {
 	}
 }
 
+// runTUIBounded runs runTUI in a goroutine and returns its result, failing
+// the test if it does not return within 5s. runTUI cannot be stopped
+// externally once the program starts — newTeaProgram never passes
+// tea.WithContext, so neither ctx cancellation nor input EOF quits
+// bubbletea; only a `q` keypress does. If that keypress is ever dropped, a
+// synchronous call would block until the package timeout (10 min by
+// default), panic, and fail every other test in the package with a stack
+// that doesn't identify the offending assertion (#492).
+func runTUIBounded(t *testing.T, ctx context.Context) error {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() { done <- runTUI(ctx, io.Discard) }()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(5 * time.Second):
+		t.Fatal("runTUI did not return within 5s")
+	}
+	return nil // unreachable: t.Fatal stops the test
+}
+
 // TestRunTUI_AbsentConfigUsesDefaults asserts that runTUI proceeds normally
 // (doesn't error on the config step) when the config file simply doesn't exist.
 // The absent-config path is guarded by os.IsNotExist — defaults kick in.
@@ -175,7 +198,7 @@ func TestRunTUI_AbsentConfigUsesDefaults(t *testing.T) {
 		)
 	}
 
-	if err := runTUI(t.Context(), io.Discard); err != nil {
+	if err := runTUIBounded(t, t.Context()); err != nil {
 		t.Fatalf("runTUI should succeed with absent config (defaults), got: %v", err)
 	}
 }

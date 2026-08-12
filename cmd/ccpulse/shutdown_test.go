@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"go.uber.org/goleak"
@@ -78,18 +77,8 @@ func TestRunTUIQuitsCleanly(t *testing.T) {
 
 	// We exit via the `q` keypress, not via signal — context.Background
 	// is fine here.
-	done := make(chan error, 1)
-	go func() {
-		done <- runTUI(context.Background(), io.Discard)
-	}()
-
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("runTUI returned error: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("runTUI did not return within 5s after `q` keypress")
+	if err := runTUIBounded(t, context.Background()); err != nil {
+		t.Fatalf("runTUI returned error: %v", err)
 	}
 
 	// Belt-and-suspenders: the cache file should exist (proves runTUI
