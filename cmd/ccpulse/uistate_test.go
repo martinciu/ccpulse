@@ -78,7 +78,7 @@ func TestRunTUI_PersistsUIStateOnKeypress(t *testing.T) {
 	cacheDir := uiStateEnv(t)
 	injectKeys(t, "zuq")
 
-	if err := runTUI(t.Context(), io.Discard); err != nil {
+	if err := runTUIBounded(t, t.Context()); err != nil {
 		t.Fatalf("runTUI: %v", err)
 	}
 
@@ -108,7 +108,7 @@ func TestRunTUI_RestoresPersistedUIState(t *testing.T) {
 	}
 	injectKeys(t, "zq")
 
-	if err := runTUI(t.Context(), io.Discard); err != nil {
+	if err := runTUIBounded(t, t.Context()); err != nil {
 		t.Fatalf("runTUI: %v", err)
 	}
 
@@ -140,7 +140,7 @@ func TestRunTUI_CorruptUIStateFallsBackSilently(t *testing.T) {
 	}
 	injectKeys(t, "zq")
 
-	if err := runTUI(t.Context(), io.Discard); err != nil {
+	if err := runTUIBounded(t, t.Context()); err != nil {
 		t.Fatalf("runTUI with corrupt ui-state.toml: %v", err)
 	}
 
