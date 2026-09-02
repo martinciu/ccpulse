@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io/fs"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/martinciu/ccpulse/pkg/parse"
@@ -97,6 +99,39 @@ func (h History) Versions() []string {
 		out[i] = e.Version
 	}
 	return out
+}
+
+// ContentHash returns a deterministic FNV-64a hash, as lowercase hex, over the
+// full content of every embedded snapshot in h — not just the version
+// strings Versions() exposes. Any edit to any snapshot (a new model, a
+// corrected rate, an added file) changes the returned value, even when the
+// set of version strings stays the same. Consumed by pkg/cache to decide
+// whether a startup recost is needed (issue #512).
+func (h History) ContentHash() string {
+	sum := fnv.New64a()
+	// Strings are written with %q so each one is self-delimiting: a model
+	// name containing '|' or '\n' cannot produce the same byte stream as a
+	// differently-structured table.
+	for _, tab := range h.entries { // h.entries is already sorted by Version
+		fmt.Fprintf(sum, "%q|%q\n", tab.Version, tab.Currency)
+		names := make([]string, 0, len(tab.Models))
+		for name := range tab.Models {
+			names = append(names, name)
+		}
+		sort.Strings(names) // map iteration order must not affect the hash
+		for _, name := range names {
+			r := tab.Models[name]
+			fmt.Fprintf(sum, "%q|%s|%s|%s|%s|%s\n",
+				name,
+				strconv.FormatFloat(r.InputPerMtok, 'g', -1, 64),
+				strconv.FormatFloat(r.OutputPerMtok, 'g', -1, 64),
+				strconv.FormatFloat(r.CacheReadPerMtok, 'g', -1, 64),
+				strconv.FormatFloat(r.CacheWrite5mPerMtok, 'g', -1, 64),
+				strconv.FormatFloat(r.CacheWrite1hPerMtok, 'g', -1, 64),
+			)
+		}
+	}
+	return strconv.FormatUint(sum.Sum64(), 16)
 }
 
 // TableAt resolves the historical Table that applies to ts. Picks the largest

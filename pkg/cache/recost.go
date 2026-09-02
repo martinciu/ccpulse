@@ -15,17 +15,26 @@ import (
 
 const metaKeyRecostFingerprint = "last_recost_history_fingerprint"
 
-// recostAlgoTag versions the recost RESOLUTION ALGORITHM. It is prefixed onto the
-// fingerprint so an algorithm change (not just a new snapshot) forces a one-time
-// recost on the next launch after upgrade. Bump when CostFor's resolution logic
-// changes. "ff1" = fall-forward (issue #368).
+// recostAlgoTag versions the recost RESOLUTION ALGORITHM (CostFor's
+// fall-forward walk), independent of snapshot content. It is prefixed onto
+// the fingerprint so an algorithm change forces a one-time recost on the next
+// launch after upgrade, even when hist.ContentHash() is unchanged. Bump when
+// CostFor's resolution logic changes. "ff1" = fall-forward (issue #368).
 const recostAlgoTag = "ff1"
 
 // recostFingerprint is the value stored in meta to detect when a recost is
-// needed. It combines the algorithm tag with the embedded snapshot version set,
-// so either a new snapshot or an algorithm bump triggers AutoRecost.
+// needed. It combines three parts: the algo tag (versions the resolution
+// algorithm), the embedded snapshot version set (kept for a human-readable
+// stored value), and hist.ContentHash() (covers snapshot CONTENTS — editing
+// an existing snapshot in place, e.g. adding a model or correcting a rate,
+// changes the hash even though the version set does not, issue #512).
+// Either the algo tag or the content hash changing triggers exactly one
+// AutoRecost on the next launch. Idempotency is unaffected: evalRecostRow
+// only rewrites rows whose cost/version/unknown flag actually differ from
+// hist, so a recost triggered by an unrelated snapshot edit is a no-op for
+// every row it doesn't need to touch.
 func recostFingerprint(hist pricing.History) string {
-	return recostAlgoTag + ":" + strings.Join(hist.Versions(), ",")
+	return recostAlgoTag + ":" + strings.Join(hist.Versions(), ",") + ":" + hist.ContentHash()
 }
 
 // RecostStats summarizes a Recost run.

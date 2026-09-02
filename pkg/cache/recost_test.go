@@ -322,7 +322,7 @@ func TestAutoRecost_SkipsWhenFingerprintMatches(t *testing.T) {
 		t.Fatalf("seed stale version: %v", err)
 	}
 	// Pre-write the matching fingerprint into meta so AutoRecost short-circuits.
-	fp := "ff1:" + strings.Join(hist.Versions(), ",")
+	fp := cache.RecostFingerprint(hist)
 	if _, err := c.DB().Exec(`INSERT OR REPLACE INTO meta(key,value) VALUES('last_recost_history_fingerprint',?)`, fp); err != nil {
 		t.Fatalf("seed fingerprint: %v", err)
 	}
@@ -348,14 +348,17 @@ func TestAutoRecost_RunsAfterAlgorithmBump(t *testing.T) {
 		Timestamp: time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC),
 	}
 	seedRow(t, c, hist, m)
-	// Orphaned pre-#368 state + an OLD-FORMAT fingerprint (version list, no algo
-	// tag) as a pre-#368 build would have written it.
+	// Orphaned pre-#368 state + a fingerprint under a DIFFERENT algo tag
+	// ("ff0" instead of "ff1"), version set and content hash otherwise
+	// identical to what AutoRecost would compute now. Isolates the algo-tag
+	// dimension: this must still trigger even though nothing about the
+	// snapshot content changed.
 	if _, err := c.DB().Exec(
 		`UPDATE messages SET pricing_unknown = 1, cost_usd_estimate = 0, pricing_version = '2026-05-09' WHERE session_id = ?`,
 		m.SessionID); err != nil {
 		t.Fatalf("seed orphaned state: %v", err)
 	}
-	oldFP := strings.Join(hist.Versions(), ",") // no "ff1:" prefix
+	oldFP := "ff0:" + strings.Join(hist.Versions(), ",") + ":" + hist.ContentHash()
 	if _, err := c.DB().Exec(
 		`INSERT OR REPLACE INTO meta(key,value) VALUES('last_recost_history_fingerprint',?)`, oldFP); err != nil {
 		t.Fatalf("seed old fingerprint: %v", err)
@@ -374,7 +377,7 @@ func TestAutoRecost_RunsAfterAlgorithmBump(t *testing.T) {
 	if err := c.DB().QueryRow(`SELECT value FROM meta WHERE key = 'last_recost_history_fingerprint'`).Scan(&fp); err != nil {
 		t.Fatalf("read fingerprint: %v", err)
 	}
-	if want := "ff1:" + strings.Join(hist.Versions(), ","); fp != want {
+	if want := cache.RecostFingerprint(hist); fp != want {
 		t.Errorf("fingerprint = %q, want %q", fp, want)
 	}
 }
@@ -396,7 +399,10 @@ func TestRecost_WritesFingerprintOnCommit(t *testing.T) {
 	if err := c.DB().QueryRow(`SELECT value FROM meta WHERE key = 'last_recost_history_fingerprint'`).Scan(&got); err != nil {
 		t.Fatalf("read fingerprint: %v", err)
 	}
-	want := "ff1:" + strings.Join(hist.Versions(), ",")
+	// Hand-built oracle, deliberately not cache.RecostFingerprint: pins the
+	// stored "<algo tag>:<versions>:<content hash>" format independently of
+	// the function that produces it.
+	want := "ff1:" + strings.Join(hist.Versions(), ",") + ":" + hist.ContentHash()
 	if got != want {
 		t.Errorf("fingerprint = %q, want %q", got, want)
 	}
@@ -480,5 +486,92 @@ func TestRecost_AttemptRowRepricedAtOwnModel(t *testing.T) {
 	want := 434.0 / 1_000_000.0 * 400
 	if diff := cost - want; diff > 1e-12 || diff < -1e-12 {
 		t.Errorf("attempt row cost = %v, want %v (re-priced at claude-fable-5 rate)", cost, want)
+	}
+}
+
+// TestAutoRecost_RescuesRowAfterInPlaceSnapshotEdit pins the exact scenario
+// issue #512 describes: editing an existing snapshot in place (adding a
+// model, correcting a rate) without changing the set of version strings. The
+// old version-set-only fingerprint would treat this as identical to the prior
+// history and AutoRecost would never look at the row again.
+func TestAutoRecost_RescuesRowAfterInPlaceSnapshotEdit(t *testing.T) {
+	c := mustOpenTempCache(t)
+	hist1 := twoVersionHistory(t) // claude-ghost-1 is absent from both tables
+	m := parse.Message{
+		SessionID: "s1", ProjectSlug: "p", Role: "assistant",
+		Model: "claude-ghost-1", InputTokens: 1_000_000,
+		Timestamp: time.Date(2026, 5, 10, 0, 0, 0, 0, time.UTC),
+	}
+	seedRow(t, c, hist1, m)
+
+	// Confirm the seed landed unknown: claude-ghost-1 is nowhere in hist1.
+	var unk int
+	var cost float64
+	if err := c.DB().QueryRow(
+		`SELECT pricing_unknown, cost_usd_estimate FROM messages WHERE session_id = ?`,
+		m.SessionID).Scan(&unk, &cost); err != nil {
+		t.Fatalf("read seeded row: %v", err)
+	}
+	if unk != 1 || cost != 0 {
+		t.Fatalf("seeded row = unknown=%d cost=%v, want unknown=1 cost=0", unk, cost)
+	}
+
+	// First AutoRecost writes hist1's fingerprint. The row stays unknown —
+	// hist1 doesn't know claude-ghost-1 either, so nothing to rescue yet.
+	c.AutoRecost(t.Context(), hist1)
+	if err := c.DB().QueryRow(
+		`SELECT pricing_unknown, cost_usd_estimate FROM messages WHERE session_id = ?`,
+		m.SessionID).Scan(&unk, &cost); err != nil {
+		t.Fatalf("read row after first AutoRecost: %v", err)
+	}
+	if unk != 1 || cost != 0 {
+		t.Fatalf("row after first AutoRecost = unknown=%d cost=%v, want unknown=1 cost=0", unk, cost)
+	}
+
+	// hist2 has the SAME version strings as hist1 — an in-place edit, not a
+	// new snapshot — but the latest table now knows claude-ghost-1.
+	hist2, err := pricing.HistoryForTest([]pricing.Table{
+		{
+			Version:  "2026-05-09",
+			Currency: "USD",
+			Models: map[string]pricing.ModelRate{
+				"claude-opus-4-7": {InputPerMtok: 15, OutputPerMtok: 75},
+			},
+		},
+		{
+			Version:  "2026-05-10",
+			Currency: "USD",
+			Models: map[string]pricing.ModelRate{
+				"claude-opus-4-7":  {InputPerMtok: 5, OutputPerMtok: 25},
+				"claude-haiku-4-5": {InputPerMtok: 1, OutputPerMtok: 5},
+				"claude-ghost-1":   {InputPerMtok: 3, OutputPerMtok: 15},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("HistoryForTest: %v", err)
+	}
+	if strings.Join(hist1.Versions(), ",") != strings.Join(hist2.Versions(), ",") {
+		t.Fatalf("test setup invalid: hist1 and hist2 version sets differ")
+	}
+
+	c.AutoRecost(t.Context(), hist2)
+
+	var ver string
+	if err := c.DB().QueryRow(
+		`SELECT pricing_unknown, cost_usd_estimate, pricing_version FROM messages WHERE session_id = ?`,
+		m.SessionID).Scan(&unk, &cost, &ver); err != nil {
+		t.Fatalf("read row after second AutoRecost: %v", err)
+	}
+	if unk != 0 {
+		t.Errorf("pricing_unknown = %d after in-place snapshot edit, want 0 (rescued)", unk)
+	}
+	// 1,000,000 input tokens at claude-ghost-1's $3/Mtok input rate, no
+	// output or cache tokens.
+	if cost != 3 {
+		t.Errorf("cost_usd_estimate = %v, want 3 (1M input tokens at $3/Mtok)", cost)
+	}
+	if ver != "2026-05-10" {
+		t.Errorf("pricing_version = %q, want 2026-05-10 (the version claude-ghost-1 was added to)", ver)
 	}
 }
