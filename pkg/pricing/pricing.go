@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io/fs"
+	"math"
 	"sort"
 	"strconv"
 	"time"
@@ -74,7 +75,15 @@ func Load() (History, error) {
 }
 
 // parseTable unmarshals raw pricing JSON and validates: currency must be USD,
-// version must be non-empty.
+// version must be non-empty, the models object must be present and non-empty,
+// and every model's rates must be present and positive finite numbers. A
+// missing or misspelled "models" key would otherwise load as an empty table
+// that prices every message unknown. A missing or misspelled rate key in the source
+// JSON is indistinguishable from an explicit 0 once encoding/json has
+// unmarshalled it into a float64 zero value, so parseTable rejects it rather
+// than silently pricing that dimension free. A genuinely free-tier rate has
+// no precedent in the embedded snapshots and would need an explicit design
+// decision (e.g. a dedicated sentinel), not a parse-time default.
 func parseTable(b []byte) (Table, error) {
 	var t Table
 	if err := json.Unmarshal(b, &t); err != nil {
@@ -86,7 +95,49 @@ func parseTable(b []byte) (Table, error) {
 	if t.Version == "" {
 		return t, errors.New("missing version field")
 	}
+	if len(t.Models) == 0 {
+		return t, errors.New("no models (missing or empty \"models\" object)")
+	}
+	if err := validateModels(t.Models); err != nil {
+		return t, err
+	}
 	return t, nil
+}
+
+// validateModels checks that every ModelRate in models has all five rate
+// fields set to a positive, finite number. Model names are visited in
+// sorted order and fields in struct declaration order, so the first
+// validation failure is deterministic across runs.
+func validateModels(models map[string]ModelRate) error {
+	names := make([]string, 0, len(models))
+	for name := range models {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if name == "" {
+			return errors.New("model name must not be empty")
+		}
+		r := models[name]
+		fields := [...]struct {
+			json string
+			rate float64
+		}{
+			{"input_per_mtok", r.InputPerMtok},
+			{"output_per_mtok", r.OutputPerMtok},
+			{"cache_read_per_mtok", r.CacheReadPerMtok},
+			{"cache_write_5m_per_mtok", r.CacheWrite5mPerMtok},
+			{"cache_write_1h_per_mtok", r.CacheWrite1hPerMtok},
+		}
+		for _, f := range fields {
+			// IsNaN and IsInf are load-bearing: NaN <= 0 and +Inf <= 0 are
+			// both false, so the range check alone would let them through.
+			if math.IsNaN(f.rate) || math.IsInf(f.rate, 0) || f.rate <= 0 {
+				return fmt.Errorf("model %q: %s must be a positive finite rate, got %v", name, f.json, f.rate)
+			}
+		}
+	}
+	return nil
 }
 
 // Latest returns the highest-version entry.
