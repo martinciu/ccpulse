@@ -103,8 +103,9 @@ jobs:
               - Cache Hits & Refreshes -> cache_read_per_mtok
               - 5m Cache Writes        -> cache_write_5m_per_mtok
               - 1h Cache Writes        -> cache_write_1h_per_mtok
-            Treat the bare aliases `opus`, `sonnet`, and `haiku` as
-            informational only — do NOT compare them. Also note any model on
+            Treat every bare alias (a `models` key with no `claude-` prefix:
+            `opus`, `sonnet`, `haiku`, `fable`, `mythos`, and any future one)
+            as informational only — do NOT compare them. Also note any model on
             the page that is missing from the snapshot (a new model we should
             add). A snapshot model that is missing from the page is a RETIRED
             model — ignore it: retired models stay in the snapshot for
