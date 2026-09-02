@@ -195,6 +195,8 @@ func TestHistory_TableAt(t *testing.T) {
 		{"day before 2026-07-24 -> 2026-07-01", mustTime("2026-07-23T23:59:59Z"), "2026-07-01"},
 		{"intro window end -> 2026-07-24", mustTime("2026-08-31T23:59:59Z"), "2026-07-24"},
 		{"standard rates start -> 2026-09-01", mustTime("2026-09-01T00:00:00Z"), "2026-09-01"},
+		{"last second before 2026-09-02 -> 2026-09-01", mustTime("2026-09-01T23:59:59Z"), "2026-09-01"},
+		{"fable 5.1 snapshot -> 2026-09-02", mustTime("2026-09-02T00:00:00Z"), "2026-09-02"},
 		{"after latest -> latest", mustTime("2099-01-01T00:00:00Z"), latest},
 	}
 	for _, c := range cases {
@@ -396,6 +398,7 @@ func TestSonnet5Snapshots(t *testing.T) {
 		// The $3/$15 increase scheduled for 2026-09-01 was cancelled; the
 		// intro rates are the standard price (issue #496).
 		{"2026-09-01", intro},
+		{"2026-09-02", intro},
 	} {
 		t.Run(tc.version, func(t *testing.T) {
 			tab := h.TableAt(mustParseDate(t, tc.version))
@@ -468,6 +471,7 @@ func TestOpus5Snapshots(t *testing.T) {
 	}{
 		{"2026-07-24", want},
 		{"2026-09-01", want},
+		{"2026-09-02", want},
 	} {
 		t.Run(tc.version, func(t *testing.T) {
 			tab := h.TableAt(mustParseDate(t, tc.version))
@@ -486,7 +490,7 @@ func TestOpus5Snapshots(t *testing.T) {
 }
 
 // TestOpus5Resolution pins the pricing_version stamped and the resolved cost
-// for Claude Opus 5 across the 2026-07-24 intro window and the 2026-09-01
+// for Claude Opus 5 across the 2026-07-24 intro window and the 2026-09-02
 // carry-forward table. Resolution walks forward only, so a model absent from
 // a later snapshot costs $0 rather than falling back (issue #470).
 func TestOpus5Resolution(t *testing.T) {
@@ -504,11 +508,104 @@ func TestOpus5Resolution(t *testing.T) {
 		{"fall-forward before snapshot", time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC), "2026-07-24", 5.00},
 		{"exact snapshot date", time.Date(2026, 7, 24, 0, 0, 0, 0, time.UTC), "2026-07-24", 5.00},
 		{"intro window last second", time.Date(2026, 8, 31, 23, 59, 59, 0, time.UTC), "2026-07-24", 5.00},
-		{"after standard rates start", time.Date(2026, 9, 15, 0, 0, 0, 0, time.UTC), "2026-09-01", 5.00},
+		{"after fable 5.1 snapshot", time.Date(2026, 9, 15, 0, 0, 0, 0, time.UTC), "2026-09-02", 5.00},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			m := parse.Message{Timestamp: tc.ts, Model: "claude-opus-5", InputTokens: Mtok}
+			cost, version, unknown := h.CostFor(m)
+			if unknown {
+				t.Fatal("unknown = true, want false")
+			}
+			if version != tc.wantVersion {
+				t.Errorf("version = %q, want %q", version, tc.wantVersion)
+			}
+			if cost != tc.wantCost {
+				t.Errorf("cost = %v, want %v", cost, tc.wantCost)
+			}
+		})
+	}
+}
+
+// TestFable51Snapshots pins the Claude Fable 5.1 / Mythos 5.1 rates introduced
+// by the 2026-09-02 snapshot. The cache-read rate is 0.025x base input
+// ($0.25/MTok), not the 0.1x every other model uses — the pricing page carries
+// an explicit footnote for it (issue #511). The trailing claude-fable-5 check
+// proves the new rate was not also applied to the previous generation.
+func TestFable51Snapshots(t *testing.T) {
+	h, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	tab := h.TableAt(mustParseDate(t, "2026-09-02"))
+	if tab.Version != "2026-09-02" {
+		t.Fatalf("TableAt(2026-09-02).Version = %q, want 2026-09-02", tab.Version)
+	}
+	want := ModelRate{
+		InputPerMtok:        10.00,
+		OutputPerMtok:       50.00,
+		CacheReadPerMtok:    0.25,
+		CacheWrite5mPerMtok: 12.50,
+		CacheWrite1hPerMtok: 20.00,
+	}
+	for _, model := range []string{"claude-fable-5-1", "claude-mythos-5-1"} {
+		got, ok := tab.Models[model]
+		if !ok {
+			t.Errorf("Models[%q] missing from 2026-09-02", model)
+			continue
+		}
+		if got != want {
+			t.Errorf("Models[%q] = %+v, want %+v", model, got, want)
+		}
+	}
+	for _, model := range []string{"claude-fable-5", "claude-mythos-5"} {
+		prev, ok := tab.Models[model]
+		if !ok {
+			t.Errorf("Models[%q] missing from 2026-09-02 (carry-forward broken)", model)
+			continue
+		}
+		if prev.CacheReadPerMtok != 1.00 {
+			t.Errorf("Models[%q].CacheReadPerMtok = %v, want 1.00 (0.1x rate must stay on the previous generation)", model, prev.CacheReadPerMtok)
+		}
+	}
+}
+
+// TestFable51Resolution pins the pricing_version stamped and the resolved cost
+// for Claude Fable 5.1 / Mythos 5.1 around the 2026-09-02 snapshot. Row 1 is
+// the rescue path for rows ingested before the snapshot existed (fall-forward,
+// issue #368 semantics). The cache-read rows are the reason the snapshot
+// exists: $0.25/MTok is 0.025x base input, while the previous generation keeps
+// the standard 0.1x ($1.00/MTok) on the same table (issue #511).
+func TestFable51Resolution(t *testing.T) {
+	h, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	const Mtok = 1_000_000
+	cases := []struct {
+		name        string
+		ts          time.Time
+		model       string
+		input       int64
+		cacheRead   int64
+		wantVersion string
+		wantCost    float64
+	}{
+		{"fall-forward before snapshot", time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC), "claude-fable-5-1", Mtok, 0, "2026-09-02", 10.00},
+		{"exact snapshot date", time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC), "claude-fable-5-1", Mtok, 0, "2026-09-02", 10.00},
+		{"after snapshot", time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC), "claude-fable-5-1", Mtok, 0, "2026-09-02", 10.00},
+		{"fable 5.1 cache read at 0.025x", time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC), "claude-fable-5-1", 0, Mtok, "2026-09-02", 0.25},
+		{"mythos 5.1 cache read at 0.025x", time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC), "claude-mythos-5-1", 0, Mtok, "2026-09-02", 0.25},
+		{"fable 5 cache read stays 0.1x", time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC), "claude-fable-5", 0, Mtok, "2026-09-02", 1.00},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := parse.Message{
+				Timestamp:       tc.ts,
+				Model:           tc.model,
+				InputTokens:     tc.input,
+				CacheReadTokens: tc.cacheRead,
+			}
 			cost, version, unknown := h.CostFor(m)
 			if unknown {
 				t.Fatal("unknown = true, want false")
