@@ -3,6 +3,59 @@
 All notable changes to ccpulse are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.11.0] — 2026-09-02
+
+### Added
+- Pricing snapshot `2026-09-02` with Claude Fable 5.1 and Claude Mythos 5.1
+  at $10 / $50 / $0.25 / $12.50 / $20 per MTok. Cache hits and refreshes on
+  these two models are 0.025× base input (an explicit footnote on the
+  pricing page), four times cheaper than Fable 5; the other four rates match.
+  The bare `fable` / `mythos` aliases stay era-frozen at Fable 5 rates, the
+  same way `opus` was never re-pointed past Opus 4.1 (#511, #513)
+
+### Changed
+- Sonnet 5's $2 / $10 per MTok introductory rates are now the standard price:
+  the `2026-09-01` snapshot no longer carries the cancelled $3 / $15
+  increase, so Sonnet 5 messages dated September 1 or later are priced
+  correctly instead of ~50% too high. Sonnet 4.x and the bare `sonnet` alias
+  are unchanged (#496, #498)
+- The startup recost fingerprint now covers snapshot *contents*, not just
+  the set of snapshot versions: an in-place edit to an existing pricing
+  snapshot (an added model, a corrected rate) triggers exactly one
+  `AutoRecost` on the next launch instead of waiting for a manual
+  `ccpulse recost`. Because the stored fingerprint format changed, the first
+  launch after upgrading runs that one-time recost for every cache — bounded
+  by the existing 5 s timeout, and only rows whose cost, version or
+  unknown flag actually differ are rewritten (#512, #517)
+- Pricing snapshots are validated when loaded: a missing or empty `models`
+  object, an empty model name, or any rate that is missing, zero, negative
+  or non-finite is rejected up front instead of silently pricing that
+  dimension at $0 with `pricing_unknown = false`. The carry-forward test now
+  compares every rate between consecutive snapshots and requires intentional
+  changes to be declared explicitly (#514, #518)
+
+### Fixed
+- A quota poll landing mid-animation no longer desyncs the viewport from the
+  chart: spring, unit-toggle and zoom frames re-sync the viewport height on
+  every frame, so the x-labels no longer float one row up and the header's
+  top border is no longer pushed off-screen until the animation settles
+  (#499, #500)
+
+### Internal
+- Go toolchain 1.25.12 → 1.25.13, clearing four reachable standard-library
+  vulnerabilities flagged by govulncheck (#508, #509)
+- The pricing-drift checker treats every bare alias (any `models` key
+  without a `claude-` prefix) as informational, so the era-frozen `fable` /
+  `mythos` aliases cannot raise a false drift report (#515, #516)
+- Tests: two breakdown tests now assert the layout constants they silently
+  depended on (#482, #502); the full-lifecycle `runTUI` tests bound their
+  wait so a dropped `q` fails one test instead of the whole package (#492,
+  #503)
+- Bump `modernc.org/sqlite` 1.55.0 → 1.57.0, `charmbracelet/x/ansi`
+  0.11.7 → 0.11.8, `lucasb-eyer/go-colorful` 1.4.0 → 1.4.1 (#493, #504,
+  #506) and `anthropics/claude-code-action` 1.0.183 → 1.0.210 (#494, #505,
+  #507, #510)
+
 ## [0.10.0] — 2026-08-10
 
 ### Added
