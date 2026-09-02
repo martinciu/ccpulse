@@ -619,3 +619,127 @@ func TestFable51Resolution(t *testing.T) {
 		})
 	}
 }
+
+// TestHistory_ContentHash pins that ContentHash covers snapshot CONTENTS, not
+// just the set of version strings — the guard issue #512 needs so an in-place
+// edit to an existing snapshot (new model, corrected rate) is distinguishable
+// from an untouched one.
+func TestHistory_ContentHash(t *testing.T) {
+	baseTables := func() []Table {
+		return []Table{
+			{
+				Version:  "2026-01-01",
+				Currency: "USD",
+				Models: map[string]ModelRate{
+					"modelA": {InputPerMtok: 10, OutputPerMtok: 50},
+					"modelB": {InputPerMtok: 20, OutputPerMtok: 60},
+				},
+			},
+			{
+				Version:  "2026-02-01",
+				Currency: "USD",
+				Models: map[string]ModelRate{
+					"modelA": {InputPerMtok: 8, OutputPerMtok: 40},
+				},
+			},
+		}
+	}
+
+	t.Run("identical histories hash equal and stably", func(t *testing.T) {
+		h1, err := HistoryForTest(baseTables())
+		if err != nil {
+			t.Fatalf("HistoryForTest: %v", err)
+		}
+		h2, err := HistoryForTest(baseTables())
+		if err != nil {
+			t.Fatalf("HistoryForTest: %v", err)
+		}
+		hash1 := h1.ContentHash()
+		hash2 := h2.ContentHash()
+		if hash1 == "" {
+			t.Fatal("ContentHash() returned empty string")
+		}
+		if hash1 != hash2 {
+			t.Errorf("ContentHash() = %q for h1, %q for h2, want equal for identical content", hash1, hash2)
+		}
+		// Calling it twice on the same History must be stable (no hidden
+		// mutation, no map-iteration-order dependence).
+		if again := h1.ContentHash(); again != hash1 {
+			t.Errorf("ContentHash() called twice on same History = %q then %q, want stable", hash1, again)
+		}
+	})
+
+	t.Run("single rate difference changes the hash", func(t *testing.T) {
+		base, err := HistoryForTest(baseTables())
+		if err != nil {
+			t.Fatalf("HistoryForTest: %v", err)
+		}
+		edited := baseTables()
+		editedModelA := edited[0].Models["modelA"]
+		editedModelA.OutputPerMtok = 51 // was 50
+		edited[0].Models["modelA"] = editedModelA
+		editedHist, err := HistoryForTest(edited)
+		if err != nil {
+			t.Fatalf("HistoryForTest: %v", err)
+		}
+		if base.ContentHash() == editedHist.ContentHash() {
+			t.Error("ContentHash() unchanged after editing one rate on one model, want different hash")
+		}
+		// The version set is identical — this is exactly the case the old
+		// version-set-only fingerprint missed.
+		if strings.Join(base.Versions(), ",") != strings.Join(editedHist.Versions(), ",") {
+			t.Fatalf("test setup invalid: version sets differ")
+		}
+	})
+
+	t.Run("model key difference changes the hash", func(t *testing.T) {
+		base, err := HistoryForTest(baseTables())
+		if err != nil {
+			t.Fatalf("HistoryForTest: %v", err)
+		}
+		edited := baseTables()
+		edited[1].Models["modelC"] = ModelRate{InputPerMtok: 8, OutputPerMtok: 40}
+		editedHist, err := HistoryForTest(edited)
+		if err != nil {
+			t.Fatalf("HistoryForTest: %v", err)
+		}
+		if base.ContentHash() == editedHist.ContentHash() {
+			t.Error("ContentHash() unchanged after adding a model key, want different hash")
+		}
+	})
+
+	t.Run("separator characters in a model name do not collide", func(t *testing.T) {
+		// With bare '|' / '\n' separators, a single model named
+		// "foo|1|1|1|1|1\nzbar" serialises to the same byte stream as the
+		// two models "foo" and "zbar"; %q-quoted fields keep them distinct.
+		one := ModelRate{InputPerMtok: 1, OutputPerMtok: 1, CacheReadPerMtok: 1, CacheWrite5mPerMtok: 1, CacheWrite1hPerMtok: 1}
+		two := ModelRate{InputPerMtok: 2, OutputPerMtok: 2, CacheReadPerMtok: 2, CacheWrite5mPerMtok: 2, CacheWrite1hPerMtok: 2}
+		split, err := HistoryForTest([]Table{{
+			Version: "2026-01-01", Currency: "USD",
+			Models: map[string]ModelRate{"foo": one, "zbar": two},
+		}})
+		if err != nil {
+			t.Fatalf("HistoryForTest: %v", err)
+		}
+		joined, err := HistoryForTest([]Table{{
+			Version: "2026-01-01", Currency: "USD",
+			Models: map[string]ModelRate{"foo|1|1|1|1|1\nzbar": two},
+		}})
+		if err != nil {
+			t.Fatalf("HistoryForTest: %v", err)
+		}
+		if split.ContentHash() == joined.ContentHash() {
+			t.Error("ContentHash() collided for a model name containing separator characters")
+		}
+	})
+
+	t.Run("Load() returns a non-empty hash", func(t *testing.T) {
+		h, err := Load()
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if hash := h.ContentHash(); hash == "" {
+			t.Error("ContentHash() on embedded history returned empty string")
+		}
+	})
+}
