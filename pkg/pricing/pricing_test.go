@@ -1,6 +1,8 @@
 package pricing
 
 import (
+	"fmt"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -104,12 +106,24 @@ func TestParseTable(t *testing.T) {
 	}{
 		{
 			name:    "usd_accepted",
-			data:    `{"version":"test","currency":"USD","models":{}}`,
+			data:    `{"version":"test","currency":"USD","models":{"claude-x":{"input_per_mtok":5,"output_per_mtok":25,"cache_read_per_mtok":0.5,"cache_write_5m_per_mtok":6.25,"cache_write_1h_per_mtok":10}}}`,
 			wantVer: "test",
 		},
 		{
+			name:    "empty_models_rejected",
+			data:    `{"version":"test","currency":"USD","models":{}}`,
+			wantErr: "no models",
+		},
+		{
+			// A misspelled "models" key decodes to a nil map — the whole
+			// table would silently price every message unknown.
+			name:    "missing_models_key_rejected",
+			data:    `{"version":"test","currency":"USD","modles":{"claude-x":{"input_per_mtok":5}}}`,
+			wantErr: "no models",
+		},
+		{
 			name:             "happy_path_with_models",
-			data:             `{"version":"test","currency":"USD","models":{"claude-opus-4-7":{"input_per_mtok":5}}}`,
+			data:             `{"version":"test","currency":"USD","models":{"claude-opus-4-7":{"input_per_mtok":5,"output_per_mtok":25,"cache_read_per_mtok":0.5,"cache_write_5m_per_mtok":6.25,"cache_write_1h_per_mtok":10}}}`,
 			wantVer:          "test",
 			wantModelKey:     "claude-opus-4-7",
 			wantInputPerMtok: 5,
@@ -133,6 +147,45 @@ func TestParseTable(t *testing.T) {
 			name:    "malformed_json_rejected",
 			data:    `{not json`,
 			wantErr: "unmarshal:",
+		},
+		{
+			// cache_read_per_mtok key is absent entirely: encoding/json leaves
+			// it at the float64 zero value, indistinguishable from an explicit
+			// 0 — parseTable must reject it rather than silently pricing the
+			// dimension free.
+			name:    "missing_rate_key_rejected",
+			data:    `{"version":"test","currency":"USD","models":{"claude-x":{"input_per_mtok":5,"output_per_mtok":25,"cache_write_5m_per_mtok":6.25,"cache_write_1h_per_mtok":10}}}`,
+			wantErr: `model "claude-x": cache_read_per_mtok must be a positive finite rate, got 0`,
+		},
+		{
+			name:    "zero_rate_rejected",
+			data:    `{"version":"test","currency":"USD","models":{"claude-x":{"input_per_mtok":0,"output_per_mtok":25,"cache_read_per_mtok":0.5,"cache_write_5m_per_mtok":6.25,"cache_write_1h_per_mtok":10}}}`,
+			wantErr: `model "claude-x": input_per_mtok must be a positive finite rate, got 0`,
+		},
+		{
+			name:    "negative_rate_rejected",
+			data:    `{"version":"test","currency":"USD","models":{"claude-x":{"input_per_mtok":5,"output_per_mtok":-25,"cache_read_per_mtok":0.5,"cache_write_5m_per_mtok":6.25,"cache_write_1h_per_mtok":10}}}`,
+			wantErr: `model "claude-x": output_per_mtok must be a positive finite rate, got -25`,
+		},
+		{
+			// Two violating models: the error must name the alphabetically
+			// first one regardless of map iteration order. claude-b appears
+			// first in the JSON on purpose.
+			name:    "first_error_names_alphabetically_first_model",
+			data:    `{"version":"test","currency":"USD","models":{"claude-b":{"input_per_mtok":5,"output_per_mtok":0,"cache_read_per_mtok":0.5,"cache_write_5m_per_mtok":6.25,"cache_write_1h_per_mtok":10},"claude-a":{"input_per_mtok":5,"output_per_mtok":25,"cache_write_5m_per_mtok":6.25,"cache_write_1h_per_mtok":10}}}`,
+			wantErr: `model "claude-a": cache_read_per_mtok must be a positive finite rate, got 0`,
+		},
+		{
+			name:    "empty_model_name_rejected",
+			data:    `{"version":"test","currency":"USD","models":{"":{"input_per_mtok":5,"output_per_mtok":25,"cache_read_per_mtok":0.5,"cache_write_5m_per_mtok":6.25,"cache_write_1h_per_mtok":10}}}`,
+			wantErr: "model name must not be empty",
+		},
+		{
+			name:             "multi_model_table_accepted",
+			data:             `{"version":"test","currency":"USD","models":{"claude-a":{"input_per_mtok":1,"output_per_mtok":2,"cache_read_per_mtok":0.1,"cache_write_5m_per_mtok":1.25,"cache_write_1h_per_mtok":2},"claude-b":{"input_per_mtok":3,"output_per_mtok":4,"cache_read_per_mtok":0.3,"cache_write_5m_per_mtok":3.75,"cache_write_1h_per_mtok":6}}}`,
+			wantVer:          "test",
+			wantModelKey:     "claude-b",
+			wantInputPerMtok: 3,
 		},
 	}
 
@@ -159,6 +212,49 @@ func TestParseTable(t *testing.T) {
 			}
 			if err == nil {
 				t.Fatalf("parseTable(%q) returned nil error, want error containing %q", tt.data, tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("error = %q, want substring %q", err.Error(), tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestValidateModels_NonFiniteRejected exercises the NaN/Inf branch of
+// validateModels directly. encoding/json rejects out-of-range literals
+// (e.g. 1e999) before they ever reach a float64, so this path is
+// unreachable through parseTable's JSON input and must be tested against
+// the helper with a constructed ModelRate instead (issue #514).
+func TestValidateModels_NonFiniteRejected(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		rate    ModelRate
+		wantErr string
+	}{
+		{
+			name:    "nan_input",
+			rate:    ModelRate{InputPerMtok: math.NaN(), OutputPerMtok: 1, CacheReadPerMtok: 1, CacheWrite5mPerMtok: 1, CacheWrite1hPerMtok: 1},
+			wantErr: `model "claude-x": input_per_mtok must be a positive finite rate, got NaN`,
+		},
+		{
+			name:    "pos_inf_output",
+			rate:    ModelRate{InputPerMtok: 1, OutputPerMtok: math.Inf(1), CacheReadPerMtok: 1, CacheWrite5mPerMtok: 1, CacheWrite1hPerMtok: 1},
+			wantErr: `model "claude-x": output_per_mtok must be a positive finite rate, got +Inf`,
+		},
+		{
+			name:    "neg_inf_cache_write_1h",
+			rate:    ModelRate{InputPerMtok: 1, OutputPerMtok: 1, CacheReadPerMtok: 1, CacheWrite5mPerMtok: 1, CacheWrite1hPerMtok: math.Inf(-1)},
+			wantErr: `model "claude-x": cache_write_1h_per_mtok must be a positive finite rate, got -Inf`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateModels(map[string]ModelRate{"claude-x": tt.rate})
+			if err == nil {
+				t.Fatalf("validateModels(%+v) returned nil error, want error containing %q", tt.rate, tt.wantErr)
 			}
 			if !strings.Contains(err.Error(), tt.wantErr) {
 				t.Errorf("error = %q, want substring %q", err.Error(), tt.wantErr)
@@ -353,15 +449,68 @@ func TestSnapshot20260609_FableAndMythos(t *testing.T) {
 	}
 }
 
+// carryForwardExceptionKey identifies one declared, intentional rate change
+// between consecutive snapshots: the NEWER snapshot's version and the model
+// whose rate changed.
+type carryForwardExceptionKey struct{ version, model string }
+
+// carryForwardExceptions declares every intentional rate change between
+// consecutive snapshots for TestHistory_CarryForward_AllSnapshots, keyed by
+// the newer snapshot's version and model name. The value is the ModelRate
+// expected AFTER the change. Undeclared entries are required to carry
+// forward with byte-identical rates; a declared entry must both match this
+// value in the newer snapshot and actually differ from the model's rate in
+// the immediately preceding snapshot, so a stale declaration (left behind
+// after a later edit reverts the change) fails the test. See issue #514.
+var carryForwardExceptions = map[carryForwardExceptionKey]ModelRate{
+	// Intentional Opus 4.7 price cut that shipped with the 2026-05-10
+	// snapshot: input/output/cache rates all dropped roughly 3x from the
+	// 2026-05-09 launch pricing.
+	{version: "2026-05-10", model: "claude-opus-4-7"}: {
+		InputPerMtok:        5.00,
+		OutputPerMtok:       25.00,
+		CacheReadPerMtok:    0.50,
+		CacheWrite5mPerMtok: 6.25,
+		CacheWrite1hPerMtok: 10.00,
+	},
+}
+
+// diffModelRate returns one "field: prev -> cur" string per ModelRate field
+// (in JSON-tag name) that differs between prev and cur.
+func diffModelRate(prev, cur ModelRate) []string {
+	fields := []struct {
+		json      string
+		prev, cur float64
+	}{
+		{"input_per_mtok", prev.InputPerMtok, cur.InputPerMtok},
+		{"output_per_mtok", prev.OutputPerMtok, cur.OutputPerMtok},
+		{"cache_read_per_mtok", prev.CacheReadPerMtok, cur.CacheReadPerMtok},
+		{"cache_write_5m_per_mtok", prev.CacheWrite5mPerMtok, cur.CacheWrite5mPerMtok},
+		{"cache_write_1h_per_mtok", prev.CacheWrite1hPerMtok, cur.CacheWrite1hPerMtok},
+	}
+	var diffs []string
+	for _, f := range fields {
+		if f.prev != f.cur {
+			diffs = append(diffs, fmt.Sprintf("%s: %v -> %v", f.json, f.prev, f.cur))
+		}
+	}
+	return diffs
+}
+
 // TestHistory_CarryForward_AllSnapshots encodes the snapshot convention:
-// every dated file carries every model forward from its predecessor —
-// snapshots only add entries (retired models keep their last known rate).
+// every dated file carries every model forward from its predecessor with
+// IDENTICAL rates — snapshots only add entries or make an intentional,
+// declared rate change (retired models keep their last known rate). An
+// intentional change must be declared in carryForwardExceptions; a carried
+// rate that drifts without a declaration (e.g. a typo introduced while
+// hand-editing a later snapshot) fails the test. See issue #514.
 func TestHistory_CarryForward_AllSnapshots(t *testing.T) {
 	h, err := Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 	versions := h.Versions()
+	visited := make(map[carryForwardExceptionKey]bool, len(carryForwardExceptions))
 	for i := 1; i < len(versions); i++ {
 		prev := h.TableAt(mustParseDate(t, versions[i-1]))
 		cur := h.TableAt(mustParseDate(t, versions[i]))
@@ -369,10 +518,38 @@ func TestHistory_CarryForward_AllSnapshots(t *testing.T) {
 			t.Fatalf("TableAt resolved %s/%s, want %s/%s",
 				prev.Version, cur.Version, versions[i-1], versions[i])
 		}
-		for model := range prev.Models {
-			if _, ok := cur.Models[model]; !ok {
+		for model, prevRate := range prev.Models {
+			curRate, ok := cur.Models[model]
+			if !ok {
 				t.Errorf("model %q present in %s but missing from %s", model, prev.Version, cur.Version)
+				continue
 			}
+			key := carryForwardExceptionKey{version: cur.Version, model: model}
+			if want, declared := carryForwardExceptions[key]; declared {
+				visited[key] = true
+				if curRate != want {
+					t.Errorf("declared exception %+v: %s.Models[%q] = %+v, want declared %+v",
+						key, cur.Version, model, curRate, want)
+				}
+				if curRate == prevRate {
+					t.Errorf("declared exception %+v is stale: %s.Models[%q] no longer differs from %s.Models[%q] (%+v)",
+						key, cur.Version, model, prev.Version, model, prevRate)
+				}
+				continue
+			}
+			if curRate != prevRate {
+				t.Errorf("model %q rate changed from %s to %s without a declared carryForwardExceptions entry: %s",
+					model, prev.Version, cur.Version, strings.Join(diffModelRate(prevRate, curRate), "; "))
+			}
+		}
+	}
+	// An exception whose (version, model) never matched a carried-forward
+	// pair above (typo'd version/model, or naming a model that isn't
+	// actually carried forward from its predecessor) would otherwise sit
+	// unverified forever — fail loudly instead.
+	for key := range carryForwardExceptions {
+		if !visited[key] {
+			t.Errorf("carryForwardExceptions entry %+v was never matched against a carried-forward model pair (typo'd version/model?)", key)
 		}
 	}
 }
