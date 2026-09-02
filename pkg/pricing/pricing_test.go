@@ -398,6 +398,7 @@ func TestSonnet5Snapshots(t *testing.T) {
 		// The $3/$15 increase scheduled for 2026-09-01 was cancelled; the
 		// intro rates are the standard price (issue #496).
 		{"2026-09-01", intro},
+		{"2026-09-02", intro},
 	} {
 		t.Run(tc.version, func(t *testing.T) {
 			tab := h.TableAt(mustParseDate(t, tc.version))
@@ -470,6 +471,7 @@ func TestOpus5Snapshots(t *testing.T) {
 	}{
 		{"2026-07-24", want},
 		{"2026-09-01", want},
+		{"2026-09-02", want},
 	} {
 		t.Run(tc.version, func(t *testing.T) {
 			tab := h.TableAt(mustParseDate(t, tc.version))
@@ -488,7 +490,7 @@ func TestOpus5Snapshots(t *testing.T) {
 }
 
 // TestOpus5Resolution pins the pricing_version stamped and the resolved cost
-// for Claude Opus 5 across the 2026-07-24 intro window and the 2026-09-01
+// for Claude Opus 5 across the 2026-07-24 intro window and the 2026-09-02
 // carry-forward table. Resolution walks forward only, so a model absent from
 // a later snapshot costs $0 rather than falling back (issue #470).
 func TestOpus5Resolution(t *testing.T) {
@@ -506,7 +508,7 @@ func TestOpus5Resolution(t *testing.T) {
 		{"fall-forward before snapshot", time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC), "2026-07-24", 5.00},
 		{"exact snapshot date", time.Date(2026, 7, 24, 0, 0, 0, 0, time.UTC), "2026-07-24", 5.00},
 		{"intro window last second", time.Date(2026, 8, 31, 23, 59, 59, 0, time.UTC), "2026-07-24", 5.00},
-		{"after standard rates start", time.Date(2026, 9, 15, 0, 0, 0, 0, time.UTC), "2026-09-02", 5.00},
+		{"after fable 5.1 snapshot", time.Date(2026, 9, 15, 0, 0, 0, 0, time.UTC), "2026-09-02", 5.00},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -556,12 +558,15 @@ func TestFable51Snapshots(t *testing.T) {
 			t.Errorf("Models[%q] = %+v, want %+v", model, got, want)
 		}
 	}
-	prev, ok := tab.Models["claude-fable-5"]
-	if !ok {
-		t.Fatal("Models[claude-fable-5] missing from 2026-09-02 (carry-forward broken)")
-	}
-	if prev.CacheReadPerMtok != 1.00 {
-		t.Errorf("claude-fable-5 CacheReadPerMtok = %v, want 1.00 (0.1x rate must stay on the previous generation)", prev.CacheReadPerMtok)
+	for _, model := range []string{"claude-fable-5", "claude-mythos-5"} {
+		prev, ok := tab.Models[model]
+		if !ok {
+			t.Errorf("Models[%q] missing from 2026-09-02 (carry-forward broken)", model)
+			continue
+		}
+		if prev.CacheReadPerMtok != 1.00 {
+			t.Errorf("Models[%q].CacheReadPerMtok = %v, want 1.00 (0.1x rate must stay on the previous generation)", model, prev.CacheReadPerMtok)
+		}
 	}
 }
 
