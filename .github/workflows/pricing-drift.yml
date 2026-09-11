@@ -54,6 +54,9 @@ jobs:
       - uses: anthropics/claude-code-action@ef8bb1e43bf303cff727a1dd0b8837029fe982a2  # v1.0.215
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # TEMPORARY (#522): unhide the SDK result string so the instant
+          # is_error failure can be diagnosed. Revert once captured.
+          show_full_output: true
           claude_args: |
             --model claude-sonnet-4-6
             --allowedTools "Read,WebFetch,Glob,Bash(gh issue list:*),Bash(gh issue comment:*),Bash(gh issue create:*),Bash(gh label create:*)"
