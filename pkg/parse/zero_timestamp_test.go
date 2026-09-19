@@ -34,6 +34,19 @@ var zeroTSLines = []struct {
 		wantSentinel: ErrZeroTimestamp,
 	},
 	{
+		// Year 1, but not THE zero instant: a non-UTC offset makes IsZero()
+		// false. Stored silently before the guard was widened to Year() <= 1.
+		name:         "year 1 in a non-UTC offset",
+		line:         `{"type":"assistant","timestamp":"0001-01-01T00:00:00+01:00","message":{"role":"assistant","model":"claude-opus-5","usage":{"input_tokens":1,"output_tokens":2}}}`,
+		wantSentinel: ErrZeroTimestamp,
+	},
+	{
+		// Likewise year 1, but not 1 January.
+		name:         "year 1 on a later day",
+		line:         `{"type":"assistant","timestamp":"0001-01-02T00:00:00Z","message":{"role":"assistant","model":"claude-opus-5","usage":{"input_tokens":1,"output_tokens":2}}}`,
+		wantSentinel: ErrZeroTimestamp,
+	},
+	{
 		name: "timestamp empty string",
 		line: `{"type":"assistant","timestamp":"","message":{"role":"assistant","model":"claude-opus-5","usage":{"input_tokens":1,"output_tokens":2}}}`,
 	},
@@ -124,5 +137,35 @@ func TestParseFromOffsetWithErrors_ZeroTimestampSkipped(t *testing.T) {
 	// consumed, not left for the next fs event to re-read forever.
 	if line != 2 {
 		t.Errorf("line = %d, want 2", line)
+	}
+}
+
+// TestParseWithErrors_OldButValidTimestampKept is the other half of the guard's
+// contract: Year() <= 1 must reject the unplaceable and NOTHING else. A real
+// transcript from years ago is ordinary data, and deciding it is "too old" is a
+// display concern that belongs to the chart's ceiling, never to the parser.
+func TestParseWithErrors_OldButValidTimestampKept(t *testing.T) {
+	t.Parallel()
+
+	for _, ts := range []string{
+		"0002-01-01T00:00:00.000Z", // absurd, but unambiguously not the zero value
+		"1970-01-01T00:00:00.000Z", // the OTHER zero people reach for
+		"2020-03-01T12:00:00.000Z", // plausibly real, long before this cache
+	} {
+		t.Run(ts, func(t *testing.T) {
+			t.Parallel()
+
+			line := `{"type":"assistant","timestamp":"` + ts + `","sessionId":"s1","message":{"id":"m1","role":"assistant","model":"claude-opus-5","usage":{"output_tokens":1}}}`
+			msgs, errs, err := ParseWithErrors(strings.NewReader(line+"\n"), "slug")
+			if err != nil {
+				t.Fatalf("ParseWithErrors returned err = %v, want nil", err)
+			}
+			if len(msgs) != 1 {
+				t.Fatalf("got %d messages, want 1 — %s is valid data, not a skip", len(msgs), ts)
+			}
+			if len(errs) != 0 {
+				t.Errorf("got %d parse errors, want 0: %v", len(errs), errs)
+			}
+		})
 	}
 }

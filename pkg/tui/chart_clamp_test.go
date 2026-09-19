@@ -1,8 +1,12 @@
 package tui
 
 import (
+	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/martinciu/ccpulse/pkg/cache"
+	"github.com/martinciu/ccpulse/pkg/pricing"
 )
 
 // zoomByLabel is a lookup so these cases read in terms the UI uses ("15m")
@@ -149,5 +153,103 @@ func TestClampChartFrom_BoundsCanvasWidth(t *testing.T) {
 				t.Errorf("after clamp, CanvasWidth = %d columns, want <= %d", w, maxChartColumns)
 			}
 		})
+	}
+}
+
+// TestClampChartFrom_IsLossy documents WHY refreshChart must not assign the
+// clamped value back over `earliest`.
+//
+// Clamping is deliberately lossy: every earliest beyond the horizon collapses
+// onto the same instant. chartCache keys its memoized prefix on `earliest`
+// specifically to notice backfill widening history leftward (see slotKey), so
+// feeding it a clamped value would make the key stop changing exactly when
+// older data arrives — and slot.resolve would then stitch a fresh tail onto a
+// stale prefix, silently dropping in-window backfilled rows.
+//
+// This test pins the collapse. The guarantee it protects is asserted end-to-end
+// in TestRefreshChart_BackfillStillInvalidatesChartCache.
+func TestClampChartFrom_IsLossy(t *testing.T) {
+	t.Parallel()
+
+	zoom := zoomByLabel(t, "1h")
+	to := time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC)
+
+	// Two distinct earliest values, both past the 1h horizon (~2.3 years).
+	e1 := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
+	e2 := time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC)
+	if e1.Equal(e2) {
+		t.Fatal("precondition: the two earliest values must differ")
+	}
+
+	c1 := clampChartFrom(e1, to, zoom)
+	c2 := clampChartFrom(e2, to, zoom)
+	if !c1.Equal(c2) {
+		t.Fatalf("expected the clamp to collapse both onto one instant, got %v and %v — "+
+			"if this ever stops being true, re-read why refreshChart keeps `earliest` raw", c1, c2)
+	}
+}
+
+// TestRefreshChart_KeepsRawEarliestForChartCache is the real guard for the
+// clamp's interaction with chartCache.
+//
+// chartCache keys its memoized prefix on EarliestMessageTime to notice backfill
+// widening history leftward. Clamping is lossy — every earliest beyond the
+// horizon collapses onto one instant (TestClampChartFrom_IsLossy) — so if
+// refreshChart assigned the clamped value back over `earliest`, the key would
+// stop changing exactly when older data arrives, and slot.resolve would stitch
+// a fresh tail onto a stale prefix, silently dropping in-window backfilled rows.
+//
+// Asserting on the stored slot key is what makes this a real guard: it fails if
+// refreshChart ever passes the clamped value, which a test driving slot.resolve
+// with hand-picked arguments cannot detect.
+func TestRefreshChart_KeepsRawEarliestForChartCache(t *testing.T) {
+	t.Parallel()
+
+	tab, err := pricing.Load()
+	if err != nil {
+		t.Fatalf("pricing.Load: %v", err)
+	}
+	base := time.Date(2026, 5, 23, 12, 7, 0, 0, time.UTC)
+
+	c, err := cache.Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	defer c.Close()
+
+	// One row far enough back that the 1h clamp is definitely active, plus
+	// ordinary recent history.
+	ancient := base.AddDate(-40, 0, 0)
+	insertAt(t, c, tab, "ancient", ancient, 1)
+	for i := 1; i <= 6; i++ {
+		insertAt(t, c, tab, "seed-"+itoa(i), base.Add(-time.Duration(i)*time.Hour), int64(1000+i))
+	}
+
+	m := New(Deps{Cache: c})
+	m.unitIdx = int(chartUnitTokens)
+	m.zoomIdx = 1 // 1h
+	m.w, m.h = 122, 40
+	m.viewport.Width = m.chartWidth()
+	m.viewport.Height = m.chartHeight()
+	m.now = func() time.Time { return base }
+	m.refreshChart()
+
+	rawEarliest, ok, err := c.EarliestMessageTime(t.Context())
+	if err != nil || !ok {
+		t.Fatalf("EarliestMessageTime: ok=%v err=%v", ok, err)
+	}
+
+	// Precondition: the clamp must actually be engaged, or this proves nothing.
+	clamped := clampChartFrom(rawEarliest, m.lastChartTo, ZoomLevels[m.zoomIdx])
+	if clamped.Equal(rawEarliest) {
+		t.Fatalf("precondition: clamp not engaged for earliest=%v", rawEarliest)
+	}
+
+	got := m.chartCache.tokens.key.earliest
+	if !got.Equal(rawEarliest) {
+		t.Errorf("chartCache slot key earliest = %v, want the RAW %v.\n"+
+			"It looks like refreshChart passed the CLAMPED value (%v): that collapses "+
+			"every far-past earliest onto one instant, so backfill can no longer "+
+			"invalidate the memoized prefix.", got, rawEarliest, clamped)
 	}
 }

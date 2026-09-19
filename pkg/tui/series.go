@@ -226,11 +226,20 @@ func (m *Model) refreshChart() {
 		// in the cache, so a single bogus far-past timestamp would otherwise
 		// size the canvas (and the dense bucket slices behind it) into the
 		// millions (#527).
-		earliest = clampChartFrom(earliest, to, zoom)
+		//
+		// Deliberately a SEPARATE variable — `earliest` itself must stay the raw
+		// EarliestMessageTime. chartCache keys its memoized prefix on it
+		// precisely to notice backfill widening history leftward (see slotKey in
+		// chart_cache.go), and clamping is lossy: every earliest beyond the
+		// horizon collapses onto the same instant. Assigning the clamped value
+		// back would make the key stop changing exactly when older data arrives,
+		// so resolve would stitch a fresh tail onto a stale prefix and silently
+		// drop in-window backfilled rows.
+		chartFrom := clampChartFrom(earliest, to, zoom)
 		if zoom.Duration == 24*time.Hour {
-			from = cache.DayStartLocal(earliest)
+			from = cache.DayStartLocal(chartFrom)
 		} else {
-			from = cache.BucketAlign(earliest, zoom.Duration)
+			from = cache.BucketAlign(chartFrom, zoom.Duration)
 		}
 		dataBuckets = bucketCountInRange(from, to, zoom.Duration)
 		if minFrom.Before(from) {

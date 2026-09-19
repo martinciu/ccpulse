@@ -74,10 +74,19 @@ type ParseError struct {
 // failure if needed.
 var ErrOversizedLineSkipped = errors.New("oversized line skipped")
 
-// ErrZeroTimestamp is wrapped into the ParseError produced when an assistant
-// line carries no usable `timestamp` field. Go decodes a missing or empty
-// timestamp to the zero time.Time (year 1), which is not a point on any axis
-// ccpulse draws — it is the absence of a timestamp, wearing a number.
+// ErrZeroTimestamp is the ParseError cause reported when an assistant line
+// carries no usable `timestamp`: the key is absent, or it decodes to a year-1
+// instant. Go decodes a MISSING timestamp to the zero time.Time, which is not a
+// point on any axis ccpulse draws — it is the absence of a timestamp, wearing a
+// number. (An EMPTY string is refused one level earlier, inside time.Time's own
+// UnmarshalJSON, so it arrives as a generic decode error rather than this
+// sentinel. Both outcomes keep the line out of the cache; only this one is
+// classifiable with errors.Is.)
+//
+// The test is Year() <= 1, not IsZero(): IsZero() compares against one exact
+// instant, so "0001-01-01T00:00:00+01:00" and "0001-01-02T00:00:00Z" — equally
+// unplaceable, and equally capable of stretching the chart across two millennia
+// — would slip past it and be stored.
 //
 // Storing such a row is not a cosmetic wart: the chart spans earliest-message
 // → now at EVERY zoom (#53), so one year-1 row stretches the canvas across two
@@ -136,7 +145,7 @@ func ParseWithErrors(r io.Reader, projectSlug string) ([]Message, []ParseError, 
 // ParseFromOffsetWithErrors) route through it, so a rule added here cannot be
 // enforced by one path and missed by the other.
 func assistantMessages(raw rawLine, slug string) ([]Message, error) {
-	if raw.Timestamp.IsZero() {
+	if raw.Timestamp.Year() <= 1 {
 		return nil, ErrZeroTimestamp
 	}
 	return toMessages(raw, slug), nil
