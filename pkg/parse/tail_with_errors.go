@@ -68,7 +68,12 @@ func ParseFromOffsetWithErrors(path, slug string, startOffset int64, startLine i
 				continue
 			}
 			if r.Type == "assistant" {
-				msgs = append(msgs, toMessages(r, slug)...)
+				got, tsErr := assistantMessages(r, slug)
+				if tsErr != nil {
+					errs = append(errs, ParseError{Line: line, Err: tsErr})
+					continue
+				}
+				msgs = append(msgs, got...)
 			}
 		}
 		serr := sc.Err()

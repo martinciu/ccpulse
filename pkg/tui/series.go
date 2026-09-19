@@ -222,6 +222,11 @@ func (m *Model) refreshChart() {
 		// axis filling in from the right instead of the placeholder (#300).
 		from = minFrom
 	} else {
+		// Clamp before aligning: the chart's left edge follows the oldest row
+		// in the cache, so a single bogus far-past timestamp would otherwise
+		// size the canvas (and the dense bucket slices behind it) into the
+		// millions (#527).
+		earliest = clampChartFrom(earliest, to, zoom)
 		if zoom.Duration == 24*time.Hour {
 			from = cache.DayStartLocal(earliest)
 		} else {
