@@ -64,4 +64,14 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
           go-version-file: go.mod
-      - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+      # Pinned, not @latest: this job runs with GOTOOLCHAIN=local on the Go
+      # version from go.mod, so a govulncheck whose own go directive is NEWER
+      # than ours cannot be resolved and the job dies before scanning anything.
+      # x/vuln v1.8.0 moved to `go 1.26.0` and broke every PR that way; v1.7.0
+      # is the last release on `go 1.25.0`.
+      #
+      # When bumping: the new version's go directive must be <= the go directive
+      # in go.mod. Don't "fix" a failure here by letting the toolchain float —
+      # scanning under a newer Go reports that Go's stdlib advisories, not the
+      # one the release binaries are actually built with.
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
