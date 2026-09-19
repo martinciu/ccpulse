@@ -76,7 +76,16 @@ var schemaSQL string
 // SchemaVersion is the expected on-disk schema version; a mismatch triggers an auto-rebuild.
 // v12 changes no schema text — the bump forces the rebuild that backfills
 // per-model attempt rows from historic JSONL (issue #456).
-const SchemaVersion = "12"
+// v13 likewise changes no schema text. It evicts rows that the parser will no
+// longer produce: a transcript line with no usable timestamp used to be stored
+// at Go's zero time, and because the chart spans earliest-message → now, one
+// such row pinned the x-axis two millennia wide and made the TUI unbootable
+// (#527). pkg/parse refuses those lines now, but a cache written by an older
+// build still holds them, and `messages` is never pruned — so without this bump
+// an affected user upgrades into a TUI that boots (the chart ceiling sees to
+// that) yet stays permanently clamped to the horizon, burning ~1.4GB instead of
+// ~200MB, with no way to clear it short of hand-editing SQLite.
+const SchemaVersion = "13"
 
 // normalizeResetsAtSQL flips legacy `0001-01-01T00:00:00Z` sentinels
 // (written before issue #189 landed) to SQL NULL across every

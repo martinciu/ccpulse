@@ -113,11 +113,12 @@ func TestParseFromOffsetWithErrors_ZeroTimestampSkipped(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "poisoned.jsonl")
-	if err := os.WriteFile(path, []byte(zeroTSLines[0].line+"\n"+goodLine+"\n"), 0o600); err != nil {
+	content := zeroTSLines[0].line + "\n" + goodLine + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	msgs, errs, _, line, err := ParseFromOffsetWithErrors(path, "slug", 0, 0)
+	msgs, errs, off, line, err := ParseFromOffsetWithErrors(path, "slug", 0, 0)
 	if err != nil {
 		t.Fatalf("ParseFromOffsetWithErrors returned err = %v, want nil", err)
 	}
@@ -134,7 +135,13 @@ func TestParseFromOffsetWithErrors_ZeroTimestampSkipped(t *testing.T) {
 		t.Errorf("errs[0].Line = %d, want 1", errs[0].Line)
 	}
 	// The cursor must still advance past both lines; a skipped line is
-	// consumed, not left for the next fs event to re-read forever.
+	// consumed, not left for the next fs event to re-read forever. The BYTE
+	// offset is the one that matters — it is what the watcher resumes from, so
+	// a non-advancing `off` is what would re-parse and re-log the same bad line
+	// on every filesystem event. `line` alone would not catch that.
+	if off != int64(len(content)) {
+		t.Errorf("off = %d, want %d (the whole file consumed)", off, len(content))
+	}
 	if line != 2 {
 		t.Errorf("line = %d, want 2", line)
 	}

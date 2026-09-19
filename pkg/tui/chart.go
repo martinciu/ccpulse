@@ -182,14 +182,22 @@ func paddedFrom(to time.Time, zoom ZoomLevel, n int) time.Time {
 // The chart's horizontal extent is set by DATA, not by the viewport: it spans
 // earliest-message → now at every zoom (#53). That makes the canvas width a
 // function of the single oldest row, and the cost is paid for every column
-// whether or not it is on screen — the full canvas is rendered to a string that
-// the viewport then scrolls a ~200-column window over, and
+// whether or not it is on screen — the full canvas is materialised and the
+// viewport then scrolls a ~200-column window over it, while
 // cache.IOTokenBuckets / CostBuckets zero-FILL the range behind it
-// (`make([]TokenBucket, n)`). Measured on a real 200k-message cache, that runs
-// ~46KB resident per column:
+// (`make([]TokenBucket, n)`).
 //
-//	  3,650 columns (5 months @ 1h)  ->  288MB
-//	100,000 columns                  ->  4.65GB
+// That cost is dominated by the USAGE view's line chart, not by the bar views.
+// Measured on a real 200k-message cache at the 15m zoom, same ceiling, same
+// binary — only the view differs:
+//
+//	35,000 columns, cost bars   ->    78MB
+//	35,000 columns, usage line  ->  2,483MB
+//
+// So the ceiling is really sized by the line chart, at very roughly ~70KB
+// resident per column; the bar path is around thirty times leaner. Sizing on
+// the cheaper path would leave the expensive one unbounded, so this ceiling is
+// set by the worst view, not the average one.
 //
 // One row stamped with Go's zero time put the 1h zoom at ~17.7M buckets and the
 // 15m zoom at ~71M, so the TUI could not paint a first frame before exhausting
@@ -205,28 +213,36 @@ func paddedFrom(to time.Time, zoom ZoomLevel, n int) time.Time {
 // backstop for every OTHER route a far-past timestamp can take into the cache:
 // clock skew, a restored or hand-written transcript, a future parser gap.
 //
-// The value is chosen to put the PATHOLOGICAL case within the same order of
-// magnitude as a LEGITIMATE full-history view, rather than off the end of the
-// machine. Measured across three runs each, poisoned cache vs clean, this
-// binary (RSS at boot, then after cycling zooms and views):
+// 20_000 is where the worst view stays bootable. Measured across three runs
+// each, poisoned cache vs clean, this binary (RSS at boot, then after cycling
+// zooms and views):
 //
 //	clean, 5-month history   69-230MB   ->  191-828MB
 //	poisoned, clamped here   1.0-1.4GB  ->  1.2-1.5GB
 //	poisoned, unclamped      10.6GB and climbing; never paints a frame
 //
-// So roughly 2x the legitimate worst case — bootable and usable, which is all a
-// backstop owes. (The spread within each row is GC timing, not load.) Setting
-// the ceiling higher would only buy a slower, larger way to fail.
+// Raising it to 35_000 to buy a full year at 15m was measured too, and costs
+// ~2.5GB on the usage view — past what a backstop should ever hold. (Spread
+// within a row is GC timing, not load.)
 //
 // What it covers per zoom: ~208 days at 15m, ~2.3 years at 1h, ~4.6 years at
-// 24h. Only the finest zoom can truncate inside a plausible history, and
-// nothing becomes unreachable when it does — the older data stays on the 1h and
-// 24h axes, which is where a span that long is legible anyway.
+// 24h.
 //
-// The ~46KB/column render cost is itself a scaling problem (a year of 15m
-// buckets would cost ~1.6GB with no bad data involved at all). That is #528,
-// not what this ceiling is for — but it is why the ceiling sits as low as it
-// does. Bringing the per-column cost down is what would let this be raised.
+// Be honest about who this touches: 15m is the DEFAULT zoom on launch
+// (model.go, zoomIdx 0), so a user with more than ~208 days of history sees the
+// left edge of their default view clipped — with perfectly clean data and no
+// bad row anywhere. That is not a happy trade, but the alternative is worse:
+// rendering that same span costs ~2.5GB and climbing, so the truncation is
+// spending history the app cannot usefully draw anyway. Nothing becomes
+// unreachable — the older data is still there on the 1h and 24h axes, which is
+// where a span that long is legible. Fixing the per-column cost (#528) is what
+// removes the trade rather than re-balancing it.
+//
+// The per-column render cost is itself a scaling problem, and no bad data is
+// needed to hit it — a year of 15m columns on the usage view costs ~2.5GB on
+// its own. That is #528, not what this ceiling is for — but it is why the
+// ceiling sits as low as it does, and why it clips the default view. Bringing
+// the per-column cost down is what would let this be raised.
 const maxChartColumns = 20_000
 
 // clampChartFrom walks `from` forward, when needed, so the canvas for

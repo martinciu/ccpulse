@@ -135,17 +135,16 @@ func TestClampChartFrom_BoundsCanvasWidth(t *testing.T) {
 		t.Run(z.Label, func(t *testing.T) {
 			t.Parallel()
 
-			// Precondition: the unclamped year-1 range must actually exceed the
-			// ceiling, or this case proves nothing. Counted in columns, and
-			// only at sub-day zooms — bucketCountInRange walks 24h day by day,
-			// which over a 2025-year span is exactly the work the clamp exists
-			// to avoid.
-			if z.Duration != 24*time.Hour {
-				unclamped := z.CanvasWidth(bucketCountInRange(time.Time{}, to, z.Duration))
-				if unclamped <= maxChartColumns {
-					t.Fatalf("precondition: unclamped year-1 canvas at %s is only %d columns; "+
-						"this test no longer exercises the ceiling", z.Label, unclamped)
-				}
+			// Precondition: the unclamped year-1 canvas must actually exceed the
+			// ceiling, or this case proves nothing. Computed arithmetically
+			// rather than via bucketCountInRange, which walks 24h day by day —
+			// over a 2025-year span that is ~739k laps, exactly the work the
+			// clamp exists to avoid. Skipping the check for 24h instead would
+			// let this subtest decay into a vacuous pass the moment
+			// maxChartColumns is raised (which #528 anticipates).
+			if unclamped := z.CanvasWidth(int(to.Sub(time.Time{}) / z.Duration)); unclamped <= maxChartColumns {
+				t.Fatalf("precondition: unclamped year-1 canvas at %s is only %d columns; "+
+					"this test no longer exercises the ceiling", z.Label, unclamped)
 			}
 
 			from := clampChartFrom(time.Time{}, to, z)
@@ -251,5 +250,59 @@ func TestRefreshChart_KeepsRawEarliestForChartCache(t *testing.T) {
 			"It looks like refreshChart passed the CLAMPED value (%v): that collapses "+
 			"every far-past earliest onto one instant, so backfill can no longer "+
 			"invalidate the memoized prefix.", got, rawEarliest, clamped)
+	}
+}
+
+// TestRefreshChart_FarPastRowBoundsCanvas is the guard that layer 2 is actually
+// WIRED IN, not merely present.
+//
+// Every other test here exercises clampChartFrom as a pure function, so all of
+// them survive deleting the CALL in refreshChart — only deleting the function
+// breaks them, and that is a compile error nobody needs a test for. This one
+// drives the real Model and asserts on the canvas it produced. Without the
+// clamp call, lastCanvasW measures in the millions.
+//
+// Seeded with 1970, not time.Time{}: layer 1 now refuses Year() <= 1 at the
+// parser, so a year-1 row can only reach the cache through a direct
+// InsertMessages. Epoch-0 is a row layer 1 deliberately admits — it is exactly
+// the far-past-but-valid shape layer 2 exists to catch — so this test cannot
+// rot into an unreachable-by-design no-op if layer 1 is widened later.
+func TestRefreshChart_FarPastRowBoundsCanvas(t *testing.T) {
+	t.Parallel()
+
+	tab, err := pricing.Load()
+	if err != nil {
+		t.Fatalf("pricing.Load: %v", err)
+	}
+	base := time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC)
+
+	for zi, z := range ZoomLevels {
+		t.Run(z.Label, func(t *testing.T) {
+			t.Parallel()
+
+			c, err := cache.Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
+			if err != nil {
+				t.Fatalf("cache.Open: %v", err)
+			}
+			defer c.Close()
+
+			insertAt(t, c, tab, "poison", time.Unix(0, 0).UTC(), 1000)
+			insertAt(t, c, tab, "good", base.Add(-time.Hour), 2000)
+
+			m := New(Deps{Cache: c})
+			m.zoomIdx = zi
+			m.w, m.h = 122, 40
+			m.viewport.Width, m.viewport.Height = m.chartWidth(), m.chartHeight()
+			m.now = func() time.Time { return base }
+			m.refreshChart()
+
+			// The bound refreshChart actually satisfies is ceiling+stride, not
+			// ceiling: cache.DayStartLocal / BucketAlign walk `from` back to a
+			// bucket boundary AFTER the clamp, which can add one more bar.
+			if lim := maxChartColumns + z.stride(); m.lastCanvasW > lim {
+				t.Errorf("lastCanvasW = %d, want <= %d — is refreshChart still calling "+
+					"clampChartFrom? (unclamped this reaches the millions)", m.lastCanvasW, lim)
+			}
+		})
 	}
 }
