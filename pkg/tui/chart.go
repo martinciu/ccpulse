@@ -19,7 +19,8 @@ import (
 // ZoomLevel maps a human label to a bucket duration and visual layout
 // parameters. The chart's horizontal extent is no longer per-zoom — it
 // spans from the earliest cached message to "now" at every zoom (see
-// issue #53).
+// issue #53), bounded by maxChartColumns so one far-past row cannot size
+// the canvas without limit (#527).
 //
 // BarWidth is the column count each bar occupies. BarGap is the empty
 // column count between adjacent bars (no trailing gap after the last
@@ -172,6 +173,125 @@ func paddedFrom(to time.Time, zoom ZoomLevel, n int) time.Time {
 		return to.AddDate(0, 0, -n)
 	}
 	return to.Add(-time.Duration(n) * zoom.Duration)
+}
+
+// maxChartColumns caps the width, in rendered canvas COLUMNS, that refreshChart
+// will lay out for one chart — regardless of how far back the cache's earliest
+// timestamp claims to be.
+//
+// The chart's horizontal extent is set by DATA, not by the viewport: it spans
+// earliest-message → now at every zoom (#53). That makes the canvas width a
+// function of the single oldest row, and the cost is paid for every column
+// whether or not it is on screen — the full canvas is materialised and the
+// viewport then scrolls a ~200-column window over it, while
+// cache.IOTokenBuckets / CostBuckets zero-FILL the range behind it
+// (`make([]TokenBucket, n)`).
+//
+// That cost is dominated by the USAGE view's line chart, not by the bar views.
+// Measured on a real 200k-message cache at the 15m zoom, same ceiling, same
+// binary — only the view differs:
+//
+//	35,000 columns, cost bars   ->    78MB
+//	35,000 columns, usage line  ->  2,483MB
+//
+// So the ceiling is really sized by the line chart, at very roughly ~70KB
+// resident per column; the bar path is around thirty times leaner. Sizing on
+// the cheaper path would leave the expensive one unbounded, so this ceiling is
+// set by the worst view, not the average one.
+//
+// One row stamped with Go's zero time put the 1h zoom at ~17.7M buckets and the
+// 15m zoom at ~71M, so the TUI could not paint a first frame before exhausting
+// memory (#527).
+//
+// The ceiling counts COLUMNS, not buckets, because those differ by an order of
+// magnitude across zooms: 15m and 1h draw 1 column per bucket, but 24h draws
+// BarWidth 10 plus BarGap 2, so a bucket-denominated cap of 20k would still let
+// the 24h zoom build a ~240k-column canvas — and it did, at 7.8GB. Columns are
+// what the renderer actually pays for, so columns are what the ceiling counts.
+//
+// pkg/parse now rejects the zero-timestamp row at the door, so this is the
+// backstop for every OTHER route a far-past timestamp can take into the cache:
+// clock skew, a restored or hand-written transcript, a future parser gap.
+//
+// 20_000 is where the worst view stays bootable. Measured across three runs
+// each, poisoned cache vs clean, this binary (RSS at boot, then after cycling
+// zooms and views):
+//
+//	clean, 5-month history   69-230MB   ->  191-828MB
+//	poisoned, clamped here   1.0-1.4GB  ->  1.2-1.5GB
+//	poisoned, unclamped      10.6GB and climbing; never paints a frame
+//
+// Raising it to 35_000 to buy a full year at 15m was measured too, and costs
+// ~2.5GB on the usage view — past what a backstop should ever hold. (Spread
+// within a row is GC timing, not load.)
+//
+// What it covers per zoom: ~208 days at 15m, ~2.3 years at 1h, ~4.6 years at
+// 24h.
+//
+// Be honest about who this touches: 15m is the DEFAULT zoom on launch
+// (model.go, zoomIdx 0), so a user with more than ~208 days of history sees the
+// left edge of their default view clipped — with perfectly clean data and no
+// bad row anywhere.
+//
+// And the clip is not equally deserved across views. On the usage line chart
+// that span really is unaffordable (~2.5GB at a year of 15m columns). On the
+// cost and output BAR views the same span costs ~78MB and draws perfectly well:
+// they are clipped as collateral, because refreshChart computes ONE axis per
+// pass — lastChartFrom, lastCanvasW and the scroll anchor are per-Model, not
+// per-unit — and that single axis has to be sized for the most expensive view.
+//
+// Budgeting per unit is the obvious improvement, and it is reachable: unitIdx is
+// known at the call site, and the unit-toggle spring already sizes its arrays to
+// max(old, new), so units of differing length would not break the animation. The
+// cost is that the axis extent would then change under `u`, which the
+// scroll-anchor logic has to learn. Deliberately left to #528, which is what
+// makes the line chart affordable and so removes the trade rather than
+// re-balancing it.
+//
+// Either way nothing becomes unreachable: the older data stays on the 1h and
+// 24h axes, which is where a span that long is legible anyway.
+//
+// The per-column render cost is itself a scaling problem, and no bad data is
+// needed to hit it — a year of 15m columns on the usage view costs ~2.5GB on
+// its own. That is #528, not what this ceiling is for — but it is why the
+// ceiling sits as low as it does, and why it clips the default view. Bringing
+// the per-column cost down is what would let this be raised.
+const maxChartColumns = 20_000
+
+// clampChartFrom walks `from` forward, when needed, so the canvas for
+// [from, to) at this zoom stays within maxChartColumns. Returns `from`
+// untouched when the range already fits, is empty or reversed, or the zoom is
+// degenerate.
+//
+// Callers clamp BEFORE bucket-aligning: alignment may step back across one
+// boundary, which is immaterial against a 20k ceiling, and clamping first also
+// spares bucketCountInRange's day-by-day walk (24h) an absurd number of laps.
+//
+// Budgets columns via zoom.stride() — the same BarWidth+BarGap invariant
+// CanvasWidth lays out with, defensively clamped there — so a zoom's bar
+// geometry and its history reach can never disagree.
+//
+// Overflow-safe at both ends. time.Time.Sub saturates at the Duration limits
+// instead of wrapping, so a year-1 `from` yields a huge-but-finite count rather
+// than a negative one; and the budget is only converted into a Duration after
+// the headroom check, so maxBuckets*Duration can never wrap and hand back an
+// instant in the past.
+func clampChartFrom(from, to time.Time, zoom ZoomLevel) time.Time {
+	dur := zoom.Duration
+	if dur <= 0 || !to.After(from) {
+		return from
+	}
+	maxBuckets := int64(maxChartColumns / zoom.stride())
+	if maxBuckets <= 0 {
+		return from // a single bar already exceeds the ceiling; nothing to clamp to
+	}
+	if maxBuckets > math.MaxInt64/int64(dur) {
+		return from // budget unreachable at this zoom; nothing to clamp against
+	}
+	if int64(to.Sub(from)/dur) <= maxBuckets {
+		return from
+	}
+	return to.Add(-time.Duration(maxBuckets) * dur)
 }
 
 // ZoomLevels are the available zoom steps, cycled with the z key.

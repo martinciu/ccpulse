@@ -74,6 +74,28 @@ type ParseError struct {
 // failure if needed.
 var ErrOversizedLineSkipped = errors.New("oversized line skipped")
 
+// ErrZeroTimestamp is the ParseError cause reported when an assistant line
+// carries no usable `timestamp`: the key is absent, or it decodes to a year-1
+// instant. Go decodes a MISSING timestamp to the zero time.Time, which is not a
+// point on any axis ccpulse draws — it is the absence of a timestamp, wearing a
+// number. (An EMPTY string is refused one level earlier, inside time.Time's own
+// UnmarshalJSON, so it arrives as a generic decode error rather than this
+// sentinel. Both outcomes keep the line out of the cache; only this one is
+// classifiable with errors.Is.)
+//
+// The test is Year() <= 1, not IsZero(): IsZero() compares against one exact
+// instant, so "0001-01-01T00:00:00+01:00" and "0001-01-02T00:00:00Z" — equally
+// unplaceable, and equally capable of stretching the chart across two millennia
+// — would slip past it and be stored.
+//
+// Storing such a row is not a cosmetic wart: the chart spans earliest-message
+// → now at EVERY zoom (#53), so one year-1 row stretches the canvas across two
+// millennia. A single line of this shape put the 1h zoom at ~17.7M buckets and
+// wedged the TUI before its first frame (#527). Skipping the line here keeps it
+// out of the cache entirely, and reporting it as a ParseError means it lands in
+// parse-errors.log instead of vanishing.
+var ErrZeroTimestamp = errors.New("assistant line has no usable timestamp")
+
 // ParseWithErrors parses every line and returns successfully-parsed
 // messages plus per-line parse errors. On bufio.ErrTooLong the scanner
 // is unrecoverable (no seek on io.Reader), so the oversized line is
@@ -99,7 +121,12 @@ func ParseWithErrors(r io.Reader, projectSlug string) ([]Message, []ParseError, 
 		if raw.Type != "assistant" {
 			continue
 		}
-		msgs = append(msgs, toMessages(raw, projectSlug)...)
+		got, tsErr := assistantMessages(raw, projectSlug)
+		if tsErr != nil {
+			errs = append(errs, ParseError{Line: line, Err: tsErr})
+			continue
+		}
+		msgs = append(msgs, got...)
 	}
 	err := sc.Err()
 	if err != nil && errors.Is(err, bufio.ErrTooLong) {
@@ -110,6 +137,18 @@ func ParseWithErrors(r io.Reader, projectSlug string) ([]Message, []ParseError, 
 		return msgs, errs, nil
 	}
 	return msgs, errs, err
+}
+
+// assistantMessages returns the rows to store for a decoded assistant line, or
+// a non-nil error naming why the line was skipped. Single source of truth for
+// admission: both parse entry points (ParseWithErrors and
+// ParseFromOffsetWithErrors) route through it, so a rule added here cannot be
+// enforced by one path and missed by the other.
+func assistantMessages(raw rawLine, slug string) ([]Message, error) {
+	if raw.Timestamp.Year() <= 1 {
+		return nil, ErrZeroTimestamp
+	}
+	return toMessages(raw, slug), nil
 }
 
 // toMessage converts a parsed JSONL line into a Message.

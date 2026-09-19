@@ -76,7 +76,16 @@ var schemaSQL string
 // SchemaVersion is the expected on-disk schema version; a mismatch triggers an auto-rebuild.
 // v12 changes no schema text — the bump forces the rebuild that backfills
 // per-model attempt rows from historic JSONL (issue #456).
-const SchemaVersion = "12"
+// v13 likewise changes no schema text. It evicts rows that the parser will no
+// longer produce: a transcript line with no usable timestamp used to be stored
+// at Go's zero time, and because the chart spans earliest-message → now, one
+// such row pinned the x-axis two millennia wide and made the TUI unbootable
+// (#527). pkg/parse refuses those lines now, but a cache written by an older
+// build still holds them, and `messages` is never pruned — so without this bump
+// an affected user upgrades into a TUI that boots (the chart ceiling sees to
+// that) yet stays permanently clamped to the horizon, burning ~1.4GB instead of
+// ~200MB, with no way to clear it short of hand-editing SQLite.
+const SchemaVersion = "13"
 
 // normalizeResetsAtSQL flips legacy `0001-01-01T00:00:00Z` sentinels
 // (written before issue #189 landed) to SQL NULL across every
@@ -1060,6 +1069,47 @@ func (c *Cache) EarliestMessageTime(ctx context.Context) (time.Time, bool, error
 		return time.Time{}, false, fmt.Errorf("parse earliest ts %q: %w", s.String, err)
 	}
 	return t.UTC(), true, nil
+}
+
+// MessageSpan is the timestamp range and row count of the messages table.
+// Earliest and Latest are UTC and equal on a single-row cache.
+type MessageSpan struct {
+	Earliest time.Time
+	Latest   time.Time
+	Count    int64
+}
+
+// MessageSpanOf reports the span of the messages table in one pass. ok == false
+// when the table holds no rows (a routine first-launch state, not an error);
+// Count is still meaningful then (zero) and the times are zero.
+//
+// Exists for `ccpulse doctor`, which otherwise has no way to see a data-quality
+// problem: a single row carrying an implausible timestamp is invisible to
+// integrity_check — the database file is structurally perfect — yet it sets the
+// chart's entire x-axis, which is how one year-1 row made the TUI allocate past
+// 10GB and never paint a frame (#527). MIN/MAX over the ts index is cheap, so
+// doctor can afford to state the span outright rather than infer it.
+func (c *Cache) MessageSpanOf(ctx context.Context) (MessageSpan, bool, error) {
+	var lo, hi sql.NullString
+	var span MessageSpan
+	// MIN/MAX return NULL on an empty table, hence NullString rather than string.
+	if err := c.db.QueryRowContext(ctx,
+		`SELECT MIN(ts), MAX(ts), COUNT(*) FROM messages`).Scan(&lo, &hi, &span.Count); err != nil {
+		return MessageSpan{}, false, fmt.Errorf("message span: %w", err)
+	}
+	if !lo.Valid || !hi.Valid {
+		return MessageSpan{}, false, nil
+	}
+	earliest, err := time.Parse(tsFormat, lo.String)
+	if err != nil {
+		return MessageSpan{}, false, fmt.Errorf("parse earliest ts %q: %w", lo.String, err)
+	}
+	latest, err := time.Parse(tsFormat, hi.String)
+	if err != nil {
+		return MessageSpan{}, false, fmt.Errorf("parse latest ts %q: %w", hi.String, err)
+	}
+	span.Earliest, span.Latest = earliest.UTC(), latest.UTC()
+	return span, true, nil
 }
 
 // nullResetsWarned tracks which column names have already produced a
