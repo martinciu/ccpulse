@@ -1071,6 +1071,47 @@ func (c *Cache) EarliestMessageTime(ctx context.Context) (time.Time, bool, error
 	return t.UTC(), true, nil
 }
 
+// MessageSpan is the timestamp range and row count of the messages table.
+// Earliest and Latest are UTC and equal on a single-row cache.
+type MessageSpan struct {
+	Earliest time.Time
+	Latest   time.Time
+	Count    int64
+}
+
+// MessageSpanOf reports the span of the messages table in one pass. ok == false
+// when the table holds no rows (a routine first-launch state, not an error);
+// Count is still meaningful then (zero) and the times are zero.
+//
+// Exists for `ccpulse doctor`, which otherwise has no way to see a data-quality
+// problem: a single row carrying an implausible timestamp is invisible to
+// integrity_check — the database file is structurally perfect — yet it sets the
+// chart's entire x-axis, which is how one year-1 row made the TUI allocate past
+// 10GB and never paint a frame (#527). MIN/MAX over the ts index is cheap, so
+// doctor can afford to state the span outright rather than infer it.
+func (c *Cache) MessageSpanOf(ctx context.Context) (MessageSpan, bool, error) {
+	var lo, hi sql.NullString
+	var span MessageSpan
+	// MIN/MAX return NULL on an empty table, hence NullString rather than string.
+	if err := c.db.QueryRowContext(ctx,
+		`SELECT MIN(ts), MAX(ts), COUNT(*) FROM messages`).Scan(&lo, &hi, &span.Count); err != nil {
+		return MessageSpan{}, false, fmt.Errorf("message span: %w", err)
+	}
+	if !lo.Valid || !hi.Valid {
+		return MessageSpan{}, false, nil
+	}
+	earliest, err := time.Parse(tsFormat, lo.String)
+	if err != nil {
+		return MessageSpan{}, false, fmt.Errorf("parse earliest ts %q: %w", lo.String, err)
+	}
+	latest, err := time.Parse(tsFormat, hi.String)
+	if err != nil {
+		return MessageSpan{}, false, fmt.Errorf("parse latest ts %q: %w", hi.String, err)
+	}
+	span.Earliest, span.Latest = earliest.UTC(), latest.UTC()
+	return span, true, nil
+}
+
 // nullResetsWarned tracks which column names have already produced a
 // once-per-process WARN from warnOnceNullResets. Keyed by column name
 // string → *atomic.Bool; LoadOrStore + Swap give a lock-free

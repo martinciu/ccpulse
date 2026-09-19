@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -49,6 +50,7 @@ func runDoctor(cmd *cobra.Command) error {
 		defer c.Close()
 		ok, ierr := c.IntegrityOK(cmd.Context())
 		check(out, "integrity_check", ok && ierr == nil, ierr)
+		reportMessageSpan(cmd.Context(), out, c)
 	}
 
 	hist, perr := pricing.Load()
@@ -126,11 +128,90 @@ func reportCacheArtifacts(out io.Writer, cacheDir string) {
 		func(info os.FileInfo) string {
 			return fmt.Sprintf("usage cache: %s old", time.Since(info.ModTime()).Truncate(time.Second))
 		})
-	statCheck(out, filepath.Join(cacheDir, "parse-errors.log"), "parse-errors.log: not present",
-		func(info os.FileInfo) string {
-			return fmt.Sprintf("parse-errors.log: %d bytes (%s old)",
-				info.Size(), time.Since(info.ModTime()).Truncate(time.Second))
-		})
+	reportParseErrors(out, cacheDir)
+}
+
+// implausibleBefore is the floor below which `doctor` calls a message timestamp
+// corrupt rather than merely old. Claude Code did not exist in 2020, so nothing
+// older can be real history — which keeps the check free of any judgement about
+// how old a genuine transcript is allowed to be. It catches both shapes seen in
+// practice, since they are what a missing timestamp decays to: Go's zero time
+// (year 1) and the Unix epoch (1970).
+var implausibleBefore = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+
+// reportMessageSpan prints the cache's time span and flags an implausible
+// oldest row.
+//
+// This is the check that was missing during #527: one row stamped 0001-01-01
+// stretched the chart's x-axis across two millennia and made the TUI unbootable,
+// while every existing doctor line — integrity_check included — reported ✓,
+// because the database file was structurally perfect. The span is the cheapest
+// signal that says otherwise, and it names the remedy, since the rebuild is not
+// something a user would guess at.
+func reportMessageSpan(ctx context.Context, out io.Writer, c *cache.Cache) {
+	span, ok, err := c.MessageSpanOf(ctx)
+	if err != nil {
+		check(out, "message span readable", false, err)
+		return
+	}
+	if !ok {
+		fmt.Fprintln(out, "ℹ cache: no messages indexed yet")
+		return
+	}
+	fmt.Fprintf(out, "ℹ cache span: %s → %s (%d messages)\n",
+		span.Earliest.Format(time.DateOnly), span.Latest.Format(time.DateOnly), span.Count)
+	if span.Earliest.Before(implausibleBefore) {
+		check(out, fmt.Sprintf(
+			"message timestamps plausible — oldest row is %s, which predates Claude Code; "+
+				"the chart axis is clamped. Fix: ccpulse index --rebuild",
+			span.Earliest.Format(time.DateOnly)), false, nil)
+		return
+	}
+	check(out, "message timestamps plausible", true, nil)
+}
+
+// reportParseErrors reports parse-errors.log by RECORD COUNT, not only size,
+// and as an ℹ rather than a ✓.
+//
+// The old line printed "parse-errors.log: 2253900 bytes" with a ✓ next to it —
+// asserting health about a file it had not read, while that file held ~14k
+// records. doctor cannot tell a routine skip (a half-written line in a live
+// session) from a real problem without classifying every record, so it states
+// the number and declines to grade it. Count beats bytes because it is the
+// figure a user can act on.
+func reportParseErrors(out io.Writer, cacheDir string) {
+	path := filepath.Join(cacheDir, "parse-errors.log")
+	info, err := os.Stat(path)
+	if err != nil {
+		fmt.Fprintln(out, "ℹ parse-errors.log: not present")
+		return
+	}
+	age := time.Since(info.ModTime()).Truncate(time.Second)
+	n, cerr := countLines(path)
+	if cerr != nil {
+		fmt.Fprintf(out, "ℹ parse-errors.log: %d bytes (%s old, unreadable: %v)\n", info.Size(), age, cerr)
+		return
+	}
+	fmt.Fprintf(out, "ℹ parse-errors.log: %d records, %d bytes (%s old)\n", n, info.Size(), age)
+}
+
+// countLines counts newline-terminated records in path. The file is bounded by
+// the ingester's 10MB rotation, so reading it inside a diagnostic command is
+// affordable.
+func countLines(path string) (int, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+
+	n := 0
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	for sc.Scan() {
+		n++
+	}
+	return n, sc.Err()
 }
 
 // reportLogFile prints the log file location and presence, honouring
