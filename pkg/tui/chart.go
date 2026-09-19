@@ -231,12 +231,25 @@ func paddedFrom(to time.Time, zoom ZoomLevel, n int) time.Time {
 // Be honest about who this touches: 15m is the DEFAULT zoom on launch
 // (model.go, zoomIdx 0), so a user with more than ~208 days of history sees the
 // left edge of their default view clipped — with perfectly clean data and no
-// bad row anywhere. That is not a happy trade, but the alternative is worse:
-// rendering that same span costs ~2.5GB and climbing, so the truncation is
-// spending history the app cannot usefully draw anyway. Nothing becomes
-// unreachable — the older data is still there on the 1h and 24h axes, which is
-// where a span that long is legible. Fixing the per-column cost (#528) is what
-// removes the trade rather than re-balancing it.
+// bad row anywhere.
+//
+// And the clip is not equally deserved across views. On the usage line chart
+// that span really is unaffordable (~2.5GB at a year of 15m columns). On the
+// cost and output BAR views the same span costs ~78MB and draws perfectly well:
+// they are clipped as collateral, because refreshChart computes ONE axis per
+// pass — lastChartFrom, lastCanvasW and the scroll anchor are per-Model, not
+// per-unit — and that single axis has to be sized for the most expensive view.
+//
+// Budgeting per unit is the obvious improvement, and it is reachable: unitIdx is
+// known at the call site, and the unit-toggle spring already sizes its arrays to
+// max(old, new), so units of differing length would not break the animation. The
+// cost is that the axis extent would then change under `u`, which the
+// scroll-anchor logic has to learn. Deliberately left to #528, which is what
+// makes the line chart affordable and so removes the trade rather than
+// re-balancing it.
+//
+// Either way nothing becomes unreachable: the older data stays on the 1h and
+// 24h axes, which is where a span that long is legible anyway.
 //
 // The per-column render cost is itself a scaling problem, and no bad data is
 // needed to hit it — a year of 15m columns on the usage view costs ~2.5GB on
