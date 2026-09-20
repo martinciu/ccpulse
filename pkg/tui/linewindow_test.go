@@ -6,7 +6,10 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/martinciu/ccpulse/pkg/cache"
 )
 
 var lineWindowNow = time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
@@ -163,5 +166,141 @@ func TestRenderLineWindow_ShortChartNoLabelRow(t *testing.T) {
 		if w != int64(m.viewport.Width) {
 			t.Errorf("buildLineChart chartW = %d, want viewport width %d", w, m.viewport.Width)
 		}
+	}
+}
+
+// TestBuildLineChart_OutOfWindowPointsDoNotWidenTheTimeRange pins the root
+// cause of the line-mode scroll shimmer that windowing the steady state exposed
+// (#528). timeserieslinechart.New turns auto-ranging on unconditionally and
+// WithTimeRange does not turn it off, so every pushed point outside [from, to]
+// silently WIDENS the rendered time range. slicePointsInRange pads one such
+// point per side on purpose (edge continuity), so a windowed frame used to show
+// slightly more than its window — by an amount that depends on where the window
+// sits relative to the samples. That made the x-scale pulse while scrolling and
+// slid the plot off the label row, which assumes exactly one bucket per column.
+//
+// Two renders of the same window: one with a spike only, one with the spike
+// plus an out-of-window point per side. The pads sit at 100% headroom, so the
+// only ink they may add is along the top row (where the 7d baseline already
+// is). Every other row must be identical — the spike may not move.
+func TestBuildLineChart_OutOfWindowPointsDoNotWidenTheTimeRange(t *testing.T) {
+	withForcedColor(t)
+	const vpW = 120
+	zoom := ZoomLevels[0] // 15m: one column is exactly one bucket
+	from := lineWindowNow.Add(-vpW * zoom.Duration)
+	to := lineWindowNow
+	col := func(c int) time.Time { return from.Add(time.Duration(c) * zoom.Duration) }
+
+	spike := []cache.UtilizationPoint{
+		{At: col(40), Pct: 0}, {At: col(41), Pct: 100}, {At: col(42), Pct: 0},
+	}
+	padded := append([]cache.UtilizationPoint{{At: col(-2), Pct: 0}}, spike...)
+	padded = append(padded, cache.UtilizationPoint{At: col(vpW + 2), Pct: 0})
+
+	render := func(pts []cache.UtilizationPoint) []string {
+		body := buildLineChart(pts, nil, from, to, vpW, 33, lineWindowNow, zoom, dateOrderDayFirst, "test", "")
+		return strings.Split(ansi.Strip(body), "\n")[1:] // drop the top row: the pads legitimately ink it
+	}
+	want, got := render(spike), render(padded)
+	if len(want) != len(got) {
+		t.Fatalf("row count: spike-only=%d padded=%d", len(want), len(got))
+	}
+	for i := range want {
+		if want[i] != got[i] {
+			t.Fatalf("row %d differs — out-of-window points moved the in-window spike, so they widened the time range\nspike only: %q\nwith pads:  %q",
+				i+1, want[i], got[i])
+		}
+	}
+}
+
+// plotRows returns the ANSI-stripped plot rows of the current viewport content
+// (the x-label row, last, is dropped).
+func plotRows(m *Model) []string {
+	rows := strings.Split(ansi.Strip(m.viewport.View()), "\n")
+	if len(rows) > 1 {
+		rows = rows[:len(rows)-1]
+	}
+	return rows
+}
+
+// TestScroll_Remaining_IsPureTranslation guards the one quality the old
+// full-canvas scroll had for free: moving the viewport never redrew the line,
+// so it could not shimmer. With a windowed re-render per keypress, a one-bucket
+// scroll must still produce the previous plot shifted by exactly one column.
+// 15m zoom: one column is exactly 900 s, so the time→column mapping is
+// translation-invariant by construction and any mismatch is a real defect.
+// Two columns at each edge are excluded — that is where the padded
+// out-of-window anchor points enter and leave.
+func TestScroll_Remaining_IsPureTranslation(t *testing.T) {
+	withForcedColor(t)
+	m, c := seedWideRemainingModel(t, 600, 300, lineWindowNow)
+	defer c.Close()
+	m.scrollLeft(40) // interior: away from both canvas edges
+
+	before := plotRows(&m)
+	m.scrollLeft(1) // window moves one column earlier → content shifts right by one
+	after := plotRows(&m)
+
+	if len(before) == 0 || len(before) != len(after) {
+		t.Fatalf("row count: before=%d after=%d", len(before), len(after))
+	}
+	const edge = 2
+	for i := range before {
+		b, a := []rune(before[i]), []rune(after[i])
+		if len(b) != len(a) {
+			t.Fatalf("row %d width: before=%d after=%d", i, len(b), len(a))
+		}
+		for k := edge + 1; k < len(a)-edge; k++ {
+			if a[k] != b[k-1] {
+				t.Fatalf("row %d col %d: after=%q, want before[%d]=%q — scrolling redrew the line instead of translating it\nbefore: %s\nafter:  %s",
+					i, k, a[k], k-1, b[k-1], before[i], after[i])
+			}
+		}
+	}
+}
+
+// TestScroll_Remaining_RerendersAtViewportWidth: a scroll keypress in line mode
+// now repaints (renderWindow → renderLineWindow), and does so at viewport width.
+func TestScroll_Remaining_RerendersAtViewportWidth(t *testing.T) {
+	m, c := seedWideRemainingModel(t, 600, 120, lineWindowNow)
+	defer c.Close()
+
+	recs := captureLogs(t)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	m = updated.(Model)
+
+	widths := lineChartBuildWidths(recs())
+	if len(widths) == 0 {
+		t.Fatal("scroll keypress did not re-render the line chart")
+	}
+	for _, w := range widths {
+		if w != int64(m.viewport.Width) {
+			t.Errorf("buildLineChart chartW = %d, want viewport width %d", w, m.viewport.Width)
+		}
+	}
+}
+
+// TestScroll_Remaining_DuringSpringNeverBlanks: during a u-toggle spring a
+// scroll keypress only advances the logical offset (setX) — no render — and
+// setX applies a PHYSICAL offset of n×stride. Against the old wide content that
+// was meaningful; against viewport-wide content bubbles clamps it to 0
+// (SetXOffset clamps to longestLineWidth-Width). This pins that the frame is
+// never blank between the keypress and the next tick.
+func TestScroll_Remaining_DuringSpringNeverBlanks(t *testing.T) {
+	withForcedColor(t)
+	m, c := seedWideRemainingModel(t, 600, 120, lineWindowNow)
+	defer c.Close()
+	m.scrollLeft(40)
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	m = updated.(Model)
+	if !m.springActive {
+		t.Skip("u-toggle did not arm a spring (reduce-motion?) — nothing to guard")
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	m = updated.(Model)
+
+	if strings.TrimSpace(ansi.Strip(m.viewport.View())) == "" {
+		t.Error("viewport blanked after a scroll keypress during the spring")
 	}
 }

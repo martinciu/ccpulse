@@ -1358,6 +1358,18 @@ func buildLineChart(pts5h, pts7d []cache.UtilizationPoint,
 		timeserieslinechart.WithYRange(0, 1.0),
 		timeserieslinechart.WithTimeRange(from, to),
 	)
+	// The x-range is [from, to] and must stay that. timeserieslinechart.New
+	// turns auto-ranging on unconditionally (linechart.WithAutoXYRange) and
+	// WithTimeRange does not turn it off, so each Push of a point outside the
+	// range silently WIDENS the view (linechart.AutoAdjustRange). Windowed
+	// callers push such points on purpose — slicePointsInRange pads one per
+	// side for edge continuity — so a frame rendered slightly more than its
+	// window, by an amount that depended on where the window sat relative to
+	// the samples: the x-scale pulsed while scrolling and the plot slid off
+	// the label row, which assumes one bucket per column (#528). With the
+	// range pinned the padded segments simply clip at the grid edge
+	// (PatternDotsGrid.Set bounds-checks).
+	tslc.AutoMinX, tslc.AutoMaxX = false, false
 	tslc.SetXStep(0)
 	tslc.SetYStep(0)
 	// must come after Set{X,Y}Step — SetViewTimeRange triggers rescaleData
