@@ -17,9 +17,10 @@ import (
 // backoffBase is the instant every frozen-clock test starts from. A fixed
 // date keeps deadline assertions exact: no test in this file may sleep, and
 // none may derive a fixture timestamp from the real clock — a cache stamped
-// with time.Now() against a frozen now can read as *fresh* (freshFromCache
-// counts a negative age as fresh), and Fetch would then return before ever
-// reaching the backoff gate, passing the test for the wrong reason.
+// with time.Now() is now in the FUTURE relative to the frozen backoffBase,
+// so freshFromCache reads it as stale (#534) and Fetch would hit the API
+// before ever reaching the backoff gate, passing the test for the wrong
+// reason.
 //
 // Deliberately nowhere near the real clock: an HTTP-date Retry-After is
 // resolved against a "now", and a base within an hour of the real one would
@@ -972,5 +973,87 @@ func TestFetch_MaximalWindowSurvivesABackwardClockStep(t *testing.T) {
 	}
 	if res.Source != "cache_stale" {
 		t.Errorf("Source = %q, want cache_stale", res.Source)
+	}
+}
+
+// TestFetch_FutureCacheTimestampIsStale is the regression guard for #534.
+// A cache entry whose UpdatedAt is ahead of now produces a negative age,
+// which was always < cacheTTL — so freshFromCache served it as cache_fresh
+// forever, with zero API calls, until the wall clock caught up. Both a
+// wildly future stamp (a decade out — a hand-edited or restored cache) and
+// a barely future one (one second — an NTP-corrected clock) must fall
+// through to the API and get the cache rewritten with a sane timestamp.
+func TestFetch_FutureCacheTimestampIsStale(t *testing.T) {
+	tests := []struct {
+		name   string
+		future time.Duration
+	}{
+		{"decade in the future", 10 * 365 * 24 * time.Hour},
+		{"one second in the future", time.Second},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			withFrozenClock(t, backoffBase)
+			dir := t.TempDir()
+			writeFixtureCache(t, dir, backoffBase.Add(tt.future))
+			srv := newFlipServer(t, servesUsage)
+
+			res, err := fetchTest(t, dir)
+			if err != nil {
+				t.Fatalf("Fetch: %v", err)
+			}
+			if res.Source != "api" {
+				t.Errorf("Source = %q, want api", res.Source)
+			}
+			if srv.calls() != 1 {
+				t.Errorf("API hits = %d, want 1", srv.calls())
+			}
+			if !res.UpdatedAt.Equal(backoffBase) {
+				t.Errorf("UpdatedAt = %v, want %v (rewritten to now)", res.UpdatedAt, backoffBase)
+			}
+
+			got, err := readCache(filepath.Join(dir, "usage.json"))
+			if err != nil {
+				t.Fatalf("readCache: %v", err)
+			}
+			if !got.UpdatedAt.Equal(backoffBase) {
+				t.Errorf("on-disk cache UpdatedAt = %v, want %v — the future stamp must not survive the rewrite", got.UpdatedAt, backoffBase)
+			}
+		})
+	}
+}
+
+// TestFetch_FreshCacheAgeBoundary pins the edges of the freshness window
+// that #534's fix must not disturb: an entry stamped at exactly now (age
+// 0) still reads fresh, and one just under cacheTTL still reads fresh —
+// only a negative age is new territory.
+func TestFetch_FreshCacheAgeBoundary(t *testing.T) {
+	tests := []struct {
+		name string
+		age  time.Duration
+	}{
+		{"zero age", 0},
+		{"just under cacheTTL", cacheTTL - time.Second},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			withFrozenClock(t, backoffBase)
+			dir := t.TempDir()
+			writeFixtureCache(t, dir, backoffBase.Add(-tt.age))
+			srv := newFlipServer(t, func(w http.ResponseWriter, r *http.Request) {
+				t.Errorf("should not hit API on fresh cache")
+			})
+
+			res, err := fetchTest(t, dir)
+			if err != nil {
+				t.Fatalf("Fetch: %v", err)
+			}
+			if res.Source != "cache_fresh" {
+				t.Errorf("Source = %q, want cache_fresh", res.Source)
+			}
+			if srv.calls() != 0 {
+				t.Errorf("API hits = %d, want 0", srv.calls())
+			}
+		})
 	}
 }
