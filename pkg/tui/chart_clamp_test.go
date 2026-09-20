@@ -173,9 +173,13 @@ func TestClampChartFrom_IsLossy(t *testing.T) {
 	zoom := zoomByLabel(t, "1h")
 	to := time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC)
 
-	// Two distinct earliest values, both past the 1h horizon (~2.3 years).
-	e1 := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
-	e2 := time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC)
+	// Two distinct earliest values, both past the 1h horizon. Derived from
+	// maxChartColumns (stride 1 at this zoom, so the horizon is that many hours
+	// back) rather than written as calendar dates: dates pinned to one ceiling
+	// value stop being "past the horizon" the moment the ceiling is raised,
+	// which is a fact about the fixture, not about the clamp (#528 raised it).
+	e1 := to.Add(-(maxChartColumns + 1) * time.Hour)
+	e2 := to.Add(-(maxChartColumns + 5_000) * time.Hour)
 	if e1.Equal(e2) {
 		t.Fatal("precondition: the two earliest values must differ")
 	}

@@ -42,7 +42,7 @@ func seedWideRemainingModel(tb testing.TB, nBuckets, nSamples int, now time.Time
 // allocates canvasW x rows cells of 560 B); after it, B/op is flat.
 func BenchmarkRefreshChartRemaining(b *testing.B) {
 	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
-	for _, n := range []int{1_000, 5_000, 20_000} {
+	for _, n := range []int{1_000, 5_000, 20_000, 50_000} {
 		b.Run(fmt.Sprintf("cols=%d", n), func(b *testing.B) {
 			m, c := seedWideRemainingModel(b, n, 500, now)
 			defer c.Close()

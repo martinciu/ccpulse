@@ -326,9 +326,10 @@ func (m *Model) refreshChart() {
 // Until #528 the steady state built the full logical canvas and let the
 // viewport scroll over it. ntcharts allocates canvasW × rows cells of 560 B
 // each (a Cell embeds a lipgloss.Style), so a 20,000-column history cost
-// ~430 MB per refresh for a viewport that shows ~120 of those columns. Building
-// at viewport.Width makes the cost O(viewport); m.lastCanvasW survives purely as
-// logical geometry for setX's clamp, the scroll anchor and visibleWindow.
+// 740 MiB per refresh (427 MB of that the cell array alone) for a viewport that
+// shows ~120 of those columns. Building at viewport.Width makes the cost
+// O(viewport); m.lastCanvasW survives purely as logical geometry for setX's
+// clamp, the scroll anchor and visibleWindow.
 //
 // The plot window and the label cut both start at visibleXOffset, so they stay
 // aligned even where setX's maxX overshoots the canvas edge (24h zoom).
