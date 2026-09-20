@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
@@ -225,38 +226,155 @@ func plotRows(m *Model) []string {
 
 // TestScroll_Remaining_IsPureTranslation guards the one quality the old
 // full-canvas scroll had for free: moving the viewport never redrew the line,
-// so it could not shimmer. With a windowed re-render per keypress, a one-bucket
-// scroll must still produce the previous plot shifted by exactly one column.
-// 15m zoom: one column is exactly 900 s, so the time→column mapping is
-// translation-invariant by construction and any mismatch is a real defect.
+// so it could not shimmer. With a windowed re-render per keypress, one bucket
+// of scroll must still produce the previous plot shifted by exactly stride
+// columns.
+//
+// It SWEEPS, deliberately. A single scroll from one position lands on a clean
+// offset about half the time, so a one-step version of this test reads green
+// while every other keypress of a real drag redraws the line. Each zoom below
+// is swept across many consecutive keypresses and every one of them must
+// translate.
+//
 // Two columns at each edge are excluded — that is where the padded
 // out-of-window anchor points enter and leave.
 func TestScroll_Remaining_IsPureTranslation(t *testing.T) {
 	withForcedColor(t)
-	m, c := seedWideRemainingModel(t, 600, 300, lineWindowNow)
-	defer c.Close()
-	m.scrollLeft(40) // interior: away from both canvas edges
 
-	before := plotRows(&m)
-	m.scrollLeft(1) // window moves one column earlier → content shifts right by one
-	after := plotRows(&m)
+	// 15m and 1h only. At 24h a bucket is 12 columns and samples landing
+	// exactly on a half-dot boundary still tie under float rounding; that
+	// residual is measured and documented rather than pinned here.
+	for _, zi := range []int{0, 1} {
+		zoom := ZoomLevels[zi]
+		// Two sample densities: one whose samples sit on the 15m lattice and
+		// one that does not divide it, so neither can pass by alignment luck.
+		for _, nSamples := range []int{300, 277} {
+			t.Run(fmt.Sprintf("%s/samples=%d", zoom.Label, nSamples), func(t *testing.T) {
+				m, c := seedWideRemainingModel(t, 2_000, nSamples, lineWindowNow)
+				defer c.Close()
+				m.zoomIdx = zi
+				m.refreshChart()
+				m.scrollLeft(10) // interior: away from both canvas edges
 
-	if len(before) == 0 || len(before) != len(after) {
-		t.Fatalf("row count: before=%d after=%d", len(before), len(after))
-	}
-	const edge = 2
-	for i := range before {
-		b, a := []rune(before[i]), []rune(after[i])
-		if len(b) != len(a) {
-			t.Fatalf("row %d width: before=%d after=%d", i, len(b), len(a))
+				const edge, steps = 2, 60
+				stride := zoom.stride()
+				before := plotRows(&m)
+				for step := range steps {
+					prevOff := m.viewportXOffset
+					m.scrollLeft(1) // window moves one bucket earlier → content shifts right
+					if m.viewportXOffset == prevOff {
+						t.Fatalf("step %d: scroll clamped at offset %d — the sweep never left the edge",
+							step, prevOff)
+					}
+					after := plotRows(&m)
+					if len(before) == 0 || len(before) != len(after) {
+						t.Fatalf("step %d row count: before=%d after=%d", step, len(before), len(after))
+					}
+					for i := range before {
+						b, a := []rune(before[i]), []rune(after[i])
+						if len(b) != len(a) {
+							t.Fatalf("step %d row %d width: before=%d after=%d", step, i, len(b), len(a))
+						}
+						for k := stride + edge; k < len(a)-edge; k++ {
+							if a[k] != b[k-stride] {
+								t.Fatalf("step %d row %d col %d: after=%q, want before[%d]=%q — scrolling redrew the line instead of translating it by %d\nbefore: %s\nafter:  %s",
+									step, i, k, a[k], k-stride, b[k-stride], stride, before[i], after[i])
+							}
+						}
+					}
+					before = after
+				}
+			})
 		}
-		for k := edge + 1; k < len(a)-edge; k++ {
-			if a[k] != b[k-1] {
-				t.Fatalf("row %d col %d: after=%q, want before[%d]=%q — scrolling redrew the line instead of translating it\nbefore: %s\nafter:  %s",
-					i, k, a[k], k-1, b[k-1], before[i], after[i])
+	}
+}
+
+// bodyPlotRows splits a buildLineChart result into its plot rows, dropping the
+// x-label row. Dropping it is the point: that row is full-width text, so a
+// scan that included it would report the frame as inked to the right edge no
+// matter what the plot did.
+func bodyPlotRows(body string) []string {
+	rows := strings.Split(ansi.Strip(body), "\n")
+	if len(rows) > 1 {
+		rows = rows[:len(rows)-1]
+	}
+	return rows
+}
+
+// lastInkedCol returns the index of the rightmost non-space column across the
+// plot rows of body. Callers compare it against the width they ASKED for, not
+// against the widest rendered row: rows carry no trailing padding, so a row
+// that stops short is also a shorter row, and comparing ink to row length
+// would always agree with itself.
+func lastInkedCol(body string) int {
+	last := -1
+	for _, row := range bodyPlotRows(body) {
+		r := []rune(row)
+		for k := len(r) - 1; k >= 0; k-- {
+			if r[k] != ' ' {
+				last = max(last, k)
+				break
 			}
 		}
 	}
+	return last
+}
+
+// TestBuildLineChart_PaintsToTheRightEdge guards the right terminus.
+//
+// The chart is pinned right by default (#306), so the rightmost column is
+// "now" — the single most-read column on the usage view. ntcharts maps a
+// point at exactly `to` one dot past the end of the braille grid, where
+// PatternDotsGrid.Set drops it, so the terminus survives only because
+// DrawBrailleDataSets draws SEGMENTS and the segment's intermediate dots fill
+// the last cell. That is easy to break by adjusting the x-range, which #528
+// does. Both the zero-samples baseline (two synthetic points, from and to) and
+// a real series must still ink the final column.
+func TestBuildLineChart_PaintsToTheRightEdge(t *testing.T) {
+	withForcedColor(t)
+	const vpW = 120
+	zoom := ZoomLevels[0]
+	from := lineWindowNow.Add(-vpW * zoom.Duration)
+	to := lineWindowNow
+
+	// Dot-level, not cell-level: the flat baseline is uniform, so its final cell
+	// must be the SAME braille rune as its neighbours. A cell inked with only
+	// its left dot is a different rune and reads as the line fraying at "now",
+	// which a mere "is the last column non-blank" check cannot see.
+	t.Run("zero-samples baseline", func(t *testing.T) {
+		body := buildLineChart(nil, nil, from, to, vpW, 33, lineWindowNow, zoom, dateOrderDayFirst, "test", "")
+		if last := lastInkedCol(body); last != vpW-1 {
+			t.Fatalf("baseline inked up to column %d, want %d — the flat 100%% line stops short of the right edge", last, vpW-1)
+		}
+		for _, row := range bodyPlotRows(body) {
+			r := []rune(row)
+			if len(r) < 3 || r[len(r)-2] == ' ' {
+				continue // not the baseline row
+			}
+			if r[len(r)-1] != r[len(r)-2] {
+				t.Errorf("baseline's final cell is %q but its neighbour is %q — the flat line frays at the right edge, where \"now\" is",
+					r[len(r)-1], r[len(r)-2])
+			}
+		}
+	})
+
+	// BOTH series carry real points. An empty series is not a neutral choice
+	// here: buildLineChart substitutes a flat two-point baseline for it, which
+	// inks every column and would mask a real series that stopped short.
+	t.Run("real series ending at now", func(t *testing.T) {
+		// The series ends on the last BUCKET START, not at `to` itself: that is
+		// what real data looks like (a sample lands in a bucket, not on the
+		// frame's right edge), and a point sitting exactly on `to` re-inks the
+		// final column on its own, hiding whether the scale reaches it.
+		var pts []cache.UtilizationPoint
+		for c := range vpW {
+			pts = append(pts, cache.UtilizationPoint{At: from.Add(time.Duration(c) * zoom.Duration), Pct: float64(20 + c%50)})
+		}
+		body := buildLineChart(pts, pts, from, to, vpW, 33, lineWindowNow, zoom, dateOrderDayFirst, "test", "")
+		if last := lastInkedCol(body); last != vpW-1 {
+			t.Errorf("series inked up to column %d, want %d — the line stops short of the right edge, where \"now\" is", last, vpW-1)
+		}
+	})
 }
 
 // TestScroll_Remaining_RerendersAtViewportWidth: a scroll keypress in line mode

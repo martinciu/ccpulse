@@ -1332,6 +1332,26 @@ func buildLineChart(pts5h, pts7d []cache.UtilizationPoint,
 		timeserieslinechart.WithYRange(0, 1.0),
 		timeserieslinechart.WithTimeRange(from, to),
 	)
+	// One column must be exactly 2 braille dots, and ntcharts does not give us
+	// that for free. Its BrailleGrid spreads the range over gWidth-1 = 2w-1 dot
+	// INTERVALS although the grid holds 2w dots, so a column works out to
+	// 2 - 1/w dots. The error is invisible in a static frame but not while
+	// scrolling: a vertex whose sub-dot position crosses a rounding boundary
+	// moves one dot where its neighbours move two, and the line re-rasters
+	// under the cursor instead of translating (#528; before this, a 15m drag
+	// redrew on roughly every second keypress). Handing ntcharts a range one
+	// dot shorter makes its scale exactly 2w/(to-from) — i.e. 2 dots per column.
+	//
+	// The cost is at the right terminus: a point at exactly `to` now maps to dot
+	// 2w, which PatternDotsGrid.Set drops. The last cell still paints, because
+	// DrawBrailleDataSets draws SEGMENTS and the segment into that point inks
+	// every dot up to 2w-1 (TestBuildLineChart_PaintsToTheRightEdge pins both
+	// the real series and the zero-samples baseline, which is two synthetic
+	// points at from and to).
+	if chartW > 0 {
+		to = from.Add(to.Sub(from) * time.Duration(2*chartW-1) / time.Duration(2*chartW))
+	}
+
 	// The x-range is [from, to] and must stay that. timeserieslinechart.New
 	// turns auto-ranging on unconditionally (linechart.WithAutoXYRange) and
 	// WithTimeRange does not turn it off, so each Push of a point outside the
