@@ -128,7 +128,32 @@ func reportCacheArtifacts(out io.Writer, cacheDir string) {
 		func(info os.FileInfo) string {
 			return fmt.Sprintf("usage cache: %s old", time.Since(info.ModTime()).Truncate(time.Second))
 		})
+	reportBackoffState(out, cacheDir, time.Now())
 	reportParseErrors(out, cacheDir)
+}
+
+// reportBackoffState reports the persisted usage-API backoff window (#529).
+//
+// Informational, never a verdict: an open window is ccpulse behaving exactly
+// as designed after a 429, and the only thing a user needs is the number of
+// minutes before quota data refreshes again. The unreadable case gets its
+// own line because Fetch silently ignores a corrupt state file — doctor is
+// the one place that says so out loud.
+func reportBackoffState(out io.Writer, cacheDir string, now time.Time) {
+	st, err := anthro.ReadBackoffState(cacheDir, now)
+	switch {
+	case err != nil:
+		fmt.Fprintf(out, "ℹ usage API backoff: state file unusable, ignored — %v\n", err)
+	case !st.Active(now):
+		fmt.Fprintln(out, "ℹ usage API backoff: none")
+	default:
+		noun := "429s"
+		if st.Consecutive429 == 1 {
+			noun = "429"
+		}
+		fmt.Fprintf(out, "ℹ usage API backoff: retry in %s (%d consecutive %s)\n",
+			st.RetryAt.Sub(now).Truncate(time.Second), st.Consecutive429, noun)
+	}
 }
 
 // implausibleBefore is the floor below which `doctor` calls a message timestamp

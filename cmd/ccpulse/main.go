@@ -453,13 +453,15 @@ func startBackfill(ctx context.Context, p *tea.Program, ing *ingest.Ingester) (c
 }
 
 // runQuotaPoller fires once immediately, then re-polls on a per-outcome
-// cadence: basePollInterval normally, backing off per pollBackoff while
-// the usage endpoint returns 429 (#447). Each attempt fetches usage data
-// and pushes QuotaMsg to the program. On a successful fetch where
-// Source=="api", it also appends a row to usage_samples and (if
-// retention > 0) prunes anything older than now-retention. All side
-// effects are best-effort; errors are swallowed so the TUI quota stays
-// up to date even if the cache is misbehaving.
+// cadence: anthro.BaseRetryInterval normally, and otherwise whenever the
+// deadline Fetch reports falls due (#447, #529). The poller keeps no
+// backoff state of its own — the policy and its persisted window live in
+// pkg/anthro, so the TUI and the statusline back off together. Each
+// attempt fetches usage data and pushes QuotaMsg to the program. On a
+// successful fetch where Source=="api", it also appends a row to
+// usage_samples and (if retention > 0) prunes anything older than
+// now-retention. All side effects are best-effort; errors are swallowed so
+// the TUI quota stays up to date even if the cache is misbehaving.
 func runQuotaPoller(
 	ctx context.Context,
 	p *tea.Program,
@@ -468,29 +470,35 @@ func runQuotaPoller(
 	c *cache.Cache,
 	retention time.Duration,
 ) {
-	var backoff pollBackoff
 	// push performs one fetch attempt, pushes any result to the TUI, and
 	// returns the delay before the next attempt.
 	push := func() time.Duration {
 		res, err := anthro.Fetch(ctx, cred, cacheDir)
 		if err != nil {
-			var se *anthro.StatusError
-			errors.As(err, &se) // stays nil for transport/decode failures
-			delay := backoff.next(se)
+			// A failure that leaves no usable data still carries a
+			// deadline; anything else (an empty token, say) does not, and
+			// falls back to the base cadence.
+			var re *anthro.RetryError
+			var retryAt time.Time
+			var consecutive429 int
+			if errors.As(err, &re) {
+				retryAt, consecutive429 = re.RetryAt, re.Consecutive429
+			}
+			delay := pollDelay(retryAt, time.Now())
 			slog.Warn("ccpulse.quotaPoller",
 				"outcome", "fetch_error",
 				"err", err,
 				"next_retry_s", int(delay.Seconds()),
-				"consecutive_429", backoff.consecutive429)
+				"consecutive_429", consecutive429)
 			return delay
 		}
-		delay := backoff.next(res.APIStatus)
+		delay := pollDelay(res.RetryAt, time.Now())
 		if res.Source == "cache_stale" {
 			slog.Warn("ccpulse.quotaPoller",
 				"outcome", "cache_stale",
 				"cache_age_s", int(time.Since(res.UpdatedAt).Seconds()),
 				"next_retry_s", int(delay.Seconds()),
-				"consecutive_429", backoff.consecutive429)
+				"consecutive_429", res.Consecutive429)
 		}
 		if res.Source == "api" {
 			if err := c.RecordUsageSample(ctx, res.Usage, res.UpdatedAt); err != nil {
