@@ -212,8 +212,15 @@ type FetchResult struct {
 // freshFromCache returns a cache_fresh result when the cached entry is valid and
 // younger than cacheTTL. ok is false when there is no usable fresh entry, telling
 // the caller to fall through to the API path.
+//
+// A cache entry stamped in the future is treated as stale rather than
+// clamped: UpdatedAt is an untrusted timestamp read off disk (clock stepped
+// back after a fetch, a restored cache dir, a hand-edited file), and a
+// negative age is always < cacheTTL — without this check a future stamp
+// would be served as fresh indefinitely, until the wall clock caught up.
 func freshFromCache(cached cachedUsage, cacheErr error, now time.Time) (FetchResult, bool) {
-	if cacheErr == nil && now.Sub(cached.UpdatedAt) < cacheTTL {
+	age := now.Sub(cached.UpdatedAt)
+	if cacheErr == nil && age >= 0 && age < cacheTTL {
 		return FetchResult{Usage: cached.Usage, Source: "cache_fresh", UpdatedAt: cached.UpdatedAt}, true
 	}
 	return FetchResult{}, false
