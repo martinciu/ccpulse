@@ -474,17 +474,8 @@ func runQuotaPoller(
 	// returns the delay before the next attempt.
 	push := func() time.Duration {
 		res, err := anthro.Fetch(ctx, cred, cacheDir)
+		delay, consecutive429 := nextPollDelay(res, err, time.Now())
 		if err != nil {
-			// A failure that leaves no usable data still carries a
-			// deadline; anything else (an empty token, say) does not, and
-			// falls back to the base cadence.
-			var re *anthro.RetryError
-			var retryAt time.Time
-			var consecutive429 int
-			if errors.As(err, &re) {
-				retryAt, consecutive429 = re.RetryAt, re.Consecutive429
-			}
-			delay := pollDelay(retryAt, time.Now())
 			slog.Warn("ccpulse.quotaPoller",
 				"outcome", "fetch_error",
 				"err", err,
@@ -492,13 +483,12 @@ func runQuotaPoller(
 				"consecutive_429", consecutive429)
 			return delay
 		}
-		delay := pollDelay(res.RetryAt, time.Now())
 		if res.Source == "cache_stale" {
 			slog.Warn("ccpulse.quotaPoller",
 				"outcome", "cache_stale",
 				"cache_age_s", int(time.Since(res.UpdatedAt).Seconds()),
 				"next_retry_s", int(delay.Seconds()),
-				"consecutive_429", res.Consecutive429)
+				"consecutive_429", consecutive429)
 		}
 		if res.Source == "api" {
 			if err := c.RecordUsageSample(ctx, res.Usage, res.UpdatedAt); err != nil {

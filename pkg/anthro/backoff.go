@@ -29,6 +29,17 @@ const (
 	retryAfterMax     = time.Hour
 )
 
+// readCeilingSlack widens the ceiling readBackoffState accepts, and only
+// there. A maximal window is written at exactly now+retryAfterMax (the
+// endpoint asked for an hour or more), so the smallest backward step of the
+// wall clock between that write and the next read — an NTP correction is
+// enough — would put a perfectly legitimate deadline past a tight ceiling,
+// discard it, and send another request to an endpoint that just asked for
+// an hour of quiet. The slack does not reopen the wedge this ceiling exists
+// to prevent: read never rewrites the value it accepted, so an accepted
+// window still drains within retryAfterMax+readCeilingSlack.
+const readCeilingSlack = time.Minute
+
 // maxConsecutive429 bounds the escalation counter read back from disk. The
 // escalation itself saturates at backoffCap after four steps, so the clamp
 // buys nothing for the delay — it exists so a corrupt file holding
@@ -100,6 +111,9 @@ type backoffFile struct {
 // Any outcome other than 429 resets the escalation and returns the base
 // cadence: an offline machine must stop firing a timing-out request every
 // five seconds just as surely as a rate-limited one must stop hammering.
+// The one failure this is never asked about is a cancelled context — Fetch
+// filters that out before it gets here, because a caller giving up is not
+// evidence about the endpoint.
 // A 429 returns max(exp, min(RetryAfter, retryAfterMax)) where
 // exp = min(BaseRetryInterval·2ⁿ, backoffCap) and n counts consecutive
 // 429s — 6 → 12 → 24 → 30 → 30… minutes when no Retry-After is present.
@@ -152,7 +166,7 @@ func readBackoffState(path string, now time.Time) (BackoffState, error) {
 	if f.V != backoffVersion {
 		return BackoffState{}, fmt.Errorf("backoff state version %d, want %d", f.V, backoffVersion)
 	}
-	if f.RetryAt.After(now.Add(retryAfterMax)) {
+	if f.RetryAt.After(now.Add(retryAfterMax + readCeilingSlack)) {
 		return BackoffState{}, fmt.Errorf("backoff retry_at is beyond the %s ceiling", retryAfterMax)
 	}
 	return BackoffState{

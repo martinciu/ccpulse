@@ -147,12 +147,23 @@ func reportBackoffState(out io.Writer, cacheDir string, now time.Time) {
 	case !st.Active(now):
 		fmt.Fprintln(out, "ℹ usage API backoff: none")
 	default:
-		noun := "429s"
-		if st.Consecutive429 == 1 {
-			noun = "429"
-		}
-		fmt.Fprintf(out, "ℹ usage API backoff: retry in %s (%d consecutive %s)\n",
-			st.RetryAt.Sub(now).Truncate(time.Second), st.Consecutive429, noun)
+		fmt.Fprintf(out, "ℹ usage API backoff: retry in %s (%s)\n",
+			st.RetryAt.Sub(now).Truncate(time.Second), backoffCause(st.Consecutive429))
+	}
+}
+
+// backoffCause renders why the window is open. A transport failure or a 5xx
+// opens one too, and those carry no 429s — "0 consecutive 429s" next to a
+// live deadline reads as a contradiction, so that case says what actually
+// happened instead of counting to zero.
+func backoffCause(consecutive429 int) string {
+	switch consecutive429 {
+	case 0:
+		return "last attempt failed; not rate-limited"
+	case 1:
+		return "1 consecutive 429"
+	default:
+		return fmt.Sprintf("%d consecutive 429s", consecutive429)
 	}
 }
 

@@ -48,6 +48,15 @@ func TestReportBackoffState(t *testing.T) {
 			wantText: []string{"ℹ usage API backoff: retry in 12m0s (3 consecutive 429s)"},
 		},
 		{
+			// A transport failure or a 5xx opens a window too, and carries
+			// no 429s at all. "0 consecutive 429s" beside a live deadline
+			// reads as a contradiction.
+			name:     "a window with no 429s behind it names its cause",
+			body:     fmt.Sprintf(`{"v":1,"retry_at":%q,"consecutive_429":0}`, stamp(3*time.Minute)),
+			wantText: []string{"retry in 3m0s (last attempt failed; not rate-limited)"},
+			notText:  []string{"429"},
+		},
+		{
 			name:     "a single 429 reads as singular",
 			body:     fmt.Sprintf(`{"v":1,"retry_at":%q,"consecutive_429":1}`, stamp(6*time.Minute)),
 			wantText: []string{"(1 consecutive 429)"},

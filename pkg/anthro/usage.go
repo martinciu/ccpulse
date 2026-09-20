@@ -286,6 +286,18 @@ func Fetch(ctx context.Context, cred Credential, cacheDir string) (res FetchResu
 
 	u, apiErr := fetchAPI(ctx, cred.AccessToken)
 	if apiErr != nil {
+		// A caller that walked away says nothing about the endpoint's
+		// health. runTUI cancels the poller's context on quit and the
+		// poller fires immediately on launch, so recording a window here
+		// would gate the next launch — and reset a real 429 escalation to
+		// zero on the way out. Deliberately Canceled only, and matched on
+		// apiErr rather than ctx.Err(): `status` wraps Fetch in a 5 s
+		// timeout equal to httpTimeout, so an offline or hung endpoint
+		// surfaces as the parent's DeadlineExceeded, and that is exactly
+		// the case the window exists for.
+		if errors.Is(apiErr, context.Canceled) {
+			return staleOrRetry(cached, cacheErr, BackoffState{}, apiErr)
+		}
 		return staleOrRetry(cached, cacheErr, recordBackoff(cacheDir, bo, apiErr, timeNow()), apiErr)
 	}
 	clearBackoff(cacheDir)
@@ -310,8 +322,15 @@ func loadBackoff(cacheDir string, now time.Time) BackoffState {
 }
 
 // recordBackoff computes the window that follows an API failure and persists
-// it so sibling processes see it too. A write failure is not fatal: the worst
-// case is the pre-#529 behaviour for one more attempt.
+// it so sibling processes see it too.
+//
+// A write failure is not fatal, but it is not harmless either: the returned
+// window still throttles THIS process, and nothing else. Every ccpulse that
+// matters here is short-lived, so a persistent write failure — ENOSPC, a
+// directory squatting on the path — restores the pre-#529 behaviour in full
+// for as long as it lasts, one WARN line per attempt included. Failing open
+// is still the right call (a cache that cannot be written must not be able
+// to stop quota data from loading), but the WARN is the only signal.
 func recordBackoff(cacheDir string, prev BackoffState, apiErr error, now time.Time) BackoffState {
 	var se *StatusError
 	errors.As(apiErr, &se) // stays nil for transport/decode failures

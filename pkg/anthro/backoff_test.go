@@ -20,20 +20,26 @@ import (
 // with time.Now() against a frozen now can read as *fresh* (freshFromCache
 // counts a negative age as fresh), and Fetch would then return before ever
 // reaching the backoff gate, passing the test for the wrong reason.
-var backoffBase = time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
+//
+// Deliberately nowhere near the real clock: an HTTP-date Retry-After is
+// resolved against a "now", and a base within an hour of the real one would
+// let a test pass whether the code read the seam or time.Now().
+var backoffBase = time.Date(2026, 1, 15, 9, 0, 0, 0, time.UTC)
 
-// withFrozenClock pins timeNow at base and returns a func that steps it
-// forward, reporting the new now. Not safe with t.Parallel(): timeNow is a
-// package var, like apiURL.
+// withFrozenClock pins timeNow at base and returns a func that steps it by d
+// (negative steps the wall clock backwards, as an NTP correction would),
+// reporting the new now. The instant is held in an atomic because one test
+// advances it from the HTTP handler's goroutine while Fetch is mid-call.
+// Not safe with t.Parallel(): timeNow is a package var, like apiURL.
 func withFrozenClock(t *testing.T, base time.Time) func(time.Duration) time.Time {
 	t.Helper()
-	cur := base
+	var cur atomic.Int64
+	cur.Store(base.UnixNano())
 	prev := timeNow
-	timeNow = func() time.Time { return cur }
+	timeNow = func() time.Time { return time.Unix(0, cur.Load()).UTC() }
 	t.Cleanup(func() { timeNow = prev })
 	return func(d time.Duration) time.Time {
-		cur = cur.Add(d)
-		return cur
+		return time.Unix(0, cur.Add(int64(d))).UTC()
 	}
 }
 
@@ -117,14 +123,16 @@ func TestNextBackoff(t *testing.T) {
 		return &StatusError{Code: code, RetryAfter: ra}
 	}
 	tests := []struct {
-		name string
-		seq  []*StatusError
-		want []time.Duration
+		name  string
+		seq   []*StatusError
+		want  []time.Duration
+		wantN []int
 	}{
 		{
-			name: "non-status failures stay at base cadence",
-			seq:  []*StatusError{nil, nil},
-			want: []time.Duration{3 * time.Minute, 3 * time.Minute},
+			name:  "non-status failures stay at base cadence",
+			seq:   []*StatusError{nil, nil},
+			want:  []time.Duration{3 * time.Minute, 3 * time.Minute},
+			wantN: []int{0, 0},
 		},
 		{
 			name: "consecutive 429s escalate and cap",
@@ -137,6 +145,7 @@ func TestNextBackoff(t *testing.T) {
 				6 * time.Minute, 12 * time.Minute, 24 * time.Minute,
 				30 * time.Minute, 30 * time.Minute,
 			},
+			wantN: []int{1, 2, 3, 4, 5},
 		},
 		{
 			name: "a non-status failure resets escalation",
@@ -144,29 +153,34 @@ func TestNextBackoff(t *testing.T) {
 				st(http.StatusTooManyRequests, 0), st(http.StatusTooManyRequests, 0),
 				nil, st(http.StatusTooManyRequests, 0),
 			},
-			want: []time.Duration{6 * time.Minute, 12 * time.Minute, 3 * time.Minute, 6 * time.Minute},
+			want:  []time.Duration{6 * time.Minute, 12 * time.Minute, 3 * time.Minute, 6 * time.Minute},
+			wantN: []int{1, 2, 0, 1},
 		},
 		{
-			name: "non-429 status resets escalation",
-			seq:  []*StatusError{st(http.StatusTooManyRequests, 0), st(http.StatusInternalServerError, 0)},
-			want: []time.Duration{6 * time.Minute, 3 * time.Minute},
+			name:  "non-429 status resets escalation",
+			seq:   []*StatusError{st(http.StatusTooManyRequests, 0), st(http.StatusInternalServerError, 0)},
+			want:  []time.Duration{6 * time.Minute, 3 * time.Minute},
+			wantN: []int{1, 0},
 		},
 		{
-			name: "retry-after below exponential is floored by exponential",
-			seq:  []*StatusError{st(http.StatusTooManyRequests, 30*time.Second)},
-			want: []time.Duration{6 * time.Minute},
+			name:  "retry-after below exponential is floored by exponential",
+			seq:   []*StatusError{st(http.StatusTooManyRequests, 30*time.Second)},
+			want:  []time.Duration{6 * time.Minute},
+			wantN: []int{1},
 		},
 		{
-			name: "retry-after between exponential and cap is honored",
-			seq:  []*StatusError{st(http.StatusTooManyRequests, 20*time.Minute)},
-			want: []time.Duration{20 * time.Minute},
+			name:  "retry-after between exponential and cap is honored",
+			seq:   []*StatusError{st(http.StatusTooManyRequests, 20*time.Minute)},
+			want:  []time.Duration{20 * time.Minute},
+			wantN: []int{1},
 		},
 		{
 			name: "honored retry-after still escalates the counter",
 			seq: []*StatusError{
 				st(http.StatusTooManyRequests, 45*time.Minute), st(http.StatusTooManyRequests, 0),
 			},
-			want: []time.Duration{45 * time.Minute, 12 * time.Minute},
+			want:  []time.Duration{45 * time.Minute, 12 * time.Minute},
+			wantN: []int{1, 2},
 		},
 		{
 			name: "escalated exponential floors smaller retry-after",
@@ -174,17 +188,20 @@ func TestNextBackoff(t *testing.T) {
 				st(http.StatusTooManyRequests, 0), st(http.StatusTooManyRequests, 0),
 				st(http.StatusTooManyRequests, 10*time.Minute),
 			},
-			want: []time.Duration{6 * time.Minute, 12 * time.Minute, 24 * time.Minute},
+			want:  []time.Duration{6 * time.Minute, 12 * time.Minute, 24 * time.Minute},
+			wantN: []int{1, 2, 3},
 		},
 		{
-			name: "retry-after above cap is honored",
-			seq:  []*StatusError{st(http.StatusTooManyRequests, 45*time.Minute)},
-			want: []time.Duration{45 * time.Minute},
+			name:  "retry-after above cap is honored",
+			seq:   []*StatusError{st(http.StatusTooManyRequests, 45*time.Minute)},
+			want:  []time.Duration{45 * time.Minute},
+			wantN: []int{1},
 		},
 		{
-			name: "retry-after clamped to one hour",
-			seq:  []*StatusError{st(http.StatusTooManyRequests, 2*time.Hour)},
-			want: []time.Duration{time.Hour},
+			name:  "retry-after clamped to one hour",
+			seq:   []*StatusError{st(http.StatusTooManyRequests, 2*time.Hour)},
+			want:  []time.Duration{time.Hour},
+			wantN: []int{1},
 		},
 	}
 	for _, tt := range tests {
@@ -194,6 +211,9 @@ func TestNextBackoff(t *testing.T) {
 				n, delay := nextBackoff(prev, s)
 				if delay != tt.want[i] {
 					t.Errorf("step %d: delay = %v, want %v", i, delay, tt.want[i])
+				}
+				if n != tt.wantN[i] {
+					t.Errorf("step %d: consecutive = %d, want %d", i, n, tt.wantN[i])
 				}
 				prev = n
 			}
@@ -276,6 +296,15 @@ func TestReadBackoffState(t *testing.T) {
 			name:    "retry_at beyond the ceiling",
 			body:    `{"v":1,"retry_at":"3000-01-01T00:00:00Z","consecutive_429":3}`,
 			wantErr: true,
+		},
+		{
+			// …but the ceiling carries slack, because a maximal window is
+			// written at exactly now+retryAfterMax and the wall clock can
+			// step backwards under it.
+			name:            "a maximal window just over the ceiling is kept",
+			body:            fmt.Sprintf(`{"v":1,"retry_at":%q,"consecutive_429":1}`, backoffBase.Add(retryAfterMax+30*time.Second).Format(time.RFC3339Nano)),
+			wantActive:      true,
+			wantConsecutive: 1,
 		},
 		{
 			name:            "negative count clamps to zero",
@@ -445,6 +474,15 @@ func TestFetch_RetryAfterShapesTheWindow(t *testing.T) {
 		{name: "below the exponential is floored", retryAfter: "30", want: 6 * time.Minute},
 		{name: "above the exponential is honoured", retryAfter: "1200", want: 20 * time.Minute},
 		{name: "beyond the ceiling is clamped", retryAfter: "7200", want: time.Hour},
+		{
+			// Delta-seconds needs no clock, so it cannot tell whether the
+			// header was read against timeNow or time.Now. An HTTP-date can:
+			// backoffBase sits months away from the real clock, so reading
+			// the wrong one collapses this to the 6-minute exponential.
+			name:       "an http-date is resolved against the frozen clock",
+			retryAfter: backoffBase.Add(20 * time.Minute).Format(http.TimeFormat),
+			want:       20 * time.Minute,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -489,6 +527,19 @@ func TestFetch_NonRateLimitFailureSetsBaseCadence(t *testing.T) {
 		if want := now.Add(BaseRetryInterval); !res.RetryAt.Equal(want) {
 			t.Errorf("RetryAt = %v, want %v", res.RetryAt, want)
 		}
+
+		// Reporting the window is not the requirement — persisting it is.
+		// The next process has only the file to go on.
+		hitsBefore := srv.calls()
+		advance(time.Minute)
+		srv.serve(servesUsage)
+		if _, err := fetchTest(t, dir); err != nil {
+			t.Fatalf("Fetch inside the base window: %v", err)
+		}
+		if got := srv.calls(); got != hitsBefore {
+			t.Errorf("API hits = %d, want %d — the base window must be written, not just returned",
+				got, hitsBefore)
+		}
 	})
 
 	t.Run("transport error", func(t *testing.T) {
@@ -516,6 +567,21 @@ func TestFetch_NonRateLimitFailureSetsBaseCadence(t *testing.T) {
 		}
 		if want := now.Add(BaseRetryInterval); !res.RetryAt.Equal(want) {
 			t.Errorf("RetryAt = %v, want %v", res.RetryAt, want)
+		}
+		if !backoffFileExists(t, dir) {
+			t.Fatal("no state file after a transport failure — an offline machine would keep dialling")
+		}
+
+		// A reachable endpoint again, and a counting one: the window has to
+		// hold the request back on its own.
+		advance(time.Minute)
+		probe := newFlipServer(t, servesUsage)
+		if _, err := fetchTest(t, dir); err != nil {
+			t.Fatalf("Fetch inside the base window: %v", err)
+		}
+		if probe.calls() != 0 {
+			t.Errorf("API hits = %d, want 0 — the base window must be written, not just returned",
+				probe.calls())
 		}
 	})
 }
@@ -720,5 +786,191 @@ func TestFetchLogs_BodySnippetOnlyForNon429(t *testing.T) {
 				t.Errorf("body_snippet present = %v, want %v (attrs %v)", ok, tt.wantSnippet, attrs)
 			}
 		})
+	}
+}
+
+// TestFetch_CancelledContextRecordsNothing: a caller that walks away is not
+// evidence about the endpoint. runTUI cancels the poller's context on quit
+// and the poller fires again immediately on the next launch, so recording a
+// window here would gate that launch — and, worse, flatten a real 429
+// escalation to zero on the way out.
+func TestFetch_CancelledContextRecordsNothing(t *testing.T) {
+	cancelled := func() context.Context {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		return ctx
+	}
+
+	t.Run("no window is created", func(t *testing.T) {
+		withFrozenClock(t, backoffBase)
+		dir := staleCacheDir(t, backoffBase)
+		srv := newFlipServer(t, servesUsage)
+
+		res, err := Fetch(cancelled(), Credential{AccessToken: "tok"}, dir)
+		if err != nil {
+			t.Fatalf("Fetch: %v", err)
+		}
+		if res.Source != "cache_stale" {
+			t.Errorf("Source = %q, want cache_stale", res.Source)
+		}
+		if !res.RetryAt.IsZero() {
+			t.Errorf("RetryAt = %v, want zero — a cancelled caller sets no deadline", res.RetryAt)
+		}
+		if srv.calls() != 0 {
+			t.Errorf("API hits = %d, want 0 — the request never left", srv.calls())
+		}
+		if backoffFileExists(t, dir) {
+			t.Error("a cancelled fetch wrote a backoff window")
+		}
+	})
+
+	t.Run("an existing escalation is left untouched", func(t *testing.T) {
+		withFrozenClock(t, backoffBase)
+		dir := staleCacheDir(t, backoffBase)
+		newFlipServer(t, servesUsage)
+		// A drained window carrying a real escalation: the gate lets the
+		// attempt through, so the cancellation lands on the write path.
+		seedBackoffFile(t, dir, fmt.Sprintf(`{"v":1,"retry_at":%q,"consecutive_429":3}`,
+			backoffBase.Add(-time.Minute).Format(time.RFC3339Nano)))
+		before, err := os.ReadFile(filepath.Join(dir, backoffFileName))
+		if err != nil {
+			t.Fatalf("read seeded state: %v", err)
+		}
+
+		if _, err := Fetch(cancelled(), Credential{AccessToken: "tok"}, dir); err != nil {
+			t.Fatalf("Fetch: %v", err)
+		}
+
+		after, err := os.ReadFile(filepath.Join(dir, backoffFileName))
+		if err != nil {
+			t.Fatalf("read state after cancel: %v", err)
+		}
+		if string(after) != string(before) {
+			t.Errorf("a cancelled fetch rewrote the state file:\nbefore %s\nafter  %s", before, after)
+		}
+	})
+
+	t.Run("a deadline exceeded still records", func(t *testing.T) {
+		withFrozenClock(t, backoffBase)
+		dir := staleCacheDir(t, backoffBase)
+		newFlipServer(t, servesUsage)
+		// `status` wraps Fetch in a 5 s timeout equal to httpTimeout, so an
+		// offline or hung endpoint arrives here as the PARENT's deadline,
+		// not as a cancellation. That one must still back off, or the
+		// five-second statusline loop returns the moment a laptop goes
+		// offline — the other half of what #529 is for.
+		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+		defer cancel()
+
+		res, err := Fetch(ctx, Credential{AccessToken: "tok"}, dir)
+		if err != nil {
+			t.Fatalf("Fetch: %v", err)
+		}
+		if want := backoffBase.Add(BaseRetryInterval); !res.RetryAt.Equal(want) {
+			t.Errorf("RetryAt = %v, want %v", res.RetryAt, want)
+		}
+		if !backoffFileExists(t, dir) {
+			t.Error("a deadline-exceeded fetch recorded no window")
+		}
+	})
+}
+
+// TestFetch_WindowStartsWhenTheAttemptEnds: the deadline is measured from
+// when the request came back, not from when Fetch started. fetchAPI is
+// allowed five seconds, and anchoring the window to the pre-call clock would
+// quietly hand every one of them back to the caller.
+func TestFetch_WindowStartsWhenTheAttemptEnds(t *testing.T) {
+	advance := withFrozenClock(t, backoffBase)
+	dir := staleCacheDir(t, backoffBase)
+	const inFlight = 4 * time.Second
+	newFlipServer(t, func(w http.ResponseWriter, r *http.Request) {
+		advance(inFlight) // the request "took" four seconds
+		rateLimited("")(w, r)
+	})
+
+	res, err := fetchTest(t, dir)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if want := backoffBase.Add(inFlight + 6*time.Minute); !res.RetryAt.Equal(want) {
+		t.Errorf("RetryAt = %v, want %v — the window must start when the attempt ended", res.RetryAt, want)
+	}
+}
+
+// TestFetch_WindowHoldsWithoutTheFlock: the gate must not be conditional on
+// having taken the lock. acquireFetchLock is allowed to fail — ENOLCK on a
+// quirky filesystem is the documented case — and Fetch degrades rather than
+// refusing to work. Degrading must not mean ignoring the window, or exactly
+// the filesystems that cannot lock get the 2,596-requests-an-hour behaviour
+// back.
+func TestFetch_WindowHoldsWithoutTheFlock(t *testing.T) {
+	withFrozenClock(t, backoffBase)
+	dir := staleCacheDir(t, backoffBase)
+	// secfile.OpenFile passes O_NOFOLLOW, so a symlink where the lock file
+	// goes makes acquireFetchLock fail and touches nothing else.
+	if err := os.Symlink(filepath.Join(dir, "lock-target"), filepath.Join(dir, "usage.json.lock")); err != nil {
+		t.Fatalf("seed lock symlink: %v", err)
+	}
+	seedBackoffFile(t, dir, fmt.Sprintf(`{"v":1,"retry_at":%q,"consecutive_429":2}`,
+		backoffBase.Add(10*time.Minute).Format(time.RFC3339Nano)))
+	srv := newFlipServer(t, servesUsage)
+	recs := captureLogs(t)
+
+	res, err := fetchTest(t, dir)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+
+	// Without this the test proves nothing: if the lock were acquired after
+	// all, the gate would be exercised on its ordinary path.
+	var locked any = "record missing"
+	for _, r := range recs() {
+		if r.Message == "anthro.Fetch" {
+			locked = attrMap(r)["lock_acquired"]
+		}
+	}
+	if locked != false {
+		t.Fatalf("lock_acquired = %v, want false — the symlink did not defeat the lock", locked)
+	}
+	if srv.calls() != 0 {
+		t.Errorf("API hits = %d, want 0 — the window must hold without the lock", srv.calls())
+	}
+	if res.Source != "cache_stale" {
+		t.Errorf("Source = %q, want cache_stale", res.Source)
+	}
+	if res.Consecutive429 != 2 {
+		t.Errorf("Consecutive429 = %d, want 2", res.Consecutive429)
+	}
+}
+
+// TestFetch_MaximalWindowSurvivesABackwardClockStep: a window opened by a
+// Retry-After of an hour or more is written at exactly now+retryAfterMax, so
+// it sits on the discard ceiling. Any backward step of the wall clock before
+// the next read — an NTP correction is enough — would put it past a ceiling
+// with no slack, throw it away, and send another request to an endpoint that
+// just asked for an hour of quiet.
+func TestFetch_MaximalWindowSurvivesABackwardClockStep(t *testing.T) {
+	advance := withFrozenClock(t, backoffBase)
+	dir := staleCacheDir(t, backoffBase)
+	srv := newFlipServer(t, rateLimited("7200")) // asks two hours, clamped to one
+
+	res, err := fetchTest(t, dir)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if want := backoffBase.Add(retryAfterMax); !res.RetryAt.Equal(want) {
+		t.Fatalf("RetryAt = %v, want %v", res.RetryAt, want)
+	}
+
+	advance(-5 * time.Second) // the clock slips backwards
+	res, err = fetchTest(t, dir)
+	if err != nil {
+		t.Fatalf("Fetch after the clock slipped: %v", err)
+	}
+	if srv.calls() != 1 {
+		t.Errorf("API hits = %d, want 1 — a maximal window must survive a small backward step", srv.calls())
+	}
+	if res.Source != "cache_stale" {
+		t.Errorf("Source = %q, want cache_stale", res.Source)
 	}
 }
