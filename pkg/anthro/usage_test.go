@@ -1002,6 +1002,19 @@ func TestFreshFromCache(t *testing.T) {
 		{"fresh", cachedUsage{Usage: u, UpdatedAt: now.Add(-time.Minute)}, nil, true},
 		{"stale", cachedUsage{Usage: u, UpdatedAt: now.Add(-10 * time.Minute)}, nil, false},
 		{"cache error", cachedUsage{}, errors.New("missing"), false},
+		// A zero cachedUsage fails the TTL check on its own (the age saturates),
+		// so the row above cannot tell whether the cacheErr guard exists. This
+		// one can: the entry looks perfectly fresh, and only the error says no.
+		{"cache error beats a fresh-looking entry", cachedUsage{Usage: u, UpdatedAt: now.Add(-time.Minute)}, errors.New("corrupt"), false},
+		// The freshness window is [0, cacheTTL), and updated_at is an
+		// RFC3339Nano stamp read off disk — so both edges are pinned to the
+		// nanosecond. Whole-second fixtures let `age <= cacheTTL` and any
+		// sub-second negative tolerance slip through unnoticed (#534).
+		{"zero age", cachedUsage{Usage: u, UpdatedAt: now}, nil, true},
+		{"one nanosecond under cacheTTL", cachedUsage{Usage: u, UpdatedAt: now.Add(-cacheTTL + time.Nanosecond)}, nil, true},
+		{"exactly cacheTTL", cachedUsage{Usage: u, UpdatedAt: now.Add(-cacheTTL)}, nil, false},
+		{"one nanosecond in the future", cachedUsage{Usage: u, UpdatedAt: now.Add(time.Nanosecond)}, nil, false},
+		{"decade in the future", cachedUsage{Usage: u, UpdatedAt: now.AddDate(10, 0, 0)}, nil, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

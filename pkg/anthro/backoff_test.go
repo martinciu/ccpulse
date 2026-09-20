@@ -16,11 +16,14 @@ import (
 
 // backoffBase is the instant every frozen-clock test starts from. A fixed
 // date keeps deadline assertions exact: no test in this file may sleep, and
-// none may derive a fixture timestamp from the real clock — a cache stamped
-// with time.Now() is now in the FUTURE relative to the frozen backoffBase,
-// so freshFromCache reads it as stale (#534) and Fetch would hit the API
-// before ever reaching the backoff gate, passing the test for the wrong
-// reason.
+// none may derive a fixture timestamp from the real clock. Since #534 a cache
+// stamped with time.Now() sits in the FUTURE relative to the frozen
+// backoffBase, so freshFromCache reads it as stale and Fetch takes the same
+// path as the intended fixture — the backoff gate still runs before any API
+// call. What a real-clock stamp costs is determinism: exact UpdatedAt and age
+// assertions stop holding, and the fixture would silently turn FRESH again
+// (returning before the gate, passing for the wrong reason) if the
+// negative-age rule were ever relaxed.
 //
 // Deliberately nowhere near the real clock: an HTTP-date Retry-After is
 // resolved against a "now", and a base within an hour of the real one would
