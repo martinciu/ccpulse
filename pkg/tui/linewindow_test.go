@@ -83,6 +83,29 @@ func TestApplyBreakdownResize_Remaining_BuildsAtViewportWidth(t *testing.T) {
 	}
 }
 
+// TestRenderBreakdownFrame_Remaining_BuildsAtViewportWidth closes the slide leg
+// of the "no line build uses the logical canvas" rule. The breakdown slide has
+// its own render entry point, and endpoint-identity alone cannot see a
+// regression here: a full-canvas build plus a physical offset cuts to the same
+// visible frame, so the slide would still settle correctly while paying the
+// O(canvas) cost #528 removed.
+func TestRenderBreakdownFrame_Remaining_BuildsAtViewportWidth(t *testing.T) {
+	m, c := seedWideRemainingModel(t, 600, 120, lineWindowNow)
+	defer c.Close()
+	if m.lastCanvasW <= m.viewport.Width {
+		t.Fatalf("precondition: logical canvas %d must exceed viewport %d", m.lastCanvasW, m.viewport.Width)
+	}
+
+	recs := captureLogs(t)
+	m.renderBreakdownFrame()
+
+	widths := lineChartBuildWidths(recs())
+	if len(widths) != 1 || widths[0] != int64(m.viewport.Width) {
+		t.Errorf("buildLineChart widths = %v, want exactly one build at viewport width %d (logical canvas is %d)",
+			widths, m.viewport.Width, m.lastCanvasW)
+	}
+}
+
 // TestRenderWindow_Remaining_ZeroSamplesStillPaints: remaining mode with a long
 // message history but no usage samples has empty lastValues. renderWindow's
 // bar-mode guard (len(lastValues) == 0 → return) must not swallow the line
@@ -137,6 +160,26 @@ func TestRenderLineWindow_LabelRowMatchesFullCanvasCut(t *testing.T) {
 				full := renderXLabels(synthLabelStarts(m.lastChartFrom, m.lastChartTo, z),
 					m.lastCanvasW, z, m.now(), m.dateOrder)
 				xOff := m.visibleXOffset(m.lastCanvasW)
+
+				// Assert the clamp itself, not just the cut. `want` below is built
+				// with visibleXOffset — the same call renderLineWindow makes — so
+				// expectation and actual move together and a regression INSIDE the
+				// helper is invisible to the comparison. This line is what sees it:
+				// past this bound the plot window starts later than the frame it is
+				// painted into, and the labels sit that many columns off (#206/D4).
+				if maxOff := m.lastCanvasW - m.viewport.Width; xOff > maxOff {
+					t.Errorf("visibleXOffset = %d, want <= %d — the window runs past the canvas right edge",
+						xOff, maxOff)
+				}
+				// Pinned right, the offset is that bound exactly: the right edge is
+				// flush with "now". Stated as a constant so it holds independently
+				// of how visibleXOffset computes it.
+				if pos == "pinned-right" {
+					if want := m.lastCanvasW - m.viewport.Width; xOff != want {
+						t.Errorf("pinned-right visibleXOffset = %d, want %d", xOff, want)
+					}
+				}
+
 				want := ansi.Cut(full, xOff, xOff+m.viewport.Width)
 
 				if !strings.Contains(m.viewport.View(), want) {
@@ -163,7 +206,11 @@ func TestRenderLineWindow_ShortChartNoLabelRow(t *testing.T) {
 	recs := captureLogs(t)
 	m.refreshChart()
 
-	for _, w := range lineChartBuildWidths(recs()) {
+	widths := lineChartBuildWidths(recs())
+	if len(widths) == 0 {
+		t.Fatal("no tui.buildLineChart record captured — this test observes nothing (a guard that skips painting a short chart would slip past it)")
+	}
+	for _, w := range widths {
 		if w != int64(m.viewport.Width) {
 			t.Errorf("buildLineChart chartW = %d, want viewport width %d", w, m.viewport.Width)
 		}
@@ -241,19 +288,31 @@ func plotRows(m *Model) []string {
 func TestScroll_Remaining_IsPureTranslation(t *testing.T) {
 	withForcedColor(t)
 
-	// 15m and 1h only. At 24h a bucket is 12 columns and samples landing
-	// exactly on a half-dot boundary still tie under float rounding; that
-	// residual is measured and documented rather than pinned here.
-	for _, zi := range []int{0, 1} {
+	// All three zooms. 24h matters most of the three: it is the only one with
+	// stride > 1 (12 columns per bucket), so it is the only case that exercises
+	// the k-stride comparison at all — an off-by-stride error in the windowed
+	// render is invisible to 15m and 1h, which both have stride 1. It needs a
+	// longer fixture to have room to scroll: 2,000 buckets is only ~11 scroll
+	// positions at stride 12, which trips the clamp guard below.
+	for _, zi := range []int{0, 1, 2} {
 		zoom := ZoomLevels[zi]
-		// Two sample densities: one whose samples sit on the 15m lattice and
-		// one that does not divide it, so neither can pass by alignment luck.
+		buckets := 2_000
+		if zoom.stride() > 1 {
+			buckets = 12_000
+		}
+		// Two sample densities. Neither divides the 15m lattice evenly (spacing
+		// is 6,000 s and ~6,498 s against 900 s), but 300 re-aligns every third
+		// sample where 277 near-never does, so a pass cannot come from one
+		// convenient alignment.
 		for _, nSamples := range []int{300, 277} {
 			t.Run(fmt.Sprintf("%s/samples=%d", zoom.Label, nSamples), func(t *testing.T) {
-				m, c := seedWideRemainingModel(t, 2_000, nSamples, lineWindowNow)
+				m, c := seedWideRemainingModel(t, buckets, nSamples, lineWindowNow)
 				defer c.Close()
 				m.zoomIdx = zi
 				m.refreshChart()
+				if len(m.lastPts5h) == 0 {
+					t.Fatal("precondition: fixture has no usage samples — flat baselines translate trivially and this sweep would pass on nothing")
+				}
 				m.scrollLeft(10) // interior: away from both canvas edges
 
 				const edge, steps = 2, 60
@@ -337,24 +396,15 @@ func TestBuildLineChart_PaintsToTheRightEdge(t *testing.T) {
 	from := lineWindowNow.Add(-vpW * zoom.Duration)
 	to := lineWindowNow
 
-	// Dot-level, not cell-level: the flat baseline is uniform, so its final cell
-	// must be the SAME braille rune as its neighbours. A cell inked with only
-	// its left dot is a different rune and reads as the line fraying at "now",
-	// which a mere "is the last column non-blank" check cannot see.
+	// Smoke-level only, deliberately. A flat two-point baseline is drawn as ONE
+	// segment whose endpoint is clipped, so it inks every dot up to 2w-1 no
+	// matter what the x-range does — no range change can make this subtest fail,
+	// and it is kept for the no-samples path being painted at all, not as a
+	// guard on the range. The real-series subtest below is what pins the edge.
 	t.Run("zero-samples baseline", func(t *testing.T) {
 		body := buildLineChart(nil, nil, from, to, vpW, 33, lineWindowNow, zoom, dateOrderDayFirst, "test", "")
 		if last := lastInkedCol(body); last != vpW-1 {
 			t.Fatalf("baseline inked up to column %d, want %d — the flat 100%% line stops short of the right edge", last, vpW-1)
-		}
-		for _, row := range bodyPlotRows(body) {
-			r := []rune(row)
-			if len(r) < 3 || r[len(r)-2] == ' ' {
-				continue // not the baseline row
-			}
-			if r[len(r)-1] != r[len(r)-2] {
-				t.Errorf("baseline's final cell is %q but its neighbour is %q — the flat line frays at the right edge, where \"now\" is",
-					r[len(r)-1], r[len(r)-2])
-			}
 		}
 	})
 
@@ -375,6 +425,62 @@ func TestBuildLineChart_PaintsToTheRightEdge(t *testing.T) {
 			t.Errorf("series inked up to column %d, want %d — the line stops short of the right edge, where \"now\" is", last, vpW-1)
 		}
 	})
+}
+
+// TestDotAlignedEnd_WideTerminal guards the dot-alignment arithmetic against
+// int64 overflow.
+//
+// The shrink is a nanosecond multiply, and the window it is applied to grows
+// with the terminal: at the 24h zoom a column is a day/12, so an 1,135-column
+// terminal spans ~94 days ≈ 8.1e15 ns, and multiplying that by 2w-1 = 2,269
+// passes 2^63. The wrap is silent and lands in one of two regimes, neither of
+// which panics — which is exactly why it needs a test rather than a crash
+// report:
+//
+//   - the result falls BEFORE from, ntcharts' SetViewXRange no-ops (it guards
+//     with `if vMin < vMax`), and the 2-dots-per-column invariant this whole
+//     change exists to establish is silently lost — the scroll re-rastering of
+//     #528 returns with no error and no failing test;
+//   - the result falls INSIDE the window, the bad range IS applied, and a few
+//     hours of data get stretched across the full width under a label row that
+//     still says weeks.
+//
+// The invariant asserted here is the definition: the aligned span is the
+// window minus exactly one dot, i.e. d - d/(2w), and it always lies in
+// (from, to].
+func TestDotAlignedEnd_WideTerminal(t *testing.T) {
+	from := lineWindowNow
+
+	for _, tc := range []struct {
+		name   string
+		zoom   ZoomLevel
+		chartW int
+	}{
+		{"24h/narrow", ZoomLevels[2], 200},
+		{"24h/wide", ZoomLevels[2], 801},
+		{"24h/ultrawide", ZoomLevels[2], 1_135},
+		{"24h/absurd", ZoomLevels[2], 3_204},
+		{"1h/ultrawide", ZoomLevels[1], 1_603},
+		{"15m/ultrawide", ZoomLevels[0], 3_204},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// The window a viewport of this width actually spans at this zoom:
+			// chartW columns is chartW/stride buckets.
+			span := time.Duration(tc.chartW/tc.zoom.stride()) * tc.zoom.Duration
+			to := from.Add(span)
+
+			got := dotAlignedEnd(from, to, tc.chartW)
+
+			if !got.After(from) || got.After(to) {
+				t.Fatalf("dotAlignedEnd = %v, want within (%v, %v] — a %d-column terminal spans %v here and the shrink overflowed",
+					got, from, to, tc.chartW, span)
+			}
+			if want := to.Add(-(span / time.Duration(2*tc.chartW))); !got.Equal(want) {
+				t.Errorf("dotAlignedEnd = %v, want %v (one dot short of %v; off by %v)",
+					got, want, to, got.Sub(want))
+			}
+		})
+	}
 }
 
 // TestScroll_Remaining_RerendersAtViewportWidth: a scroll keypress in line mode
@@ -402,8 +508,14 @@ func TestScroll_Remaining_RerendersAtViewportWidth(t *testing.T) {
 // scroll keypress only advances the logical offset (setX) — no render — and
 // setX applies a PHYSICAL offset of n×stride. Against the old wide content that
 // was meaningful; against viewport-wide content bubbles clamps it to 0
-// (SetXOffset clamps to longestLineWidth-Width). This pins that the frame is
-// never blank between the keypress and the next tick.
+// (SetXOffset clamps to longestLineWidth-Width), so the spring's own frame must
+// come through untouched.
+//
+// Asserted as frame equality, not as "not blank": the offset bubbles applies is
+// unexported in v1, and "not blank" would pass on a completely wrong frame. The
+// contract — the keypress moves the logical offset and paints nothing — is
+// falsified by dropping the !springActive gate in scrollLeft, which is what
+// makes this a guard rather than a smoke test.
 func TestScroll_Remaining_DuringSpringNeverBlanks(t *testing.T) {
 	withForcedColor(t)
 	m, c := seedWideRemainingModel(t, 600, 120, lineWindowNow)
@@ -413,12 +525,20 @@ func TestScroll_Remaining_DuringSpringNeverBlanks(t *testing.T) {
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
 	m = updated.(Model)
 	if !m.springActive {
-		t.Skip("u-toggle did not arm a spring (reduce-motion?) — nothing to guard")
+		t.Fatal("u-toggle did not arm a spring — this guard needs one, so a silent skip would hide the regression it exists for")
 	}
+	before, beforeOff := m.viewport.View(), m.viewportXOffset
+
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyLeft})
 	m = updated.(Model)
 
 	if strings.TrimSpace(ansi.Strip(m.viewport.View())) == "" {
-		t.Error("viewport blanked after a scroll keypress during the spring")
+		t.Fatal("viewport blanked after a scroll keypress during the spring")
+	}
+	if m.viewportXOffset == beforeOff {
+		t.Errorf("viewportXOffset stayed %d — the keypress must still advance the logical offset so the post-settle refresh picks it up", beforeOff)
+	}
+	if got := m.viewport.View(); got != before {
+		t.Error("the spring's frame changed on a scroll keypress — mid-spring scroll must move the logical offset only, leaving the animation to own the paint")
 	}
 }

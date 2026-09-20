@@ -200,9 +200,17 @@ func paddedFrom(to time.Time, zoom ZoomLevel, n int) time.Time {
 //
 // Since #528 no view builds a canvas wider than the viewport, so the cost this
 // ceiling was originally sized around — the usage line chart at ~70KB resident
-// per column — is gone. What still scales with it is small: the dense bucket
-// arrays and the full-canvas x-label row refreshChart builds once per refresh
-// (renderXLabels + synthLabelStarts, ~15% of a refresh at 50,000 columns).
+// per column — is gone. In the usage view the dense bucket arrays are not a
+// factor either: loadRemainingSeries returns raw UtilizationPoints and never
+// calls IOTokenBuckets / CostBuckets. What is left is essentially ONE term, the
+// full-canvas x-label row (renderXLabels + synthLabelStarts): refreshChart
+// builds it once per refresh, and every windowed render then ansi.Cuts it, so
+// the ceiling is felt per scroll keypress and per animation frame as well.
+// Isolated, that row costs 2.4ms / 1.7MB at 50,000 columns and 5.1ms / 3.5MB at
+// 105,120 — and with it reused rather than rebuilt, refresh cost stops growing
+// with width almost entirely (+0.4% B/op from 20,000 to 50,000). Windowing it
+// is therefore the one change that would let this ceiling rise.
+//
 // Measured on a 3-year seeded cache (67,299 messages over 1,095 days), usage
 // view @ 15m, Apple M1 Max. RSS is at boot → after scrolling, zooming and
 // cycling all three views, three runs each; refresh is
@@ -213,13 +221,18 @@ func paddedFrom(to time.Time, zoom ZoomLevel, n int) time.Time {
 //	105,120 columns   48MB    -> 64-66MB   refresh 12.8ms   8.2MiB/op
 //
 // Chosen as the largest candidate within a 400MB steady-RSS / 10ms-per-refresh
-// budget. Memory no longer separates the candidates at all; refresh time does,
+// budget, that budget being read on the machine above — a slower one scales
+// these times up, so treat 50,000 as the ceiling for a fast laptop rather than
+// a universal constant. Memory no longer separates the candidates at all;
+// refresh time does,
 // because a refresh runs on every watcher event and every now-tick. 105,120
-// (three years of 15m columns) breaks that budget by ~28%. About 3ms of its
-// 12.8ms is the benchmark's one-message-per-column table rather than the canvas
-// width — but a cache that old really is that full, and even over a two-row
-// table the width alone costs 9.8ms, so it does not clear the bar either way.
-// Windowing the label-row synthesis is what would let this rise further.
+// (three years of 15m columns) breaks that budget by ~28%. Roughly 3ms of its
+// 12.8ms comes from the benchmark's one-message-per-column table rather than
+// from the canvas width — over a two-row table the width alone costs 9.8ms,
+// which would squeak under the line — but D5's rule is stated on
+// BenchmarkRefreshChartRemaining, and a three-year cache really is that full.
+// Subtract the label row (above) instead and 105,120 lands near 7.7ms, so this
+// ceiling is gated on that optimisation rather than on anything fundamental.
 //
 // What it covers per zoom: ~520 days at 15m, ~5.7 years at 1h, ~11.4 years at
 // 24h.
@@ -1295,6 +1308,27 @@ func crossfadeLabelRow(snap zoomAnimSnapshot, newZoom ZoomLevel, chartW int, r f
 	}
 }
 
+// dotAlignedEnd returns the end of the x-range to hand ntcharts so that one
+// chart column is exactly two braille dots wide. See buildLineChart for why
+// that matters (#528).
+//
+// Written as d - d/(2w) rather than the equivalent d*(2w-1)/(2w): the latter
+// multiplies nanoseconds by 2w-1 before dividing, and the window grows with
+// the terminal. At the 24h zoom a column is a day/12, so a 1,135-column
+// terminal spans ~94 days and the product passes 2^63. Nothing panics when it
+// wraps, which is what makes it dangerous — the result either lands before
+// `from`, where ntcharts' SetViewXRange silently no-ops (it guards with
+// `if vMin < vMax`) and the dot alignment is lost with no error, or lands
+// inside the window, where a few hours of data are stretched across the full
+// width under a label row that still says weeks. Dividing first cannot
+// overflow, since the dividend only shrinks.
+func dotAlignedEnd(from, to time.Time, chartW int) time.Time {
+	if chartW <= 0 || !to.After(from) {
+		return to
+	}
+	return to.Add(-(to.Sub(from) / time.Duration(2*chartW)))
+}
+
 // buildLineChart renders two remaining-quota series (5h green, 7d
 // purple) as a dotted braille trail on a timeserieslinechart canvas.
 // Time values are mapped natively by ntcharts via SetViewTimeRange.
@@ -1348,9 +1382,7 @@ func buildLineChart(pts5h, pts7d []cache.UtilizationPoint,
 	// every dot up to 2w-1 (TestBuildLineChart_PaintsToTheRightEdge pins both
 	// the real series and the zero-samples baseline, which is two synthetic
 	// points at from and to).
-	if chartW > 0 {
-		to = from.Add(to.Sub(from) * time.Duration(2*chartW-1) / time.Duration(2*chartW))
-	}
+	to = dotAlignedEnd(from, to, chartW)
 
 	// The x-range is [from, to] and must stay that. timeserieslinechart.New
 	// turns auto-ranging on unconditionally (linechart.WithAutoXYRange) and

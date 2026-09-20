@@ -205,7 +205,9 @@ type Model struct {
 	// label straddling the window's left edge keeps its clipped tail, which a
 	// row synthesised for the window alone would drop. Building it per refresh
 	// costs what the old full-canvas buildLineChart already paid; cutting it per
-	// scroll keypress / slide frame costs a scan, not an O(canvas) rebuild.
+	// scroll keypress / slide frame is still O(canvas), but it is a scan rather
+	// than a rebuild — ~0.26ms at 20,000 columns against a ~3.3ms render, where
+	// the slide used to re-synthesise the whole row every frame.
 	// Empty outside remaining mode and after clearChart.
 	lineLabelRow string
 

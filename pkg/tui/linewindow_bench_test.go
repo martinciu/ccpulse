@@ -37,9 +37,20 @@ func seedWideRemainingModel(tb testing.TB, nBuckets, nSamples int, now time.Time
 }
 
 // BenchmarkRefreshChartRemaining measures a full steady-state refresh of the
-// usage line chart against history length. The point of #528 is that this
-// stops scaling with `cols`: before the change B/op grows ~linearly (ntcharts
-// allocates canvasW x rows cells of 560 B); after it, B/op is flat.
+// usage line chart against history length. Before #528 B/op grew ~linearly —
+// ntcharts allocated canvasW x rows cells of 560 B, ~37 KB per logical column.
+//
+// After it the cost is sub-linear, NOT flat: ~34 B and ~55 ns per column, so
+// 1,000 -> 20,000 columns is about +12% B/op and +26% ns/op — small, but well
+// outside run-to-run noise. All of that residual is the full-canvas x-label row
+// refreshChart rebuilds once per refresh (renderXLabels + synthLabelStarts);
+// with that row reused instead, B/op moves only +0.4% from 20,000 to 50,000.
+// Windowing it is the remaining work, and what would let maxChartColumns rise.
+//
+// Note the fixture dilutes the render: refreshChart also issues three SQLite
+// queries per call (EarliestMessageTime plus two UtilizationSince), a
+// width-independent floor of roughly 3.6 ms on this machine. The render work is
+// therefore flatter than these totals suggest.
 func BenchmarkRefreshChartRemaining(b *testing.B) {
 	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
 	for _, n := range []int{1_000, 5_000, 20_000, 50_000} {
@@ -60,10 +71,17 @@ func BenchmarkRefreshChartRemaining(b *testing.B) {
 // BenchmarkScrollRemaining measures one scroll keypress pair in the usage
 // line chart. Before #528 this is a pure offset (nanoseconds, zero allocs);
 // after it each keypress re-renders the visible window, like the bars have
-// since #255. The number to watch is that it stays flat across `cols`.
+// since #255.
+//
+// Read the trend across `cols` with care: the 500 samples are spread over the
+// whole span, so a ~120-column window holds ~61 of them at cols=1000 but ~3 at
+// cols=20000. That thinning very nearly cancels the growth of the O(canvas)
+// ansi.Cut of the label row, so an apparently flat line here is two opposing
+// effects, not an absence of scaling. cols=50_000 is the shipped
+// maxChartColumns and is the case that matters.
 func BenchmarkScrollRemaining(b *testing.B) {
 	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
-	for _, n := range []int{1_000, 20_000} {
+	for _, n := range []int{1_000, 20_000, 50_000} {
 		b.Run(fmt.Sprintf("cols=%d", n), func(b *testing.B) {
 			m, c := seedWideRemainingModel(b, n, 500, now)
 			defer c.Close()

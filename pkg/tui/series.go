@@ -362,9 +362,13 @@ func (m *Model) renderLineWindow(source string) {
 // line chart the same way (#528 finished what #255 scoped to bars only).
 //
 // Runs live per scroll keypress now that #255 dropped the #252 scroll-stop
-// debounce — each call allocates ~2.4 MB / ~10k allocs (mostly inside
-// ntcharts), a deliberate GC-pressure-for-responsiveness trade that the
-// windowing keeps well under the per-frame budget.
+// debounce — a deliberate GC-pressure-for-responsiveness trade that the
+// windowing keeps well under the per-frame budget. Measured per call on an
+// M1 Max: ~4.8 MB / ~16k allocs in bar mode, ~5.0 MB / ~2.8k allocs in line
+// mode. Most of it is inside ntcharts, which allocates its cell grid twice per
+// render (canvas.New, then canvas.Clear re-makes every row instead of clearing
+// in place) — roughly half these bytes, and reusable if a future change keeps
+// one chart model per size rather than building one per frame.
 func (m *Model) renderWindow() {
 	if m.lastCanvasW == 0 {
 		return
