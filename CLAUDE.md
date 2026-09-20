@@ -59,7 +59,7 @@ These env vars override `config.toml` at runtime — useful for testing against 
 | `pkg/watcher` | fsnotify wrapper with 100 ms debounce; auto-subscribes new subdirectories |
 | `pkg/pricing` | Embeds `pricing.json`; `Table.CostFor(Message)` returns USD cost |
 | `pkg/status` | 5-hour rolling window + 7-day window computation; tier → token ceiling mapping; consumed by TUI header and `status --json` |
-| `pkg/anthro` | Anthropic credential loading (`LoadCredential`), tier slug/pretty mapping (`TierSlug`, `TierPretty`), and the usage-API client / cache used by `runTUI` |
+| `pkg/anthro` | Anthropic credential loading (`LoadCredential`), tier slug/pretty mapping (`TierSlug`, `TierPretty`), and the usage-API client / cache used by `runTUI`; owns the retry policy every `Fetch` caller shares, persisted as a backoff window in `<cacheDir>/usage-backoff.json` so short-lived `status` processes back off with the TUI |
 | `pkg/ingest` | Cold-walk indexer used by `runTUI` startup backfill and `ccpulse index`; reports progress via `IndexProgressMsg` |
 | `pkg/tui` | Bubble Tea model: bordered header (5h+7d quota bars), horizontally-scrollable token histogram, full-help overlay, lipgloss styling, `bubbles/{help,key,progress,viewport}` + `ntcharts/barchart` |
 | `pkg/config` | TOML config at `~/.config/ccpulse/config.toml` (respects `XDG_CONFIG_HOME`); `config.Load("")` returns safe defaults |
@@ -138,4 +138,4 @@ ccpulse writes `slog` records to `<cacheDir>/ccpulse.log` on release builds (lev
 - ⚠️ **Care:** project paths (`~/.claude/projects/...` reveals home dir + workspace topology), HTTP status codes alongside URL fragments (usually fine).
 - ✅ **OK:** durations, byte counts, bucket counts, source field (`api`/`cache_fresh`/`cache_stale`), error type names without bodies.
 
-The `TestFetch_NoBearerTokenInLogs` test (`pkg/anthro/usage_test.go`) guards the credential surface (Bearer token). If you add a slog call that handles credentials or full response payloads, extend that test (or write a sibling using the constant in `pkg/anthro/privacy_sentinels_test.go`) so the new path is covered. The current `body_snippet` attribute on `fetchAPI` non-2xx / decode paths is intentionally exempt from the guard — it is bounded by `maxBodySnippet` and `strconv.Quote`'d.
+The `TestFetch_NoCredentialFieldsInLogs` test (`pkg/anthro/usage_test.go`) guards the credential surface (every string-shaped `Credential` field, Bearer token included). If you add a slog call that handles credentials or full response payloads, extend that test (or write a sibling using the constant in `pkg/anthro/privacy_sentinels_test.go`) so the new path is covered. The current `body_snippet` attribute on `fetchAPI` non-2xx / decode paths is intentionally exempt from the guard — it is bounded by `maxBodySnippet` and `strconv.Quote`'d. It is omitted entirely for 429 (#529), where the status code is the whole message.

@@ -144,6 +144,12 @@ var (
 	apiURL      = "https://api.anthropic.com/api/oauth/usage"
 	cacheTTL    = 3 * time.Minute
 	httpTimeout = 5 * time.Second
+
+	// timeNow is the clock seam, same idiom as apiURL. Every freshness and
+	// backoff-deadline decision in this package reads it, so a test can
+	// step a window forward instead of sleeping through it. Elapsed-time
+	// measurement (dur_ms) deliberately keeps using time.Now directly.
+	timeNow = time.Now
 )
 
 // maxBodySnippet bounds the body bytes that fetchAPI surfaces in the
@@ -190,6 +196,17 @@ type FetchResult struct {
 	// fallback so callers can branch on rate limiting (#447). nil for
 	// every other source and for non-status failures (transport, decode).
 	APIStatus *StatusError
+	// RetryAt is the deadline before which the caller must not call Fetch
+	// again, zero when nothing is backing off. It is the persisted window
+	// (#529), so it holds across processes: the TUI poller and every
+	// short-lived `ccpulse status` observe the same one. Consecutive429 is
+	// the escalation count behind it, carried for logging only.
+	//
+	// Source stays "cache_stale" while a window is open — a suppressed
+	// attempt serves exactly the data an attempted-and-failed one would,
+	// and a non-zero RetryAt already says which of the two happened.
+	RetryAt        time.Time
+	Consecutive429 int
 }
 
 // freshFromCache returns a cache_fresh result when the cached entry is valid and
@@ -215,12 +232,20 @@ func freshFromCache(cached cachedUsage, cacheErr error, now time.Time) (FetchRes
 // flock on a sibling lock file: the first caller refreshes the cache, the
 // rest re-read under the lock and find a fresh entry — eliminating the
 // duplicate-API-hit race that survived the atomic-write fix in #75.
+//
+// A failed API call additionally records a retry deadline in a sibling state
+// file, and a stale-cache attempt made before that deadline is suppressed
+// rather than sent (#529). The flock already serialises the state file's
+// readers and writers. This is what stops the 5-second statusline loop from
+// hammering a rate-limited endpoint 2,600 times an hour: every one of those
+// invocations is a fresh process, so an in-memory backoff — which the TUI
+// poller used to keep — is invisible to all of them.
 func Fetch(ctx context.Context, cred Credential, cacheDir string) (res FetchResult, err error) {
 	if cred.AccessToken == "" {
 		return FetchResult{}, errors.New("anthro: empty access token")
 	}
 	cachePath := filepath.Join(cacheDir, "usage.json")
-	now := time.Now()
+	now := timeNow()
 	var lockAcquired bool
 
 	cached, cacheErr := readCache(cachePath)
@@ -247,33 +272,116 @@ func Fetch(ctx context.Context, cred Credential, cacheDir string) (res FetchResu
 	if release, lockErr := acquireFetchLock(cacheDir); lockErr == nil {
 		lockAcquired = true
 		defer release()
-		now = time.Now()
+		now = timeNow()
 		cached, cacheErr = readCache(cachePath)
 		if res, ok := freshFromCache(cached, cacheErr, now); ok {
 			return res, nil
 		}
 	}
 
+	bo := loadBackoff(cacheDir, now)
+	if bo.Active(now) {
+		return staleOrRetry(cached, cacheErr, bo, nil)
+	}
+
 	u, apiErr := fetchAPI(ctx, cred.AccessToken)
 	if apiErr != nil {
-		if cacheErr == nil {
-			var se *StatusError
-			errors.As(apiErr, &se) // stays nil for transport/decode failures
-			return FetchResult{
-				Usage:     cached.Usage,
-				Source:    "cache_stale",
-				UpdatedAt: cached.UpdatedAt,
-				APIStatus: se,
-			}, nil
+		// A caller that walked away says nothing about the endpoint's
+		// health. runTUI cancels the poller's context on quit and the
+		// poller fires immediately on launch, so recording a window here
+		// would gate the next launch — and reset a real 429 escalation to
+		// zero on the way out. Deliberately Canceled only, and matched on
+		// apiErr rather than ctx.Err(): `status` wraps Fetch in a 5 s
+		// timeout equal to httpTimeout, so an offline or hung endpoint
+		// surfaces as the parent's DeadlineExceeded, and that is exactly
+		// the case the window exists for.
+		if errors.Is(apiErr, context.Canceled) {
+			return staleOrRetry(cached, cacheErr, BackoffState{}, apiErr)
 		}
-		return FetchResult{}, fmt.Errorf("anthro fetch: %w", apiErr)
+		return staleOrRetry(cached, cacheErr, recordBackoff(cacheDir, bo, apiErr, timeNow()), apiErr)
 	}
+	clearBackoff(cacheDir)
 	if werr := writeCache(cachePath, u, now); werr != nil {
 		slog.Warn("anthro.writeCache",
 			"path", cachePath,
 			"err", werr)
 	}
 	return FetchResult{Usage: u, Source: "api", UpdatedAt: now.UTC()}, nil
+}
+
+// loadBackoff reads the persisted window, failing open on anything it cannot
+// use. The DEBUG line is the only trace a discarded state file leaves: it is
+// rare, it repeats on every call while the bad file sits there, and the
+// actionable report belongs in `ccpulse doctor`, which reads the same state.
+func loadBackoff(cacheDir string, now time.Time) BackoffState {
+	st, err := readBackoffState(backoffPath(cacheDir), now)
+	if err != nil {
+		slog.Debug("anthro.backoffState ignored", "err", err)
+	}
+	return st
+}
+
+// recordBackoff computes the window that follows an API failure and persists
+// it so sibling processes see it too.
+//
+// A write failure is not fatal, but it is not harmless either: the returned
+// window still throttles THIS process, and nothing else. Every ccpulse that
+// matters here is short-lived, so a persistent write failure — ENOSPC, a
+// directory squatting on the path — restores the pre-#529 behaviour in full
+// for as long as it lasts, one WARN line per attempt included. Failing open
+// is still the right call (a cache that cannot be written must not be able
+// to stop quota data from loading), but the WARN is the only signal.
+func recordBackoff(cacheDir string, prev BackoffState, apiErr error, now time.Time) BackoffState {
+	var se *StatusError
+	errors.As(apiErr, &se) // stays nil for transport/decode failures
+	n, delay := nextBackoff(prev.Consecutive429, se)
+	next := BackoffState{RetryAt: now.Add(delay), Consecutive429: n}
+	if err := writeBackoffState(backoffPath(cacheDir), next); err != nil {
+		slog.Warn("anthro.writeBackoffState",
+			"path", backoffPath(cacheDir),
+			"err", err)
+	}
+	return next
+}
+
+// clearBackoff drops the state file after a successful fetch — the reset is
+// a deletion, so there is no "healthy" shape of this file to get wrong. A
+// failed removal is benign (the deadline it holds is already in the past;
+// only the escalation count survives, and that saturates), hence DEBUG.
+func clearBackoff(cacheDir string) {
+	if err := os.Remove(backoffPath(cacheDir)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		slog.Debug("anthro.clearBackoffState", "err", err)
+	}
+}
+
+// staleOrRetry renders an attempt that produced no new data — either
+// suppressed by an open window (cause nil) or failed outright (cause is the
+// API error). The stale cache is served when there is one; otherwise the
+// caller gets a *RetryError rather than a zero-value Usage, which would
+// render as a perfectly plausible 0% utilisation.
+func staleOrRetry(cached cachedUsage, cacheErr error, bo BackoffState, cause error) (FetchResult, error) {
+	var se *StatusError
+	if cause != nil {
+		errors.As(cause, &se) // stays nil for transport/decode failures
+	}
+	if cacheErr == nil {
+		return FetchResult{
+			Usage:          cached.Usage,
+			Source:         "cache_stale",
+			UpdatedAt:      cached.UpdatedAt,
+			APIStatus:      se,
+			RetryAt:        bo.RetryAt,
+			Consecutive429: bo.Consecutive429,
+		}, nil
+	}
+	if cause == nil {
+		cause = ErrBackoff
+	}
+	return FetchResult{}, &RetryError{
+		RetryAt:        bo.RetryAt,
+		Consecutive429: bo.Consecutive429,
+		Err:            cause,
+	}
 }
 
 // acquireFetchLock takes an exclusive advisory lock on cacheDir/usage.json.lock
@@ -371,13 +479,19 @@ func fetchAPI(ctx context.Context, token string) (Usage, error) {
 		// Quote'd: error strings here surface only Go-internal text
 		// (status code, decode-offset, url.Error with host but no body
 		// bytes), not attacker-controlled response payload.
-		slog.Warn("anthro.fetchAPI non-2xx",
-			"status", resp.StatusCode,
-			"dur_ms", durMS,
-			"body_snippet", strconv.Quote(string(snippet)))
+		//
+		// 429 is the exception: the status code is the whole message and
+		// the body is a fixed rate_limit_error string, so the snippet only
+		// adds bytes to a line that already repeats once per backoff
+		// window (#529).
+		attrs := []any{"status", resp.StatusCode, "dur_ms", durMS}
+		if resp.StatusCode != http.StatusTooManyRequests {
+			attrs = append(attrs, "body_snippet", strconv.Quote(string(snippet)))
+		}
+		slog.Warn("anthro.fetchAPI non-2xx", attrs...)
 		return Usage{}, &StatusError{
 			Code:       resp.StatusCode,
-			RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After"), time.Now()),
+			RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After"), timeNow()),
 		}
 	}
 

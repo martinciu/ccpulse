@@ -235,4 +235,10 @@ func TestDoctor_SurfacesLockHeld(t *testing.T) {
 	if !bytes.Contains([]byte(out), []byte(cache.ErrLockHeld.Error())) {
 		t.Fatalf("doctor output missing ErrLockHeld message:\n%s", out)
 	}
+	// End-to-end anchor for the backoff line (#529): reportBackoffState has
+	// its own table test, but nothing else pins that runDoctor still calls
+	// it — deleting the call from reportCacheArtifacts is otherwise silent.
+	if !bytes.Contains([]byte(out), []byte("usage API backoff:")) {
+		t.Fatalf("doctor output missing the usage API backoff line:\n%s", out)
+	}
 }

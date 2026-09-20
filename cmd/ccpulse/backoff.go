@@ -1,48 +1,52 @@
 package main
 
 import (
-	"net/http"
+	"errors"
 	"time"
 
 	"github.com/martinciu/ccpulse/pkg/anthro"
 )
 
-// Quota-poller cadence knobs (#447). basePollInterval is the healthy
-// cadence. Consecutive 429s escalate the delay exponentially up to
-// backoffCap; the server's Retry-After may push past the cap but never
-// past retryAfterMax, so a garbage or hostile header can't wedge the
-// poller for longer than an hour.
-const (
-	basePollInterval = 3 * time.Minute
-	backoffCap       = 30 * time.Minute
-	retryAfterMax    = time.Hour
-)
+// minPollDelay floors the computed sleep. A deadline can already be in the
+// past by the time the poller reads it — a clock jump, or a fetch that took
+// longer than the window it was granted — and without a floor the timer
+// would fire immediately and turn the loop into a spin.
+const minPollDelay = time.Second
 
-// pollBackoff computes the delay before the next quota poll. The zero
-// value is ready to use. Not safe for concurrent use — the poller
-// goroutine owns it.
-type pollBackoff struct {
-	consecutive429 int
+// pollDelay converts the retry deadline anthro.Fetch reports into the sleep
+// before the next poll. A zero deadline means nothing is backing off, so the
+// poller falls back to the healthy cadence.
+//
+// The escalation policy itself moved into pkg/anthro in #529 and is now
+// shared with every short-lived `ccpulse status` process through the
+// persisted state file. The TUI used to own a second, in-process copy: it
+// politely waited thirty minutes while the statusline next to it fired at
+// the same endpoint every five seconds.
+func pollDelay(retryAt, now time.Time) time.Duration {
+	if retryAt.IsZero() {
+		return anthro.BaseRetryInterval
+	}
+	return max(retryAt.Sub(now), minPollDelay)
 }
 
-// next returns the delay before the next poll given the API status the
-// last attempt observed: nil when the attempt saw no non-2xx status
-// (success, fresh cache, transport or decode failure).
+// nextPollDelay turns one Fetch outcome into the sleep before the next poll
+// and the escalation count to log with it. Both Fetch return shapes carry
+// the deadline — the result while there is still cached data to serve, a
+// *RetryError once there is not — and the poller must honour it either way:
+// the no-cache 429 case is precisely where dropping it would spin the timer
+// and flood the log, which is the bug #529 set out to kill.
 //
-// Any outcome other than 429 resets the escalation and returns the base
-// cadence. A 429 returns max(exp, min(RetryAfter, retryAfterMax)) where
-// exp = min(basePollInterval·2ⁿ, backoffCap) and n counts consecutive
-// 429s — 6 → 12 → 24 → 30 → 30… minutes when no Retry-After is present.
-func (b *pollBackoff) next(apiStatus *anthro.StatusError) time.Duration {
-	if apiStatus == nil || apiStatus.Code != http.StatusTooManyRequests {
-		b.consecutive429 = 0
-		return basePollInterval
+// Split out of runQuotaPoller's closure so it can be tested without
+// standing up a tea.Program and a cache.
+func nextPollDelay(res anthro.FetchResult, err error, now time.Time) (delay time.Duration, consecutive429 int) {
+	if err != nil {
+		var re *anthro.RetryError
+		if errors.As(err, &re) {
+			return pollDelay(re.RetryAt, now), re.Consecutive429
+		}
+		// A failure carrying no deadline at all (an empty access token,
+		// say) is not worth a tight retry either.
+		return pollDelay(time.Time{}, now), 0
 	}
-	b.consecutive429++
-	exp := basePollInterval
-	for i := 0; i < b.consecutive429 && exp < backoffCap; i++ {
-		exp *= 2
-	}
-	exp = min(exp, backoffCap)
-	return max(exp, min(apiStatus.RetryAfter, retryAfterMax))
+	return pollDelay(res.RetryAt, now), res.Consecutive429
 }

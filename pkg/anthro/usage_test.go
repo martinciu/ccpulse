@@ -774,8 +774,10 @@ func TestFetchLogs_CacheStale(t *testing.T) {
 	if got, _ := attrs["status"].(int64); got != 429 {
 		t.Errorf("non-2xx status = %v, want 429", attrs["status"])
 	}
-	if snip, _ := attrs["body_snippet"].(string); snip == "" {
-		t.Errorf("body_snippet empty, want non-empty")
+	// body_snippet is dropped for 429 specifically (#529) — see
+	// TestFetchLogs_BodySnippetOnlyForNon429 for the both-sides table.
+	if _, ok := attrs["body_snippet"]; ok {
+		t.Errorf("body_snippet present on a 429 line: %v", attrs)
 	}
 	if fetchDbg == nil || attrMap(*fetchDbg)["source"] != "cache_stale" {
 		t.Errorf("Fetch DEBUG missing or wrong source: %+v", fetchDbg)
@@ -786,10 +788,14 @@ func TestFetchLogs_BodySnippetEscapesControlBytes(t *testing.T) {
 	// Pins the security property: a malicious or MitM'd response body
 	// containing ANSI escapes / CR / NUL must NOT land in the log as
 	// raw control bytes (would execute in the user's terminal on `tail`).
+	//
+	// 500 rather than 429: since #529 the 429 line carries no body_snippet
+	// at all, so a 429 here would assert the property on an absent attribute
+	// and pass vacuously.
 	dir := t.TempDir()
 	writeFixtureCache(t, dir, time.Now().Add(-10*time.Minute))
 	srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusTooManyRequests)
+		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte("\x1b[2J\r\x00malicious"))
 	})
 	withTestEndpoint(t, srv.URL)
@@ -805,7 +811,10 @@ func TestFetchLogs_BodySnippetEscapesControlBytes(t *testing.T) {
 			continue
 		}
 		seen = true
-		snip, _ := attrMap(*r)["body_snippet"].(string)
+		snip, ok := attrMap(*r)["body_snippet"].(string)
+		if !ok || snip == "" {
+			t.Fatalf("body_snippet missing on a 500 line — the escaping guard would pass vacuously: %v", attrMap(*r))
+		}
 		if strings.ContainsAny(snip, "\x1b\r\x00") {
 			t.Errorf("body_snippet leaks raw control bytes: %q", snip)
 		}
