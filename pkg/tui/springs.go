@@ -593,6 +593,21 @@ func (m *Model) renderSpringFrame() {
 	m.renderSpringBarFrame(zoom, chartH)
 }
 
+// visibleXOffset is the viewport's left edge as a column on the LOGICAL full
+// canvas: viewportXOffset × stride, clamped so the window never runs past the
+// canvas right edge. setX ceil-divides maxX (#206), so at the 24h zoom
+// (stride 12) the unclamped product can overshoot by up to stride-1 columns.
+// The old full-canvas line render absorbed that inside bubbles' own XOffset
+// clamp; with windowed content nothing does, so the plot window and the label
+// cut must both start from this one value or they drift apart (#528).
+func (m *Model) visibleXOffset(fullCanvasW int) int {
+	xOff := m.viewportXOffset * ZoomLevels[m.zoomIdx].stride()
+	if maxOff := fullCanvasW - m.viewport.Width; xOff > maxOff {
+		xOff = maxOff
+	}
+	return max(xOff, 0)
+}
+
 // visibleWindow returns the [from, to] wall-clock window currently mapped to
 // the viewport at the active zoom and scroll offset. It is the single source
 // of truth for "what time range is on screen", shared by renderSpringLineFrame
@@ -613,10 +628,7 @@ func (m *Model) visibleWindow() (from, to time.Time) {
 	}
 	fullCanvasW := max(zoom.CanvasWidth(bucketCountInRange(fullFrom, fullTo, zoom.Duration)), m.viewport.Width)
 	vpW := m.viewport.Width
-	chartXOffset := m.viewportXOffset * zoom.stride()
-	if maxOff := fullCanvasW - vpW; chartXOffset > maxOff {
-		chartXOffset = maxOff
-	}
+	chartXOffset := m.visibleXOffset(fullCanvasW)
 	from = columnToTime(chartXOffset, fullCanvasW, fullFrom, fullTo)
 	to = columnToTime(chartXOffset+vpW, fullCanvasW, fullFrom, fullTo)
 	return from, to

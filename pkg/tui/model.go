@@ -199,6 +199,16 @@ type Model struct {
 	lastPts5h []cache.UtilizationPoint
 	lastPts7d []cache.UtilizationPoint
 
+	// lineLabelRow is the remaining-mode x-label row for the FULL logical
+	// canvas, built once per refreshChart and ansi.Cut to the visible columns
+	// on every windowed render (#528). The row is deliberately full-width: a
+	// label straddling the window's left edge keeps its clipped tail, which a
+	// row synthesised for the window alone would drop. Building it per refresh
+	// costs what the old full-canvas buildLineChart already paid; cutting it per
+	// scroll keypress / slide frame costs a scan, not an O(canvas) rebuild.
+	// Empty outside remaining mode and after clearChart.
+	lineLabelRow string
+
 	// oldPts5h / oldPts7d are snapshotted in beginUnitAnimation so
 	// renderSpringFrame can render the exiting line chart (oldIsLine=true
 	// phase) after refreshChart has already overwritten lastPts5h/7d
@@ -660,9 +670,8 @@ func (m *Model) handleBreakdownTick(msg breakdownTickMsg) {
 	}
 	// Do not reflow mid-spring: a unit or zoom spring in flight owns m.peak as
 	// the bar-height normalization base, and applyBreakdownResize calls
-	// renderWindow (bar mode) / buildLineChart (remaining mode) which would
-	// overwrite it, corrupting the spring frames and flashing steady-state
-	// content (#420). The deferred recompute is never lost — every spring
+	// renderWindow, which would overwrite it, corrupting the spring frames and
+	// flashing steady-state content (#420). The deferred recompute is never lost — every spring
 	// settle path calls refreshChart (pkg/tui/springs.go, pkg/tui/zoomspring.go,
 	// and the projects slide in pkg/tui/breakdownspring.go, #416), whose
 	// pre-paint refreshBreakdown + height re-sync catches it.
@@ -1344,10 +1353,13 @@ func (m *Model) refreshBreakdown() {
 // applyBreakdownResize re-syncs the viewport height and chart content after a
 // breakdownRows change moved the content-aware breakdownHeight (#420). No-op
 // when the height is already in sync — the common case; most scroll-settles
-// don't cross a row-count boundary. Never re-queries the cache: bar mode
-// re-renders the in-memory visible window; remaining mode rebuilds the line
-// chart from lastPts5h/7d. Height is a fixed point after one call (resizing
-// never changes breakdownRows), so callers never loop.
+// don't cross a row-count boundary. Never re-queries the cache: renderWindow
+// re-renders the in-memory visible window at the new height — bars and, since
+// #528, the line chart alike (this was the one steady-state paint the #528
+// windowing had to reach besides refreshChart: it fires on scroll-settles and
+// quota polls, so a full-canvas rebuild here cost the same ~70 KB per column).
+// Height is a fixed point after one call (resizing never changes
+// breakdownRows), so callers never loop.
 func (m *Model) applyBreakdownResize() {
 	nh := m.chartHeight()
 	if m.viewport.Height == nh {
@@ -1357,14 +1369,7 @@ func (m *Model) applyBreakdownResize() {
 	if m.lastCanvasW == 0 {
 		return // cleared/pre-init chart: no content to re-render
 	}
-	if chartUnit(m.unitIdx) == chartUnitRemaining {
-		m.viewport.SetContent(buildLineChart(m.lastPts5h, m.lastPts7d,
-			m.lastChartFrom, m.lastChartTo, m.lastCanvasW, nh, m.now(),
-			ZoomLevels[m.zoomIdx], m.dateOrder, "breakdown-resize", ""))
-		m.setX(m.viewportXOffset)
-	} else {
-		m.renderWindow()
-	}
+	m.renderWindow()
 }
 
 // minBarWidth is the smallest a quota bar may shrink to. Lowered from the

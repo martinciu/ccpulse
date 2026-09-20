@@ -2,7 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"log/slog"
 	"math"
 	"path/filepath"
 	"runtime"
@@ -5438,7 +5437,7 @@ func TestScroll_RebuildUsesWindowedWidth(t *testing.T) {
 			"windowing assertion to be meaningful", m.lastCanvasW, m.viewport.Width)
 	}
 
-	recs := captureLogs(t, slog.LevelDebug)
+	recs := captureLogs(t)
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyLeft})
 	m = updated.(Model)
 

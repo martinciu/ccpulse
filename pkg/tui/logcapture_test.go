@@ -7,20 +7,20 @@ import (
 	"testing"
 )
 
-// captureLogs swaps slog.Default for a slice-backed handler at the given
-// level and restores it via t.Cleanup. Returns a snapshot getter. Mirrors
-// the helper in pkg/anthro.
+// captureLogs swaps slog.Default for a slice-backed handler capturing every
+// level (Debug and up) and restores it via t.Cleanup. Returns a snapshot
+// getter. Mirrors the helper in pkg/anthro.
 //
 // Caveat: slog.SetDefault is process-global, so tests using captureLogs MUST
 // NOT call t.Parallel().
-func captureLogs(t *testing.T, minLevel slog.Level) func() []slog.Record {
+func captureLogs(t *testing.T) func() []slog.Record {
 	t.Helper()
 	var (
 		mu   sync.Mutex
 		recs []slog.Record
 	)
 	prev := slog.Default()
-	h := &captureHandler{level: minLevel, mu: &mu, recs: &recs}
+	h := &captureHandler{level: slog.LevelDebug, mu: &mu, recs: &recs}
 	slog.SetDefault(slog.New(h))
 	t.Cleanup(func() { slog.SetDefault(prev) })
 	return func() []slog.Record {
