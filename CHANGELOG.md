@@ -3,6 +3,70 @@
 All notable changes to ccpulse are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.12.0] — 2026-09-22
+
+### Added
+- Pricing snapshot `2026-09-22` with Claude Opus 5.5 at $4 / $20 / $0.20 /
+  $5 / $8 per MTok. Cache hits and refreshes on Opus 5.5 are 0.05× base
+  input (a footnote on the pricing page), not the standard 0.1×. Opus 5.5
+  turns previously priced at $0 and were flagged `pricing_unknown`; the new
+  snapshot changes the recost fingerprint, so cached rows are repriced once
+  on the next launch with no manual step (#543, #544)
+- `doctor` reports the cache's time span and flags an implausible oldest row
+  (anything before 2020, which catches both Go's zero time and the Unix
+  epoch) with `ccpulse index --rebuild` as the fix. The `parse-errors.log`
+  line now reports a record count as ℹ instead of grading the file size ✓
+  (#527, #530)
+
+### Changed
+- The usage line chart (`u`) renders only the visible window instead of the
+  full history canvas. A refresh on a 20,000-column history drops from
+  ~625 ms and ~740 MiB to ~5 ms and ~5.5 MiB, and stays flat as history
+  grows. A line-mode scroll keypress is now a windowed re-render (~3 ms)
+  rather than a pure offset, the same trade the bar views made in #255. The
+  u-toggle, zoom and breakdown-slide line frames no longer let points just
+  outside the window stretch the x-scale, so they stop popping by 1–3% when
+  they settle into the steady frame (#528, #539)
+- The chart's scrollable history is capped at 50,000 columns of canvas:
+  ~520 days at the 15m zoom, ~5.7 years at 1h and ~11.4 years at 24h. Older
+  history is clipped from the chart's left edge only; the cache and
+  `status --json` are unaffected (#527, #530, #528, #539)
+- The usage-API backoff window is persisted to
+  `<cacheDir>/usage-backoff.json`, so short-lived processes (the statusline's
+  `ccpulse status --json` every 5 s, Stop hooks) honour it alongside the TUI.
+  Before, a statusline could hit a rate-limited endpoint every ~1.4 s and
+  grow `ccpulse.log` by hundreds of MB. Consecutive 429s escalate
+  6 → 12 → 24 → 30 minutes, `Retry-After` is honoured up to an hour, and any
+  other failure backs off at the base cadence. The 429 warning is logged once
+  per backoff window, without the response body. `status --json` output is
+  unchanged (#529, #535)
+- Counting 24h buckets is O(1) instead of a day-by-day walk that ran on every
+  line-mode scroll keypress and breakdown-slide frame: ~53–132 µs down to
+  ~84 ns at 1,666–4,166 days of history (#542, #548)
+
+### Fixed
+- A single transcript line with a missing or year-1 `timestamp` no longer
+  bricks the TUI (~100% CPU, >10 GB resident, no first frame). Such lines are
+  refused at parse time and recorded in `parse-errors.log`. The chart's left
+  edge is also clamped to the column ceiling, so one bogus old row can no
+  longer size the canvas across two millennia. `index --rebuild` no longer
+  re-adds the poisoned row (#527, #530)
+- A `usage.json` whose `updated_at` lies in the future, e.g. after a backward
+  clock step, is treated as stale. Before, it was served as `cache_fresh`
+  with zero API calls until the wall clock caught up (#534, #536)
+
+### Internal
+- CI: `govulncheck` pinned to v1.7.0 in both CI and `make vulncheck`, the
+  last release that resolves under Go 1.25. The job had been failing on
+  `@latest` without scanning anything (#531, #533)
+- The line chart's label row and plot window derive their canvas width from
+  one helper (#540, #546), and `buildLineChart` no longer shadows its `to`
+  parameter with the dot-aligned range end (#541, #545)
+- pricing-drift: a temporary diagnostic run traced the scheduled job's
+  failures to a revoked OAuth token, then was reverted (#522, #523, #524)
+- Bump `modernc.org/sqlite` 1.57.0 → 1.59.0 (#520, #537) and
+  `anthropics/claude-code-action` 1.0.210 → 1.0.228 (#521, #525, #538)
+
 ## [0.11.0] — 2026-09-02
 
 ### Added
