@@ -136,12 +136,15 @@ func TestClampChartFrom_BoundsCanvasWidth(t *testing.T) {
 			t.Parallel()
 
 			// Precondition: the unclamped year-1 canvas must actually exceed the
-			// ceiling, or this case proves nothing. Computed arithmetically
-			// rather than via bucketCountInRange, which walks 24h day by day —
-			// over a 2025-year span that is ~739k laps, exactly the work the
-			// clamp exists to avoid. Skipping the check for 24h instead would
-			// let this subtest decay into a vacuous pass the moment
-			// maxChartColumns is raised (which #528 anticipates).
+			// ceiling, or this case proves nothing. Computed arithmetically here
+			// rather than via bucketCountInRange for simplicity (int(dur-based)
+			// division approximates the 24h day count closely enough for this
+			// precondition check; bucketCountInRange itself is O(1) since #542,
+			// so the unclamped span is no longer expensive to compute exactly —
+			// this shortcut just avoids duplicating that arithmetic here).
+			// Skipping the check for 24h instead would let this subtest decay
+			// into a vacuous pass the moment maxChartColumns is raised (which
+			// #528 anticipates).
 			if unclamped := z.CanvasWidth(int(to.Sub(time.Time{}) / z.Duration)); unclamped <= maxChartColumns {
 				t.Fatalf("precondition: unclamped year-1 canvas at %s is only %d columns; "+
 					"this test no longer exercises the ceiling", z.Label, unclamped)

@@ -138,11 +138,23 @@ func timeToColumn(t time.Time, canvasW int, from, to time.Time) int {
 }
 
 // bucketCountInRange counts the bucket slots covering [from, to) at the
-// given zoom duration. Matches cache.IOTokenBuckets / cache.CostBuckets
-// return-length semantics:
-//   - For sub-day durations, the count is int(to.Sub(from) / dur).
-//   - For 24h, the count is the number of local-tz calendar days in
-//     the range (DST-correct via AddDate(0,0,1)).
+// given zoom duration:
+//   - For sub-day durations, the count is int(to.Sub(from) / dur) — this
+//     matches cache.IOTokenBuckets / cache.CostBuckets exactly.
+//   - For 24h, the count is the number of k >= 0 with
+//     from.AddDate(0, 0, k).Before(to) — i.e. how many local-calendar-day
+//     (from.Location()) steps from `from` land before `to`. This is
+//     DST-correct (a local day is not always 24h); see dayBucketCount for
+//     how it's computed in O(1). It does NOT always match the length of
+//     cache's own 24h buckets (dailyBuckets/ioTokenBucketsDaily): those
+//     still use a compounding AddDate(0,0,1) walk, and in a zone whose DST
+//     gap covers local midnight (e.g. America/Santiago, America/Havana,
+//     America/Asuncion) that walk can emit the SAME calendar day twice —
+//     see dayBucketCount's doc comment. bucketCountInRange here is never
+//     used as an index into cache's bucket slices (only for canvas-width
+//     sizing and the underfilled threshold — see series.go/springs.go), so
+//     this mismatch is a cosmetic, bounded (±1) sizing quirk, not a crash
+//     risk — but it means the two are not interchangeable in a gap zone.
 //
 // Returns 0 for empty or reversed ranges.
 func bucketCountInRange(from, to time.Time, dur time.Duration) int {
@@ -150,13 +162,57 @@ func bucketCountInRange(from, to time.Time, dur time.Duration) int {
 		return 0
 	}
 	if dur == 24*time.Hour {
-		n := 0
-		for t := from; t.Before(to); t = t.AddDate(0, 0, 1) {
-			n++
-		}
-		return n
+		return dayBucketCount(from, to)
 	}
 	return int(to.Sub(from) / dur)
+}
+
+// dayBucketCount returns the number of k >= 0 with
+// from.AddDate(0, 0, k).Before(to) — the 24h-zoom bucket count. It used to
+// be computed by walking `from` forward one AddDate(0,0,1) step at a time
+// until reaching `to` (O(n) in the day span — up to 244µs at ~4,166 days,
+// issue #542); this computes the same count in O(1).
+//
+// Approach: the civil (Y/M/D) day difference between `from` and `to`, both
+// read in from.Location() so "day" means the same local calendar the
+// AddDate walk used, gives an estimate within a step or two of the exact
+// answer — the gap comes from from/to's differing time-of-day and from any
+// DST transition landing between them. Two short correction loops (each
+// bounded by that same small gap, never by the day span) walk the estimate
+// to the exact from.AddDate(0,0,k).Before(to) boundary using the identical
+// comparison the walk used, so the result is byte-for-byte what the walk
+// would have produced — EXCEPT where the walk itself drifts from this
+// definition (see TestDayBucketCount_PropertySweep in
+// chart_daybucket_test.go for the documented cases and per-zone counts):
+// a compounding AddDate walk that crosses a DST gap keeps the shifted wall
+// clock on every subsequent step, while each from.AddDate(0,0,k) here is
+// computed fresh from the original `from` and never inherits that drift.
+// That divergence is intentionally NOT reproduced — it was never a
+// desirable property, just an accident of how the walk was written.
+func dayBucketCount(from, to time.Time) int {
+	loc := from.Location()
+	toInLoc := to.In(loc)
+
+	fy, fm, fd := from.Date()
+	ty, tm, td := toInLoc.Date()
+	// Pure calendar-date distance (Y/M/D only, via UTC dates so DST offsets
+	// never enter the subtraction) — an O(1) estimate of the answer.
+	fromCivil := time.Date(fy, fm, fd, 0, 0, 0, 0, time.UTC)
+	toCivil := time.Date(ty, tm, td, 0, 0, 0, 0, time.UTC)
+	n := max(int(toCivil.Sub(fromCivil)/(24*time.Hour)), 0)
+
+	// from.AddDate(0,0,k).Before(to) is monotone non-increasing in k (true,
+	// true, ..., true, false, false, ...), so walking the estimate to the
+	// true/false boundary always converges — and converges in O(1) steps
+	// because the estimate's error is bounded by the from/to time-of-day
+	// gap plus at most one DST shift, not by n itself.
+	for n > 0 && !from.AddDate(0, 0, n-1).Before(to) {
+		n--
+	}
+	for from.AddDate(0, 0, n).Before(to) {
+		n++
+	}
+	return n
 }
 
 // paddedFrom returns `to` walked left by n buckets at the given zoom — the
@@ -251,8 +307,11 @@ const maxChartColumns = 50_000
 // degenerate.
 //
 // Callers clamp BEFORE bucket-aligning: alignment may step back across one
-// boundary, which is immaterial against a 20k ceiling, and clamping first also
-// spares bucketCountInRange's day-by-day walk (24h) an absurd number of laps.
+// boundary, which is immaterial against a 20k ceiling. (bucketCountInRange's
+// 24h case used to walk one day at a time, which made clamping first doubly
+// important — it kept that walk from taking an absurd number of laps; #542
+// made it O(1), so that particular reason no longer applies, but clamping
+// before aligning is still the simpler order to reason about.)
 //
 // Budgets columns via zoom.stride() — the same BarWidth+BarGap invariant
 // CanvasWidth lays out with, defensively clamped there — so a zoom's bar
