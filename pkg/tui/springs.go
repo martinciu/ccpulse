@@ -608,15 +608,51 @@ func (m *Model) visibleXOffset(fullCanvasW int) int {
 	return max(xOff, 0)
 }
 
+// logicalCanvasWidth is the width, in columns, of the LOGICAL full canvas that
+// spans [from, to) at zoom — one bucket per stride — floored at viewport.Width
+// so the canvas is never narrower than the frame drawn over it.
+//
+// It is the one formula behind both halves of the windowed line render (#540):
+// refreshChart's remaining branch stores it as m.lastCanvasW, the width the
+// label row is rendered at and cut from, and visibleWindow derives the plot
+// window from it. They used to be two copies with different floors —
+// chartWidth() in refreshChart, viewport.Width in visibleWindow — that agreed
+// only while handleWindowSize kept those widths equal. Before the first
+// tea.WindowSizeMsg they are not (m.w == 0 floors chartWidth() at 10 while
+// viewport.Width is still New's 80), and the label row came out an 11-column
+// canvas under an 80-column plot of the same span.
+//
+// The floor is viewport.Width, not chartWidth(), because that is the width
+// actually drawn — buildLineChart builds at it and the label cut is that wide —
+// and every other reader of m.lastCanvasW (setX's clamp, snapshotAnchor,
+// restoreAnchor, visibleXOffset) measures the canvas against it. It is also
+// the floor visibleWindow always had, so the window every spring reads is
+// unchanged. After the first resize the two widths are equal and the #300
+// padding keeps the bucket term above both, so the floor only binds pre-resize.
+// Where it binds the canvas is wider than its buckets, and buildXLabelsRow's
+// per-bucket ticks fill only its left part; View() renders nothing at m.w == 0,
+// so that state is never painted.
+func (m *Model) logicalCanvasWidth(zoom ZoomLevel, from, to time.Time) int {
+	return max(zoom.CanvasWidth(bucketCountInRange(from, to, zoom.Duration)), m.viewport.Width)
+}
+
 // visibleWindow returns the [from, to] wall-clock window currently mapped to
 // the viewport at the active zoom and scroll offset. It is the single source
-// of truth for "what time range is on screen", shared by renderSpringLineFrame
-// (the u-toggle line frame), the zoom squeeze's arm-time snapshot (#373), and
-// refreshBreakdown' remaining-mode window (#430).
+// of truth for "what time range is on screen", shared by renderLineWindow (the
+// steady-state plot window, #528), renderSpringLineFrame (the u-toggle line
+// frame), the zoom transition's arm-time snapshot in both chart families
+// (#373; bar mode reads it only for the cross-faded x-label rows, #393), and
+// refreshBreakdown's remaining-mode window (#430).
 //
-// Reads m.lastChartFrom/To, m.lastCanvasW (via the recomputed fullCanvasW),
-// m.viewportXOffset, and m.viewport.Width — all consistent with ZoomLevels[
-// m.zoomIdx] at any call site that hasn't mutated zoomIdx without a refresh.
+// Reads m.lastChartFrom/To (the 5h ending now while they are unset),
+// m.viewportXOffset, m.viewport.Width and ZoomLevels[m.zoomIdx]. It does NOT
+// read m.lastCanvasW: it re-derives the canvas width through
+// logicalCanvasWidth, the helper refreshChart's remaining branch stored
+// m.lastCanvasW from, so in remaining mode the two are equal by construction
+// at any call site that hasn't changed zoomIdx or viewport.Width without a
+// refresh (#540). Re-deriving rather than reading keeps bar mode as it was:
+// there m.lastCanvasW is the unfloored bar canvas, which equals this width
+// only once the viewport is sized.
 func (m *Model) visibleWindow() (from, to time.Time) {
 	zoom := ZoomLevels[m.zoomIdx]
 	fullFrom, fullTo := m.lastChartFrom, m.lastChartTo
@@ -626,7 +662,7 @@ func (m *Model) visibleWindow() (from, to time.Time) {
 	if fullTo.IsZero() {
 		fullTo = m.now()
 	}
-	fullCanvasW := max(zoom.CanvasWidth(bucketCountInRange(fullFrom, fullTo, zoom.Duration)), m.viewport.Width)
+	fullCanvasW := m.logicalCanvasWidth(zoom, fullFrom, fullTo)
 	vpW := m.viewport.Width
 	chartXOffset := m.visibleXOffset(fullCanvasW)
 	from = columnToTime(chartXOffset, fullCanvasW, fullFrom, fullTo)

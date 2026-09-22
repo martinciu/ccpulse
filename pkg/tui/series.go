@@ -271,10 +271,13 @@ func (m *Model) refreshChart() {
 	if series.unit == chartUnitRemaining {
 		// Mirror bar mode's canvas-width formula so 'z' zoom and 'u'
 		// unit-toggle preserve the same time-range under the viewport's
-		// left edge in both modes. Floor at chartWidth() so a short
-		// usage_samples history still spans the visible area instead
-		// of rendering in a narrow slice on the left.
-		canvasW = max(zoom.CanvasWidth(bucketCountInRange(from, to, zoom.Duration)), m.chartWidth())
+		// left edge in both modes. logicalCanvasWidth is also what
+		// visibleWindow derives the plot window from, so the label row
+		// rendered at this width below and the plot window renderLineWindow
+		// draws are cut from ONE canvas (#540). Its viewport.Width floor
+		// keeps the canvas at least as wide as the frame drawn over it;
+		// since the #300 padding it only binds before the first resize.
+		canvasW = m.logicalCanvasWidth(zoom, from, to)
 	} else {
 		canvasW = zoom.CanvasWidth(len(series.values))
 	}
@@ -329,9 +332,11 @@ func (m *Model) refreshChart() {
 // 740 MiB per refresh (427 MB of that the cell array alone) for a viewport that
 // shows ~120 of those columns. Building at viewport.Width makes the cost
 // O(viewport); m.lastCanvasW survives purely as logical geometry for setX's
-// clamp, the scroll anchor and visibleWindow.
+// clamp, the scroll anchor and the label cut below.
 //
-// The plot window and the label cut both start at visibleXOffset, so they stay
+// The plot window and the label cut are two slices of one canvas: the cut
+// reads m.lastCanvasW, and visibleWindow re-derives that same width through
+// logicalCanvasWidth (#540). Both start at visibleXOffset, so they stay
 // aligned even where setX's maxX overshoots the canvas edge (24h zoom).
 // SetXOffset(0): the content is exactly the window, there is nothing to offset.
 func (m *Model) renderLineWindow(source string) {

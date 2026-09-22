@@ -3,13 +3,16 @@ package tui
 import (
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/martinciu/ccpulse/pkg/anthro"
 	"github.com/martinciu/ccpulse/pkg/cache"
 )
 
@@ -540,5 +543,127 @@ func TestScroll_Remaining_DuringSpringNeverBlanks(t *testing.T) {
 	}
 	if got := m.viewport.View(); got != before {
 		t.Error("the spring's frame changed on a scroll keypress — mid-spring scroll must move the logical offset only, leaving the animation to own the paint")
+	}
+}
+
+// newPreResizeRemainingModel builds a remaining-mode model in the state the TUI
+// is in before bubbletea's first tea.WindowSizeMsg: m.w == 0, so chartWidth()
+// floors at 10, while viewport.Width is still the 80 that New's
+// viewport.New(80, 20) left there. refreshChart genuinely runs in this state —
+// the startup RefreshMsg can race ahead of the first resize (see maybeArmIntro).
+// The usage history is a handful of recent samples and no messages, so the
+// #300 padding (sized from chartWidth()) yields a logical canvas far narrower
+// than the 80-column viewport.
+func newPreResizeRemainingModel(t *testing.T, zoomIdx int, now time.Time) (Model, *cache.Cache) {
+	t.Helper()
+	c, err := cache.Open(t.Context(), filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	for i := range 8 {
+		when := now.Add(-time.Duration(i) * 15 * time.Minute)
+		resets := when.Add(2 * time.Hour)
+		u := anthro.Usage{FiveHour: &anthro.Bucket{Utilization: 20 + float64(5*i), ResetsAt: &resets}}
+		if err := c.RecordUsageSample(t.Context(), u, when); err != nil {
+			t.Fatalf("RecordUsageSample: %v", err)
+		}
+	}
+	m := New(Deps{Cache: c})
+	m.unitIdx = int(chartUnitRemaining)
+	m.zoomIdx = zoomIdx
+	m.now = func() time.Time { return now }
+	m.refreshChart()
+	return m, c
+}
+
+// TestRenderLineWindow_LabelCutAndPlotWindowShareCanvas pins #540: the label
+// row renderLineWindow cuts and the plot window visibleWindow hands it must be
+// two slices of ONE logical canvas. The label row is rendered at m.lastCanvasW
+// over [lastChartFrom, lastChartTo] and cut at [xOff, xOff+vpW); the plot is
+// drawn at vpW columns over visibleWindow(). So the cut must be exactly vpW
+// columns wide, and the plot window must start and end at the instants the
+// cut's two edges map to on that canvas.
+//
+// Until #540 the two sides derived the canvas width independently —
+// refreshChart floored it at chartWidth(), visibleWindow at viewport.Width —
+// and agreed only because handleWindowSize keeps those equal. The pre-resize
+// cases pull them apart: the label row was an 11-column canvas while the plot
+// spread the same span over 80 columns. View() renders nothing at m.w == 0,
+// which is how that went unnoticed. The resized cases guard the steady state,
+// including the 24h stride overshoot visibleXOffset clamps (#528).
+func TestRenderLineWindow_LabelCutAndPlotWindowShareCanvas(t *testing.T) {
+	type buildFn func(t *testing.T) (Model, *cache.Cache)
+	type testCase struct {
+		name  string
+		build buildFn
+	}
+	var cases []testCase
+	for zi, z := range ZoomLevels {
+		cases = append(cases, testCase{
+			name: "pre-resize/" + z.Label,
+			build: func(t *testing.T) (Model, *cache.Cache) {
+				m, c := newPreResizeRemainingModel(t, zi, lineWindowNow)
+				if m.w != 0 || m.viewport.Width == m.chartWidth() {
+					t.Fatalf("precondition: want the pre-resize state (m.w == 0, viewport.Width != chartWidth()), got m.w=%d viewport.Width=%d chartWidth()=%d",
+						m.w, m.viewport.Width, m.chartWidth())
+				}
+				return m, c
+			},
+		})
+		for _, pos := range []string{"pinned-right", "middle"} {
+			cases = append(cases, testCase{
+				name: "resized/" + z.Label + "/" + pos,
+				build: func(t *testing.T) (Model, *cache.Cache) {
+					// 4,000 15m-buckets ≈ 41 days: wide at every zoom (24h → ~490 cols).
+					m, c := seedWideRemainingModel(t, 4_000, 400, lineWindowNow)
+					m.zoomIdx = zi
+					m.refreshChart()
+					if pos == "middle" {
+						m.scrollLeft(m.viewportXOffset / 2)
+					}
+					return m, c
+				},
+			})
+		}
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, c := tc.build(t)
+			defer c.Close()
+
+			vpW, canvasW := m.viewport.Width, m.lastCanvasW
+			from, to := m.lastChartFrom, m.lastChartTo
+			if got := lipgloss.Width(m.lineLabelRow); got != canvasW {
+				t.Fatalf("precondition: label row is %d columns, want the logical canvas width %d", got, canvasW)
+			}
+
+			// The cut renderLineWindow takes. It must cover every plot column.
+			xOff := m.visibleXOffset(canvasW)
+			if got := lipgloss.Width(ansi.Cut(m.lineLabelRow, xOff, xOff+vpW)); got != vpW {
+				t.Errorf("label cut [%d, %d) of the %d-column canvas is %d columns wide, want the plot's %d",
+					xOff, xOff+vpW, canvasW, got, vpW)
+			}
+
+			// The instant at column col of the canvas the label row was rendered
+			// on — the plain linear map, no clamp, so a window running past the
+			// canvas edge shows up as a time past lastChartTo.
+			spanSec := int64(to.Sub(from) / time.Second)
+			at := func(col int) time.Time {
+				return from.Add(time.Duration(spanSec*int64(col)/int64(canvasW)) * time.Second)
+			}
+			// columnToTime rounds to the nearest second, at truncates: allow 1s.
+			near := func(a, b time.Time) bool { return a.Sub(b).Abs() <= time.Second }
+
+			viewFrom, viewTo := m.visibleWindow()
+			if want := at(xOff); !near(viewFrom, want) {
+				t.Errorf("plot window starts at %v, want %v — the label cut's left edge (column %d of a %d-column canvas)",
+					viewFrom, want, xOff, canvasW)
+			}
+			if want := at(xOff + vpW); !near(viewTo, want) {
+				t.Errorf("plot window ends at %v, want %v — the label cut's right edge (column %d of a %d-column canvas)",
+					viewTo, want, xOff+vpW, canvasW)
+			}
+		})
 	}
 }

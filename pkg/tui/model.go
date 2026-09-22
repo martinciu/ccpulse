@@ -228,11 +228,14 @@ type Model struct {
 	oldStarts []time.Time
 
 	// lastChartFrom / lastChartTo / lastCanvasW are the [from, to) time
-	// window and column-count used by the most recent buildChart /
-	// buildLineChart call (any unit). Stored so refreshChart can map
-	// the viewport column back to a wall-clock anchor on the NEXT
-	// refresh (zoom, unit toggle, watcher event), and so
-	// renderSpringFrame can reproduce the same x-axis during animation.
+	// window and LOGICAL full-canvas column count of the most recent
+	// refreshChart (any unit). In remaining mode the line chart is only
+	// built at viewport width (#528), so there lastCanvasW is geometry,
+	// not the width of any built chart — logicalCanvasWidth derives it
+	// (#540). Stored so refreshChart can map the viewport column back to
+	// a wall-clock anchor on the NEXT refresh (zoom, unit toggle, watcher
+	// event), and so renderSpringFrame can reproduce the same x-axis
+	// during animation.
 	lastChartFrom time.Time
 	lastChartTo   time.Time
 	lastCanvasW   int
