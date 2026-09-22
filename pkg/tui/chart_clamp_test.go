@@ -136,12 +136,8 @@ func TestClampChartFrom_BoundsCanvasWidth(t *testing.T) {
 			t.Parallel()
 
 			// Precondition: the unclamped year-1 canvas must actually exceed the
-			// ceiling, or this case proves nothing. Computed arithmetically here
-			// rather than via bucketCountInRange for simplicity (int(dur-based)
-			// division approximates the 24h day count closely enough for this
-			// precondition check; bucketCountInRange itself is O(1) since #542,
-			// so the unclamped span is no longer expensive to compute exactly —
-			// this shortcut just avoids duplicating that arithmetic here).
+			// ceiling, or this case proves nothing. A plain duration division is
+			// close enough to the 24h day count for a precondition.
 			// Skipping the check for 24h instead would let this subtest decay
 			// into a vacuous pass the moment maxChartColumns is raised (which
 			// #528 anticipates).

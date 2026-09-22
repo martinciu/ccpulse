@@ -313,7 +313,7 @@ func TestDayBucketCount_EdgeCases(t *testing.T) {
 // those (to, n) pairs are skipped and tallied rather than asserted.
 //
 // For a plain midnight `to` (cache.DayStartLocal's output — the only value
-// real callers pass, per model.go:1198) in Europe/Warsaw, America/New_York
+// real callers pass, via refreshChart) in Europe/Warsaw, America/New_York
 // and Australia/Lord_Howe, the round trip always holds (midnight is never
 // in those zones' ~02:00 gap) — so those three zones are held to zero
 // skips for the "midnight_now" and "midnight_dst_era" cases.
