@@ -1376,15 +1376,22 @@ func buildLineChart(pts5h, pts7d []cache.UtilizationPoint,
 	// redrew on roughly every second keypress). Handing ntcharts a range one
 	// dot shorter makes its scale exactly 2w/(to-from) — i.e. 2 dots per column.
 	//
-	// The cost is at the right terminus: a point at exactly `to` now maps to dot
-	// 2w, which PatternDotsGrid.Set drops. The last cell still paints, because
-	// DrawBrailleDataSets draws SEGMENTS and the segment into that point inks
-	// every dot up to 2w-1 (TestBuildLineChart_PaintsToTheRightEdge pins both
-	// the real series and the zero-samples baseline, which is two synthetic
-	// points at from and to).
-	to = dotAlignedEnd(from, to, chartW)
+	// The cost is at the right terminus: a point at exactly the caller's `to`
+	// now maps to dot 2w, which PatternDotsGrid.Set drops. The last cell
+	// still paints, because DrawBrailleDataSets draws SEGMENTS and the
+	// segment into that point inks every dot up to 2w-1
+	// (TestBuildLineChart_PaintsToTheRightEdge pins both the real series and
+	// the zero-samples baseline, which is two synthetic points at from and
+	// to).
+	//
+	// plotTo — not `to` — is what ntcharts actually scales against below.
+	// `to` itself is left untouched: the zero-sample baseline pushes and the
+	// labelRow=="" fallback further down both want the caller's real window
+	// end, not the dot-shaved one, so shadowing the parameter here would
+	// leak the shrink into code that never asked for it (#541).
+	plotTo := dotAlignedEnd(from, to, chartW)
 
-	// The x-range is [from, to] and must stay that. timeserieslinechart.New
+	// The x-range is [from, plotTo] and must stay that. timeserieslinechart.New
 	// turns auto-ranging on unconditionally (linechart.WithAutoXYRange) and
 	// WithTimeRange does not turn it off, so each Push of a point outside the
 	// range silently WIDENS the view (linechart.AutoAdjustRange). Windowed
@@ -1401,12 +1408,18 @@ func buildLineChart(pts5h, pts7d []cache.UtilizationPoint,
 	// must come after Set{X,Y}Step — SetViewTimeRange triggers rescaleData
 	// on the default dataset, anchoring it to the post-step geometry so it
 	// shares scale with later PushDataSet datasets (issue #194).
-	tslc.SetViewTimeRange(from, to)
+	tslc.SetViewTimeRange(from, plotTo)
 
 	// 5h dataset (default).
 	tslc.SetLineStyle(runes.ThinLineStyle)
 	tslc.SetStyle(lipgloss.NewStyle().Foreground(colorChartRemaining5h))
 	if len(pts5h) == 0 {
+		// Endpoint at the caller's `to`, not plotTo: a flat two-point
+		// baseline draws as one SEGMENT, and the segment's far endpoint is
+		// clipped at the grid edge regardless of how far past it sits — so
+		// `to` vs plotTo paints identically (verified byte-for-byte against
+		// this function at 120/15m, 80/1h and 200/24h). Keep the caller's
+		// real window end since there's no painting reason not to.
 		tslc.Push(timeserieslinechart.TimePoint{Time: from, Value: 1.0})
 		tslc.Push(timeserieslinechart.TimePoint{Time: to, Value: 1.0})
 	} else {
@@ -1457,6 +1470,8 @@ func buildLineChart(pts5h, pts7d []cache.UtilizationPoint,
 	if showXLabels {
 		row := labelRow
 		if row == "" {
+			// `to`, not plotTo: the label ticks belong to the caller's real
+			// window, same reasoning as the baseline pushes above (#541).
 			row = renderXLabels(synthLabelStarts(from, to, zoom), chartW, zoom, now, order)
 		}
 		body = lipgloss.JoinVertical(lipgloss.Left, body, row)

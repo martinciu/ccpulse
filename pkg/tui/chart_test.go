@@ -2060,6 +2060,57 @@ func TestBuildLineChart_LabelRowParam(t *testing.T) {
 	}
 }
 
+// TestBuildLineChart_LabelFallbackUsesCallersTo guards #541: buildLineChart
+// used to reassign its own `to` parameter to the dot-aligned x-range end
+// (dotAlignedEnd) before the labelRow=="" fallback ran, so the fallback
+// synthesized ticks against the shrunk end instead of the caller's real
+// window.
+//
+// Of the three call sites, only renderSpringLineFrame (springs.go, the
+// u-toggle spring) ever passes labelRow=="" and reaches this fallback;
+// renderLineWindow and the zoom-squeeze both precompute a non-empty row.
+// renderSpringLineFrame's [from, to) comes from visibleWindow(), which maps
+// columns to wall-clock time by proportional (sub-second) interpolation —
+// nothing guarantees `to` lands on a label-cadence boundary there, but
+// whether a given viewport width happens to trigger a visible difference is
+// not this test's concern: the fallback should read the caller's real
+// window regardless. TestBuildLineChart_LabelRowParam above doesn't catch
+// the bug because its window happens not to straddle a tick — both the
+// caller's `to` and the aligned end produce the identical tick set — which
+// is also why the shadowing shipped unnoticed.
+//
+// This test picks a window that straddles a tick on purpose: `to` sits 1
+// minute past a 3-hourly 15m tick (06:00), and at chartW=60 the alignment
+// shrink is ~3 minutes — enough to pull the aligned end back before that
+// tick. The precondition below fails loudly if that stops being true (e.g.
+// dotAlignedEnd's formula changes), rather than silently asserting nothing.
+func TestBuildLineChart_LabelFallbackUsesCallersTo(t *testing.T) {
+	t.Parallel()
+	from := time.Date(2026, 5, 20, 0, 0, 0, 0, time.UTC)
+	to := from.Add(361 * time.Minute) // 06:01 — 1 minute past the 06:00 tick
+	now := to
+	const chartW, chartH = 60, 12
+	zoom := ZoomLevels[0] // 15m
+
+	callerStarts := synthLabelStarts(from, to, zoom)
+	alignedStarts := synthLabelStarts(from, dotAlignedEnd(from, to, chartW), zoom)
+	wantCallerTo := renderXLabels(callerStarts, chartW, zoom, now, dateOrderMonthFirst)
+	wantAlignedTo := renderXLabels(alignedStarts, chartW, zoom, now, dateOrderMonthFirst)
+	if wantAlignedTo == wantCallerTo {
+		t.Fatalf("precondition: caller-to and aligned-to synthesize the same label row %q — this window no longer discriminates the bug; widen `to` past the tick or shrink chartW", wantCallerTo)
+	}
+
+	pts := []cache.UtilizationPoint{{At: from, Pct: 20}, {At: to, Pct: 40}}
+	body := buildLineChart(pts, nil, from, to, chartW, chartH, now, zoom, dateOrderMonthFirst, "test", "")
+	lines := strings.Split(body, "\n")
+	got := lines[len(lines)-1]
+
+	if got != wantCallerTo {
+		t.Errorf("labelRow=\"\" fallback = %q, want caller-to row %q (got the aligned-to row %q — buildLineChart is reading the shrunk `to`)",
+			got, wantCallerTo, wantAlignedTo)
+	}
+}
+
 func TestCrossfadeLabelRow(t *testing.T) {
 	t.Parallel()
 	// now just after midnight so BOTH cadences render labels: 15m shows
