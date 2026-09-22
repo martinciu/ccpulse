@@ -94,12 +94,12 @@ func (m *Model) setX(n int) {
 	m.viewportXOffset = n
 }
 
-// scrollLeft / scrollRight shift the bucket-indexed viewport offset and, in
-// bar mode, re-render the visible window live (#255 — no debounce; the
-// rebuild is now ~viewport width). renderWindow no-ops in remaining mode, so
-// line-mode scroll stays a pure offset over the full canvas. The
-// !springActive case ports the old rescaleMsg gate: a scroll during a u/z
-// spring still advances the viewportXOffset shadow (so the post-settle
+// scrollLeft / scrollRight shift the bucket-indexed viewport offset and
+// re-render the visible window live (#255 — no debounce; the rebuild is now
+// ~viewport width). renderWindow windows the line chart too since #528, so a
+// line-mode scroll repaints the visible window exactly as a bar-mode scroll
+// does. The !springActive case ports the old rescaleMsg gate: a scroll during
+// a u/z spring still advances the viewportXOffset shadow (so the post-settle
 // refreshChart picks up the new position) but must not recompute m.peak —
 // those springs own it as the bar-height normalization base. A breakdown
 // slide is the exception (#477): its ticks already repaint through

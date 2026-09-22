@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/martinciu/ccpulse/pkg/cache"
 )
@@ -113,6 +114,7 @@ func (m *Model) clearChart() {
 	m.lastStarts = nil
 	m.peak = 0
 	m.lastCanvasW = 0
+	m.lineLabelRow = ""
 	m.lastZoomStride = 0
 	m.lastChartFrom = time.Time{}
 	m.lastChartTo = time.Time{}
@@ -265,7 +267,6 @@ func (m *Model) refreshChart() {
 	m.lastValues = series.values
 	m.lastStarts = series.starts
 
-	var chartH int
 	var canvasW int
 	if series.unit == chartUnitRemaining {
 		// Mirror bar mode's canvas-width formula so 'z' zoom and 'u'
@@ -298,23 +299,53 @@ func (m *Model) refreshChart() {
 	// reorder every 'p' press fired two full-canvas paints.
 	m.refreshBreakdown()
 	m.viewport.Height = m.chartHeight()
-	chartH = m.chartHeight()
 
 	// Paint (#255). Bar modes window the render to the visible slice via
 	// renderWindow, which computes the visible-slice peak and sets the
 	// viewport content + slack offset itself — so no separate peak calc and
 	// no re-apply setX are needed (renderWindow's SetXOffset against its own
 	// windowed canvas is what restores the right edge; the old full-canvas
-	// re-apply dance is gone). Remaining mode keeps the full-canvas line
-	// chart plus the re-apply setX to restore the offset against the new
-	// wide canvas after a bar→line spring left narrow content behind.
+	// re-apply dance is gone).
+	// Remaining mode windows the same way since #528 (renderWindow delegates
+	// to renderLineWindow): no full-canvas build, and no re-apply setX —
+	// restoreAnchor above already clamped the logical offset, and the windowed
+	// content needs no physical one.
 	if series.unit == chartUnitRemaining {
 		m.peak = series.peak // 1.0, set in loadRemainingSeries
-		m.viewport.SetContent(buildLineChart(m.lastPts5h, m.lastPts7d, from, to, canvasW, chartH, m.now(), zoom, m.dateOrder, "refresh", ""))
-		m.setX(m.viewportXOffset)
-	} else {
-		m.renderWindow()
+		// Full-canvas label row, once per refresh; renderLineWindow cuts it.
+		m.lineLabelRow = renderXLabels(synthLabelStarts(from, to, zoom), canvasW, zoom, m.now(), m.dateOrder)
 	}
+	m.renderWindow()
+}
+
+// renderLineWindow paints the remaining-mode (usage line chart) viewport from
+// the VISIBLE time window only (#528). It is the steady-state twin of
+// renderSpringLineFrame, and the body renderBreakdownFrame's line branch
+// shares — so steady frames and slide frames are the same code.
+//
+// Until #528 the steady state built the full logical canvas and let the
+// viewport scroll over it. ntcharts allocates canvasW × rows cells of 560 B
+// each (a Cell embeds a lipgloss.Style), so a 20,000-column history cost
+// 740 MiB per refresh (427 MB of that the cell array alone) for a viewport that
+// shows ~120 of those columns. Building at viewport.Width makes the cost
+// O(viewport); m.lastCanvasW survives purely as logical geometry for setX's
+// clamp, the scroll anchor and visibleWindow.
+//
+// The plot window and the label cut both start at visibleXOffset, so they stay
+// aligned even where setX's maxX overshoots the canvas edge (24h zoom).
+// SetXOffset(0): the content is exactly the window, there is nothing to offset.
+func (m *Model) renderLineWindow(source string) {
+	zoom := ZoomLevels[m.zoomIdx]
+	vpW := m.viewport.Width
+	viewFrom, viewTo := m.visibleWindow()
+	xOff := m.visibleXOffset(m.lastCanvasW)
+	labelRow := ansi.Cut(m.lineLabelRow, xOff, xOff+vpW)
+	m.viewport.SetContent(buildLineChart(
+		slicePointsInRange(m.lastPts5h, viewFrom, viewTo),
+		slicePointsInRange(m.lastPts7d, viewFrom, viewTo),
+		viewFrom, viewTo, vpW, m.chartHeight(),
+		m.now(), zoom, m.dateOrder, source, labelRow))
+	m.viewport.SetXOffset(0)
 }
 
 // renderWindow renders the bar-chart viewport from the visible window of
@@ -326,20 +357,31 @@ func (m *Model) refreshChart() {
 // rebuilt the full canvas (m.lastCanvasW ≈ 3090 cols), this builds ~viewport
 // width — dropping the per-scroll rebuild from ~80-130ms to ~5ms.
 //
-// No-op when lastValues is empty, lastCanvasW is 0 (pre-init), or the active
-// unit is chartUnitRemaining (the line chart keeps a fixed peak=1.0 and a
-// full-canvas pure-offset scroll — bar-only per #255 scope).
+// No-op when lastCanvasW is 0 (pre-init), or — in bar mode — when lastValues is
+// empty. In remaining mode it delegates to renderLineWindow, which windows the
+// line chart the same way (#528 finished what #255 scoped to bars only).
 //
 // Runs live per scroll keypress now that #255 dropped the #252 scroll-stop
-// debounce — each call allocates ~2.4 MB / ~10k allocs (mostly inside
-// ntcharts), a deliberate GC-pressure-for-responsiveness trade that the
-// windowing keeps well under the per-frame budget.
+// debounce — a deliberate GC-pressure-for-responsiveness trade that the
+// windowing keeps well under the per-frame budget. Measured per call on an
+// M1 Max: ~4.8 MB / ~16k allocs in bar mode, ~5.0 MB / ~2.8k allocs in line
+// mode. Most of it is inside ntcharts, which allocates its cell grid twice per
+// render (canvas.New, then canvas.Clear re-makes every row instead of clearing
+// in place) — roughly half these bytes, and reusable if a future change keeps
+// one chart model per size rather than building one per frame.
 func (m *Model) renderWindow() {
-	if len(m.lastValues) == 0 || m.lastCanvasW == 0 {
+	if m.lastCanvasW == 0 {
 		return
 	}
 	unit := chartUnit(m.unitIdx)
 	if unit == chartUnitRemaining {
+		// Before the lastValues guard on purpose: remaining mode with no usage
+		// samples has empty lastValues yet must still paint the flat 100%
+		// baseline.
+		m.renderLineWindow("window")
+		return
+	}
+	if len(m.lastValues) == 0 {
 		return
 	}
 	zoom := ZoomLevels[m.zoomIdx]

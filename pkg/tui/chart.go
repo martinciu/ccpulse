@@ -180,83 +180,70 @@ func paddedFrom(to time.Time, zoom ZoomLevel, n int) time.Time {
 // timestamp claims to be.
 //
 // The chart's horizontal extent is set by DATA, not by the viewport: it spans
-// earliest-message → now at every zoom (#53). That makes the canvas width a
-// function of the single oldest row, and the cost is paid for every column
-// whether or not it is on screen — the full canvas is materialised and the
-// viewport then scrolls a ~200-column window over it, while
-// cache.IOTokenBuckets / CostBuckets zero-FILL the range behind it
-// (`make([]TokenBucket, n)`).
-//
-// That cost is dominated by the USAGE view's line chart, not by the bar views.
-// Measured on a real 200k-message cache at the 15m zoom, same ceiling, same
-// binary — only the view differs:
-//
-//	35,000 columns, cost bars   ->    78MB
-//	35,000 columns, usage line  ->  2,483MB
-//
-// So the ceiling is really sized by the line chart, at very roughly ~70KB
-// resident per column; the bar path is around thirty times leaner. Sizing on
-// the cheaper path would leave the expensive one unbounded, so this ceiling is
-// set by the worst view, not the average one.
-//
+// earliest-message → now at every zoom (#53). That makes the LOGICAL canvas
+// width a function of the single oldest row, and cache.IOTokenBuckets /
+// CostBuckets zero-FILL the whole range behind it (`make([]TokenBucket, n)`).
 // One row stamped with Go's zero time put the 1h zoom at ~17.7M buckets and the
 // 15m zoom at ~71M, so the TUI could not paint a first frame before exhausting
-// memory (#527).
-//
-// The ceiling counts COLUMNS, not buckets, because those differ by an order of
-// magnitude across zooms: 15m and 1h draw 1 column per bucket, but 24h draws
-// BarWidth 10 plus BarGap 2, so a bucket-denominated cap of 20k would still let
-// the 24h zoom build a ~240k-column canvas — and it did, at 7.8GB. Columns are
-// what the renderer actually pays for, so columns are what the ceiling counts.
+// memory (#527) — unclamped it passed 10.6GB and was still climbing.
 //
 // pkg/parse now rejects the zero-timestamp row at the door, so this is the
 // backstop for every OTHER route a far-past timestamp can take into the cache:
 // clock skew, a restored or hand-written transcript, a future parser gap.
 //
-// 20_000 is where the worst view stays bootable. Measured across three runs
-// each, poisoned cache vs clean, this binary (RSS at boot, then after cycling
-// zooms and views):
+// The ceiling counts COLUMNS, not buckets, because those differ by an order of
+// magnitude across zooms: 15m and 1h draw 1 column per bucket, but 24h draws
+// BarWidth 10 plus BarGap 2 — 12 columns per bucket — so a bucket-denominated
+// cap would let the 24h axis run twelve times wider than the others. Columns
+// are what the per-refresh work below is proportional to, so columns are what
+// the ceiling counts.
 //
-//	clean, 5-month history   69-230MB   ->  191-828MB
-//	poisoned, clamped here   1.0-1.4GB  ->  1.2-1.5GB
-//	poisoned, unclamped      10.6GB and climbing; never paints a frame
+// Since #528 no view builds a canvas wider than the viewport, so the cost this
+// ceiling was originally sized around — the usage line chart at ~70KB resident
+// per column — is gone. In the usage view the dense bucket arrays are not a
+// factor either: loadRemainingSeries returns raw UtilizationPoints and never
+// calls IOTokenBuckets / CostBuckets. What is left is essentially ONE term, the
+// full-canvas x-label row (renderXLabels + synthLabelStarts): refreshChart
+// builds it once per refresh, and every windowed render then ansi.Cuts it, so
+// the ceiling is felt per scroll keypress and per animation frame as well.
+// Isolated, that row costs 2.4ms / 1.7MB at 50,000 columns and 5.1ms / 3.5MB at
+// 105,120 — and with it reused rather than rebuilt, refresh cost stops growing
+// with width almost entirely (+0.4% B/op from 20,000 to 50,000). Windowing it
+// is therefore the one change that would let this ceiling rise.
 //
-// Raising it to 35_000 to buy a full year at 15m was measured too, and costs
-// ~2.5GB on the usage view — past what a backstop should ever hold. (Spread
-// within a row is GC timing, not load.)
+// Measured on a 3-year seeded cache (67,299 messages over 1,095 days), usage
+// view @ 15m, Apple M1 Max. RSS is at boot → after scrolling, zooming and
+// cycling all three views, three runs each; refresh is
+// BenchmarkRefreshChartRemaining at that width, benchstat median of 10:
 //
-// What it covers per zoom: ~208 days at 15m, ~2.3 years at 1h, ~4.6 years at
+//	 20,000 columns   47-48MB -> 63-67MB   refresh  4.9ms   5.5MiB/op
+//	 50,000 columns   48MB    -> 64MB      refresh  7.2ms   6.5MiB/op
+//	105,120 columns   48MB    -> 64-66MB   refresh 12.8ms   8.2MiB/op
+//
+// Chosen as the largest candidate within a 400MB steady-RSS / 10ms-per-refresh
+// budget, that budget being read on the machine above — a slower one scales
+// these times up, so treat 50,000 as the ceiling for a fast laptop rather than
+// a universal constant. Memory no longer separates the candidates at all;
+// refresh time does,
+// because a refresh runs on every watcher event and every now-tick. 105,120
+// (three years of 15m columns) breaks that budget by ~28%. Roughly 3ms of its
+// 12.8ms comes from the benchmark's one-message-per-column table rather than
+// from the canvas width — over a two-row table the width alone costs 9.8ms,
+// which would squeak under the line — but D5's rule is stated on
+// BenchmarkRefreshChartRemaining, and a three-year cache really is that full.
+// Subtract the label row (above) instead and 105,120 lands near 7.7ms, so this
+// ceiling is gated on that optimisation rather than on anything fundamental.
+//
+// What it covers per zoom: ~520 days at 15m, ~5.7 years at 1h, ~11.4 years at
 // 24h.
 //
 // Be honest about who this touches: 15m is the DEFAULT zoom on launch
-// (model.go, zoomIdx 0), so a user with more than ~208 days of history sees the
-// left edge of their default view clipped — with perfectly clean data and no
-// bad row anywhere.
-//
-// And the clip is not equally deserved across views. On the usage line chart
-// that span really is unaffordable (~2.5GB at a year of 15m columns). On the
-// cost and output BAR views the same span costs ~78MB and draws perfectly well:
-// they are clipped as collateral, because refreshChart computes ONE axis per
-// pass — lastChartFrom, lastCanvasW and the scroll anchor are per-Model, not
-// per-unit — and that single axis has to be sized for the most expensive view.
-//
-// Budgeting per unit is the obvious improvement, and it is reachable: unitIdx is
-// known at the call site, and the unit-toggle spring already sizes its arrays to
-// max(old, new), so units of differing length would not break the animation. The
-// cost is that the axis extent would then change under `u`, which the
-// scroll-anchor logic has to learn. Deliberately left to #528, which is what
-// makes the line chart affordable and so removes the trade rather than
-// re-balancing it.
-//
-// Either way nothing becomes unreachable: the older data stays on the 1h and
-// 24h axes, which is where a span that long is legible anyway.
-//
-// The per-column render cost is itself a scaling problem, and no bad data is
-// needed to hit it — a year of 15m columns on the usage view costs ~2.5GB on
-// its own. That is #528, not what this ceiling is for — but it is why the
-// ceiling sits as low as it does, and why it clips the default view. Bringing
-// the per-column cost down is what would let this be raised.
-const maxChartColumns = 20_000
+// (model.go, zoomIdx 0), so a user with more than ~520 days of history still
+// sees the left edge of their default view clipped, with perfectly clean data
+// and no bad row anywhere. (Until #528 that happened at ~208 days.) Nothing
+// becomes unreachable: the older data stays on the 1h and 24h axes, which is
+// where a span that long is legible anyway.
+const maxChartColumns = 50_000
 
 // clampChartFrom walks `from` forward, when needed, so the canvas for
 // [from, to) at this zoom stays within maxChartColumns. Returns `from`
@@ -1321,6 +1308,27 @@ func crossfadeLabelRow(snap zoomAnimSnapshot, newZoom ZoomLevel, chartW int, r f
 	}
 }
 
+// dotAlignedEnd returns the end of the x-range to hand ntcharts so that one
+// chart column is exactly two braille dots wide. See buildLineChart for why
+// that matters (#528).
+//
+// Written as d - d/(2w) rather than the equivalent d*(2w-1)/(2w): the latter
+// multiplies nanoseconds by 2w-1 before dividing, and the window grows with
+// the terminal. At the 24h zoom a column is a day/12, so a 1,135-column
+// terminal spans ~94 days and the product passes 2^63. Nothing panics when it
+// wraps, which is what makes it dangerous — the result either lands before
+// `from`, where ntcharts' SetViewXRange silently no-ops (it guards with
+// `if vMin < vMax`) and the dot alignment is lost with no error, or lands
+// inside the window, where a few hours of data are stretched across the full
+// width under a label row that still says weeks. Dividing first cannot
+// overflow, since the dividend only shrinks.
+func dotAlignedEnd(from, to time.Time, chartW int) time.Time {
+	if chartW <= 0 || !to.After(from) {
+		return to
+	}
+	return to.Add(-(to.Sub(from) / time.Duration(2*chartW)))
+}
+
 // buildLineChart renders two remaining-quota series (5h green, 7d
 // purple) as a dotted braille trail on a timeserieslinechart canvas.
 // Time values are mapped natively by ntcharts via SetViewTimeRange.
@@ -1358,6 +1366,36 @@ func buildLineChart(pts5h, pts7d []cache.UtilizationPoint,
 		timeserieslinechart.WithYRange(0, 1.0),
 		timeserieslinechart.WithTimeRange(from, to),
 	)
+	// One column must be exactly 2 braille dots, and ntcharts does not give us
+	// that for free. Its BrailleGrid spreads the range over gWidth-1 = 2w-1 dot
+	// INTERVALS although the grid holds 2w dots, so a column works out to
+	// 2 - 1/w dots. The error is invisible in a static frame but not while
+	// scrolling: a vertex whose sub-dot position crosses a rounding boundary
+	// moves one dot where its neighbours move two, and the line re-rasters
+	// under the cursor instead of translating (#528; before this, a 15m drag
+	// redrew on roughly every second keypress). Handing ntcharts a range one
+	// dot shorter makes its scale exactly 2w/(to-from) — i.e. 2 dots per column.
+	//
+	// The cost is at the right terminus: a point at exactly `to` now maps to dot
+	// 2w, which PatternDotsGrid.Set drops. The last cell still paints, because
+	// DrawBrailleDataSets draws SEGMENTS and the segment into that point inks
+	// every dot up to 2w-1 (TestBuildLineChart_PaintsToTheRightEdge pins both
+	// the real series and the zero-samples baseline, which is two synthetic
+	// points at from and to).
+	to = dotAlignedEnd(from, to, chartW)
+
+	// The x-range is [from, to] and must stay that. timeserieslinechart.New
+	// turns auto-ranging on unconditionally (linechart.WithAutoXYRange) and
+	// WithTimeRange does not turn it off, so each Push of a point outside the
+	// range silently WIDENS the view (linechart.AutoAdjustRange). Windowed
+	// callers push such points on purpose — slicePointsInRange pads one per
+	// side for edge continuity — so a frame rendered slightly more than its
+	// window, by an amount that depended on where the window sat relative to
+	// the samples: the x-scale pulsed while scrolling and the plot slid off
+	// the label row, which assumes one bucket per column (#528). With the
+	// range pinned the padded segments simply clip at the grid edge
+	// (PatternDotsGrid.Set bounds-checks).
+	tslc.AutoMinX, tslc.AutoMaxX = false, false
 	tslc.SetXStep(0)
 	tslc.SetYStep(0)
 	// must come after Set{X,Y}Step — SetViewTimeRange triggers rescaleData
