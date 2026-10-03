@@ -3,6 +3,44 @@
 All notable changes to ccpulse are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.13.0] — 2026-10-03
+
+### Added
+- Pricing snapshot `2026-09-28` with Claude Sonnet 5.5 at $2 / $10 / $0.20 /
+  $2.50 / $4 per MTok, the same as Sonnet 5, with the standard 0.1× cache
+  multiplier. Sonnet 5.5 turns previously priced at $0 and were flagged
+  `pricing_unknown`; the new snapshot changes the recost fingerprint, so
+  cached rows are repriced once on the next launch with no manual step
+  (#551, #552)
+- `doctor` reports how many assistant lines the parser refused in
+  transcripts modified over the last 7 days
+  (`ℹ transcript admission (7d): 0 of 19799 assistant lines refused`). It
+  turns ✗ once refusals reach 1% with at least 5 lines refused, which is
+  what a Claude Code transcript-format change that ccpulse no longer
+  understands looks like: totals quietly under-counted. The line prints
+  counts only, never paths or content (#532, #553)
+
+### Changed
+- An assistant transcript line counts as billed spend only when it carries
+  a transcript envelope: a non-empty `sessionId` and `uuid`, checked before
+  the timestamp guard. Before, `"type":"assistant"` alone was enough, so a
+  hand-written fixture or another tool's JSONL under `projects_root` was
+  counted as real spend — the file behind #527 was one. Refused lines go to
+  `parse-errors.log` naming the missing key, and an assistant line that
+  fails to decode (e.g. a usage field changing JSON type) is reported as
+  such instead of as a generic JSON error. Existing cache rows are
+  untouched; `ccpulse index --rebuild` applies the rule to already-indexed
+  data (#532, #553)
+
+### Internal
+- Tests: embedded pricing snapshots are checked for filename/version drift,
+  unknown fields and duplicate keys, and snapshot resolution is pinned to
+  the UTC date under a non-UTC local zone (#551, #552). A scrubbed
+  real-session transcript fixture pins the envelope rule, and the ingest
+  tests assert how many rows landed rather than just `err == nil` (#532,
+  #553)
+- Bump `anthropics/claude-code-action` 1.0.228 → 1.0.234 (#550)
+
 ## [0.12.0] — 2026-09-22
 
 ### Added
