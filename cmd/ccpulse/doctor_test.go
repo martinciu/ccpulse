@@ -241,4 +241,10 @@ func TestDoctor_SurfacesLockHeld(t *testing.T) {
 	if !bytes.Contains([]byte(out), []byte("usage API backoff:")) {
 		t.Fatalf("doctor output missing the usage API backoff line:\n%s", out)
 	}
+	// Same for the transcript-admission line (#532): it is what makes the
+	// stricter admission rule observable, and reportAdmission's table test
+	// cannot notice runDoctor no longer calling it.
+	if !bytes.Contains([]byte(out), []byte("transcript admission (7d):")) {
+		t.Fatalf("doctor output missing the transcript admission line:\n%s", out)
+	}
 }
