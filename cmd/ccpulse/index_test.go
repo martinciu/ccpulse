@@ -15,7 +15,7 @@ func TestIndexRebuildSmoke(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(projects, "-fake-slug"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	jsonl := []byte(`{"type":"assistant","message":{"role":"assistant","model":"claude-opus-4-7","usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}},"sessionId":"s","timestamp":"2026-05-09T10:00:00.000Z"}` + "\n")
+	jsonl := []byte(`{"type":"assistant","uuid":"u1","message":{"role":"assistant","model":"claude-opus-4-7","usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}},"sessionId":"s","timestamp":"2026-05-09T10:00:00.000Z"}` + "\n")
 	if err := os.WriteFile(filepath.Join(projects, "-fake-slug", "x.jsonl"), jsonl, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -33,6 +33,9 @@ func TestIndexRebuildSmoke(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Join(cacheDir, "state.db")); err != nil {
 		t.Fatalf("cache db not created: %v", err)
+	}
+	if got := countMessages(t, filepath.Join(cacheDir, "state.db")); got != 1 {
+		t.Fatalf("messages rows = %d, want 1", got)
 	}
 }
 

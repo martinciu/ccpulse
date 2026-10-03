@@ -194,8 +194,8 @@ func TestParse_CapturesMessageID(t *testing.T) {
 }
 
 func TestParseCapturesEffort(t *testing.T) {
-	input := `{"type":"assistant","sessionId":"s1","timestamp":"2026-07-21T10:00:00.000Z","effort":"xhigh","message":{"id":"m1","role":"assistant","model":"claude-fable-5","usage":{"input_tokens":1,"output_tokens":2}}}` + "\n" +
-		`{"type":"assistant","sessionId":"s1","timestamp":"2026-07-21T10:00:01.000Z","message":{"id":"m2","role":"assistant","model":"claude-fable-5","usage":{"input_tokens":1,"output_tokens":2}}}` + "\n"
+	input := `{"type":"assistant","uuid":"u1","sessionId":"s1","timestamp":"2026-07-21T10:00:00.000Z","effort":"xhigh","message":{"id":"m1","role":"assistant","model":"claude-fable-5","usage":{"input_tokens":1,"output_tokens":2}}}` + "\n" +
+		`{"type":"assistant","uuid":"u2","sessionId":"s1","timestamp":"2026-07-21T10:00:01.000Z","message":{"id":"m2","role":"assistant","model":"claude-fable-5","usage":{"input_tokens":1,"output_tokens":2}}}` + "\n"
 
 	msgs, err := Parse(strings.NewReader(input), "test-slug")
 	if err != nil {
@@ -304,7 +304,7 @@ func TestIterationsInformativePredicate(t *testing.T) {
 			if tt.iterations != "" {
 				iterField = `,"iterations":` + tt.iterations
 			}
-			line := fmt.Sprintf(`{"type":"assistant","sessionId":"s1","timestamp":"2026-07-21T10:00:00.000Z","message":{"id":"m1","role":"assistant","model":"claude-fable-5","usage":{"input_tokens":2,"output_tokens":300,"cache_read_input_tokens":20000,"cache_creation_input_tokens":400,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":400}%s}}}`, iterField) + "\n"
+			line := fmt.Sprintf(`{"type":"assistant","uuid":"u3","sessionId":"s1","timestamp":"2026-07-21T10:00:00.000Z","message":{"id":"m1","role":"assistant","model":"claude-fable-5","usage":{"input_tokens":2,"output_tokens":300,"cache_read_input_tokens":20000,"cache_creation_input_tokens":400,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":400}%s}}}`, iterField) + "\n"
 
 			msgs, err := Parse(strings.NewReader(line), "test-slug")
 			if err != nil {
@@ -371,7 +371,7 @@ func TestIterationsOversizedKeptWithoutExpansion(t *testing.T) {
 		t.Fatalf("fixture too small: len=%d, want > %d", len(its), maxIterationsProbe)
 	}
 
-	line := fmt.Sprintf(`{"type":"assistant","sessionId":"s1","timestamp":"2026-07-21T10:00:00.000Z","message":{"id":"m1","role":"assistant","model":"claude-fable-5","usage":{"input_tokens":2,"output_tokens":300,"cache_read_input_tokens":20000,"cache_creation_input_tokens":400,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":400},"iterations":%s}}}`, its) + "\n"
+	line := fmt.Sprintf(`{"type":"assistant","uuid":"u4","sessionId":"s1","timestamp":"2026-07-21T10:00:00.000Z","message":{"id":"m1","role":"assistant","model":"claude-fable-5","usage":{"input_tokens":2,"output_tokens":300,"cache_read_input_tokens":20000,"cache_creation_input_tokens":400,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":400},"iterations":%s}}}`, its) + "\n"
 
 	msgs, err := Parse(strings.NewReader(line), "test-slug")
 	if err != nil {
@@ -520,7 +520,7 @@ func TestIterationsExpansion(t *testing.T) {
 			if tt.iterations != "" {
 				iterField = `,"iterations":` + tt.iterations
 			}
-			line := fmt.Sprintf(`{"type":"assistant","sessionId":"s1","timestamp":"2026-07-21T10:00:00.000Z","effort":"high","message":{"id":"m1","role":"assistant","model":"claude-fable-5","usage":{"input_tokens":2,"output_tokens":300,"cache_read_input_tokens":20000,"cache_creation_input_tokens":400,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":400}%s}}}`, iterField) + "\n"
+			line := fmt.Sprintf(`{"type":"assistant","uuid":"u5","sessionId":"s1","timestamp":"2026-07-21T10:00:00.000Z","effort":"high","message":{"id":"m1","role":"assistant","model":"claude-fable-5","usage":{"input_tokens":2,"output_tokens":300,"cache_read_input_tokens":20000,"cache_creation_input_tokens":400,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":400}%s}}}`, iterField) + "\n"
 
 			msgs, err := Parse(strings.NewReader(line), "test-slug")
 			if err != nil {
@@ -563,7 +563,7 @@ const noMessageIDIterations = `[{"input_tokens":2,"output_tokens":434,"type":"me
 // when the line has no message.id — a bare ":it:<idx>" key would collide
 // across turns in a session.
 func TestIterationsExpansion_NoMessageID(t *testing.T) {
-	line := `{"type":"assistant","sessionId":"s1","timestamp":"2026-07-21T10:00:00.000Z","message":{"role":"assistant","model":"claude-fable-5","usage":{"input_tokens":2,"output_tokens":300,"iterations":` + noMessageIDIterations + `}}}` + "\n"
+	line := `{"type":"assistant","uuid":"u6","sessionId":"s1","timestamp":"2026-07-21T10:00:00.000Z","message":{"role":"assistant","model":"claude-fable-5","usage":{"input_tokens":2,"output_tokens":300,"iterations":` + noMessageIDIterations + `}}}` + "\n"
 
 	msgs, err := Parse(strings.NewReader(line), "test-slug")
 	if err != nil {

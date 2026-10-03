@@ -25,34 +25,34 @@ var zeroTSLines = []struct {
 }{
 	{
 		name:         "timestamp key absent",
-		line:         `{"type":"assistant","message":{"role":"assistant","model":"claude-opus-5","usage":{"input_tokens":1,"output_tokens":2}}}`,
+		line:         `{"type":"assistant","sessionId":"s1","uuid":"u1","message":{"role":"assistant","model":"claude-opus-5","usage":{"input_tokens":1,"output_tokens":2}}}`,
 		wantSentinel: ErrZeroTimestamp,
 	},
 	{
 		name:         "timestamp spelled as year 1",
-		line:         `{"type":"assistant","timestamp":"0001-01-01T00:00:00.000Z","message":{"role":"assistant","model":"claude-opus-5","usage":{"input_tokens":1,"output_tokens":2}}}`,
+		line:         `{"type":"assistant","sessionId":"s1","uuid":"u2","timestamp":"0001-01-01T00:00:00.000Z","message":{"role":"assistant","model":"claude-opus-5","usage":{"input_tokens":1,"output_tokens":2}}}`,
 		wantSentinel: ErrZeroTimestamp,
 	},
 	{
 		// Year 1, but not THE zero instant: a non-UTC offset makes IsZero()
 		// false. Stored silently before the guard was widened to Year() <= 1.
 		name:         "year 1 in a non-UTC offset",
-		line:         `{"type":"assistant","timestamp":"0001-01-01T00:00:00+01:00","message":{"role":"assistant","model":"claude-opus-5","usage":{"input_tokens":1,"output_tokens":2}}}`,
+		line:         `{"type":"assistant","sessionId":"s1","uuid":"u3","timestamp":"0001-01-01T00:00:00+01:00","message":{"role":"assistant","model":"claude-opus-5","usage":{"input_tokens":1,"output_tokens":2}}}`,
 		wantSentinel: ErrZeroTimestamp,
 	},
 	{
 		// Likewise year 1, but not 1 January.
 		name:         "year 1 on a later day",
-		line:         `{"type":"assistant","timestamp":"0001-01-02T00:00:00Z","message":{"role":"assistant","model":"claude-opus-5","usage":{"input_tokens":1,"output_tokens":2}}}`,
+		line:         `{"type":"assistant","sessionId":"s1","uuid":"u4","timestamp":"0001-01-02T00:00:00Z","message":{"role":"assistant","model":"claude-opus-5","usage":{"input_tokens":1,"output_tokens":2}}}`,
 		wantSentinel: ErrZeroTimestamp,
 	},
 	{
 		name: "timestamp empty string",
-		line: `{"type":"assistant","timestamp":"","message":{"role":"assistant","model":"claude-opus-5","usage":{"input_tokens":1,"output_tokens":2}}}`,
+		line: `{"type":"assistant","sessionId":"s1","uuid":"u5","timestamp":"","message":{"role":"assistant","model":"claude-opus-5","usage":{"input_tokens":1,"output_tokens":2}}}`,
 	},
 }
 
-const goodLine = `{"type":"assistant","timestamp":"2026-05-09T10:00:00.000Z","sessionId":"s1","message":{"id":"m1","role":"assistant","model":"claude-opus-5","usage":{"input_tokens":10,"output_tokens":20}}}`
+const goodLine = `{"type":"assistant","uuid":"u6","timestamp":"2026-05-09T10:00:00.000Z","sessionId":"s1","message":{"id":"m1","role":"assistant","model":"claude-opus-5","usage":{"input_tokens":10,"output_tokens":20}}}`
 
 func TestParseWithErrors_ZeroTimestampSkipped(t *testing.T) {
 	t.Parallel()
@@ -162,7 +162,7 @@ func TestParseWithErrors_OldButValidTimestampKept(t *testing.T) {
 		t.Run(ts, func(t *testing.T) {
 			t.Parallel()
 
-			line := `{"type":"assistant","timestamp":"` + ts + `","sessionId":"s1","message":{"id":"m1","role":"assistant","model":"claude-opus-5","usage":{"output_tokens":1}}}`
+			line := `{"type":"assistant","uuid":"u7","timestamp":"` + ts + `","sessionId":"s1","message":{"id":"m1","role":"assistant","model":"claude-opus-5","usage":{"output_tokens":1}}}`
 			msgs, errs, err := ParseWithErrors(strings.NewReader(line+"\n"), "slug")
 			if err != nil {
 				t.Fatalf("ParseWithErrors returned err = %v, want nil", err)

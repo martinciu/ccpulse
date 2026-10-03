@@ -245,7 +245,7 @@ func writeProjectsFixture(t *testing.T) string {
 	if err := os.MkdirAll(projDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	line := `{"type":"assistant","sessionId":"s1",` +
+	line := `{"type":"assistant","uuid":"u1","sessionId":"s1",` +
 		`"timestamp":"2026-05-09T10:00:00.000Z","cwd":"/Users/x/foo","gitBranch":"main",` +
 		`"message":{"role":"assistant","model":"claude-opus-4-7","usage":` +
 		`{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,` +
