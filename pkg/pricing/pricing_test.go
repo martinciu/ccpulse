@@ -295,6 +295,8 @@ func TestHistory_TableAt(t *testing.T) {
 		{"fable 5.1 snapshot -> 2026-09-02", mustTime("2026-09-02T00:00:00Z"), "2026-09-02"},
 		{"last second before 2026-09-22 -> 2026-09-02", mustTime("2026-09-21T23:59:59Z"), "2026-09-02"},
 		{"opus 5.5 snapshot -> 2026-09-22", mustTime("2026-09-22T00:00:00Z"), "2026-09-22"},
+		{"last second before 2026-09-28 -> 2026-09-22", mustTime("2026-09-27T23:59:59Z"), "2026-09-22"},
+		{"sonnet 5.5 snapshot -> 2026-09-28", mustTime("2026-09-28T00:00:00Z"), "2026-09-28"},
 		{"after latest -> latest", mustTime("2099-01-01T00:00:00Z"), latest},
 	}
 	for _, c := range cases {
@@ -772,7 +774,7 @@ func TestFable51Resolution(t *testing.T) {
 	}{
 		{"fall-forward before snapshot", time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC), "claude-fable-5-1", Mtok, 0, "2026-09-02", 10.00},
 		{"exact snapshot date", time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC), "claude-fable-5-1", Mtok, 0, "2026-09-02", 10.00},
-		{"after snapshot", time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC), "claude-fable-5-1", Mtok, 0, "2026-09-22", 10.00},
+		{"after snapshot", time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC), "claude-fable-5-1", Mtok, 0, "2026-09-28", 10.00},
 		{"fable 5.1 cache read at 0.025x", time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC), "claude-fable-5-1", 0, Mtok, "2026-09-02", 0.25},
 		{"mythos 5.1 cache read at 0.025x", time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC), "claude-mythos-5-1", 0, Mtok, "2026-09-02", 0.25},
 		{"fable 5 cache read stays 0.1x", time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC), "claude-fable-5", 0, Mtok, "2026-09-02", 1.00},
@@ -862,10 +864,92 @@ func TestOpus55Resolution(t *testing.T) {
 	}{
 		{"fall-forward before snapshot", time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC), "claude-opus-5-5", Mtok, 0, "2026-09-22", 4.00},
 		{"exact snapshot date", time.Date(2026, 9, 22, 0, 0, 0, 0, time.UTC), "claude-opus-5-5", Mtok, 0, "2026-09-22", 4.00},
-		{"after snapshot", time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC), "claude-opus-5-5", Mtok, 0, "2026-09-22", 4.00},
+		{"after snapshot", time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC), "claude-opus-5-5", Mtok, 0, "2026-09-28", 4.00},
 		{"opus 5.5 cache read at 0.05x", time.Date(2026, 9, 22, 0, 0, 0, 0, time.UTC), "claude-opus-5-5", 0, Mtok, "2026-09-22", 0.20},
 		{"opus 5 cache read stays 0.1x", time.Date(2026, 9, 22, 0, 0, 0, 0, time.UTC), "claude-opus-5", 0, Mtok, "2026-09-22", 0.50},
 		{"local CEST midnight is still 2026-09-21 UTC", time.Date(2026, 9, 22, 1, 30, 0, 0, cest), "claude-opus-5", Mtok, 0, "2026-09-02", 5.00},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := parse.Message{
+				Timestamp:       tc.ts,
+				Model:           tc.model,
+				InputTokens:     tc.input,
+				CacheReadTokens: tc.cacheRead,
+			}
+			cost, version, unknown := h.CostFor(m)
+			if unknown {
+				t.Fatal("unknown = true, want false")
+			}
+			if version != tc.wantVersion {
+				t.Errorf("version = %q, want %q", version, tc.wantVersion)
+			}
+			if cost != tc.wantCost {
+				t.Errorf("cost = %v, want %v", cost, tc.wantCost)
+			}
+		})
+	}
+}
+
+// TestSonnet55Snapshots pins the Claude Sonnet 5.5 rates introduced by the
+// 2026-09-28 snapshot (issue #551). The cache-read rate is the standard 0.1x of
+// base input ($0.20/MTok): the pricing page carries no footnote for Sonnet 5.5,
+// unlike Fable 5.1 and Opus 5.5. There is no previous-model guard because the
+// rates equal Sonnet 5's, and TestHistory_CarryForward_AllSnapshots already
+// guards every carried rate.
+func TestSonnet55Snapshots(t *testing.T) {
+	h, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	tab := h.TableAt(mustParseDate(t, "2026-09-28"))
+	if tab.Version != "2026-09-28" {
+		t.Fatalf("TableAt(2026-09-28).Version = %q, want 2026-09-28", tab.Version)
+	}
+	want := ModelRate{
+		InputPerMtok:        2.00,
+		OutputPerMtok:       10.00,
+		CacheReadPerMtok:    0.20,
+		CacheWrite5mPerMtok: 2.50,
+		CacheWrite1hPerMtok: 4.00,
+	}
+	got, ok := tab.Models["claude-sonnet-5-5"]
+	if !ok {
+		t.Fatal("Models[claude-sonnet-5-5] missing from 2026-09-28")
+	}
+	if got != want {
+		t.Errorf("claude-sonnet-5-5 = %+v, want %+v", got, want)
+	}
+}
+
+// TestSonnet55Resolution pins the pricing_version stamped and the resolved
+// cost for Claude Sonnet 5.5 around the 2026-09-28 snapshot. The fall-forward
+// row is the rescue path for Sonnet 5.5 rows ingested before the snapshot
+// existed (issue #368 semantics). The cache-read row pins the standard 0.1x
+// rate. The CEST row pins that the snapshot boundary is a UTC date: 01:30 local
+// on 2026-09-28 is still 2026-09-27 UTC, so Sonnet 5 resolves to the previous
+// table.
+func TestSonnet55Resolution(t *testing.T) {
+	h, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	const Mtok = 1_000_000
+	cest := time.FixedZone("CEST", 2*60*60)
+	cases := []struct {
+		name        string
+		ts          time.Time
+		model       string
+		input       int64
+		cacheRead   int64
+		wantVersion string
+		wantCost    float64
+	}{
+		{"fall-forward before snapshot", time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC), "claude-sonnet-5-5", Mtok, 0, "2026-09-28", 2.00},
+		{"exact snapshot date", time.Date(2026, 9, 28, 0, 0, 0, 0, time.UTC), "claude-sonnet-5-5", Mtok, 0, "2026-09-28", 2.00},
+		{"after snapshot", time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC), "claude-sonnet-5-5", Mtok, 0, "2026-09-28", 2.00},
+		{"sonnet 5.5 cache read at standard 0.1x", time.Date(2026, 9, 28, 0, 0, 0, 0, time.UTC), "claude-sonnet-5-5", 0, Mtok, "2026-09-28", 0.20},
+		{"local CEST midnight is still 2026-09-27 UTC", time.Date(2026, 9, 28, 1, 30, 0, 0, cest), "claude-sonnet-5", Mtok, 0, "2026-09-22", 2.00},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
