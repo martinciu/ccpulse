@@ -3,7 +3,6 @@ package parse
 import (
 	"bufio"
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -62,8 +61,8 @@ func ParseFromOffsetWithErrors(path, slug string, startOffset int64, startLine i
 			line++
 			raw := sc.Bytes()
 			off += int64(len(raw)) + 1
-			var r rawLine
-			if err := json.Unmarshal(raw, &r); err != nil {
+			r, err := decodeLine(raw)
+			if err != nil {
 				errs = append(errs, ParseError{Line: line, Err: err})
 				continue
 			}

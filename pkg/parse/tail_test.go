@@ -24,7 +24,7 @@ func withScannerMaxBytes(t *testing.T) {
 // assistant message, with the given filler appended inside a
 // "padding" field so callers can inflate it to any size.
 func validAssistantLine(filler string) string {
-	return `{"type":"assistant","message":{"role":"assistant","model":"claude-opus-4-7","usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}},"sessionId":"s","timestamp":"2026-05-09T10:00:00.000Z","padding":"` + filler + `"}` + "\n"
+	return `{"type":"assistant","uuid":"u1","message":{"role":"assistant","model":"claude-opus-4-7","usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}},"sessionId":"s","timestamp":"2026-05-09T10:00:00.000Z","padding":"` + filler + `"}` + "\n"
 }
 
 func TestSkipPastNewline_FindsTerminator(t *testing.T) {
@@ -633,7 +633,7 @@ func TestParseFromOffsetWithErrors_PartialTailAfterOversized(t *testing.T) {
 func TestParseFromOffset(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "t.jsonl")
-	one := `{"type":"assistant","message":{"role":"assistant","model":"claude-opus-4-7","usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}},"sessionId":"s","timestamp":"2026-05-09T10:00:00.000Z"}` + "\n"
+	one := `{"type":"assistant","uuid":"u2","message":{"role":"assistant","model":"claude-opus-4-7","usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}},"sessionId":"s","timestamp":"2026-05-09T10:00:00.000Z"}` + "\n"
 	if err := os.WriteFile(p, []byte(one+one), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -660,7 +660,7 @@ func TestParseFromOffset(t *testing.T) {
 // into ParseWithErrors would pass every reader-based test yet never produce
 // an attempt row from real JSONL.
 func TestParseFromOffsetWithErrors_ExpandsIterations(t *testing.T) {
-	line := `{"type":"assistant","sessionId":"s1","timestamp":"2026-07-21T10:00:00.000Z","message":{"id":"m1","role":"assistant","model":"claude-fable-5","usage":{"input_tokens":2,"output_tokens":300,"iterations":[{"input_tokens":2,"output_tokens":434,"type":"message","model":"claude-opus-4-8"},{"input_tokens":2,"output_tokens":300,"type":"fallback_message","model":"claude-fable-5"}]}}}` + "\n"
+	line := `{"type":"assistant","uuid":"u3","sessionId":"s1","timestamp":"2026-07-21T10:00:00.000Z","message":{"id":"m1","role":"assistant","model":"claude-fable-5","usage":{"input_tokens":2,"output_tokens":300,"iterations":[{"input_tokens":2,"output_tokens":434,"type":"message","model":"claude-opus-4-8"},{"input_tokens":2,"output_tokens":300,"type":"fallback_message","model":"claude-fable-5"}]}}}` + "\n"
 	path := filepath.Join(t.TempDir(), "t.jsonl")
 	if err := os.WriteFile(path, []byte(line), 0o600); err != nil {
 		t.Fatal(err)

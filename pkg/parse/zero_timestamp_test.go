@@ -11,48 +11,56 @@ import (
 // zeroTSLines are the assistant-line shapes that must never become a stored
 // message because they carry no placeable timestamp (#527).
 //
+// Every entry carries a transcript envelope (sessionId + uuid), so each one
+// exercises the timestamp guard rather than the envelope check ahead of it.
+//
 // They are refused at two different depths, which is why wantSentinel varies:
 // an ABSENT or year-1 `timestamp` decodes cleanly to the zero time.Time and is
 // caught by assistantMessages, whereas an EMPTY string fails inside
-// time.Time's own UnmarshalJSON, so the line is already rejected as a malformed
-// JSON line before the guard is reached. Both outcomes are correct and both are
-// reported; the invariant this table pins is that none of them yields a
-// Message, and none of them passes silently.
+// time.Time's own UnmarshalJSON, so the line is refused at decode as an
+// undecodable assistant line (ErrUndecodableAssistant) before the guard is
+// reached. Both outcomes are correct, reported and classifiable; the invariant
+// this table pins is that none of them yields a Message, and none of them
+// passes silently.
 var zeroTSLines = []struct {
 	name         string
 	line         string
-	wantSentinel error // nil: rejected earlier, at JSON decode
+	wantSentinel error
 }{
 	{
 		name:         "timestamp key absent",
-		line:         `{"type":"assistant","message":{"role":"assistant","model":"claude-opus-5","usage":{"input_tokens":1,"output_tokens":2}}}`,
+		line:         `{"type":"assistant","sessionId":"s1","uuid":"u1","message":{"role":"assistant","model":"claude-opus-5","usage":{"input_tokens":1,"output_tokens":2}}}`,
 		wantSentinel: ErrZeroTimestamp,
 	},
 	{
 		name:         "timestamp spelled as year 1",
-		line:         `{"type":"assistant","timestamp":"0001-01-01T00:00:00.000Z","message":{"role":"assistant","model":"claude-opus-5","usage":{"input_tokens":1,"output_tokens":2}}}`,
+		line:         `{"type":"assistant","sessionId":"s1","uuid":"u2","timestamp":"0001-01-01T00:00:00.000Z","message":{"role":"assistant","model":"claude-opus-5","usage":{"input_tokens":1,"output_tokens":2}}}`,
 		wantSentinel: ErrZeroTimestamp,
 	},
 	{
 		// Year 1, but not THE zero instant: a non-UTC offset makes IsZero()
 		// false. Stored silently before the guard was widened to Year() <= 1.
 		name:         "year 1 in a non-UTC offset",
-		line:         `{"type":"assistant","timestamp":"0001-01-01T00:00:00+01:00","message":{"role":"assistant","model":"claude-opus-5","usage":{"input_tokens":1,"output_tokens":2}}}`,
+		line:         `{"type":"assistant","sessionId":"s1","uuid":"u3","timestamp":"0001-01-01T00:00:00+01:00","message":{"role":"assistant","model":"claude-opus-5","usage":{"input_tokens":1,"output_tokens":2}}}`,
 		wantSentinel: ErrZeroTimestamp,
 	},
 	{
 		// Likewise year 1, but not 1 January.
 		name:         "year 1 on a later day",
-		line:         `{"type":"assistant","timestamp":"0001-01-02T00:00:00Z","message":{"role":"assistant","model":"claude-opus-5","usage":{"input_tokens":1,"output_tokens":2}}}`,
+		line:         `{"type":"assistant","sessionId":"s1","uuid":"u4","timestamp":"0001-01-02T00:00:00Z","message":{"role":"assistant","model":"claude-opus-5","usage":{"input_tokens":1,"output_tokens":2}}}`,
 		wantSentinel: ErrZeroTimestamp,
 	},
 	{
-		name: "timestamp empty string",
-		line: `{"type":"assistant","timestamp":"","message":{"role":"assistant","model":"claude-opus-5","usage":{"input_tokens":1,"output_tokens":2}}}`,
+		// Refused inside time.Time's UnmarshalJSON, so the whole-line decode
+		// fails; the line still says "assistant", so it is classified rather
+		// than lost as a generic decode error.
+		name:         "timestamp empty string",
+		line:         `{"type":"assistant","sessionId":"s1","uuid":"u5","timestamp":"","message":{"role":"assistant","model":"claude-opus-5","usage":{"input_tokens":1,"output_tokens":2}}}`,
+		wantSentinel: ErrUndecodableAssistant,
 	},
 }
 
-const goodLine = `{"type":"assistant","timestamp":"2026-05-09T10:00:00.000Z","sessionId":"s1","message":{"id":"m1","role":"assistant","model":"claude-opus-5","usage":{"input_tokens":10,"output_tokens":20}}}`
+const goodLine = `{"type":"assistant","uuid":"u6","timestamp":"2026-05-09T10:00:00.000Z","sessionId":"s1","message":{"id":"m1","role":"assistant","model":"claude-opus-5","usage":{"input_tokens":10,"output_tokens":20}}}`
 
 func TestParseWithErrors_ZeroTimestampSkipped(t *testing.T) {
 	t.Parallel()
@@ -71,7 +79,7 @@ func TestParseWithErrors_ZeroTimestampSkipped(t *testing.T) {
 			if len(errs) != 1 {
 				t.Fatalf("got %d parse errors, want 1 (the skip must be reported, not silent)", len(errs))
 			}
-			if tt.wantSentinel != nil && !errors.Is(errs[0].Err, tt.wantSentinel) {
+			if !errors.Is(errs[0].Err, tt.wantSentinel) {
 				t.Errorf("errs[0].Err = %v, want it to wrap %v", errs[0].Err, tt.wantSentinel)
 			}
 			if errs[0].Line != 1 {
@@ -162,7 +170,7 @@ func TestParseWithErrors_OldButValidTimestampKept(t *testing.T) {
 		t.Run(ts, func(t *testing.T) {
 			t.Parallel()
 
-			line := `{"type":"assistant","timestamp":"` + ts + `","sessionId":"s1","message":{"id":"m1","role":"assistant","model":"claude-opus-5","usage":{"output_tokens":1}}}`
+			line := `{"type":"assistant","uuid":"u7","timestamp":"` + ts + `","sessionId":"s1","message":{"id":"m1","role":"assistant","model":"claude-opus-5","usage":{"output_tokens":1}}}`
 			msgs, errs, err := ParseWithErrors(strings.NewReader(line+"\n"), "slug")
 			if err != nil {
 				t.Fatalf("ParseWithErrors returned err = %v, want nil", err)

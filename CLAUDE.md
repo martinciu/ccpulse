@@ -54,7 +54,7 @@ These env vars override `config.toml` at runtime — useful for testing against 
 | Package | Responsibility |
 |---|---|
 | `cmd/ccpulse` | Cobra CLI wiring: `runTUI`, `status`, `index`, `config`, `doctor`, `version` |
-| `pkg/parse` | JSONL transcript → `[]Message`; `ParseFromOffsetWithErrors` for incremental tail; expands informative `usage.iterations` into per-model attempt rows (`:it:` message-id suffix) |
+| `pkg/parse` | JSONL transcript → `[]Message`; `ParseFromOffsetWithErrors` for incremental tail; expands informative `usage.iterations` into per-model attempt rows (`:it:` message-id suffix); admits an assistant line only with a transcript envelope (non-empty `sessionId` + `uuid`, usable timestamp); refusals are `ParseError`s classified by sentinel, tallied per file by `ScanAdmission` for `doctor` |
 | `pkg/cache` | SQLite via `modernc.org/sqlite`; schema embedded in `schema.sql`; tracks file cursors (`files` table), per-message rows in `messages` (including `cwd` / `git_branch` from JSONL), and time-bucketed output-token aggregates (`OutputTokenBuckets`) |
 | `pkg/watcher` | fsnotify wrapper with 100 ms debounce; auto-subscribes new subdirectories |
 | `pkg/pricing` | Embeds `pricing.json`; `Table.CostFor(Message)` returns USD cost |

@@ -63,6 +63,14 @@ func TestBackfillRun_WalksFilesNewestFirstWithProgress(t *testing.T) {
 	if last.Done != first.Total {
 		t.Errorf("final Done = %d, want %d", last.Done, first.Total)
 	}
+
+	var rows int
+	if err := ing.Cache.DB().QueryRowContext(t.Context(), `SELECT count(*) FROM messages`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 4 {
+		t.Errorf("messages rows = %d, want 4 (sess + a + b + c)", rows)
+	}
 }
 
 func TestBackfillRun_NewestMtimeFirst(t *testing.T) {
@@ -118,6 +126,14 @@ func TestBackfillRun_NewestMtimeFirst(t *testing.T) {
 	}
 	if seen[0] != "c-new.jsonl" || seen[1] != "b-mid.jsonl" || seen[2] != "a-old.jsonl" {
 		t.Errorf("order = %v, want [c-new b-mid a-old]", seen)
+	}
+
+	var rows int
+	if err := ing.Cache.DB().QueryRowContext(t.Context(), `SELECT count(*) FROM messages`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 3 {
+		t.Errorf("messages rows = %d, want 3", rows)
 	}
 }
 

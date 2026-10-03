@@ -36,6 +36,7 @@ type Message struct {
 type rawLine struct {
 	Type      string    `json:"type"`
 	SessionID string    `json:"sessionId"`
+	UUID      string    `json:"uuid"` // admission only (ErrMissingEnvelope); never stored
 	Timestamp time.Time `json:"timestamp"`
 	Cwd       string    `json:"cwd"`
 	GitBranch string    `json:"gitBranch"`
@@ -79,9 +80,9 @@ var ErrOversizedLineSkipped = errors.New("oversized line skipped")
 // instant. Go decodes a MISSING timestamp to the zero time.Time, which is not a
 // point on any axis ccpulse draws — it is the absence of a timestamp, wearing a
 // number. (An EMPTY string is refused one level earlier, inside time.Time's own
-// UnmarshalJSON, so it arrives as a generic decode error rather than this
-// sentinel. Both outcomes keep the line out of the cache; only this one is
-// classifiable with errors.Is.)
+// UnmarshalJSON, so the line fails to decode and is reported as
+// ErrUndecodableAssistant instead of this sentinel. Both outcomes keep the line
+// out of the cache, and both are classifiable with errors.Is.)
 //
 // The test is Year() <= 1, not IsZero(): IsZero() compares against one exact
 // instant, so "0001-01-01T00:00:00+01:00" and "0001-01-02T00:00:00Z" — equally
@@ -95,6 +96,58 @@ var ErrOversizedLineSkipped = errors.New("oversized line skipped")
 // out of the cache entirely, and reporting it as a ParseError means it lands in
 // parse-errors.log instead of vanishing.
 var ErrZeroTimestamp = errors.New("assistant line has no usable timestamp")
+
+// ErrMissingEnvelope is the ParseError cause reported when an assistant line
+// lacks the transcript envelope every Claude Code turn carries: a non-empty
+// `sessionId` AND a non-empty `uuid`. Without it, `"type":"assistant"` alone
+// admitted any JSON under projects_root as billed spend — a hand-written
+// fixture, another tool's JSONL, a half-copied file. #527 was exactly that: a
+// synthetic file with no envelope at all, caught then only because it also had
+// no timestamp; the same file with a plausible timestamp would have been
+// stored as real usage (#532).
+//
+// Evidence for the rule: of 475,763 assistant lines in a full real corpus,
+// 475,761 carry both keys; the 2 that don't are the #527 fixture. The risk is
+// asymmetric — if Claude Code ever wrote a genuine turn without them, ccpulse
+// would silently under-count — which is why `ccpulse doctor` grades the
+// refusal rate: that line is what makes this rule observable.
+//
+// `uuid` is used for admission only and is never stored.
+var ErrMissingEnvelope = errors.New("assistant line has no transcript envelope")
+
+// ErrUndecodableAssistant is the ParseError cause reported when a line that
+// says `"type":"assistant"` fails the whole-line decode. The usual trigger is a
+// field changing JSON type — `usage.input_tokens` turning into a string, or an
+// envelope key like `sessionId` turning into a number. Such a line used to
+// vanish as a generic decode error, indistinguishable from a torn write; it is
+// in fact a transcript format change that silently shrinks totals, so it is
+// classified here and counted as a refusal by `ccpulse doctor` (#532). An empty
+// `"timestamp":""` lands here too, refused inside time.Time's UnmarshalJSON.
+//
+// Lines too broken to say what type they are (truncated or garbage JSON) keep
+// their plain decode error: they cannot be attributed to an assistant turn.
+var ErrUndecodableAssistant = errors.New("assistant line failed to decode")
+
+// decodeLine decodes one transcript line. On failure it probes for the line's
+// `type` alone, and if that probe says "assistant" the error is classified as
+// ErrUndecodableAssistant with the original decode error kept in the chain.
+// Otherwise the decode error is returned unchanged. The probe runs only on the
+// failure path, so well-formed lines pay nothing for it. Both parse entry points
+// route every line through here, so they classify identically.
+func decodeLine(b []byte) (rawLine, error) {
+	var raw rawLine
+	err := json.Unmarshal(b, &raw)
+	if err == nil {
+		return raw, nil
+	}
+	var probe struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal(b, &probe) == nil && probe.Type == "assistant" {
+		return rawLine{}, fmt.Errorf("%w: %w", ErrUndecodableAssistant, err)
+	}
+	return rawLine{}, err
+}
 
 // ParseWithErrors parses every line and returns successfully-parsed
 // messages plus per-line parse errors. On bufio.ErrTooLong the scanner
@@ -113,8 +166,8 @@ func ParseWithErrors(r io.Reader, projectSlug string) ([]Message, []ParseError, 
 	line := 0
 	for sc.Scan() {
 		line++
-		var raw rawLine
-		if err := json.Unmarshal(sc.Bytes(), &raw); err != nil {
+		raw, err := decodeLine(sc.Bytes())
+		if err != nil {
 			errs = append(errs, ParseError{Line: line, Err: err})
 			continue
 		}
@@ -144,7 +197,19 @@ func ParseWithErrors(r io.Reader, projectSlug string) ([]Message, []ParseError, 
 // admission: both parse entry points (ParseWithErrors and
 // ParseFromOffsetWithErrors) route through it, so a rule added here cannot be
 // enforced by one path and missed by the other.
+//
+// Checks run in order: the transcript envelope (ErrMissingEnvelope) — is this a
+// transcript line at all? — then the timestamp (ErrZeroTimestamp), then the
+// line is converted by toMessages.
 func assistantMessages(raw rawLine, slug string) ([]Message, error) {
+	switch {
+	case raw.SessionID == "" && raw.UUID == "":
+		return nil, fmt.Errorf("%w: missing sessionId, uuid", ErrMissingEnvelope)
+	case raw.SessionID == "":
+		return nil, fmt.Errorf("%w: missing sessionId", ErrMissingEnvelope)
+	case raw.UUID == "":
+		return nil, fmt.Errorf("%w: missing uuid", ErrMissingEnvelope)
+	}
 	if raw.Timestamp.Year() <= 1 {
 		return nil, ErrZeroTimestamp
 	}

@@ -14,7 +14,7 @@ import (
 // jsonl returns a single assistant-line transcript with the given
 // session id. cwd and gitBranch match the slug used in the test fixture.
 func jsonl(sid string) []byte {
-	return []byte(`{"type":"assistant","sessionId":"` + sid +
+	return []byte(`{"type":"assistant","uuid":"u1","sessionId":"` + sid +
 		`","timestamp":"2026-05-09T10:00:00.000Z","cwd":"/Users/x/foo","gitBranch":"main",` +
 		`"message":` +
 		`{"role":"assistant","model":"claude-opus-4-7","usage":` +
@@ -142,8 +142,12 @@ func TestProcessFile_SkipsWhenAtEOF(t *testing.T) {
 	ing, _, path := newIngesterFixture(t)
 
 	// First pass: ingest fully.
-	if _, err := ing.ProcessFile(t.Context(), path); err != nil {
+	first, err := ing.ProcessFile(t.Context(), path)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if first != 1 {
+		t.Fatalf("inserted on first pass = %d, want 1", first)
 	}
 
 	// Make the file unreadable AFTER recording the offset.
@@ -351,7 +355,7 @@ func TestProcessFile_StampsRepoRoot(t *testing.T) {
 
 	// A one-line transcript whose envelope cwd is the repo dir, so the
 	// resolver walks up to the .git dir and stamps repo_root = repo.
-	line := `{"type":"assistant","sessionId":"rr1",` +
+	line := `{"type":"assistant","uuid":"u2","sessionId":"rr1",` +
 		`"timestamp":"2026-05-09T10:00:00.000Z","cwd":"` + repo + `","gitBranch":"main",` +
 		`"message":{"role":"assistant","model":"claude-opus-4-7","usage":` +
 		`{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,` +
