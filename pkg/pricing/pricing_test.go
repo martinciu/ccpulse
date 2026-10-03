@@ -1,7 +1,10 @@
 package pricing
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"io/fs"
 	"math"
 	"strings"
 	"testing"
@@ -76,6 +79,88 @@ func TestHistory_Load_AllEmbedded(t *testing.T) {
 			t.Errorf("Versions() not strictly ascending: %v", versions)
 		}
 	}
+}
+
+// TestHistory_EmbeddedSnapshotsWellFormed guards the embedded snapshots against
+// silent drift. The pricing-drift workflow resolves the effective snapshot by
+// filename while Load() resolves it by the "version" field, so the two must
+// agree. encoding/json also tolerates unknown fields and keeps the last value
+// of a duplicated key, so each file is decoded strictly and token-walked for
+// duplicate keys at every depth.
+func TestHistory_EmbeddedSnapshotsWellFormed(t *testing.T) {
+	files, err := fs.ReadDir(historyFS, "history")
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	for _, f := range files {
+		if f.IsDir() {
+			continue
+		}
+		t.Run(f.Name(), func(t *testing.T) {
+			b, err := fs.ReadFile(historyFS, "history/"+f.Name())
+			if err != nil {
+				t.Fatalf("ReadFile: %v", err)
+			}
+
+			var tab Table
+			dec := json.NewDecoder(bytes.NewReader(b))
+			dec.DisallowUnknownFields()
+			if err := dec.Decode(&tab); err != nil {
+				t.Errorf("strict decode: %v", err)
+			}
+			if got := tab.Version + ".json"; got != f.Name() {
+				t.Errorf("version %q implies filename %q, want %q", tab.Version, got, f.Name())
+			}
+			if _, err := time.Parse("2006-01-02", tab.Version); err != nil {
+				t.Errorf("version %q is not a YYYY-MM-DD date: %v", tab.Version, err)
+			}
+			if err := findDuplicateKey(json.NewDecoder(bytes.NewReader(b)), "$"); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+}
+
+// findDuplicateKey consumes one JSON value from dec and returns an error naming
+// the first object key (exact, case-sensitive match) that repeats within the
+// same object, together with its path. Each object gets a fresh seen-set.
+func findDuplicateKey(dec *json.Decoder, path string) error {
+	tok, err := dec.Token()
+	if err != nil {
+		return fmt.Errorf("token at %s: %w", path, err)
+	}
+	delim, ok := tok.(json.Delim)
+	if !ok {
+		return nil // scalar
+	}
+	switch delim {
+	case '{':
+		seen := map[string]bool{}
+		for dec.More() {
+			kt, err := dec.Token()
+			if err != nil {
+				return fmt.Errorf("key at %s: %w", path, err)
+			}
+			key, _ := kt.(string)
+			if seen[key] {
+				return fmt.Errorf("duplicate key %q in object at %s", key, path)
+			}
+			seen[key] = true
+			if err := findDuplicateKey(dec, path+"."+key); err != nil {
+				return err
+			}
+		}
+	case '[':
+		for i := 0; dec.More(); i++ {
+			if err := findDuplicateKey(dec, fmt.Sprintf("%s[%d]", path, i)); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err := dec.Token(); err != nil { // closing delimiter
+		return fmt.Errorf("closing delimiter at %s: %w", path, err)
+	}
+	return nil
 }
 
 func TestHistory_Latest(t *testing.T) {
