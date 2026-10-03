@@ -381,6 +381,7 @@ func TestHistory_TableAt(t *testing.T) {
 		{"last second before 2026-09-22 -> 2026-09-02", mustTime("2026-09-21T23:59:59Z"), "2026-09-02"},
 		{"opus 5.5 snapshot -> 2026-09-22", mustTime("2026-09-22T00:00:00Z"), "2026-09-22"},
 		{"last second before 2026-09-28 -> 2026-09-22", mustTime("2026-09-27T23:59:59Z"), "2026-09-22"},
+		{"01:30 CEST on 2026-09-28 is still 2026-09-27 UTC -> 2026-09-22", mustTime("2026-09-28T01:30:00+02:00"), "2026-09-22"},
 		{"sonnet 5.5 snapshot -> 2026-09-28", mustTime("2026-09-28T00:00:00Z"), "2026-09-28"},
 		{"after latest -> latest", mustTime("2099-01-01T00:00:00Z"), latest},
 	}
@@ -391,6 +392,36 @@ func TestHistory_TableAt(t *testing.T) {
 				t.Errorf("TableAt(%s).Version = %q, want %q", c.ts.Format(time.RFC3339), got, c.wantVersion)
 			}
 		})
+	}
+}
+
+// TestHistory_ResolvesByUTCDate_UnderNonUTCLocalZone pins that snapshots are
+// keyed on the UTC calendar date, not the process-local one. CI runs with
+// TZ=UTC, so the CEST rows elsewhere cannot catch a regression that resolves
+// via ts.Local(); here time.Local is swapped for UTC-10, where 05:00 UTC on
+// 2026-09-28 is still 2026-09-27 locally. Not parallel: it mutates time.Local.
+func TestHistory_ResolvesByUTCDate_UnderNonUTCLocalZone(t *testing.T) {
+	orig := time.Local
+	time.Local = time.FixedZone("UTC-10", -10*60*60)
+	t.Cleanup(func() { time.Local = orig })
+
+	h, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	ts := time.Date(2026, 9, 28, 5, 0, 0, 0, time.UTC)
+	if got := h.TableAt(ts).Version; got != "2026-09-28" {
+		t.Errorf("TableAt(%s).Version = %q, want %q", ts.Format(time.RFC3339), got, "2026-09-28")
+	}
+	cost, version, unknown := h.CostFor(parse.Message{Timestamp: ts, Model: "claude-sonnet-5", InputTokens: 1_000_000})
+	if unknown {
+		t.Fatalf("CostFor unknown = true, want false")
+	}
+	if version != "2026-09-28" {
+		t.Errorf("CostFor version = %q, want %q", version, "2026-09-28")
+	}
+	if cost != 2.00 {
+		t.Errorf("CostFor cost = %v, want 2.00", cost)
 	}
 }
 
@@ -859,7 +890,7 @@ func TestFable51Resolution(t *testing.T) {
 	}{
 		{"fall-forward before snapshot", time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC), "claude-fable-5-1", Mtok, 0, "2026-09-02", 10.00},
 		{"exact snapshot date", time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC), "claude-fable-5-1", Mtok, 0, "2026-09-02", 10.00},
-		{"after snapshot", time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC), "claude-fable-5-1", Mtok, 0, "2026-09-28", 10.00},
+		{"after snapshot", time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC), "claude-fable-5-1", Mtok, 0, "2026-09-02", 10.00},
 		{"fable 5.1 cache read at 0.025x", time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC), "claude-fable-5-1", 0, Mtok, "2026-09-02", 0.25},
 		{"mythos 5.1 cache read at 0.025x", time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC), "claude-mythos-5-1", 0, Mtok, "2026-09-02", 0.25},
 		{"fable 5 cache read stays 0.1x", time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC), "claude-fable-5", 0, Mtok, "2026-09-02", 1.00},
@@ -949,10 +980,10 @@ func TestOpus55Resolution(t *testing.T) {
 	}{
 		{"fall-forward before snapshot", time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC), "claude-opus-5-5", Mtok, 0, "2026-09-22", 4.00},
 		{"exact snapshot date", time.Date(2026, 9, 22, 0, 0, 0, 0, time.UTC), "claude-opus-5-5", Mtok, 0, "2026-09-22", 4.00},
-		{"after snapshot", time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC), "claude-opus-5-5", Mtok, 0, "2026-09-28", 4.00},
+		{"after snapshot", time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC), "claude-opus-5-5", Mtok, 0, "2026-09-22", 4.00},
 		{"opus 5.5 cache read at 0.05x", time.Date(2026, 9, 22, 0, 0, 0, 0, time.UTC), "claude-opus-5-5", 0, Mtok, "2026-09-22", 0.20},
 		{"opus 5 cache read stays 0.1x", time.Date(2026, 9, 22, 0, 0, 0, 0, time.UTC), "claude-opus-5", 0, Mtok, "2026-09-22", 0.50},
-		{"local CEST midnight is still 2026-09-21 UTC", time.Date(2026, 9, 22, 1, 30, 0, 0, cest), "claude-opus-5", Mtok, 0, "2026-09-02", 5.00},
+		{"01:30 CEST on 2026-09-22 is still 2026-09-21 UTC", time.Date(2026, 9, 22, 1, 30, 0, 0, cest), "claude-opus-5", Mtok, 0, "2026-09-02", 5.00},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1032,9 +1063,9 @@ func TestSonnet55Resolution(t *testing.T) {
 	}{
 		{"fall-forward before snapshot", time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC), "claude-sonnet-5-5", Mtok, 0, "2026-09-28", 2.00},
 		{"exact snapshot date", time.Date(2026, 9, 28, 0, 0, 0, 0, time.UTC), "claude-sonnet-5-5", Mtok, 0, "2026-09-28", 2.00},
-		{"after snapshot", time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC), "claude-sonnet-5-5", Mtok, 0, "2026-09-28", 2.00},
+		{"after snapshot", time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC), "claude-sonnet-5-5", Mtok, 0, "2026-09-28", 2.00},
 		{"sonnet 5.5 cache read at standard 0.1x", time.Date(2026, 9, 28, 0, 0, 0, 0, time.UTC), "claude-sonnet-5-5", 0, Mtok, "2026-09-28", 0.20},
-		{"local CEST midnight is still 2026-09-27 UTC", time.Date(2026, 9, 28, 1, 30, 0, 0, cest), "claude-sonnet-5", Mtok, 0, "2026-09-22", 2.00},
+		{"01:30 CEST on 2026-09-28 is still 2026-09-27 UTC", time.Date(2026, 9, 28, 1, 30, 0, 0, cest), "claude-sonnet-5", Mtok, 0, "2026-09-22", 2.00},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
