@@ -66,6 +66,9 @@ func runDoctor(cmd *cobra.Command) error {
 
 	checkCredential(out)
 	reportCacheArtifacts(out, env.cacheDir)
+	if statErr == nil {
+		reportAdmission(cmd.Context(), out, env.projectsRoot, time.Now())
+	}
 	checkClaudeCodeHook(out)
 	reportLogFile(out, env.cacheDir)
 	return nil

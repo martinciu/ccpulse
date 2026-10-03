@@ -271,6 +271,7 @@ Runs a health-check checklist and prints a pass/fail report:
 - Pricing table version (and the versions present in the cache)
 - Anthropic OAuth credential — present, plan tier, and not expired
 - Usage-API cache freshness and `parse-errors.log` size
+- Transcript admission over the last 7 days — assistant lines refused (missing `sessionId`/`uuid`, unusable timestamp, or undecodable); ✗ past 1%, a sign Claude Code's transcript format changed
 - Whether the Claude Code `Stop` hook is configured
 
 Run this first when something looks wrong.
@@ -319,7 +320,10 @@ If the cache is corrupt (rare; usually after a kill-during-write), the
 TUI auto-rebuilds on launch. Manual: `ccpulse index --rebuild`.
 
 Parse errors are logged to `~/.cache/ccpulse/parse-errors.log`
-(rotated at 10 MB). Empty when everything is healthy.
+(rotated at 10 MB). Empty when everything is healthy. Refused assistant
+lines (no transcript envelope, an unusable timestamp, or undecodable) are
+logged there too, so the file names what `doctor`'s transcript-admission
+line counts.
 
 The TUI's chart zoom and view are remembered in
 `~/.cache/ccpulse/ui-state.toml`. Delete it to reset to the defaults
