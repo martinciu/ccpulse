@@ -79,9 +79,9 @@ var ErrOversizedLineSkipped = errors.New("oversized line skipped")
 // instant. Go decodes a MISSING timestamp to the zero time.Time, which is not a
 // point on any axis ccpulse draws — it is the absence of a timestamp, wearing a
 // number. (An EMPTY string is refused one level earlier, inside time.Time's own
-// UnmarshalJSON, so it arrives as a generic decode error rather than this
-// sentinel. Both outcomes keep the line out of the cache; only this one is
-// classifiable with errors.Is.)
+// UnmarshalJSON, so the line fails to decode and is reported as
+// ErrUndecodableAssistant instead of this sentinel. Both outcomes keep the line
+// out of the cache, and both are classifiable with errors.Is.)
 //
 // The test is Year() <= 1, not IsZero(): IsZero() compares against one exact
 // instant, so "0001-01-01T00:00:00+01:00" and "0001-01-02T00:00:00Z" — equally
@@ -95,6 +95,40 @@ var ErrOversizedLineSkipped = errors.New("oversized line skipped")
 // out of the cache entirely, and reporting it as a ParseError means it lands in
 // parse-errors.log instead of vanishing.
 var ErrZeroTimestamp = errors.New("assistant line has no usable timestamp")
+
+// ErrUndecodableAssistant is the ParseError cause reported when a line that
+// says `"type":"assistant"` fails the whole-line decode. The usual trigger is a
+// field changing JSON type — `usage.input_tokens` turning into a string, or an
+// envelope key like `sessionId` turning into a number. Such a line used to
+// vanish as a generic decode error, indistinguishable from a torn write; it is
+// in fact a transcript format change that silently shrinks totals, so it is
+// classified here and counted as a refusal by `ccpulse doctor` (#532). An empty
+// `"timestamp":""` lands here too, refused inside time.Time's UnmarshalJSON.
+//
+// Lines too broken to say what type they are (truncated or garbage JSON) keep
+// their plain decode error: they cannot be attributed to an assistant turn.
+var ErrUndecodableAssistant = errors.New("assistant line failed to decode")
+
+// decodeLine decodes one transcript line. On failure it probes for the line's
+// `type` alone, and if that probe says "assistant" the error is classified as
+// ErrUndecodableAssistant with the original decode error kept in the chain.
+// Otherwise the decode error is returned unchanged. The probe runs only on the
+// failure path, so well-formed lines pay nothing for it. Both parse entry points
+// route every line through here, so they classify identically.
+func decodeLine(b []byte) (rawLine, error) {
+	var raw rawLine
+	err := json.Unmarshal(b, &raw)
+	if err == nil {
+		return raw, nil
+	}
+	var probe struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal(b, &probe) == nil && probe.Type == "assistant" {
+		return rawLine{}, fmt.Errorf("%w: %w", ErrUndecodableAssistant, err)
+	}
+	return rawLine{}, err
+}
 
 // ParseWithErrors parses every line and returns successfully-parsed
 // messages plus per-line parse errors. On bufio.ErrTooLong the scanner
@@ -113,8 +147,8 @@ func ParseWithErrors(r io.Reader, projectSlug string) ([]Message, []ParseError, 
 	line := 0
 	for sc.Scan() {
 		line++
-		var raw rawLine
-		if err := json.Unmarshal(sc.Bytes(), &raw); err != nil {
+		raw, err := decodeLine(sc.Bytes())
+		if err != nil {
 			errs = append(errs, ParseError{Line: line, Err: err})
 			continue
 		}
