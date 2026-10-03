@@ -1,7 +1,10 @@
 package pricing
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"io/fs"
 	"math"
 	"strings"
 	"testing"
@@ -76,6 +79,88 @@ func TestHistory_Load_AllEmbedded(t *testing.T) {
 			t.Errorf("Versions() not strictly ascending: %v", versions)
 		}
 	}
+}
+
+// TestHistory_EmbeddedSnapshotsWellFormed guards the embedded snapshots against
+// silent drift. The pricing-drift workflow resolves the effective snapshot by
+// filename while Load() resolves it by the "version" field, so the two must
+// agree. encoding/json also tolerates unknown fields and keeps the last value
+// of a duplicated key, so each file is decoded strictly and token-walked for
+// duplicate keys at every depth.
+func TestHistory_EmbeddedSnapshotsWellFormed(t *testing.T) {
+	files, err := fs.ReadDir(historyFS, "history")
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	for _, f := range files {
+		if f.IsDir() {
+			continue
+		}
+		t.Run(f.Name(), func(t *testing.T) {
+			b, err := fs.ReadFile(historyFS, "history/"+f.Name())
+			if err != nil {
+				t.Fatalf("ReadFile: %v", err)
+			}
+
+			var tab Table
+			dec := json.NewDecoder(bytes.NewReader(b))
+			dec.DisallowUnknownFields()
+			if err := dec.Decode(&tab); err != nil {
+				t.Errorf("strict decode: %v", err)
+			}
+			if got := tab.Version + ".json"; got != f.Name() {
+				t.Errorf("version %q implies filename %q, want %q", tab.Version, got, f.Name())
+			}
+			if _, err := time.Parse("2006-01-02", tab.Version); err != nil {
+				t.Errorf("version %q is not a YYYY-MM-DD date: %v", tab.Version, err)
+			}
+			if err := findDuplicateKey(json.NewDecoder(bytes.NewReader(b)), "$"); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+}
+
+// findDuplicateKey consumes one JSON value from dec and returns an error naming
+// the first object key (exact, case-sensitive match) that repeats within the
+// same object, together with its path. Each object gets a fresh seen-set.
+func findDuplicateKey(dec *json.Decoder, path string) error {
+	tok, err := dec.Token()
+	if err != nil {
+		return fmt.Errorf("token at %s: %w", path, err)
+	}
+	delim, ok := tok.(json.Delim)
+	if !ok {
+		return nil // scalar
+	}
+	switch delim {
+	case '{':
+		seen := map[string]bool{}
+		for dec.More() {
+			kt, err := dec.Token()
+			if err != nil {
+				return fmt.Errorf("key at %s: %w", path, err)
+			}
+			key, _ := kt.(string)
+			if seen[key] {
+				return fmt.Errorf("duplicate key %q in object at %s", key, path)
+			}
+			seen[key] = true
+			if err := findDuplicateKey(dec, path+"."+key); err != nil {
+				return err
+			}
+		}
+	case '[':
+		for i := 0; dec.More(); i++ {
+			if err := findDuplicateKey(dec, fmt.Sprintf("%s[%d]", path, i)); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err := dec.Token(); err != nil { // closing delimiter
+		return fmt.Errorf("closing delimiter at %s: %w", path, err)
+	}
+	return nil
 }
 
 func TestHistory_Latest(t *testing.T) {
@@ -295,6 +380,9 @@ func TestHistory_TableAt(t *testing.T) {
 		{"fable 5.1 snapshot -> 2026-09-02", mustTime("2026-09-02T00:00:00Z"), "2026-09-02"},
 		{"last second before 2026-09-22 -> 2026-09-02", mustTime("2026-09-21T23:59:59Z"), "2026-09-02"},
 		{"opus 5.5 snapshot -> 2026-09-22", mustTime("2026-09-22T00:00:00Z"), "2026-09-22"},
+		{"last second before 2026-09-28 -> 2026-09-22", mustTime("2026-09-27T23:59:59Z"), "2026-09-22"},
+		{"01:30 CEST on 2026-09-28 is still 2026-09-27 UTC -> 2026-09-22", mustTime("2026-09-28T01:30:00+02:00"), "2026-09-22"},
+		{"sonnet 5.5 snapshot -> 2026-09-28", mustTime("2026-09-28T00:00:00Z"), "2026-09-28"},
 		{"after latest -> latest", mustTime("2099-01-01T00:00:00Z"), latest},
 	}
 	for _, c := range cases {
@@ -304,6 +392,36 @@ func TestHistory_TableAt(t *testing.T) {
 				t.Errorf("TableAt(%s).Version = %q, want %q", c.ts.Format(time.RFC3339), got, c.wantVersion)
 			}
 		})
+	}
+}
+
+// TestHistory_ResolvesByUTCDate_UnderNonUTCLocalZone pins that snapshots are
+// keyed on the UTC calendar date, not the process-local one. CI runs with
+// TZ=UTC, so the CEST rows elsewhere cannot catch a regression that resolves
+// via ts.Local(); here time.Local is swapped for UTC-10, where 05:00 UTC on
+// 2026-09-28 is still 2026-09-27 locally. Not parallel: it mutates time.Local.
+func TestHistory_ResolvesByUTCDate_UnderNonUTCLocalZone(t *testing.T) {
+	orig := time.Local
+	time.Local = time.FixedZone("UTC-10", -10*60*60)
+	t.Cleanup(func() { time.Local = orig })
+
+	h, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	ts := time.Date(2026, 9, 28, 5, 0, 0, 0, time.UTC)
+	if got := h.TableAt(ts).Version; got != "2026-09-28" {
+		t.Errorf("TableAt(%s).Version = %q, want %q", ts.Format(time.RFC3339), got, "2026-09-28")
+	}
+	cost, version, unknown := h.CostFor(parse.Message{Timestamp: ts, Model: "claude-sonnet-5", InputTokens: 1_000_000})
+	if unknown {
+		t.Fatalf("CostFor unknown = true, want false")
+	}
+	if version != "2026-09-28" {
+		t.Errorf("CostFor version = %q, want %q", version, "2026-09-28")
+	}
+	if cost != 2.00 {
+		t.Errorf("CostFor cost = %v, want 2.00", cost)
 	}
 }
 
@@ -772,7 +890,7 @@ func TestFable51Resolution(t *testing.T) {
 	}{
 		{"fall-forward before snapshot", time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC), "claude-fable-5-1", Mtok, 0, "2026-09-02", 10.00},
 		{"exact snapshot date", time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC), "claude-fable-5-1", Mtok, 0, "2026-09-02", 10.00},
-		{"after snapshot", time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC), "claude-fable-5-1", Mtok, 0, "2026-09-22", 10.00},
+		{"after snapshot", time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC), "claude-fable-5-1", Mtok, 0, "2026-09-02", 10.00},
 		{"fable 5.1 cache read at 0.025x", time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC), "claude-fable-5-1", 0, Mtok, "2026-09-02", 0.25},
 		{"mythos 5.1 cache read at 0.025x", time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC), "claude-mythos-5-1", 0, Mtok, "2026-09-02", 0.25},
 		{"fable 5 cache read stays 0.1x", time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC), "claude-fable-5", 0, Mtok, "2026-09-02", 1.00},
@@ -862,10 +980,92 @@ func TestOpus55Resolution(t *testing.T) {
 	}{
 		{"fall-forward before snapshot", time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC), "claude-opus-5-5", Mtok, 0, "2026-09-22", 4.00},
 		{"exact snapshot date", time.Date(2026, 9, 22, 0, 0, 0, 0, time.UTC), "claude-opus-5-5", Mtok, 0, "2026-09-22", 4.00},
-		{"after snapshot", time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC), "claude-opus-5-5", Mtok, 0, "2026-09-22", 4.00},
+		{"after snapshot", time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC), "claude-opus-5-5", Mtok, 0, "2026-09-22", 4.00},
 		{"opus 5.5 cache read at 0.05x", time.Date(2026, 9, 22, 0, 0, 0, 0, time.UTC), "claude-opus-5-5", 0, Mtok, "2026-09-22", 0.20},
 		{"opus 5 cache read stays 0.1x", time.Date(2026, 9, 22, 0, 0, 0, 0, time.UTC), "claude-opus-5", 0, Mtok, "2026-09-22", 0.50},
-		{"local CEST midnight is still 2026-09-21 UTC", time.Date(2026, 9, 22, 1, 30, 0, 0, cest), "claude-opus-5", Mtok, 0, "2026-09-02", 5.00},
+		{"01:30 CEST on 2026-09-22 is still 2026-09-21 UTC", time.Date(2026, 9, 22, 1, 30, 0, 0, cest), "claude-opus-5", Mtok, 0, "2026-09-02", 5.00},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := parse.Message{
+				Timestamp:       tc.ts,
+				Model:           tc.model,
+				InputTokens:     tc.input,
+				CacheReadTokens: tc.cacheRead,
+			}
+			cost, version, unknown := h.CostFor(m)
+			if unknown {
+				t.Fatal("unknown = true, want false")
+			}
+			if version != tc.wantVersion {
+				t.Errorf("version = %q, want %q", version, tc.wantVersion)
+			}
+			if cost != tc.wantCost {
+				t.Errorf("cost = %v, want %v", cost, tc.wantCost)
+			}
+		})
+	}
+}
+
+// TestSonnet55Snapshots pins the Claude Sonnet 5.5 rates introduced by the
+// 2026-09-28 snapshot (issue #551). The cache-read rate is the standard 0.1x of
+// base input ($0.20/MTok): the pricing page carries no footnote for Sonnet 5.5,
+// unlike Fable 5.1 and Opus 5.5. There is no previous-model guard because the
+// rates equal Sonnet 5's, and TestHistory_CarryForward_AllSnapshots already
+// guards every carried rate.
+func TestSonnet55Snapshots(t *testing.T) {
+	h, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	tab := h.TableAt(mustParseDate(t, "2026-09-28"))
+	if tab.Version != "2026-09-28" {
+		t.Fatalf("TableAt(2026-09-28).Version = %q, want 2026-09-28", tab.Version)
+	}
+	want := ModelRate{
+		InputPerMtok:        2.00,
+		OutputPerMtok:       10.00,
+		CacheReadPerMtok:    0.20,
+		CacheWrite5mPerMtok: 2.50,
+		CacheWrite1hPerMtok: 4.00,
+	}
+	got, ok := tab.Models["claude-sonnet-5-5"]
+	if !ok {
+		t.Fatal("Models[claude-sonnet-5-5] missing from 2026-09-28")
+	}
+	if got != want {
+		t.Errorf("claude-sonnet-5-5 = %+v, want %+v", got, want)
+	}
+}
+
+// TestSonnet55Resolution pins the pricing_version stamped and the resolved
+// cost for Claude Sonnet 5.5 around the 2026-09-28 snapshot. The fall-forward
+// row is the rescue path for Sonnet 5.5 rows ingested before the snapshot
+// existed (issue #368 semantics). The cache-read row pins the standard 0.1x
+// rate. The CEST row pins that the snapshot boundary is a UTC date: 01:30 local
+// on 2026-09-28 is still 2026-09-27 UTC, so Sonnet 5 resolves to the previous
+// table.
+func TestSonnet55Resolution(t *testing.T) {
+	h, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	const Mtok = 1_000_000
+	cest := time.FixedZone("CEST", 2*60*60)
+	cases := []struct {
+		name        string
+		ts          time.Time
+		model       string
+		input       int64
+		cacheRead   int64
+		wantVersion string
+		wantCost    float64
+	}{
+		{"fall-forward before snapshot", time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC), "claude-sonnet-5-5", Mtok, 0, "2026-09-28", 2.00},
+		{"exact snapshot date", time.Date(2026, 9, 28, 0, 0, 0, 0, time.UTC), "claude-sonnet-5-5", Mtok, 0, "2026-09-28", 2.00},
+		{"after snapshot", time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC), "claude-sonnet-5-5", Mtok, 0, "2026-09-28", 2.00},
+		{"sonnet 5.5 cache read at standard 0.1x", time.Date(2026, 9, 28, 0, 0, 0, 0, time.UTC), "claude-sonnet-5-5", 0, Mtok, "2026-09-28", 0.20},
+		{"01:30 CEST on 2026-09-28 is still 2026-09-27 UTC", time.Date(2026, 9, 28, 1, 30, 0, 0, cest), "claude-sonnet-5", Mtok, 0, "2026-09-22", 2.00},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
