@@ -36,6 +36,7 @@ type Message struct {
 type rawLine struct {
 	Type      string    `json:"type"`
 	SessionID string    `json:"sessionId"`
+	UUID      string    `json:"uuid"` // admission only (ErrMissingEnvelope); never stored
 	Timestamp time.Time `json:"timestamp"`
 	Cwd       string    `json:"cwd"`
 	GitBranch string    `json:"gitBranch"`
@@ -95,6 +96,24 @@ var ErrOversizedLineSkipped = errors.New("oversized line skipped")
 // out of the cache entirely, and reporting it as a ParseError means it lands in
 // parse-errors.log instead of vanishing.
 var ErrZeroTimestamp = errors.New("assistant line has no usable timestamp")
+
+// ErrMissingEnvelope is the ParseError cause reported when an assistant line
+// lacks the transcript envelope every Claude Code turn carries: a non-empty
+// `sessionId` AND a non-empty `uuid`. Without it, `"type":"assistant"` alone
+// admitted any JSON under projects_root as billed spend — a hand-written
+// fixture, another tool's JSONL, a half-copied file. #527 was exactly that: a
+// synthetic file with no envelope at all, caught then only because it also had
+// no timestamp; the same file with a plausible timestamp would have been
+// stored as real usage (#532).
+//
+// Evidence for the rule: of 475,763 assistant lines in a full real corpus,
+// 475,761 carry both keys; the 2 that don't are the #527 fixture. The risk is
+// asymmetric — if Claude Code ever wrote a genuine turn without them, ccpulse
+// would silently under-count — which is why `ccpulse doctor` grades the
+// refusal rate: that line is what makes this rule observable.
+//
+// `uuid` is used for admission only and is never stored.
+var ErrMissingEnvelope = errors.New("assistant line has no transcript envelope")
 
 // ErrUndecodableAssistant is the ParseError cause reported when a line that
 // says `"type":"assistant"` fails the whole-line decode. The usual trigger is a
@@ -178,7 +197,19 @@ func ParseWithErrors(r io.Reader, projectSlug string) ([]Message, []ParseError, 
 // admission: both parse entry points (ParseWithErrors and
 // ParseFromOffsetWithErrors) route through it, so a rule added here cannot be
 // enforced by one path and missed by the other.
+//
+// Checks run in order: the transcript envelope (ErrMissingEnvelope) — is this a
+// transcript line at all? — then the timestamp (ErrZeroTimestamp), then the
+// line is converted by toMessages.
 func assistantMessages(raw rawLine, slug string) ([]Message, error) {
+	switch {
+	case raw.SessionID == "" && raw.UUID == "":
+		return nil, fmt.Errorf("%w: missing sessionId, uuid", ErrMissingEnvelope)
+	case raw.SessionID == "":
+		return nil, fmt.Errorf("%w: missing sessionId", ErrMissingEnvelope)
+	case raw.UUID == "":
+		return nil, fmt.Errorf("%w: missing uuid", ErrMissingEnvelope)
+	}
 	if raw.Timestamp.Year() <= 1 {
 		return nil, ErrZeroTimestamp
 	}
