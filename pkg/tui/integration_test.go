@@ -183,7 +183,7 @@ func TestProgram_BurnRateOverreach(t *testing.T) {
 		Usage: &anthro.Usage{
 			FiveHour: &anthro.Bucket{
 				Utilization: 95.0,
-				ResetsAt:    timePtr(now.Add(45 * time.Minute)),
+				ResetsAt:    new(now.Add(45 * time.Minute)),
 			},
 		},
 		Source:    "api",
@@ -333,7 +333,7 @@ func TestZoomCycle_PreservesTimeAnchorInRemaining(t *testing.T) {
 	// so minX resolves to 0 and never blocks startBucket. This no longer depends
 	// on the seed's row count or a hard-coded hour offset.
 	earlyUsage := anthro.Usage{
-		FiveHour: &anthro.Bucket{Utilization: 5.0, ResetsAt: timePtr(time.Now().UTC())},
+		FiveHour: &anthro.Bucket{Utilization: 5.0, ResetsAt: new(time.Now().UTC())},
 	}
 	if err := m.deps.Cache.RecordUsageSample(t.Context(), earlyUsage, m.lastChartFrom); err != nil {
 		t.Fatalf("RecordUsageSample early: %v", err)
@@ -402,7 +402,7 @@ func TestRemainingClamp_DoesNotBlockZoomAnchorRestore(t *testing.T) {
 	// and the clamp never blocks startBucket. This mirrors the setup in
 	// TestZoomCycle_PreservesTimeAnchorInRemaining.
 	earlyUsage := anthro.Usage{
-		FiveHour: &anthro.Bucket{Utilization: 5.0, ResetsAt: timePtr(time.Now().UTC())},
+		FiveHour: &anthro.Bucket{Utilization: 5.0, ResetsAt: new(time.Now().UTC())},
 	}
 	if err := m.deps.Cache.RecordUsageSample(t.Context(), earlyUsage, m.lastChartFrom); err != nil {
 		t.Fatalf("RecordUsageSample early: %v", err)
