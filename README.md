@@ -93,7 +93,7 @@ tarball. The Homebrew install path is already integrity-checked by
 go install github.com/martinciu/ccpulse/cmd/ccpulse@latest
 ```
 
-Requires Go 1.25+. Skips the build-channel ldflag, so the binary writes
+Requires Go 1.26+. Skips the build-channel ldflag, so the binary writes
 dev debug logs to `~/.cache/ccpulse/debug.log`.
 
 After install, launch the TUI:
@@ -113,7 +113,7 @@ Requires `mise` and `git`.
 ```sh
 git clone https://github.com/martinciu/ccpulse ~/code/ccpulse
 cd ~/code/ccpulse
-mise install        # fetches Go 1.25 into the project-scoped toolchain
+mise install        # fetches Go 1.26 into the project-scoped toolchain
 make install        # builds → ~/.local/bin/ccpulse
 ```
 
