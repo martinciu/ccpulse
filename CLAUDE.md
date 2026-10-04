@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```sh
-mise install          # fetch Go 1.25 (first-time setup)
+mise install          # fetch Go 1.26 (first-time setup)
 
 make build            # go build -o ccpulse ./cmd/ccpulse
 make install          # build → ~/.local/bin/ccpulse (release channel)

@@ -1,8 +1,8 @@
 # govulncheck is pinned so `make vulncheck` and the CI job scan identically.
 # The pinned version's own go directive must stay <= the one in go.mod: CI runs
 # this with GOTOOLCHAIN=local, so a newer tool simply fails to resolve. x/vuln
-# v1.8.0 requires go 1.26.0; v1.7.0 is the last release on go 1.25.0.
-GOVULNCHECK_VERSION ?= v1.7.0
+# v1.8.0 requires go 1.26.0.
+GOVULNCHECK_VERSION ?= v1.8.0
 
 .PHONY: build install seed-dev seed-dev-config seed-dev-cache seed-front-loaded reset-dev test lint lint-fix fmt vulncheck snapshot demo
 

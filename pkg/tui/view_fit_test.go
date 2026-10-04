@@ -75,13 +75,13 @@ func projFor(sev string, window time.Duration) *status.Projection {
 func windowFor(sev string, has7d bool) status.Window {
 	w := status.Window{
 		Percent:        43,
-		MinutesToReset: intPtr(137),
+		MinutesToReset: new(137),
 		CeilingLabel:   "max_20x",
 	}
 	if has7d {
 		w.Has7d = true
 		w.Percent7d = 17
-		w.MinutesToReset7d = intPtr(7200)
+		w.MinutesToReset7d = new(7200)
 	}
 	if sev != "none" {
 		w.Projection = &status.Projections{FiveHour: projFor(sev, 5*time.Hour)}

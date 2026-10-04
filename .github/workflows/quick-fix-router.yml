@@ -69,7 +69,7 @@ jobs:
             ## 0. Pre-flight
 
             1. `gh auth status` must pass.
-            2. `go version` must return Go 1.25 or newer.
+            2. `go version` must return Go 1.26 or newer.
             3. `git checkout main && git pull --ff-only origin main`.
 
             If any pre-flight step fails, print the failure and exit. Do NOT attempt the fix from a dirty or wrong-branch state.

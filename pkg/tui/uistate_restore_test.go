@@ -70,7 +70,7 @@ func TestIntro_RestoredUsageView_ArmsLineMode(t *testing.T) {
 	// path: restoring is not a unit-toggle keypress, so no unit spring
 	// fires — beginIntroAnimation just reads the restored unitIdx (#490).
 	seed := seedIntroModel(t, false)
-	u := anthro.Usage{FiveHour: &anthro.Bucket{Utilization: 42.0, ResetsAt: timePtr(time.Now().UTC())}}
+	u := anthro.Usage{FiveHour: &anthro.Bucket{Utilization: 42.0, ResetsAt: new(time.Now().UTC())}}
 	// -5m keeps the sample inside the chart window regardless of zoom:
 	// the window starts at the earliest seeded message (-30m), so an
 	// older sample could fall outside it and never set hasData.

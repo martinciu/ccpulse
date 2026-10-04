@@ -13,13 +13,6 @@ import (
 	"github.com/martinciu/ccpulse/pkg/cache"
 )
 
-// intPtr returns &n. Test-only helper for the *int Window fields.
-func intPtr(n int) *int { return &n }
-
-// timePtr returns &t. Test-only helper for the *time.Time
-// anthro.Bucket.ResetsAt field on sites that build the value inline.
-func timePtr(t time.Time) *time.Time { return &t }
-
 func freshDB(t *testing.T) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("sqlite", ":memory:")
@@ -84,7 +77,7 @@ func TestComputeWithQuota(t *testing.T) {
 
 func TestJSONOutputIncludesQuota(t *testing.T) {
 	w := Window{
-		Percent: 13, MinutesToReset: intPtr(70),
+		Percent: 13, MinutesToReset: new(70),
 		CeilingLabel: "max_20x", CeilingPretty: "Max 20x",
 		Quota:          &anthro.Usage{FiveHour: &anthro.Bucket{Utilization: 12.7}},
 		QuotaSource:    "api",
@@ -144,7 +137,7 @@ func TestCompute_OmitsSevenDayWhenSevenDayNil(t *testing.T) {
 	db := freshDB(t)
 	now := time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)
 	usage := &anthro.Usage{
-		FiveHour: &anthro.Bucket{Utilization: 14.0, ResetsAt: timePtr(now.Add(2 * time.Hour))},
+		FiveHour: &anthro.Bucket{Utilization: 14.0, ResetsAt: new(now.Add(2 * time.Hour))},
 	}
 	w, err := Compute(t.Context(), db, now, QuotaInput{Usage: usage, Source: "api", UpdatedAt: now})
 	if err != nil {

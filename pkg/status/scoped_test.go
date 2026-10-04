@@ -8,8 +8,6 @@ import (
 	"github.com/martinciu/ccpulse/pkg/anthro"
 )
 
-func strPtr(s string) *string { return &s }
-
 // scopedUsage builds a Usage whose Limits array mirrors the observed #458
 // probe shape: session + weekly_all (unscoped) + one scoped weekly entry.
 func scopedUsage(resetsAt *time.Time) *anthro.Usage {
@@ -20,7 +18,7 @@ func scopedUsage(resetsAt *time.Time) *anthro.Usage {
 			{
 				Kind: "weekly_scoped", Group: "weekly", Percent: 35,
 				Severity: "normal", ResetsAt: resetsAt, IsActive: true,
-				Scope: &anthro.LimitScope{Model: &anthro.ScopeModel{DisplayName: strPtr("Fable")}},
+				Scope: &anthro.LimitScope{Model: &anthro.ScopeModel{DisplayName: new("Fable")}},
 			},
 		},
 	}
@@ -74,10 +72,10 @@ func TestDistillScopedLimits(t *testing.T) {
 
 	t.Run("missing display_name skipped", func(t *testing.T) {
 		u := &anthro.Usage{Limits: []anthro.Limit{
-			{Kind: "weekly_scoped", Percent: 40},                                                                                // nil Scope
-			{Kind: "weekly_scoped", Percent: 41, Scope: &anthro.LimitScope{}},                                                   // nil Model
-			{Kind: "weekly_scoped", Percent: 42, Scope: &anthro.LimitScope{Model: &anthro.ScopeModel{}}},                        // nil DisplayName
-			{Kind: "weekly_scoped", Percent: 43, Scope: &anthro.LimitScope{Model: &anthro.ScopeModel{DisplayName: strPtr("")}}}, // empty
+			{Kind: "weekly_scoped", Percent: 40},                                                                             // nil Scope
+			{Kind: "weekly_scoped", Percent: 41, Scope: &anthro.LimitScope{}},                                                // nil Model
+			{Kind: "weekly_scoped", Percent: 42, Scope: &anthro.LimitScope{Model: &anthro.ScopeModel{}}},                     // nil DisplayName
+			{Kind: "weekly_scoped", Percent: 43, Scope: &anthro.LimitScope{Model: &anthro.ScopeModel{DisplayName: new("")}}}, // empty
 		}}
 		if got := distillScopedLimits(u, now); got != nil {
 			t.Errorf("want nil (all skipped), got %+v", got)
@@ -86,9 +84,9 @@ func TestDistillScopedLimits(t *testing.T) {
 
 	t.Run("percent rounded and clamped", func(t *testing.T) {
 		u := &anthro.Usage{Limits: []anthro.Limit{
-			{Kind: "weekly_scoped", Percent: 35.6, Scope: &anthro.LimitScope{Model: &anthro.ScopeModel{DisplayName: strPtr("A")}}},
-			{Kind: "weekly_scoped", Percent: 140, Scope: &anthro.LimitScope{Model: &anthro.ScopeModel{DisplayName: strPtr("B")}}},
-			{Kind: "weekly_scoped", Percent: -5, Scope: &anthro.LimitScope{Model: &anthro.ScopeModel{DisplayName: strPtr("C")}}},
+			{Kind: "weekly_scoped", Percent: 35.6, Scope: &anthro.LimitScope{Model: &anthro.ScopeModel{DisplayName: new("A")}}},
+			{Kind: "weekly_scoped", Percent: 140, Scope: &anthro.LimitScope{Model: &anthro.ScopeModel{DisplayName: new("B")}}},
+			{Kind: "weekly_scoped", Percent: -5, Scope: &anthro.LimitScope{Model: &anthro.ScopeModel{DisplayName: new("C")}}},
 		}}
 		got := distillScopedLimits(u, now)
 		if len(got) != 3 || got[0].Percent != 36 || got[1].Percent != 100 || got[2].Percent != 0 {
@@ -99,7 +97,7 @@ func TestDistillScopedLimits(t *testing.T) {
 	t.Run("control characters stripped from display_name", func(t *testing.T) {
 		poisoned := "\x1b]0;pwned\x07Claude\nOpus\r"
 		u := &anthro.Usage{Limits: []anthro.Limit{
-			{Kind: "weekly_scoped", Percent: 50, Scope: &anthro.LimitScope{Model: &anthro.ScopeModel{DisplayName: strPtr(poisoned)}}},
+			{Kind: "weekly_scoped", Percent: 50, Scope: &anthro.LimitScope{Model: &anthro.ScopeModel{DisplayName: new(poisoned)}}},
 		}}
 		got := distillScopedLimits(u, now)
 		if len(got) != 1 {
@@ -115,7 +113,7 @@ func TestDistillScopedLimits(t *testing.T) {
 
 	t.Run("display_name of only control bytes skipped entirely", func(t *testing.T) {
 		u := &anthro.Usage{Limits: []anthro.Limit{
-			{Kind: "weekly_scoped", Percent: 50, Scope: &anthro.LimitScope{Model: &anthro.ScopeModel{DisplayName: strPtr("\x1b\n\r\x07")}}},
+			{Kind: "weekly_scoped", Percent: 50, Scope: &anthro.LimitScope{Model: &anthro.ScopeModel{DisplayName: new("\x1b\n\r\x07")}}},
 		}}
 		if got := distillScopedLimits(u, now); got != nil {
 			t.Errorf("want nil (all-control display_name skipped), got %+v", got)
@@ -124,8 +122,8 @@ func TestDistillScopedLimits(t *testing.T) {
 
 	t.Run("API order preserved", func(t *testing.T) {
 		u := &anthro.Usage{Limits: []anthro.Limit{
-			{Kind: "weekly_scoped", Percent: 10, Scope: &anthro.LimitScope{Model: &anthro.ScopeModel{DisplayName: strPtr("Zeta")}}},
-			{Kind: "weekly_scoped", Percent: 90, Scope: &anthro.LimitScope{Model: &anthro.ScopeModel{DisplayName: strPtr("Alpha")}}},
+			{Kind: "weekly_scoped", Percent: 10, Scope: &anthro.LimitScope{Model: &anthro.ScopeModel{DisplayName: new("Zeta")}}},
+			{Kind: "weekly_scoped", Percent: 90, Scope: &anthro.LimitScope{Model: &anthro.ScopeModel{DisplayName: new("Alpha")}}},
 		}}
 		got := distillScopedLimits(u, now)
 		if len(got) != 2 || got[0].Model != "Zeta" || got[1].Model != "Alpha" {

@@ -20,11 +20,6 @@ import (
 	"github.com/martinciu/ccpulse/pkg/pricing"
 )
 
-// timePtr returns &t. Test-only helper to satisfy the pointer-typed
-// anthro.Bucket.ResetsAt field for sites that build the value inline
-// (Go can't take the address of a function-call result directly).
-func timePtr(t time.Time) *time.Time { return &t }
-
 // withTimeLocal swaps time.Local for the duration of the test. Tests
 // calling this MUST NOT use t.Parallel() — mutating time.Local races
 // with any other tz-aware test in the same package.
@@ -280,8 +275,8 @@ func TestRecordUsageSample_DuplicateTs(t *testing.T) {
 	defer c.Close()
 
 	when := time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)
-	first := anthro.Usage{FiveHour: &anthro.Bucket{Utilization: 10.0, ResetsAt: timePtr(when.Add(time.Hour))}}
-	second := anthro.Usage{FiveHour: &anthro.Bucket{Utilization: 99.0, ResetsAt: timePtr(when.Add(time.Hour))}}
+	first := anthro.Usage{FiveHour: &anthro.Bucket{Utilization: 10.0, ResetsAt: new(when.Add(time.Hour))}}
+	second := anthro.Usage{FiveHour: &anthro.Bucket{Utilization: 99.0, ResetsAt: new(when.Add(time.Hour))}}
 
 	if err := c.RecordUsageSample(t.Context(), first, when); err != nil {
 		t.Fatal(err)
@@ -321,7 +316,7 @@ func TestPruneUsageSamples(t *testing.T) {
 		base,
 	}
 	for i, when := range samples {
-		u := anthro.Usage{FiveHour: &anthro.Bucket{Utilization: float64(i), ResetsAt: timePtr(when.Add(time.Hour))}}
+		u := anthro.Usage{FiveHour: &anthro.Bucket{Utilization: float64(i), ResetsAt: new(when.Add(time.Hour))}}
 		if err := c.RecordUsageSample(t.Context(), u, when); err != nil {
 			t.Fatal(err)
 		}
@@ -363,7 +358,7 @@ func TestRecordUsageSample_NilBucket(t *testing.T) {
 
 	when := time.Date(2026, 5, 9, 12, 34, 56, 0, time.UTC)
 	u := anthro.Usage{
-		FiveHour: &anthro.Bucket{Utilization: 12.5, ResetsAt: timePtr(when.Add(2 * time.Hour))},
+		FiveHour: &anthro.Bucket{Utilization: 12.5, ResetsAt: new(when.Add(2 * time.Hour))},
 		// SevenDay deliberately nil
 	}
 
@@ -1922,7 +1917,7 @@ func TestSevenDaySamplesSince_NullPctExcluded(t *testing.T) {
 
 	// One sample with SevenDay populated; one with SevenDay nil (NULL pct).
 	if err := c.RecordUsageSample(t.Context(), anthro.Usage{
-		SevenDay: &anthro.Bucket{Utilization: 25.0, ResetsAt: timePtr(now.Add(96 * time.Hour))},
+		SevenDay: &anthro.Bucket{Utilization: 25.0, ResetsAt: new(now.Add(96 * time.Hour))},
 	}, now.Add(-2*time.Hour)); err != nil {
 		t.Fatalf("Record populated: %v", err)
 	}
@@ -1998,9 +1993,9 @@ func TestUtilizationSince(t *testing.T) {
 		fiveHour *anthro.Bucket
 		sevenDay *anthro.Bucket
 	}{
-		{now.Add(-6 * time.Minute), &anthro.Bucket{Utilization: 10.0, ResetsAt: timePtr(now.Add(time.Hour))}, &anthro.Bucket{Utilization: 5.0, ResetsAt: timePtr(now.Add(24 * time.Hour))}},
-		{now.Add(-3 * time.Minute), &anthro.Bucket{Utilization: 25.0, ResetsAt: timePtr(now.Add(time.Hour))}, nil},
-		{now, &anthro.Bucket{Utilization: 50.0, ResetsAt: timePtr(now.Add(time.Hour))}, &anthro.Bucket{Utilization: 15.0, ResetsAt: timePtr(now.Add(24 * time.Hour))}},
+		{now.Add(-6 * time.Minute), &anthro.Bucket{Utilization: 10.0, ResetsAt: new(now.Add(time.Hour))}, &anthro.Bucket{Utilization: 5.0, ResetsAt: new(now.Add(24 * time.Hour))}},
+		{now.Add(-3 * time.Minute), &anthro.Bucket{Utilization: 25.0, ResetsAt: new(now.Add(time.Hour))}, nil},
+		{now, &anthro.Bucket{Utilization: 50.0, ResetsAt: new(now.Add(time.Hour))}, &anthro.Bucket{Utilization: 15.0, ResetsAt: new(now.Add(24 * time.Hour))}},
 	}
 	for _, s := range samples {
 		u := anthro.Usage{FiveHour: s.fiveHour, SevenDay: s.sevenDay}
