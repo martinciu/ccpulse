@@ -188,6 +188,8 @@ func TestParseTable(t *testing.T) {
 		wantVer          string  // expected Table.Version when no error
 		wantModelKey     string  // if non-empty, assert tab.Models has this key
 		wantInputPerMtok float64 // expected InputPerMtok for wantModelKey
+		wantLongInput    float64 // if non-zero, expected LongContext.InputPerMtok for wantModelKey
+		wantUntiered     bool    // if true, assert LongContext for wantModelKey is the zero value
 	}{
 		{
 			name:    "usd_accepted",
@@ -272,6 +274,44 @@ func TestParseTable(t *testing.T) {
 			wantModelKey:     "claude-b",
 			wantInputPerMtok: 3,
 		},
+		{
+			name:             "long_context_accepted",
+			data:             `{"version":"test","currency":"USD","models":{"claude-x":{"input_per_mtok":0.1,"output_per_mtok":0.5,"cache_read_per_mtok":0.01,"cache_write_5m_per_mtok":0.125,"cache_write_1h_per_mtok":0.2,"long_context":{"over_prompt_tokens":100000,"input_per_mtok":0.5,"output_per_mtok":2.5,"cache_read_per_mtok":0.05,"cache_write_5m_per_mtok":0.625,"cache_write_1h_per_mtok":1}}}}`,
+			wantVer:          "test",
+			wantModelKey:     "claude-x",
+			wantInputPerMtok: 0.1,
+			wantLongInput:    0.5,
+		},
+		{
+			// A tier without a threshold would price every message long.
+			name:    "long_context_zero_threshold_rejected",
+			data:    `{"version":"test","currency":"USD","models":{"claude-x":{"input_per_mtok":0.1,"output_per_mtok":0.5,"cache_read_per_mtok":0.01,"cache_write_5m_per_mtok":0.125,"cache_write_1h_per_mtok":0.2,"long_context":{"over_prompt_tokens":0,"input_per_mtok":0.5,"output_per_mtok":2.5,"cache_read_per_mtok":0.05,"cache_write_5m_per_mtok":0.625,"cache_write_1h_per_mtok":1}}}}`,
+			wantErr: `model "claude-x": long_context.over_prompt_tokens must be positive, got 0`,
+		},
+		{
+			name:    "long_context_negative_threshold_rejected",
+			data:    `{"version":"test","currency":"USD","models":{"claude-x":{"input_per_mtok":0.1,"output_per_mtok":0.5,"cache_read_per_mtok":0.01,"cache_write_5m_per_mtok":0.125,"cache_write_1h_per_mtok":0.2,"long_context":{"over_prompt_tokens":-1,"input_per_mtok":0.5,"output_per_mtok":2.5,"cache_read_per_mtok":0.05,"cache_write_5m_per_mtok":0.625,"cache_write_1h_per_mtok":1}}}}`,
+			wantErr: `model "claude-x": long_context.over_prompt_tokens must be positive, got -1`,
+		},
+		{
+			// A misspelled threshold key decodes to 0, same as an explicit 0.
+			name:    "long_context_threshold_key_typo_rejected",
+			data:    `{"version":"test","currency":"USD","models":{"claude-x":{"input_per_mtok":0.1,"output_per_mtok":0.5,"cache_read_per_mtok":0.01,"cache_write_5m_per_mtok":0.125,"cache_write_1h_per_mtok":0.2,"long_context":{"over_prompt_token":100000,"input_per_mtok":0.5,"output_per_mtok":2.5,"cache_read_per_mtok":0.05,"cache_write_5m_per_mtok":0.625,"cache_write_1h_per_mtok":1}}}}`,
+			wantErr: `model "claude-x": long_context.over_prompt_tokens must be positive, got 0`,
+		},
+		{
+			name:    "long_context_missing_rate_rejected",
+			data:    `{"version":"test","currency":"USD","models":{"claude-x":{"input_per_mtok":0.1,"output_per_mtok":0.5,"cache_read_per_mtok":0.01,"cache_write_5m_per_mtok":0.125,"cache_write_1h_per_mtok":0.2,"long_context":{"over_prompt_tokens":100000,"input_per_mtok":0.5,"output_per_mtok":2.5,"cache_write_5m_per_mtok":0.625,"cache_write_1h_per_mtok":1}}}}`,
+			wantErr: `model "claude-x": long_context.cache_read_per_mtok must be a positive finite rate, got 0`,
+		},
+		{
+			name:             "long_context_absent_is_untiered",
+			data:             `{"version":"test","currency":"USD","models":{"claude-x":{"input_per_mtok":0.1,"output_per_mtok":0.5,"cache_read_per_mtok":0.01,"cache_write_5m_per_mtok":0.125,"cache_write_1h_per_mtok":0.2}}}`,
+			wantVer:          "test",
+			wantModelKey:     "claude-x",
+			wantInputPerMtok: 0.1,
+			wantUntiered:     true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -291,6 +331,12 @@ func TestParseTable(t *testing.T) {
 						t.Errorf("Models[%q] missing", tt.wantModelKey)
 					} else if rate.InputPerMtok != tt.wantInputPerMtok {
 						t.Errorf("Models[%q].InputPerMtok = %v, want %v", tt.wantModelKey, rate.InputPerMtok, tt.wantInputPerMtok)
+					}
+					if tt.wantLongInput != 0 && rate.LongContext.InputPerMtok != tt.wantLongInput {
+						t.Errorf("Models[%q].LongContext.InputPerMtok = %v, want %v", tt.wantModelKey, rate.LongContext.InputPerMtok, tt.wantLongInput)
+					}
+					if tt.wantUntiered && rate.LongContext != (LongContextRate{}) {
+						t.Errorf("Models[%q].LongContext = %+v, want zero value (untiered)", tt.wantModelKey, rate.LongContext)
 					}
 				}
 				return
@@ -333,6 +379,14 @@ func TestValidateModels_NonFiniteRejected(t *testing.T) {
 			rate:    ModelRate{InputPerMtok: 1, OutputPerMtok: 1, CacheReadPerMtok: 1, CacheWrite5mPerMtok: 1, CacheWrite1hPerMtok: math.Inf(-1)},
 			wantErr: `model "claude-x": cache_write_1h_per_mtok must be a positive finite rate, got -Inf`,
 		},
+		{
+			name: "nan_long_context_output",
+			rate: ModelRate{
+				InputPerMtok: 1, OutputPerMtok: 1, CacheReadPerMtok: 1, CacheWrite5mPerMtok: 1, CacheWrite1hPerMtok: 1,
+				LongContext: LongContextRate{OverPromptTokens: 100, InputPerMtok: 1, OutputPerMtok: math.NaN(), CacheReadPerMtok: 1, CacheWrite5mPerMtok: 1, CacheWrite1hPerMtok: 1},
+			},
+			wantErr: `model "claude-x": long_context.output_per_mtok must be a positive finite rate, got NaN`,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -345,6 +399,23 @@ func TestValidateModels_NonFiniteRejected(t *testing.T) {
 				t.Errorf("error = %q, want substring %q", err.Error(), tt.wantErr)
 			}
 		})
+	}
+}
+
+// TestModelRate_ComparableAcrossDecodes guards the value-typed LongContext:
+// with a pointer, two decodes of identical JSON would compare unequal and
+// TestHistory_CarryForward_AllSnapshots would silently change meaning.
+func TestModelRate_ComparableAcrossDecodes(t *testing.T) {
+	t.Parallel()
+
+	const data = `{"version":"test","currency":"USD","models":{"claude-x":{"input_per_mtok":0.1,"output_per_mtok":0.5,"cache_read_per_mtok":0.01,"cache_write_5m_per_mtok":0.125,"cache_write_1h_per_mtok":0.2,"long_context":{"over_prompt_tokens":100000,"input_per_mtok":0.5,"output_per_mtok":2.5,"cache_read_per_mtok":0.05,"cache_write_5m_per_mtok":0.625,"cache_write_1h_per_mtok":1}}}}`
+	a, errA := parseTable([]byte(data))
+	b, errB := parseTable([]byte(data))
+	if errA != nil || errB != nil {
+		t.Fatalf("parseTable: %v / %v", errA, errB)
+	}
+	if a.Models["claude-x"] != b.Models["claude-x"] {
+		t.Errorf("two decodes of identical JSON compare unequal: %+v != %+v", a.Models["claude-x"], b.Models["claude-x"])
 	}
 }
 
