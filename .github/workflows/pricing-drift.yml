@@ -81,6 +81,11 @@ jobs:
             `models`. Each model has five USD-per-million-token rates:
             `input_per_mtok`, `output_per_mtok`, `cache_read_per_mtok`,
             `cache_write_5m_per_mtok`, `cache_write_1h_per_mtok`.
+            A model the page prices by prompt length may also carry an
+            optional `long_context` object: `over_prompt_tokens` (the
+            threshold N) plus the same five rate keys, holding the prices for
+            prompts over N tokens. The five top-level rates are the prices for
+            prompts up to N tokens.
 
             ## 2. Fetch the pricing page
 
@@ -93,6 +98,9 @@ jobs:
             standard rate with a later start date — capture the row in effect on
             today's UTC date, the same date basis used to resolve the effective
             snapshot in step 1.
+            The page may list one model in two rows by prompt length — "(for
+            prompts up to N tokens)" and "(for prompts over N tokens)". Capture
+            both rows and N.
 
             ## 3. Compare
 
@@ -103,6 +111,13 @@ jobs:
               - Cache Hits & Refreshes -> cache_read_per_mtok
               - 5m Cache Writes        -> cache_write_5m_per_mtok
               - 1h Cache Writes        -> cache_write_1h_per_mtok
+            For a model listed in two prompt-length rows, compare the "up to N"
+            row against the top-level rates, the "over N" row against
+            `long_context` (same field mapping), and N against
+            `long_context.over_prompt_tokens`. It is drift if the page shows two
+            prompt-length rows for a model whose entry has no `long_context`,
+            or if an entry has `long_context` but the page shows a single row
+            for that model.
             Treat every bare alias (a `models` key with no `claude-` prefix:
             `opus`, `sonnet`, `haiku`, `fable`, `mythos`, and any future one)
             as informational only — do NOT compare them. Also note any model on
@@ -155,6 +170,9 @@ jobs:
                  snapshot dated on or after today's file, INCLUDING future-dated
                  ones — model resolution walks forward only, so a model missing
                  from a later snapshot costs $0 and is stamped pricing_unknown.
+               - If the new or changed model is priced by prompt length, its
+                 entry needs a `long_context` object (see step 1) with both the
+                 threshold and the over-threshold rates.
                - After editing snapshots, run `go test ./pkg/pricing/...` and
                  update any date-pinned test expectations the change shifts.
 
