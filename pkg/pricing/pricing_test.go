@@ -65,6 +65,59 @@ func TestCostForUnknown(t *testing.T) {
 	}
 }
 
+// TestTable_CostFor_LongContextTier pins tier selection on a constructed
+// Table. Every rate is distinct per field, so pricing a token kind at the
+// wrong field's rate (or the wrong tier) shows up as a cost mismatch.
+func TestTable_CostFor_LongContextTier(t *testing.T) {
+	t.Parallel()
+
+	tab := Table{Version: "t", Currency: "USD", Models: map[string]ModelRate{
+		"tiered": {
+			InputPerMtok: 1, OutputPerMtok: 2, CacheReadPerMtok: 3, CacheWrite5mPerMtok: 4, CacheWrite1hPerMtok: 5,
+			LongContext: LongContextRate{
+				OverPromptTokens: 100_000,
+				InputPerMtok:     10, OutputPerMtok: 20, CacheReadPerMtok: 30, CacheWrite5mPerMtok: 40, CacheWrite1hPerMtok: 50,
+			},
+		},
+		"flat": {InputPerMtok: 1, OutputPerMtok: 2, CacheReadPerMtok: 3, CacheWrite5mPerMtok: 4, CacheWrite1hPerMtok: 5},
+	}}
+	tests := []struct {
+		name                    string
+		model                   string
+		in, out, cr, cw5m, cw1h int64
+		want                    float64
+	}{
+		{"exactly at threshold stays base", "tiered", 100_000, 0, 0, 0, 0, 0.1},
+		{"one over threshold goes long", "tiered", 100_001, 0, 0, 0, 0, 1.00001},
+		{"cache read counts toward prompt", "tiered", 1, 0, 100_000, 0, 0, 3.00001},
+		{"5m cache write counts toward prompt", "tiered", 1, 0, 0, 100_000, 0, 4.00001},
+		{"1h cache write counts toward prompt", "tiered", 1, 0, 0, 0, 100_000, 5.00001},
+		{"output does not count toward prompt", "tiered", 50_000, 200_000, 0, 0, 0, 0.45},
+		{"output billed at long rate when long", "tiered", 100_001, 1_000_000, 0, 0, 0, 21.00001},
+		{"untiered model ignores prompt size", "flat", 1_000_000, 0, 0, 0, 0, 1.0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			m := parse.Message{
+				Model:              tt.model,
+				InputTokens:        tt.in,
+				OutputTokens:       tt.out,
+				CacheReadTokens:    tt.cr,
+				CacheWrite5mTokens: tt.cw5m,
+				CacheWrite1hTokens: tt.cw1h,
+			}
+			got, unknown := tab.CostFor(m)
+			if unknown {
+				t.Fatal("unknown = true, want false")
+			}
+			if math.Abs(got-tt.want) > 1e-9 {
+				t.Errorf("cost = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestHistory_Load_AllEmbedded(t *testing.T) {
 	h, err := Load()
 	if err != nil {

@@ -308,10 +308,28 @@ func HistoryForTest(entries []Table) (History, error) {
 
 // CostFor returns USD estimate for the message and whether the model rate
 // was missing from this Table.
+//
+// A model with a LongContext tier bills every token kind, output included,
+// at the tier rates when the message's prompt is strictly greater than
+// OverPromptTokens; exactly at the threshold stays on the base rates. The
+// prompt counts input, cache read and both cache writes; output tokens never
+// count toward it. Accepted approximation: a parent row whose tokens pkg/parse
+// summed from several own-model usage.iterations entries is tiered on the
+// sum, although the pricing page prices each request on its own.
 func (t Table) CostFor(m parse.Message) (float64, bool) {
 	r, ok := t.Models[m.Model]
 	if !ok {
 		return 0, true
+	}
+	prompt := m.InputTokens + m.CacheReadTokens + m.CacheWrite5mTokens + m.CacheWrite1hTokens
+	if lc := r.LongContext; lc != (LongContextRate{}) && prompt > lc.OverPromptTokens {
+		r = ModelRate{
+			InputPerMtok:        lc.InputPerMtok,
+			OutputPerMtok:       lc.OutputPerMtok,
+			CacheReadPerMtok:    lc.CacheReadPerMtok,
+			CacheWrite5mPerMtok: lc.CacheWrite5mPerMtok,
+			CacheWrite1hPerMtok: lc.CacheWrite1hPerMtok,
+		}
 	}
 	const M = 1_000_000
 	cost := float64(m.InputTokens)/M*r.InputPerMtok +
