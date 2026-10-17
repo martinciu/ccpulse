@@ -170,6 +170,20 @@ func TestHistory_EmbeddedSnapshotsWellFormed(t *testing.T) {
 			if err := findDuplicateKey(json.NewDecoder(bytes.NewReader(b)), "$"); err != nil {
 				t.Error(err)
 			}
+			// An explicit empty "long_context": {} decodes to the zero value
+			// and would load as untiered; parseTable tolerates it, so guard
+			// the build-time data here.
+			var raw struct {
+				Models map[string]map[string]json.RawMessage `json:"models"`
+			}
+			if err := json.Unmarshal(b, &raw); err != nil {
+				t.Fatalf("raw decode: %v", err)
+			}
+			for name, fields := range raw.Models {
+				if _, ok := fields["long_context"]; ok && tab.Models[name].LongContext == (LongContextRate{}) {
+					t.Errorf("model %q: explicit long_context decodes to the zero value (empty block?)", name)
+				}
+			}
 		})
 	}
 }
@@ -507,6 +521,8 @@ func TestHistory_TableAt(t *testing.T) {
 		{"last second before 2026-09-28 -> 2026-09-22", mustTime("2026-09-27T23:59:59Z"), "2026-09-22"},
 		{"01:30 CEST on 2026-09-28 is still 2026-09-27 UTC -> 2026-09-22", mustTime("2026-09-28T01:30:00+02:00"), "2026-09-22"},
 		{"sonnet 5.5 snapshot -> 2026-09-28", mustTime("2026-09-28T00:00:00Z"), "2026-09-28"},
+		{"last second before 2026-10-08 -> 2026-09-28", mustTime("2026-10-07T23:59:59Z"), "2026-09-28"},
+		{"haiku 5.5 + sonnet 5.5 cache-read snapshot -> 2026-10-08", mustTime("2026-10-08T00:00:00Z"), "2026-10-08"},
 		{"after latest -> latest", mustTime("2099-01-01T00:00:00Z"), latest},
 	}
 	for _, c := range cases {
@@ -717,11 +733,23 @@ var carryForwardExceptions = map[carryForwardExceptionKey]ModelRate{
 		CacheWrite5mPerMtok: 6.25,
 		CacheWrite1hPerMtok: 10.00,
 	},
+	// The pricing page extended the 0.05x cache-hit footnote (until then
+	// Opus 5.5 only) to Sonnet 5.5 on 2026-10-08: cache reads dropped from
+	// $0.20 to $0.10/MTok; the other four rates are unchanged (issue #559).
+	{version: "2026-10-08", model: "claude-sonnet-5-5"}: {
+		InputPerMtok:        2.00,
+		OutputPerMtok:       10.00,
+		CacheReadPerMtok:    0.10,
+		CacheWrite5mPerMtok: 2.50,
+		CacheWrite1hPerMtok: 4.00,
+	},
 }
 
 // diffModelRate returns one "field: prev -> cur" string per ModelRate field
-// (in JSON-tag name) that differs between prev and cur.
+// (in JSON-tag name, long_context fields behind a "long_context." prefix)
+// that differs between prev and cur.
 func diffModelRate(prev, cur ModelRate) []string {
+	plc, clc := prev.LongContext, cur.LongContext
 	fields := []struct {
 		json      string
 		prev, cur float64
@@ -731,12 +759,20 @@ func diffModelRate(prev, cur ModelRate) []string {
 		{"cache_read_per_mtok", prev.CacheReadPerMtok, cur.CacheReadPerMtok},
 		{"cache_write_5m_per_mtok", prev.CacheWrite5mPerMtok, cur.CacheWrite5mPerMtok},
 		{"cache_write_1h_per_mtok", prev.CacheWrite1hPerMtok, cur.CacheWrite1hPerMtok},
+		{"long_context.input_per_mtok", plc.InputPerMtok, clc.InputPerMtok},
+		{"long_context.output_per_mtok", plc.OutputPerMtok, clc.OutputPerMtok},
+		{"long_context.cache_read_per_mtok", plc.CacheReadPerMtok, clc.CacheReadPerMtok},
+		{"long_context.cache_write_5m_per_mtok", plc.CacheWrite5mPerMtok, clc.CacheWrite5mPerMtok},
+		{"long_context.cache_write_1h_per_mtok", plc.CacheWrite1hPerMtok, clc.CacheWrite1hPerMtok},
 	}
 	var diffs []string
 	for _, f := range fields {
 		if f.prev != f.cur {
 			diffs = append(diffs, fmt.Sprintf("%s: %v -> %v", f.json, f.prev, f.cur))
 		}
+	}
+	if plc.OverPromptTokens != clc.OverPromptTokens {
+		diffs = append(diffs, fmt.Sprintf("long_context.over_prompt_tokens: %d -> %d", plc.OverPromptTokens, clc.OverPromptTokens))
 	}
 	return diffs
 }
@@ -1133,10 +1169,13 @@ func TestOpus55Resolution(t *testing.T) {
 
 // TestSonnet55Snapshots pins the Claude Sonnet 5.5 rates introduced by the
 // 2026-09-28 snapshot (issue #551). The cache-read rate is the standard 0.1x of
-// base input ($0.20/MTok): the pricing page carries no footnote for Sonnet 5.5,
-// unlike Fable 5.1 and Opus 5.5. There is no previous-model guard because the
-// rates equal Sonnet 5's, and TestHistory_CarryForward_AllSnapshots already
-// guards every carried rate.
+// base input ($0.20/MTok): until 2026-10-08 the pricing page carried no
+// footnote for Sonnet 5.5, unlike Fable 5.1 and Opus 5.5. On 2026-10-08 the
+// page extended the 0.05x footnote to Sonnet 5.5 (Wayback captures; issue
+// #559), recorded in the 2026-10-08 snapshot and pinned by
+// TestHaiku55Snapshots. There is no previous-model guard because the rates
+// equal Sonnet 5's, and TestHistory_CarryForward_AllSnapshots already guards
+// every carried rate.
 func TestSonnet55Snapshots(t *testing.T) {
 	h, err := Load()
 	if err != nil {
@@ -1166,9 +1205,13 @@ func TestSonnet55Snapshots(t *testing.T) {
 // cost for Claude Sonnet 5.5 around the 2026-09-28 snapshot. The fall-forward
 // row is the rescue path for Sonnet 5.5 rows ingested before the snapshot
 // existed (issue #368 semantics). The cache-read row pins the standard 0.1x
-// rate. The CEST row pins that the snapshot boundary is a UTC date: 01:30 local
-// on 2026-09-28 is still 2026-09-27 UTC, so Sonnet 5 resolves to the previous
-// table.
+// rate, which held until 2026-10-08, when the page extended the 0.05x
+// footnote to Sonnet 5.5 (Wayback captures; issue #559): the trailing rows pin
+// $0.20 through the last second of 2026-10-07 UTC and $0.10 from 2026-10-08.
+// The CEST rows pin that each snapshot boundary is a UTC date: 01:30 local on
+// 2026-09-28 is still 2026-09-27 UTC, so Sonnet 5 resolves to the previous
+// table, and 01:30 local on 2026-10-08 still bills Sonnet 5.5 cache reads at
+// $0.20.
 func TestSonnet55Resolution(t *testing.T) {
 	h, err := Load()
 	if err != nil {
@@ -1190,6 +1233,9 @@ func TestSonnet55Resolution(t *testing.T) {
 		{"after snapshot", time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC), "claude-sonnet-5-5", Mtok, 0, "2026-09-28", 2.00},
 		{"sonnet 5.5 cache read at standard 0.1x", time.Date(2026, 9, 28, 0, 0, 0, 0, time.UTC), "claude-sonnet-5-5", 0, Mtok, "2026-09-28", 0.20},
 		{"01:30 CEST on 2026-09-28 is still 2026-09-27 UTC", time.Date(2026, 9, 28, 1, 30, 0, 0, cest), "claude-sonnet-5", Mtok, 0, "2026-09-22", 2.00},
+		{"sonnet 5.5 cache read last second before 2026-10-08", time.Date(2026, 10, 7, 23, 59, 59, 0, time.UTC), "claude-sonnet-5-5", 0, Mtok, "2026-09-28", 0.20},
+		{"sonnet 5.5 cache read at 0.05x from 2026-10-08", time.Date(2026, 10, 8, 0, 0, 0, 0, time.UTC), "claude-sonnet-5-5", 0, Mtok, "2026-10-08", 0.10},
+		{"01:30 CEST on 2026-10-08 is still 2026-10-07 UTC", time.Date(2026, 10, 8, 1, 30, 0, 0, cest), "claude-sonnet-5-5", 0, Mtok, "2026-09-28", 0.20},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1207,6 +1253,108 @@ func TestSonnet55Resolution(t *testing.T) {
 				t.Errorf("version = %q, want %q", version, tc.wantVersion)
 			}
 			if cost != tc.wantCost {
+				t.Errorf("cost = %v, want %v", cost, tc.wantCost)
+			}
+		})
+	}
+}
+
+// TestHaiku55Snapshots pins the 2026-10-08 snapshot (issue #559): Claude
+// Haiku 5.5 with both prompt-length tiers (the page prices prompts over
+// 100,000 tokens at 5x on every dimension, output included), and Sonnet 5.5
+// cache reads at 0.05x base input ($0.10/MTok) now that the page's footnote
+// names it. The trailing alias check proves the bare "haiku" alias kept its
+// legacy rate (#498 precedent).
+func TestHaiku55Snapshots(t *testing.T) {
+	h, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	tab := h.TableAt(mustParseDate(t, "2026-10-08"))
+	if tab.Version != "2026-10-08" {
+		t.Fatalf("TableAt(2026-10-08).Version = %q, want 2026-10-08", tab.Version)
+	}
+	wantHaiku := ModelRate{
+		InputPerMtok:        0.10,
+		OutputPerMtok:       0.50,
+		CacheReadPerMtok:    0.01,
+		CacheWrite5mPerMtok: 0.125,
+		CacheWrite1hPerMtok: 0.20,
+		LongContext: LongContextRate{
+			OverPromptTokens:    100_000,
+			InputPerMtok:        0.50,
+			OutputPerMtok:       2.50,
+			CacheReadPerMtok:    0.05,
+			CacheWrite5mPerMtok: 0.625,
+			CacheWrite1hPerMtok: 1.00,
+		},
+	}
+	got, ok := tab.Models["claude-haiku-5-5"]
+	if !ok {
+		t.Fatal("Models[claude-haiku-5-5] missing from 2026-10-08")
+	}
+	if got != wantHaiku {
+		t.Errorf("claude-haiku-5-5 = %+v, want %+v", got, wantHaiku)
+	}
+	wantSonnet := ModelRate{
+		InputPerMtok:        2.00,
+		OutputPerMtok:       10.00,
+		CacheReadPerMtok:    0.10,
+		CacheWrite5mPerMtok: 2.50,
+		CacheWrite1hPerMtok: 4.00,
+	}
+	if got := tab.Models["claude-sonnet-5-5"]; got != wantSonnet {
+		t.Errorf("claude-sonnet-5-5 = %+v, want %+v", got, wantSonnet)
+	}
+	if got := tab.Models["haiku"].InputPerMtok; got != 0.80 {
+		t.Errorf("haiku alias InputPerMtok = %v, want 0.80 (aliases keep legacy rates)", got)
+	}
+}
+
+// TestHaiku55Resolution pins the pricing_version stamped and the resolved cost
+// for Claude Haiku 5.5 around the 2026-10-08 snapshot. Haiku 5.5 first appeared
+// on the pricing page on the evening of 2026-10-07 UTC, so those turns resolve
+// by fall-forward (issue #368 semantics) and must get the long tier too, not
+// just the base rate. A prompt counts input plus cache reads and writes, so a
+// mostly-cache-read prompt crosses the 100,000-token threshold; exactly
+// 100,000 stays on the base rates (issue #559).
+func TestHaiku55Resolution(t *testing.T) {
+	h, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	cases := []struct {
+		name        string
+		ts          time.Time
+		input       int64
+		output      int64
+		cacheRead   int64
+		wantVersion string
+		wantCost    float64
+	}{
+		{"fall-forward before snapshot, short prompt", time.Date(2026, 10, 7, 21, 30, 0, 0, time.UTC), 0, 1_000_000, 0, "2026-10-08", 0.50},
+		{"fall-forward before snapshot, long prompt", time.Date(2026, 10, 7, 21, 30, 0, 0, time.UTC), 1_000_000, 1_000_000, 0, "2026-10-08", 3.00},
+		{"exact snapshot date, short prompt", time.Date(2026, 10, 8, 0, 0, 0, 0, time.UTC), 50_000, 0, 0, "2026-10-08", 0.005},
+		{"after snapshot, mostly cache reads crosses threshold", time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC), 1, 0, 100_000, "2026-10-08", 0.0050005},
+		{"exactly 100,000 prompt tokens stays base", time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC), 50_000, 0, 50_000, "2026-10-08", 0.0055},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := parse.Message{
+				Timestamp:       tc.ts,
+				Model:           "claude-haiku-5-5",
+				InputTokens:     tc.input,
+				OutputTokens:    tc.output,
+				CacheReadTokens: tc.cacheRead,
+			}
+			cost, version, unknown := h.CostFor(m)
+			if unknown {
+				t.Fatal("unknown = true, want false")
+			}
+			if version != tc.wantVersion {
+				t.Errorf("version = %q, want %q", version, tc.wantVersion)
+			}
+			if math.Abs(cost-tc.wantCost) > 1e-9 {
 				t.Errorf("cost = %v, want %v", cost, tc.wantCost)
 			}
 		})
