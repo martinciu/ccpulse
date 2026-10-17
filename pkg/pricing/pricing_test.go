@@ -1301,6 +1301,54 @@ func TestHistory_ContentHash(t *testing.T) {
 		}
 	})
 
+	// tieredTables is baseTables with a long_context tier on the first
+	// table's modelA; the existing subtests keep their untiered fixtures.
+	tieredTables := func() []Table {
+		tabs := baseTables()
+		a := tabs[0].Models["modelA"]
+		a.LongContext = LongContextRate{
+			OverPromptTokens:    100_000,
+			InputPerMtok:        50,
+			OutputPerMtok:       250,
+			CacheReadPerMtok:    5,
+			CacheWrite5mPerMtok: 62.5,
+			CacheWrite1hPerMtok: 100,
+		}
+		tabs[0].Models["modelA"] = a
+		return tabs
+	}
+	tierCases := []struct {
+		name  string
+		base  func() []Table
+		edit  func(*LongContextRate)
+		label string
+	}{
+		{"editing one long_context rate changes the hash", tieredTables, func(lc *LongContextRate) { lc.OutputPerMtok = 251 }, "editing one tier rate"},
+		{"editing the long_context threshold changes the hash", tieredTables, func(lc *LongContextRate) { lc.OverPromptTokens = 200_000 }, "editing the tier threshold"},
+		{"adding a long_context tier changes the hash", baseTables, nil, "adding a tier"},
+	}
+	for _, tc := range tierCases {
+		t.Run(tc.name, func(t *testing.T) {
+			before, err := HistoryForTest(tc.base())
+			if err != nil {
+				t.Fatalf("HistoryForTest: %v", err)
+			}
+			edited := tieredTables()
+			if tc.edit != nil {
+				a := edited[0].Models["modelA"]
+				tc.edit(&a.LongContext)
+				edited[0].Models["modelA"] = a
+			}
+			after, err := HistoryForTest(edited)
+			if err != nil {
+				t.Fatalf("HistoryForTest: %v", err)
+			}
+			if before.ContentHash() == after.ContentHash() {
+				t.Errorf("ContentHash() unchanged after %s, want different hash", tc.label)
+			}
+		})
+	}
+
 	t.Run("separator characters in a model name do not collide", func(t *testing.T) {
 		// With bare '|' / '\n' separators, a single model named
 		// "foo|1|1|1|1|1\nzbar" serialises to the same byte stream as the

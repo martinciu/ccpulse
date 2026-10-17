@@ -199,9 +199,9 @@ func (h History) Versions() []string {
 // ContentHash returns a deterministic FNV-64a hash, as lowercase hex, over the
 // full content of every embedded snapshot in h — not just the version
 // strings Versions() exposes. Any edit to any snapshot (a new model, a
-// corrected rate, an added file) changes the returned value, even when the
-// set of version strings stays the same. Consumed by pkg/cache to decide
-// whether a startup recost is needed (issue #512).
+// corrected rate, a long_context tier, an added file) changes the returned
+// value, even when the set of version strings stays the same. Consumed by
+// pkg/cache to decide whether a startup recost is needed (issue #512).
 func (h History) ContentHash() string {
 	sum := fnv.New64a()
 	// Strings are written with %q so each one is self-delimiting: a model
@@ -216,7 +216,7 @@ func (h History) ContentHash() string {
 		sort.Strings(names) // map iteration order must not affect the hash
 		for _, name := range names {
 			r := tab.Models[name]
-			fmt.Fprintf(sum, "%q|%s|%s|%s|%s|%s\n",
+			fmt.Fprintf(sum, "%q|%s|%s|%s|%s|%s",
 				name,
 				strconv.FormatFloat(r.InputPerMtok, 'g', -1, 64),
 				strconv.FormatFloat(r.OutputPerMtok, 'g', -1, 64),
@@ -224,6 +224,20 @@ func (h History) ContentHash() string {
 				strconv.FormatFloat(r.CacheWrite5mPerMtok, 'g', -1, 64),
 				strconv.FormatFloat(r.CacheWrite1hPerMtok, 'g', -1, 64),
 			)
+			// The tier goes behind a "|lc|" marker only when present, so
+			// untiered lines stay byte-identical to the pre-tier encoding
+			// and a tiered line's extra fields cannot collide with one.
+			if lc := r.LongContext; lc != (LongContextRate{}) {
+				fmt.Fprintf(sum, "|lc|%s|%s|%s|%s|%s|%s",
+					strconv.FormatInt(lc.OverPromptTokens, 10),
+					strconv.FormatFloat(lc.InputPerMtok, 'g', -1, 64),
+					strconv.FormatFloat(lc.OutputPerMtok, 'g', -1, 64),
+					strconv.FormatFloat(lc.CacheReadPerMtok, 'g', -1, 64),
+					strconv.FormatFloat(lc.CacheWrite5mPerMtok, 'g', -1, 64),
+					strconv.FormatFloat(lc.CacheWrite1hPerMtok, 'g', -1, 64),
+				)
+			}
+			fmt.Fprintln(sum)
 		}
 	}
 	return strconv.FormatUint(sum.Sum64(), 16)
