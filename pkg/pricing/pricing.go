@@ -26,6 +26,20 @@ type ModelRate struct {
 	CacheReadPerMtok    float64 `json:"cache_read_per_mtok"`
 	CacheWrite5mPerMtok float64 `json:"cache_write_5m_per_mtok"`
 	CacheWrite1hPerMtok float64 `json:"cache_write_1h_per_mtok"`
+	// LongContext is a value, not a pointer, so ModelRate stays comparable
+	// with == (snapshot carry-forward tests rely on it).
+	LongContext LongContextRate `json:"long_context,omitzero"`
+}
+
+// LongContextRate is an optional second price tier for models the pricing
+// page prices by prompt length. The zero value means "no tier".
+type LongContextRate struct {
+	OverPromptTokens    int64   `json:"over_prompt_tokens"`
+	InputPerMtok        float64 `json:"input_per_mtok"`
+	OutputPerMtok       float64 `json:"output_per_mtok"`
+	CacheReadPerMtok    float64 `json:"cache_read_per_mtok"`
+	CacheWrite5mPerMtok float64 `json:"cache_write_5m_per_mtok"`
+	CacheWrite1hPerMtok float64 `json:"cache_write_1h_per_mtok"`
 }
 
 // Table is a versioned snapshot of per-model billing rates decoded from a pricing JSON file.
@@ -83,7 +97,11 @@ func Load() (History, error) {
 // unmarshalled it into a float64 zero value, so parseTable rejects it rather
 // than silently pricing that dimension free. A genuinely free-tier rate has
 // no precedent in the embedded snapshots and would need an explicit design
-// decision (e.g. a dedicated sentinel), not a parse-time default.
+// decision (e.g. a dedicated sentinel), not a parse-time default. A model may
+// also carry an optional "long_context" tier (threshold plus five rates); a
+// present tier is held to the same rule, and its threshold must be positive,
+// so a misspelled "over_prompt_tokens" key is rejected rather than pricing
+// every message long.
 func parseTable(b []byte) (Table, error) {
 	var t Table
 	if err := json.Unmarshal(b, &t); err != nil {
@@ -105,8 +123,11 @@ func parseTable(b []byte) (Table, error) {
 }
 
 // validateModels checks that every ModelRate in models has all five rate
-// fields set to a positive, finite number. Model names are visited in
-// sorted order and fields in struct declaration order, so the first
+// fields set to a positive, finite number. A model with a non-zero
+// LongContext tier must also have a positive threshold and five positive,
+// finite tier rates; the zero value means untiered and is valid. Model names
+// are visited in sorted order, and per model the base fields, then the
+// threshold, then the tier rates in struct declaration order, so the first
 // validation failure is deterministic across runs.
 func validateModels(models map[string]ModelRate) error {
 	names := make([]string, 0, len(models))
@@ -119,22 +140,45 @@ func validateModels(models map[string]ModelRate) error {
 			return errors.New("model name must not be empty")
 		}
 		r := models[name]
-		fields := [...]struct {
-			json string
-			rate float64
-		}{
-			{"input_per_mtok", r.InputPerMtok},
-			{"output_per_mtok", r.OutputPerMtok},
-			{"cache_read_per_mtok", r.CacheReadPerMtok},
-			{"cache_write_5m_per_mtok", r.CacheWrite5mPerMtok},
-			{"cache_write_1h_per_mtok", r.CacheWrite1hPerMtok},
+		if err := validateRates(name, "",
+			r.InputPerMtok, r.OutputPerMtok, r.CacheReadPerMtok, r.CacheWrite5mPerMtok, r.CacheWrite1hPerMtok,
+		); err != nil {
+			return err
 		}
-		for _, f := range fields {
-			// IsNaN and IsInf are load-bearing: NaN <= 0 and +Inf <= 0 are
-			// both false, so the range check alone would let them through.
-			if math.IsNaN(f.rate) || math.IsInf(f.rate, 0) || f.rate <= 0 {
-				return fmt.Errorf("model %q: %s must be a positive finite rate, got %v", name, f.json, f.rate)
-			}
+		lc := r.LongContext
+		if lc == (LongContextRate{}) {
+			continue
+		}
+		if lc.OverPromptTokens <= 0 {
+			return fmt.Errorf("model %q: long_context.over_prompt_tokens must be positive, got %d", name, lc.OverPromptTokens)
+		}
+		if err := validateRates(name, "long_context.",
+			lc.InputPerMtok, lc.OutputPerMtok, lc.CacheReadPerMtok, lc.CacheWrite5mPerMtok, lc.CacheWrite1hPerMtok,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateRates checks the five per-Mtok rates, given in ModelRate
+// declaration order, and names a failing field by its JSON key behind prefix.
+func validateRates(name, prefix string, input, output, cacheRead, cacheWrite5m, cacheWrite1h float64) error {
+	fields := [...]struct {
+		json string
+		rate float64
+	}{
+		{"input_per_mtok", input},
+		{"output_per_mtok", output},
+		{"cache_read_per_mtok", cacheRead},
+		{"cache_write_5m_per_mtok", cacheWrite5m},
+		{"cache_write_1h_per_mtok", cacheWrite1h},
+	}
+	for _, f := range fields {
+		// IsNaN and IsInf are load-bearing: NaN <= 0 and +Inf <= 0 are
+		// both false, so the range check alone would let them through.
+		if math.IsNaN(f.rate) || math.IsInf(f.rate, 0) || f.rate <= 0 {
+			return fmt.Errorf("model %q: %s%s must be a positive finite rate, got %v", name, prefix, f.json, f.rate)
 		}
 	}
 	return nil
@@ -155,9 +199,9 @@ func (h History) Versions() []string {
 // ContentHash returns a deterministic FNV-64a hash, as lowercase hex, over the
 // full content of every embedded snapshot in h — not just the version
 // strings Versions() exposes. Any edit to any snapshot (a new model, a
-// corrected rate, an added file) changes the returned value, even when the
-// set of version strings stays the same. Consumed by pkg/cache to decide
-// whether a startup recost is needed (issue #512).
+// corrected rate, a long_context tier, an added file) changes the returned
+// value, even when the set of version strings stays the same. Consumed by
+// pkg/cache to decide whether a startup recost is needed (issue #512).
 func (h History) ContentHash() string {
 	sum := fnv.New64a()
 	// Strings are written with %q so each one is self-delimiting: a model
@@ -172,7 +216,7 @@ func (h History) ContentHash() string {
 		sort.Strings(names) // map iteration order must not affect the hash
 		for _, name := range names {
 			r := tab.Models[name]
-			fmt.Fprintf(sum, "%q|%s|%s|%s|%s|%s\n",
+			fmt.Fprintf(sum, "%q|%s|%s|%s|%s|%s",
 				name,
 				strconv.FormatFloat(r.InputPerMtok, 'g', -1, 64),
 				strconv.FormatFloat(r.OutputPerMtok, 'g', -1, 64),
@@ -180,6 +224,20 @@ func (h History) ContentHash() string {
 				strconv.FormatFloat(r.CacheWrite5mPerMtok, 'g', -1, 64),
 				strconv.FormatFloat(r.CacheWrite1hPerMtok, 'g', -1, 64),
 			)
+			// The tier goes behind a "|lc|" marker only when present, so
+			// untiered lines stay byte-identical to the pre-tier encoding
+			// and a tiered line's extra fields cannot collide with one.
+			if lc := r.LongContext; lc != (LongContextRate{}) {
+				fmt.Fprintf(sum, "|lc|%s|%s|%s|%s|%s|%s",
+					strconv.FormatInt(lc.OverPromptTokens, 10),
+					strconv.FormatFloat(lc.InputPerMtok, 'g', -1, 64),
+					strconv.FormatFloat(lc.OutputPerMtok, 'g', -1, 64),
+					strconv.FormatFloat(lc.CacheReadPerMtok, 'g', -1, 64),
+					strconv.FormatFloat(lc.CacheWrite5mPerMtok, 'g', -1, 64),
+					strconv.FormatFloat(lc.CacheWrite1hPerMtok, 'g', -1, 64),
+				)
+			}
+			fmt.Fprintln(sum)
 		}
 	}
 	return strconv.FormatUint(sum.Sum64(), 16)
@@ -264,10 +322,28 @@ func HistoryForTest(entries []Table) (History, error) {
 
 // CostFor returns USD estimate for the message and whether the model rate
 // was missing from this Table.
+//
+// A model with a LongContext tier bills every token kind, output included,
+// at the tier rates when the message's prompt is strictly greater than
+// OverPromptTokens; exactly at the threshold stays on the base rates. The
+// prompt counts input, cache read and both cache writes; output tokens never
+// count toward it. Accepted approximation: a parent row whose tokens pkg/parse
+// summed from several own-model usage.iterations entries is tiered on the
+// sum, although the pricing page prices each request on its own.
 func (t Table) CostFor(m parse.Message) (float64, bool) {
 	r, ok := t.Models[m.Model]
 	if !ok {
 		return 0, true
+	}
+	prompt := m.InputTokens + m.CacheReadTokens + m.CacheWrite5mTokens + m.CacheWrite1hTokens
+	if lc := r.LongContext; lc != (LongContextRate{}) && prompt > lc.OverPromptTokens {
+		r = ModelRate{
+			InputPerMtok:        lc.InputPerMtok,
+			OutputPerMtok:       lc.OutputPerMtok,
+			CacheReadPerMtok:    lc.CacheReadPerMtok,
+			CacheWrite5mPerMtok: lc.CacheWrite5mPerMtok,
+			CacheWrite1hPerMtok: lc.CacheWrite1hPerMtok,
+		}
 	}
 	const M = 1_000_000
 	cost := float64(m.InputTokens)/M*r.InputPerMtok +
