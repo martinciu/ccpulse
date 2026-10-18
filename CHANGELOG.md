@@ -3,6 +3,42 @@
 All notable changes to ccpulse are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.14.0] — 2026-10-18
+
+### Added
+- Pricing snapshot `2026-10-08` with Claude Haiku 5.5 at $0.10 / $0.50 /
+  $0.01 / $0.125 / $0.20 per MTok. Haiku 5.5 is the first model priced by
+  request size: a prompt over 100,000 tokens (input plus cache reads and
+  writes; output does not count) bills every token kind, output included,
+  at 5× ($0.50 / $2.50 / $0.05 / $0.625 / $1.00). Snapshots carry this as an
+  optional per-model `long_context` tier, validated like the base rates.
+  Haiku 5.5 turns previously priced at $0 and were flagged
+  `pricing_unknown`; the new snapshot changes the recost fingerprint, so
+  cached rows are repriced once on the next launch with no manual step
+  (#559, #564)
+
+### Changed
+- Sonnet 5.5 cache reads are $0.10 per MTok (0.05× base input, the same
+  footnote as Opus 5.5) instead of $0.20 for turns dated 2026-10-08 UTC or
+  later. Earlier turns keep $0.20. The same one-time recost applies
+  (#559, #564)
+
+### Internal
+- Go toolchain 1.25.13 → 1.26.9. Go 1.25 is out of upstream support, and
+  1.26.9 clears nine standard-library advisories (net/http, net/textproto,
+  crypto/tls) that had turned vulncheck red. Building from source now needs
+  Go 1.26; `govulncheck` moves v1.7.0 → v1.8.0 in CI and `make vulncheck`
+  (#555, #558, #562, #563)
+- pricing-drift: the checker compares the pricing page's prompt-length rows
+  against `long_context` and treats a tier mismatch in either direction as
+  drift (#559, #564)
+- Bump `modernc.org/sqlite` 1.59.0 → 1.60.1 (#558),
+  `NimbleMarkets/ntcharts` 0.5.1 → 0.5.2 (#560), `charmbracelet/x/ansi`
+  0.11.8 → 0.11.9 (#565), `goreleaser/goreleaser-action` 7.2.3 → 7.3.0
+  (#566), `actions/upload-artifact` 7.0.1 → 7.0.2 and
+  `actions/download-artifact` 8.0.1 → 8.0.2 (#561), and
+  `anthropics/claude-code-action` 1.0.234 → 1.0.251 (#557, #561, #566)
+
 ## [0.13.0] — 2026-10-03
 
 ### Added
