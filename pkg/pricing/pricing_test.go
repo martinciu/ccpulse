@@ -1471,7 +1471,11 @@ func TestHistory_ContentHash(t *testing.T) {
 		edit  func(*LongContextRate)
 		label string
 	}{
-		{"editing one long_context rate changes the hash", tieredTables, func(lc *LongContextRate) { lc.OutputPerMtok = 251 }, "editing one tier rate"},
+		{"editing long_context.input_per_mtok changes the hash", tieredTables, func(lc *LongContextRate) { lc.InputPerMtok = 51 }, "editing tier input"},
+		{"editing long_context.output_per_mtok changes the hash", tieredTables, func(lc *LongContextRate) { lc.OutputPerMtok = 251 }, "editing tier output"},
+		{"editing long_context.cache_read_per_mtok changes the hash", tieredTables, func(lc *LongContextRate) { lc.CacheReadPerMtok = 6 }, "editing tier cache_read"},
+		{"editing long_context.cache_write_5m_per_mtok changes the hash", tieredTables, func(lc *LongContextRate) { lc.CacheWrite5mPerMtok = 63.5 }, "editing tier cache_write_5m"},
+		{"editing long_context.cache_write_1h_per_mtok changes the hash", tieredTables, func(lc *LongContextRate) { lc.CacheWrite1hPerMtok = 101 }, "editing tier cache_write_1h"},
 		{"editing the long_context threshold changes the hash", tieredTables, func(lc *LongContextRate) { lc.OverPromptTokens = 200_000 }, "editing the tier threshold"},
 		{"adding a long_context tier changes the hash", baseTables, nil, "adding a tier"},
 	}
