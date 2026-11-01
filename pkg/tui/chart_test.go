@@ -1256,29 +1256,41 @@ func BenchmarkBuildLineChart(b *testing.B) {
 	}
 }
 
+// TestColumnToTime_RoundTrip pins the scroll-anchor invariant: every column
+// survives columnToTime -> timeToColumn unchanged. snapshotAnchor and
+// restoreAnchor rely on it, and an off-by-one at a bucket-start column restores
+// the previous bucket, so the viewport creeps left one bar per refresh (#573).
+// The 24h-zoom canvases (canvasW = 12N-2, bar 10 + gap 2) make span*col/canvasW
+// non-integral, which is where a non-inverse rounding shows up. The DST spans
+// cover local-day buckets of 25h and 23h.
 func TestColumnToTime_RoundTrip(t *testing.T) {
+	t.Parallel()
+	const day = 24 * time.Hour
 	from := time.Date(2026, 5, 15, 9, 0, 0, 0, time.UTC)
-	to := from.Add(24 * time.Hour)
 
 	tests := []struct {
 		name    string
 		canvasW int
-		col     int
+		span    time.Duration
 	}{
-		{"narrow_canvas", 24, 0},
-		{"narrow_canvas_mid", 24, 12},
-		{"narrow_canvas_end", 24, 23},
-		{"wide_canvas_start", 5000, 0},
-		{"wide_canvas_mid", 5000, 2500},
-		{"wide_canvas_end", 5000, 4999},
+		{"1d_narrow", 24, day},
+		{"1d_wide", 5000, day},
+		{"15m_zoom_1d", 96, day},
+		{"24h_zoom_41d", ZoomLevels[2].CanvasWidth(41), 41 * day},
+		{"24h_zoom_40d_dst_fall_back", ZoomLevels[2].CanvasWidth(40), 40*day + time.Hour},
+		{"24h_zoom_30d_dst_spring_forward", ZoomLevels[2].CanvasWidth(30), 30*day - time.Hour},
+		{"24h_zoom_365d", ZoomLevels[2].CanvasWidth(365), 365 * day},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotT := columnToTime(tt.col, tt.canvasW, from, to)
-			gotCol := timeToColumn(gotT, tt.canvasW, from, to)
-			if absInt(gotCol-tt.col) > 1 {
-				t.Errorf("round-trip col=%d -> t=%v -> col=%d (canvasW=%d); want within +-1",
-					tt.col, gotT, gotCol, tt.canvasW)
+			t.Parallel()
+			to := from.Add(tt.span)
+			for col := 0; col <= tt.canvasW; col++ {
+				gotT := columnToTime(col, tt.canvasW, from, to)
+				if gotCol := timeToColumn(gotT, tt.canvasW, from, to); gotCol != col {
+					t.Fatalf("round-trip col=%d -> t=%v -> col=%d (canvasW=%d, span=%v); want %d",
+						col, gotT, gotCol, tt.canvasW, tt.span, col)
+				}
 			}
 		})
 	}
@@ -1364,14 +1376,6 @@ func TestBucketCountInRange(t *testing.T) {
 			}
 		})
 	}
-}
-
-// absInt is a small int absolute-value helper used by helper round-trip tests.
-func absInt(x int) int {
-	if x < 0 {
-		return -x
-	}
-	return x
 }
 
 // TestBuildLineChart_5hAnd7dShareScale guards against issue #194 —

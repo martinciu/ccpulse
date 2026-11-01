@@ -2224,8 +2224,8 @@ func TestRefreshChart_PreservesAnchorAcrossRefresh(t *testing.T) {
 	// No-op refresh — same data, same zoom, same unit.
 	m.refreshChart()
 
-	if got := m.viewportXOffset; absInt(got-want) > 1 {
-		t.Errorf("after no-op refresh viewportXOffset = %d; want within +-1 of %d", got, want)
+	if got := m.viewportXOffset; got != want {
+		t.Errorf("after no-op refresh viewportXOffset = %d; want %d", got, want)
 	}
 }
 
@@ -2411,11 +2411,19 @@ func TestRefreshChart_PreservesScroll_Issue134(t *testing.T) {
 }
 
 // TestRefreshChart_ScrollAnchorAcrossZooms verifies the 24h zoom path:
-// - ioTokenBucketsDaily returns day-aligned buckets (~24h apart)
-// - the anchor is preserved across a subsequent refreshChart in 24h zoom
+//   - ioTokenBucketsDaily returns day-aligned buckets (~24h apart)
+//   - the anchor is preserved across a subsequent refreshChart in 24h zoom,
+//     at EVERY scroll position
 //
 // Seeds 40 days of data (40*24*4=3840 15m-spaced messages) so that 24h
 // zoom produces ~40 buckets with scroll room beyond visibleBuckets_24h=23.
+//
+// The sweep matters: 24h is the only zoom with a bar gap, so its canvas
+// (12N-2 columns) maps columns to non-integral offsets, and a non-inverse
+// columnToTime/timeToColumn pair drifts at roughly half the positions (#573).
+// A single scrolled position passes or fails depending on N, which shifts
+// with the local timezone and DST; the old one-position check happened to
+// pass under CI's UTC while failing locally.
 func TestRefreshChart_ScrollAnchorAcrossZooms(t *testing.T) {
 	const days = 40
 	m, cleanup := seedScrollTestModel(t, days*24*4)
@@ -2438,22 +2446,29 @@ func TestRefreshChart_ScrollAnchorAcrossZooms(t *testing.T) {
 		}
 	}
 
-	// Scroll to a mid-chart position and verify anchor persists across refresh.
+	// Visit every scrolled (non-pinned) position and verify the anchor
+	// persists across a refresh.
 	nv := m.visibleBuckets()
 	if len(m.lastStarts) <= nv {
 		t.Skipf("not enough 24h buckets for scroll room: %d ≤ visibleBuckets %d", len(m.lastStarts), nv)
 	}
-	m.scrollLeft(5)
-	if m.viewportXOffset == 0 {
-		t.Fatal("scrollLeft(5) did not move; no scroll room")
+	pinnedX := m.viewportXOffset // the first 24h refresh pins to the right edge
+	if pinnedX == 0 {
+		t.Fatal("24h zoom: no scroll room left of the right edge")
 	}
-	anchorTime := m.lastStarts[m.viewportXOffset]
+	for pos := range pinnedX {
+		m.setX(pos)
+		if m.viewportXOffset != pos {
+			t.Fatalf("setX(%d) landed at %d", pos, m.viewportXOffset)
+		}
+		anchorTime := m.lastStarts[pos]
 
-	m.refreshChart()
+		m.refreshChart()
 
-	got := m.lastStarts[m.viewportXOffset]
-	if !got.Equal(anchorTime) {
-		t.Errorf("anchor drifted at 24h zoom across refresh: %v → %v", anchorTime, got)
+		if got := m.lastStarts[m.viewportXOffset]; !got.Equal(anchorTime) {
+			t.Errorf("anchor drifted at 24h zoom across refresh from position %d: %v → %v",
+				pos, anchorTime, got)
+		}
 	}
 }
 
