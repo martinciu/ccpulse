@@ -70,10 +70,13 @@ func (z ZoomLevel) stride() int {
 // column within the canvas's [from, to) range. Used pre-rebuild to
 // snapshot the anchor; the (truncating) inverse is timeToColumn.
 //
-// Uses integer-second arithmetic with round-to-nearest so the
-// round-trip columnToTime(col) -> timeToColumn(t) returns col exactly
-// at canvasW values where the truncated form would drop by 1 (e.g.,
-// 312/490*span over a 41-day range).
+// Uses integer-second arithmetic with ceiling division so the round trip
+// columnToTime(col) -> timeToColumn(t) returns col exactly for every col
+// (#573). snapshotAnchor/restoreAnchor depend on that: an off-by-one at a
+// bucket-start column restores the previous bucket. Round-to-nearest
+// held only for columns whose fractional offset rounded up, roughly half
+// of them at 24h zoom, where canvasW = 12N-2 makes span*col/canvasW
+// non-integral.
 //
 // Defensive: canvasW<=0 or to<=from collapse to the canvas origin so
 // callers can use the result without nil checks. col is clamped to
@@ -92,11 +95,13 @@ func columnToTime(col, canvasW int, from, to time.Time) time.Time {
 	if spanSec <= 0 {
 		return from
 	}
-	// Round-to-nearest: (a + b/2) / b. The +canvasW/2 bias makes this
-	// the inverse of timeToColumn's truncating divide for exact
-	// bucket-boundary inputs that would otherwise drift by 1 col.
+	// Ceiling: (a + b - 1) / b. With offSec = ceil(span*col/cw),
+	// span*col <= offSec*cw < span*col + cw, so timeToColumn's
+	// floor(offSec*cw/span) == col whenever cw <= span (canvas columns vs
+	// span seconds), which every real canvas satisfies by orders of
+	// magnitude.
 	cw := int64(canvasW)
-	offSec := (spanSec*int64(col) + cw/2) / cw
+	offSec := (spanSec*int64(col) + cw - 1) / cw
 	return from.Add(time.Duration(offSec) * time.Second)
 }
 
