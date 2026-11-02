@@ -2472,6 +2472,105 @@ func TestRefreshChart_ScrollAnchorAcrossZooms(t *testing.T) {
 	}
 }
 
+// TestRefreshChart_ScrollAnchorSurvivesBackfill verifies a scrolled 24h view
+// keeps its left-edge day when older history arrives and the chart's `from`
+// moves earlier (#574). An anchor interpolated linearly over the gapped canvas
+// (12N-2 columns for N days) maps the same instant to a column short of the
+// bucket start once N grows on the left, so the view slid one day left.
+func TestRefreshChart_ScrollAnchorSurvivesBackfill(t *testing.T) {
+	const days = 40
+	m, cleanup := seedScrollTestModel(t, days*24*4)
+	defer cleanup()
+
+	m.zoomIdx = 2
+	m.refreshChart()
+	pinnedX := m.viewportXOffset // the first 24h refresh pins to the right edge
+	if pinnedX < 2 {
+		t.Fatalf("24h zoom: no scroll room (pinned offset %d)", pinnedX)
+	}
+	m.setX(pinnedX / 2)
+	before := m.lastStarts[m.viewportXOffset]
+	oldest := m.lastStarts[0]
+
+	// Backfill five days of history older than anything seeded.
+	tab, err := pricing.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	older := make([]parse.Message, 5)
+	for i := range older {
+		older[i] = parse.Message{
+			SessionID:   "s1",
+			ProjectSlug: "p",
+			Model:       "claude-opus-4-7",
+			Timestamp:   oldest.Add(-time.Duration(i+1)*24*time.Hour + 12*time.Hour),
+			InputTokens: 1000,
+		}
+	}
+	if err := m.deps.Cache.InsertMessages(t.Context(), older, tab); err != nil {
+		t.Fatal(err)
+	}
+
+	m.refreshChart()
+
+	if got := m.lastStarts[0]; !got.Before(oldest) {
+		t.Fatalf("backfill did not widen the chart: lastStarts[0] = %v, was %v", got, oldest)
+	}
+	if got := m.lastStarts[m.viewportXOffset]; !got.Equal(before) {
+		t.Errorf("anchor drifted at 24h zoom across a backfill refresh: %v → %v", before, got)
+	}
+}
+
+// TestRefreshChart_ZoomKeepsLeftEdgeBucket verifies a zoom change on a
+// scrolled view lands on the destination bucket that contains the old
+// left-edge bucket start (#574): 24h -> 15m opens on the day's local midnight,
+// and 1h/15m -> 24h stays on the same day even when the left edge sits in the
+// first hours after midnight. The source bucket is about 20 days back, far
+// from the destination's right edge, so setX's clamp cannot mask the result.
+func TestRefreshChart_ZoomKeepsLeftEdgeBucket(t *testing.T) {
+	tests := []struct {
+		name             string
+		fromZoom, toZoom int
+		hour, minute     int // local wall clock of the source left edge
+	}{
+		{"24h_to_15m_opens_on_midnight", 2, 0, 0, 0},
+		{"1h_to_24h_early_morning_stays_on_day", 1, 2, 1, 0},
+		{"15m_to_24h_after_midnight_stays_on_day", 0, 2, 0, 30},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m, cleanup := seedScrollTestModel(t, 40*24*4)
+			defer cleanup()
+
+			m.zoomIdx = tt.fromZoom
+			m.refreshChart()
+
+			day := cache.DayStartLocal(m.now()).AddDate(0, 0, -20)
+			want := time.Date(day.Year(), day.Month(), day.Day(), tt.hour, tt.minute, 0, 0, time.Local)
+			src := slices.IndexFunc(m.lastStarts, func(s time.Time) bool { return !s.Before(want) })
+			if src < 0 {
+				t.Fatalf("no %s bucket at or after %v", ZoomLevels[tt.fromZoom].Label, want)
+			}
+			m.setX(src)
+			if m.viewportXOffset != src {
+				t.Fatalf("setX(%d) landed at %d", src, m.viewportXOffset)
+			}
+			old := m.lastStarts[src]
+
+			m.zoomIdx = tt.toZoom
+			m.refreshChart()
+
+			dst := m.viewportXOffset
+			start := m.lastStarts[dst]
+			contains := !start.After(old) && (dst+1 == len(m.lastStarts) || m.lastStarts[dst+1].After(old))
+			if !contains {
+				t.Errorf("%s left edge %v does not contain the %s left edge %v",
+					ZoomLevels[tt.toZoom].Label, start, ZoomLevels[tt.fromZoom].Label, old)
+			}
+		})
+	}
+}
+
 func TestView_CostModeRendersDollarPrefix(t *testing.T) {
 	// End-to-end check that flipping unitIdx to cost causes the rendered
 	// View() to contain a "$"-prefixed Y label. Guards the path

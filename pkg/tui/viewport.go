@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"slices"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
@@ -145,6 +146,13 @@ type viewportAnchor struct {
 // overwrites lastCanvasW / lastChartFrom / lastChartTo. had=false on first
 // load or after an empty-cache reset; pinned=true when the viewport was at
 // the right edge (the restore then re-pins to the new right edge).
+//
+// After a bar-unit pass the anchor is the start of the left-edge bucket
+// (#574). Interpolating time across the canvas instead is only exact while
+// the geometry is unchanged: the 24h canvas is gapped (12N-2 columns), so
+// after a backfill or a zoom change the same column-derived instant lands
+// in a neighbouring day. Remaining mode keeps the interpolation, since its
+// lastStarts are sparse samples that viewportXOffset does not index.
 func (m *Model) snapshotAnchor() viewportAnchor {
 	var a viewportAnchor
 	if m.lastCanvasW > 0 && m.lastZoomStride > 0 && !m.lastChartFrom.IsZero() && m.lastChartTo.After(m.lastChartFrom) {
@@ -152,7 +160,11 @@ func (m *Model) snapshotAnchor() viewportAnchor {
 		prevMaxCol := max(0, m.lastCanvasW-m.viewport.Width)
 		a.pinned = prevColOffset >= prevMaxCol
 		if !a.pinned {
-			a.at = columnToTime(prevColOffset, m.lastCanvasW, m.lastChartFrom, m.lastChartTo)
+			if m.lastBarStarts && m.viewportXOffset >= 0 && m.viewportXOffset < len(m.lastStarts) {
+				a.at = m.lastStarts[m.viewportXOffset]
+			} else {
+				a.at = columnToTime(prevColOffset, m.lastCanvasW, m.lastChartFrom, m.lastChartTo)
+			}
 			a.had = true
 		}
 	}
@@ -160,9 +172,12 @@ func (m *Model) snapshotAnchor() viewportAnchor {
 }
 
 // restoreAnchor restores the scroll position captured by snapshotAnchor
-// against the rebuilt canvas. !had or pinned re-pins to the right edge;
-// otherwise it maps the anchor time back to a column. Routes through setX so
-// the viewport offset and the viewportXOffset shadow stay in sync.
+// against the rebuilt canvas. !had or pinned re-pins to the right edge.
+// Otherwise a bar-unit canvas lands on the bucket containing the anchor
+// time (the last start <= at in the freshly built, dense lastStarts), and a
+// remaining-mode canvas maps the anchor time back to a column. Routes
+// through setX so the viewport offset and the viewportXOffset shadow stay
+// in sync; setX also clamps to the scrollable range.
 func (m *Model) restoreAnchor(a viewportAnchor, zoom ZoomLevel, canvasW int, from, to time.Time) {
 	stride := zoom.stride()
 	rightEdgeCol := max(0, canvasW-m.viewport.Width)
@@ -170,6 +185,12 @@ func (m *Model) restoreAnchor(a viewportAnchor, zoom ZoomLevel, canvasW int, fro
 	case !a.had, a.pinned:
 		bucketCount := (canvasW + max(zoom.BarGap, 0)) / stride
 		m.setX(bucketCount)
+	case m.lastBarStarts && len(m.lastStarts) > 0:
+		i, found := slices.BinarySearchFunc(m.lastStarts, a.at, time.Time.Compare)
+		if !found {
+			i-- // insertion point -> the bucket that contains a.at
+		}
+		m.setX(max(i, 0))
 	default:
 		targetCol := min(timeToColumn(a.at, canvasW, from, to), rightEdgeCol)
 		m.setX(targetCol / stride)

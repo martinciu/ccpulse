@@ -1261,8 +1261,10 @@ func BenchmarkBuildLineChart(b *testing.B) {
 // restoreAnchor rely on it, and an off-by-one at a bucket-start column restores
 // the previous bucket, so the viewport creeps left one bar per refresh (#573).
 // The 24h-zoom canvases (canvasW = 12N-2, bar 10 + gap 2) make span*col/canvasW
-// non-integral, which is where a non-inverse rounding shows up. The DST spans
-// cover local-day buckets of 25h and 23h.
+// non-integral, which is where a non-inverse rounding shows up. The "dst"
+// cases are spans one hour longer or shorter than whole days, as a window
+// across a DST change has. The mapping itself is uniform, so they don't model
+// uneven buckets; bar modes anchor on bucket starts for that (#574).
 func TestColumnToTime_RoundTrip(t *testing.T) {
 	t.Parallel()
 	const day = 24 * time.Hour
