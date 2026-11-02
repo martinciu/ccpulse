@@ -116,6 +116,7 @@ func (m *Model) clearChart() {
 	m.lastCanvasW = 0
 	m.lineLabelRow = ""
 	m.lastZoomStride = 0
+	m.lastBarStarts = false
 	m.lastChartFrom = time.Time{}
 	m.lastChartTo = time.Time{}
 	m.hasData = false
@@ -285,6 +286,7 @@ func (m *Model) refreshChart() {
 	m.lastChartTo = to
 	m.lastCanvasW = canvasW
 	m.lastZoomStride = zoom.stride()
+	m.lastBarStarts = series.unit != chartUnitRemaining
 
 	// Restore the scroll anchor against the rebuilt canvas BEFORE peak is
 	// computed, so the post-anchor viewportXOffset drives the visible-slice

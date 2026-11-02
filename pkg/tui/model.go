@@ -246,6 +246,12 @@ type Model struct {
 	// ZoomLevels[m.zoomIdx].stride() reflects the NEW zoom, not the
 	// one the viewport was last drawn against.
 	lastZoomStride int
+	// lastBarStarts reports that the same refreshChart pass drew a bar unit,
+	// so lastStarts holds one start per bucket and viewportXOffset indexes
+	// it. snapshotAnchor reads it instead of m.unitIdx, which 'u' has
+	// already advanced by the time refreshChart runs. False after a
+	// remaining-mode pass, whose lastStarts are sparse usage samples (#574).
+	lastBarStarts bool
 
 	// chartCache memoizes the bar-unit bucket arrays so refreshChart re-queries
 	// only the mutable trailing region per refresh instead of re-aggregating
