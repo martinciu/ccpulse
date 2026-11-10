@@ -57,9 +57,13 @@ homebrew_casks:
       fish: completions/ccpulse.fish
     hooks:
       post:
-        install: |
-          if OS.mac?
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/ccpulse"]
+        # install_steps renders Homebrew's declarative `postflight_steps`
+        # stanza (the raw-Ruby `postflight` block is deprecated). Needs
+        # GoReleaser >= 2.19; .StagedPath expands to Homebrew's own
+        # {{staged_path}} token.
+        install_steps: |
+          on_macos do
+            run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ .StagedPath }}/ccpulse"]
           end
 checksum:
   name_template: "checksums.txt"
