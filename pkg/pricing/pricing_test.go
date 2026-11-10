@@ -523,6 +523,8 @@ func TestHistory_TableAt(t *testing.T) {
 		{"sonnet 5.5 snapshot -> 2026-09-28", mustTime("2026-09-28T00:00:00Z"), "2026-09-28"},
 		{"last second before 2026-10-08 -> 2026-09-28", mustTime("2026-10-07T23:59:59Z"), "2026-09-28"},
 		{"haiku 5.5 + sonnet 5.5 cache-read snapshot -> 2026-10-08", mustTime("2026-10-08T00:00:00Z"), "2026-10-08"},
+		{"last second before 2026-11-09 -> 2026-10-08", mustTime("2026-11-08T23:59:59Z"), "2026-10-08"},
+		{"fable 5.2 snapshot -> 2026-11-09", mustTime("2026-11-09T00:00:00Z"), "2026-11-09"},
 		{"after latest -> latest", mustTime("2099-01-01T00:00:00Z"), latest},
 	}
 	for _, c := range cases {
@@ -1355,6 +1357,106 @@ func TestHaiku55Resolution(t *testing.T) {
 				t.Errorf("version = %q, want %q", version, tc.wantVersion)
 			}
 			if math.Abs(cost-tc.wantCost) > 1e-9 {
+				t.Errorf("cost = %v, want %v", cost, tc.wantCost)
+			}
+		})
+	}
+}
+
+// TestFable52Snapshots pins the Claude Fable 5.2 / Mythos 5.2 rates introduced
+// by the 2026-11-09 snapshot (issue #579). Every one of the five rates differs
+// from the 5.1 generation, so the trailing 5.1 checks catch an edit that leaked
+// a 5.2 value into a 5.1 block on the same table.
+func TestFable52Snapshots(t *testing.T) {
+	h, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	tab := h.TableAt(mustParseDate(t, "2026-11-09"))
+	if tab.Version != "2026-11-09" {
+		t.Fatalf("TableAt(2026-11-09).Version = %q, want 2026-11-09", tab.Version)
+	}
+	want := ModelRate{
+		InputPerMtok:        8.00,
+		OutputPerMtok:       40.00,
+		CacheReadPerMtok:    0.20,
+		CacheWrite5mPerMtok: 10.00,
+		CacheWrite1hPerMtok: 16.00,
+	}
+	for _, model := range []string{"claude-fable-5-2", "claude-mythos-5-2"} {
+		got, ok := tab.Models[model]
+		if !ok {
+			t.Errorf("Models[%q] missing from 2026-11-09", model)
+			continue
+		}
+		if got != want {
+			t.Errorf("Models[%q] = %+v, want %+v", model, got, want)
+		}
+	}
+	prev := ModelRate{
+		InputPerMtok:        10.00,
+		OutputPerMtok:       50.00,
+		CacheReadPerMtok:    0.25,
+		CacheWrite5mPerMtok: 12.50,
+		CacheWrite1hPerMtok: 20.00,
+	}
+	for _, model := range []string{"claude-fable-5-1", "claude-mythos-5-1"} {
+		got, ok := tab.Models[model]
+		if !ok {
+			t.Errorf("Models[%q] missing from 2026-11-09 (carry-forward broken)", model)
+			continue
+		}
+		if got != prev {
+			t.Errorf("Models[%q] = %+v, want %+v (5.1 rates must stay on the previous generation)", model, got, prev)
+		}
+	}
+}
+
+// TestFable52Resolution pins the pricing_version stamped and the resolved cost
+// for Claude Fable 5.2 / Mythos 5.2 around the 2026-11-09 snapshot. Row 1 is
+// the rescue path for rows ingested before the snapshot existed (fall-forward,
+// issue #368 semantics): without it those turns stay at $0 and pricing_unknown.
+// The last row proves the 5.1 generation keeps its own rate on the same table
+// (issue #579).
+func TestFable52Resolution(t *testing.T) {
+	h, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	const Mtok = 1_000_000
+	cases := []struct {
+		name        string
+		ts          time.Time
+		model       string
+		input       int64
+		cacheRead   int64
+		wantVersion string
+		wantCost    float64
+	}{
+		{"fall-forward before snapshot", time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC), "claude-fable-5-2", Mtok, 0, "2026-11-09", 8.00},
+		{"exact snapshot date", time.Date(2026, 11, 9, 0, 0, 0, 0, time.UTC), "claude-fable-5-2", Mtok, 0, "2026-11-09", 8.00},
+		{"after snapshot", time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC), "claude-fable-5-2", Mtok, 0, "2026-11-09", 8.00},
+		{"mythos 5.2 input", time.Date(2026, 11, 9, 0, 0, 0, 0, time.UTC), "claude-mythos-5-2", Mtok, 0, "2026-11-09", 8.00},
+		{"fable 5.2 cache read", time.Date(2026, 11, 9, 0, 0, 0, 0, time.UTC), "claude-fable-5-2", 0, Mtok, "2026-11-09", 0.20},
+		{"mythos 5.2 cache read", time.Date(2026, 11, 9, 0, 0, 0, 0, time.UTC), "claude-mythos-5-2", 0, Mtok, "2026-11-09", 0.20},
+		{"fable 5.1 keeps its own rate", time.Date(2026, 11, 9, 0, 0, 0, 0, time.UTC), "claude-fable-5-1", Mtok, 0, "2026-11-09", 10.00},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := parse.Message{
+				Timestamp:       tc.ts,
+				Model:           tc.model,
+				InputTokens:     tc.input,
+				CacheReadTokens: tc.cacheRead,
+			}
+			cost, version, unknown := h.CostFor(m)
+			if unknown {
+				t.Fatal("unknown = true, want false")
+			}
+			if version != tc.wantVersion {
+				t.Errorf("version = %q, want %q", version, tc.wantVersion)
+			}
+			if cost != tc.wantCost {
 				t.Errorf("cost = %v, want %v", cost, tc.wantCost)
 			}
 		})
