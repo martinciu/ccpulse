@@ -3,6 +3,40 @@
 All notable changes to ccpulse are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.15.0] — 2026-11-10
+
+### Added
+- Pricing snapshot `2026-11-09` with Claude Fable 5.2 and Claude Mythos 5.2
+  at $8 / $40 / $0.20 / $10 / $16 per MTok. Cache reads are 0.025× base
+  input, the same footnote as the 5.1 models. Their turns previously priced
+  at $0 and were flagged `pricing_unknown`; the new snapshot changes the
+  recost fingerprint, so cached rows are repriced once on the next launch
+  with no manual step. The bare `fable` / `mythos` aliases stay at Fable 5
+  rates (#579, #580)
+
+### Fixed
+- At 24h zoom, a scrolled-back chart no longer drifts one day to the left
+  when it refreshes (a new transcript write, a resize or a unit toggle)
+  (#573, #572)
+- In the bar views (cost and output tokens), a scrolled-back chart keeps its
+  left-edge day when older history is backfilled and across zoom changes.
+  Zooming from 24h into 15m or 1h opens at that day's midnight instead of a
+  few hours into it, and a full `z` cycle returns to the same day rather
+  than the one before (#574, #575)
+- Homebrew: the cask uses `postflight_steps` to clear the macOS quarantine
+  attribute, so brew no longer prints "Calling `postflight` is deprecated!"
+  on every command that loads the cask (#526, #581)
+
+### Internal
+- Go toolchain 1.26.9 → 1.26.10, clearing GO-2026-6809 (`crypto/x509`),
+  which had turned vulncheck red. Release binaries are built with 1.26.10
+  from this version on (#571, #572)
+- `.goreleaser.yml` moves the cask hook to `hooks.post.install_steps`, which
+  needs GoReleaser 2.19 or newer. The release workflow's `~> v2` already
+  resolves past that; a local snapshot build needs the same (#526, #581)
+- Bump `modernc.org/sqlite` 1.60.1 → 1.61.1 (#569, #576, #577) and
+  `anthropics/claude-code-action` 1.0.251 → 1.0.259 (#570)
+
 ## [0.14.0] — 2026-10-18
 
 ### Added
