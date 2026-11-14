@@ -314,9 +314,10 @@ func runTUI(ctx context.Context, errOut io.Writer) error {
 	//   2. bfDone.Wait blocks until the backfill goroutine returns.
 	//   3. cancel signals the poller ctx (in-flight HTTP aborts).
 	//   4. w.Close closes fsnotify, signalling the watcher goroutine.
-	//   5. bg.Wait blocks until the watcher, poller, and initial-refresh
-	//      goroutines all return — including any in-flight db.Exec from
-	//      runQuotaPoller.push.
+	//   5. bg.Wait blocks until the watcher, quota poller (API attempts +
+	//      the 30 s statusline-overlay re-read, one goroutine — see
+	//      runQuotaPoller), and initial-refresh goroutines all return —
+	//      including any in-flight db.Exec from the poller's recordAPI.
 	//   6. c.Close closes the cache (registered earlier; runs last among
 	//      the cache-touching defers).
 	//
@@ -339,11 +340,28 @@ func runTUI(ctx context.Context, errOut io.Writer) error {
 				UpdatedAt: time.Now().UTC(),
 			})
 		})
-	case qs.hasOAuth:
+	default:
+		// Always poll: without OAuth the poller still re-reads the
+		// statusline overlay (#568), it just never calls the API.
 		retention := time.Duration(env.cfg.History.RetentionDays) * 24 * time.Hour
-		bg.Go(func() {
-			runQuotaPoller(pollerCtx, p, qs.cred, env.cacheDir, c, retention)
-		})
+		d := quotaPollerDeps{
+			cacheDir: env.cacheDir,
+			send:     func(m tui.QuotaMsg) { p.Send(m) },
+			recordAPI: func(ctx context.Context, res anthro.FetchResult) {
+				if err := c.RecordUsageSample(ctx, res.Usage, res.UpdatedAt); err != nil {
+					slog.Warn("usage.recordFailed", "err", err)
+				}
+				if retention > 0 {
+					if _, err := c.PruneUsageSamples(ctx, time.Now().Add(-retention)); err != nil {
+						slog.Warn("usage.pruneFailed", "err", err)
+					}
+				}
+			},
+		}
+		if qs.hasOAuth {
+			d.cred = &qs.cred
+		}
+		bg.Go(func() { runQuotaPoller(pollerCtx, d) })
 	}
 
 	bg.Go(func() {
@@ -450,73 +468,6 @@ func startBackfill(ctx context.Context, p *tea.Program, ing *ingest.Ingester) (c
 		})
 	}()
 	return bfCancel, &bfDone
-}
-
-// runQuotaPoller fires once immediately, then re-polls on a per-outcome
-// cadence: anthro.BaseRetryInterval normally, and otherwise whenever the
-// deadline Fetch reports falls due (#447, #529). The poller keeps no
-// backoff state of its own — the policy and its persisted window live in
-// pkg/anthro, so the TUI and the statusline back off together. Each
-// attempt fetches usage data and pushes QuotaMsg to the program. On a
-// successful fetch where Source=="api", it also appends a row to
-// usage_samples and (if retention > 0) prunes anything older than
-// now-retention. All side effects are best-effort; errors are swallowed so
-// the TUI quota stays up to date even if the cache is misbehaving.
-func runQuotaPoller(
-	ctx context.Context,
-	p *tea.Program,
-	cred anthro.Credential,
-	cacheDir string,
-	c *cache.Cache,
-	retention time.Duration,
-) {
-	// push performs one fetch attempt, pushes any result to the TUI, and
-	// returns the delay before the next attempt.
-	push := func() time.Duration {
-		res, err := anthro.Fetch(ctx, cred, cacheDir)
-		delay, consecutive429 := nextPollDelay(res, err, time.Now())
-		if err != nil {
-			slog.Warn("ccpulse.quotaPoller",
-				"outcome", "fetch_error",
-				"err", err,
-				"next_retry_s", int(delay.Seconds()),
-				"consecutive_429", consecutive429)
-			return delay
-		}
-		if res.Source == "cache_stale" {
-			slog.Warn("ccpulse.quotaPoller",
-				"outcome", "cache_stale",
-				"cache_age_s", int(time.Since(res.UpdatedAt).Seconds()),
-				"next_retry_s", int(delay.Seconds()),
-				"consecutive_429", consecutive429)
-		}
-		if res.Source == "api" {
-			if err := c.RecordUsageSample(ctx, res.Usage, res.UpdatedAt); err != nil {
-				slog.Warn("usage.recordFailed", "err", err)
-			}
-			if retention > 0 {
-				if _, err := c.PruneUsageSamples(ctx, time.Now().Add(-retention)); err != nil {
-					slog.Warn("usage.pruneFailed", "err", err)
-				}
-			}
-		}
-		p.Send(tui.QuotaMsg{
-			Usage:     &res.Usage,
-			Source:    res.Source,
-			UpdatedAt: res.UpdatedAt,
-		})
-		return delay
-	}
-	t := time.NewTimer(push()) // immediate first attempt
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-			t.Reset(push())
-		}
-	}
 }
 
 // exitCodeFor maps a top-level error to a Unix exit code. Defaults
