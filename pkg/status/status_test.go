@@ -708,3 +708,49 @@ func TestComputePeriods_TodayLocalMidnight(t *testing.T) {
 		t.Errorf("today.Tokens = %d, want %d (only the post-local-midnight row counts)", got, want)
 	}
 }
+
+func TestComputeCarriesAPIUpdatedAt(t *testing.T) {
+	db := freshDB(t)
+	now := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
+	resetsAt := now.Add(72 * time.Hour)
+	usage := &anthro.Usage{SevenDay: &anthro.Bucket{Utilization: 54, ResetsAt: &resetsAt}}
+	apiAt := now.Add(-2 * time.Hour)
+
+	w, err := Compute(t.Context(), db, now, QuotaInput{
+		Usage: usage, Source: anthro.SourceStatusline, UpdatedAt: now.Add(-time.Minute), APIUpdatedAt: apiAt,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !w.APIUpdatedAt.Equal(apiAt) {
+		t.Errorf("APIUpdatedAt = %v, want %v", w.APIUpdatedAt, apiAt)
+	}
+	out, err := JSON(w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `"api_updated_at":"2026-11-14T10:00:00Z"`) {
+		t.Errorf("JSON lacks api_updated_at: %s", out)
+	}
+
+	w, err = Compute(t.Context(), db, now, QuotaInput{Usage: usage, Source: anthro.SourceStatusline, UpdatedAt: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err = JSON(w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, `"api_updated_at"`) {
+		t.Errorf("JSON carries api_updated_at with no API data: %s", out)
+	}
+
+	// No quota at all: the API age must not leak through on its own.
+	w, err = Compute(t.Context(), db, now, QuotaInput{APIUpdatedAt: apiAt})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !w.APIUpdatedAt.IsZero() {
+		t.Errorf("APIUpdatedAt = %v without quota, want zero", w.APIUpdatedAt)
+	}
+}

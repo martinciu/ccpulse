@@ -26,6 +26,7 @@ type Window struct {
 	Quota             *anthro.Usage   `json:"quota,omitempty"`
 	QuotaSource       string          `json:"quota_source,omitempty"`
 	QuotaUpdatedAt    time.Time       `json:"quota_updated_at,omitzero"`
+	APIUpdatedAt      time.Time       `json:"api_updated_at,omitzero"` // age of the API-only fields (#568)
 	Projection        *Projections    `json:"projection,omitempty"`
 	Periods           *Periods        `json:"periods,omitempty"`
 	Throughput        *Throughput     `json:"throughput,omitempty"`
