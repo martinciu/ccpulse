@@ -2908,3 +2908,67 @@ func TestInsertAndQueryIterations(t *testing.T) {
 		t.Errorf("iterations_json after second blob upsert = (%v, %q), want %q", got.Valid, got.String, blob2)
 	}
 }
+
+func TestRecordUsageSampleFrom_Source(t *testing.T) {
+	c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	base := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
+	sevenResets := base.Add(72 * time.Hour)
+	statusline := anthro.Usage{SevenDay: &anthro.Bucket{Utilization: 54, ResetsAt: &sevenResets}}
+	if err := c.RecordUsageSampleFrom(t.Context(), statusline, base, SampleSourceStatusline); err != nil {
+		t.Fatalf("RecordUsageSampleFrom: %v", err)
+	}
+	fable := "Fable"
+	api := anthro.Usage{
+		SevenDay:       &anthro.Bucket{Utilization: 55, ResetsAt: &sevenResets},
+		SevenDaySonnet: &anthro.Bucket{Utilization: 5, ResetsAt: &sevenResets},
+		Limits: []anthro.Limit{{
+			Kind: "weekly_scoped", Group: "weekly", Percent: 35,
+			Scope: &anthro.LimitScope{Model: &anthro.ScopeModel{DisplayName: &fable}},
+		}},
+	}
+	if err := c.RecordUsageSample(t.Context(), api, base.Add(time.Minute)); err != nil {
+		t.Fatalf("RecordUsageSample: %v", err)
+	}
+
+	var src string
+	var sonnet sql.NullFloat64
+	if err := c.DB().QueryRowContext(t.Context(),
+		`SELECT source, seven_day_sonnet_pct FROM usage_samples WHERE ts = ?`, base.Unix()).Scan(&src, &sonnet); err != nil {
+		t.Fatal(err)
+	}
+	if src != "statusline" || sonnet.Valid {
+		t.Errorf("statusline row: source=%q sonnet=%+v, want statusline and NULL", src, sonnet)
+	}
+	var children int
+	if err := c.DB().QueryRowContext(t.Context(),
+		`SELECT COUNT(*) FROM usage_limits WHERE ts = ?`, base.Unix()).Scan(&children); err != nil {
+		t.Fatal(err)
+	}
+	if children != 0 {
+		t.Errorf("statusline row has %d usage_limits children, want 0", children)
+	}
+	if err := c.DB().QueryRowContext(t.Context(),
+		`SELECT source FROM usage_samples WHERE ts = ?`, base.Add(time.Minute).Unix()).Scan(&src); err != nil {
+		t.Fatal(err)
+	}
+	if src != "api" {
+		t.Errorf("RecordUsageSample row source = %q, want api", src)
+	}
+
+	pts, err := c.UtilizationSince(t.Context(), "seven_day_pct", base.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pts) != 2 {
+		t.Errorf("UtilizationSince returned %d points, want 2 (both sources)", len(pts))
+	}
+
+	if err := c.RecordUsageSampleFrom(t.Context(), statusline, base.Add(2*time.Minute), "bogus"); err == nil {
+		t.Error("unknown source accepted, want an error")
+	}
+}

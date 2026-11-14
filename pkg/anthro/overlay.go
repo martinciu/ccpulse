@@ -346,12 +346,7 @@ func (s *storedBucket) toOverlay() *OverlayBucket {
 	if s == nil {
 		return nil
 	}
-	at := s.ResetsAt
-	return &OverlayBucket{
-		Bucket:     Bucket{Utilization: s.Utilization, ResetsAt: &at},
-		AsOf:       s.AsOf,
-		AcceptedAt: s.AcceptedAt,
-	}
+	return &OverlayBucket{Bucket: *s.toBucket(), AsOf: s.AsOf, AcceptedAt: s.AcceptedAt}
 }
 
 // ReadOverlayFile returns the stored overlay as on disk, expired buckets
@@ -391,4 +386,105 @@ func errWithoutPath(err error) error {
 		return pe.Err
 	}
 	return err
+}
+
+// History knobs (spec §6). A statusline reading reaches usage_samples only
+// once it has settled: held as the stored winner for statuslineSampleHold,
+// with the last recorded statusline row at least statuslineSampleSpacing
+// old. A leading-edge throttle would persist a transient value of a burst
+// forever and drop the correct one that follows; this records the burst's
+// final value on a later render from any session.
+const (
+	statuslineSampleHold    = 30 * time.Second
+	statuslineSampleSpacing = 60 * time.Second
+)
+
+// PendingStatuslineSample reports the stored 5h/7d reading when it is due
+// for recording to history. u holds only FiveHour/SevenDay (buckets whose
+// reset has passed are excluded); at is the latest AcceptedAt among them —
+// the row's timestamp. ok is false when there is nothing to record: no
+// usable overlay, a reading not yet held statuslineSampleHold, a reading
+// equal to the last one recorded, or a last row younger than
+// statuslineSampleSpacing.
+func PendingStatuslineSample(cacheDir string, now time.Time) (u Usage, at time.Time, ok bool) {
+	f, err := readOverlayRaw(overlayPath(cacheDir))
+	if err != nil {
+		return Usage{}, time.Time{}, false
+	}
+	five, seven := f.FiveHour.liveAt(now), f.SevenDay.liveAt(now)
+	if five == nil && seven == nil {
+		return Usage{}, time.Time{}, false
+	}
+	at = five.acceptedAt()
+	if t := seven.acceptedAt(); t.After(at) {
+		at = t
+	}
+	if now.Sub(at) < statuslineSampleHold || f.Recorded.covers(five, seven, now) {
+		return Usage{}, time.Time{}, false
+	}
+	return Usage{FiveHour: five.toBucket(), SevenDay: seven.toBucket()}, at, true
+}
+
+// liveAt is s, or nil when s is absent or its reset has passed at now.
+func (s *storedBucket) liveAt(now time.Time) *storedBucket {
+	if s == nil || !s.ResetsAt.After(now) {
+		return nil
+	}
+	return s
+}
+
+func (s *storedBucket) acceptedAt() time.Time {
+	if s == nil {
+		return time.Time{}
+	}
+	return s.AcceptedAt
+}
+
+func (s *storedBucket) reported() *reportedBucket {
+	if s == nil {
+		return nil
+	}
+	return &s.reportedBucket
+}
+
+// covers reports whether the last recorded sample rules out recording the
+// stored pair now: it already holds the same values, or it is younger than
+// statuslineSampleSpacing.
+func (rec *recordedSample) covers(five, seven *storedBucket, now time.Time) bool {
+	if rec == nil {
+		return false
+	}
+	if sameReport(rec.FiveHour, five.reported()) && sameReport(rec.SevenDay, seven.reported()) {
+		return true
+	}
+	return now.Sub(rec.At) < statuslineSampleSpacing
+}
+
+// MarkStatuslineRecorded notes, under the overlay lock, that the reading u
+// was recorded to history at at, so PendingStatuslineSample stops offering
+// it. Racing processes that both record the same reading are harmless: the
+// same at is the same usage_samples ts, and the insert is OR IGNORE.
+func MarkStatuslineRecorded(cacheDir string, u Usage, at time.Time) error {
+	if release, lockErr := acquireFileLock(cacheDir, overlayLockName); lockErr == nil {
+		defer release()
+	}
+	path := overlayPath(cacheDir)
+	f, err := readOverlayRaw(path)
+	if err != nil {
+		return fmt.Errorf("mark statusline sample: %w", errWithoutPath(err))
+	}
+	f.V = overlayVersion
+	f.Recorded = &recordedSample{At: at.UTC(), FiveHour: toReported(u.FiveHour), SevenDay: toReported(u.SevenDay)}
+	if err := writeOverlayRaw(path, f); err != nil {
+		return fmt.Errorf("mark statusline sample: %w", err)
+	}
+	return nil
+}
+
+func (s *storedBucket) toBucket() *Bucket {
+	if s == nil {
+		return nil
+	}
+	at := s.ResetsAt
+	return &Bucket{Utilization: s.Utilization, ResetsAt: &at}
 }

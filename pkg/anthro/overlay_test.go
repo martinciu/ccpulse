@@ -556,3 +556,164 @@ func TestOverlay_NewestAsOfAndEmpty(t *testing.T) {
 		t.Errorf("NewestAsOf (7d only) = %v, want %v", got, t1)
 	}
 }
+
+func TestPendingStatuslineSample(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
+	ago := func(d time.Duration) time.Time { return now.Add(-d) }
+	R5 := now.Add(2 * time.Hour)
+	R7 := now.Add(72 * time.Hour)
+
+	tests := []struct {
+		name   string
+		raw    string // written verbatim instead of f when non-empty
+		f      *overlayFile
+		wantOK bool
+		wantAt time.Time
+		want5  any
+		want7  any
+	}{
+		{name: "missing file"},
+		{name: "corrupt file", raw: `{garbage`},
+		{
+			name: "accepted 10s ago is not settled",
+			f:    &overlayFile{SevenDay: sb(54, R7, ago(10*time.Second), ago(10*time.Second))},
+		},
+		{
+			name:   "held 40s, nothing recorded",
+			f:      &overlayFile{SevenDay: sb(54, R7, ago(5*time.Second), ago(40*time.Second))},
+			wantOK: true, wantAt: ago(40 * time.Second), want7: 54.0,
+		},
+		{
+			name: "same values as recorded",
+			f: &overlayFile{
+				SevenDay: sb(54, R7, ago(5*time.Second), ago(40*time.Second)),
+				Recorded: &recordedSample{At: ago(2 * time.Minute), SevenDay: rb(54, R7)},
+			},
+		},
+		{
+			name: "different from recorded, recorded 50s ago",
+			f: &overlayFile{
+				SevenDay: sb(55, R7, ago(5*time.Second), ago(40*time.Second)),
+				Recorded: &recordedSample{At: ago(50 * time.Second), SevenDay: rb(54, R7)},
+			},
+		},
+		{
+			name: "different from recorded, recorded 70s ago",
+			f: &overlayFile{
+				SevenDay: sb(55, R7, ago(5*time.Second), ago(40*time.Second)),
+				Recorded: &recordedSample{At: ago(70 * time.Second), SevenDay: rb(54, R7)},
+			},
+			wantOK: true, wantAt: ago(40 * time.Second), want7: 55.0,
+		},
+		{
+			name: "only bucket expired",
+			f:    &overlayFile{SevenDay: sb(54, ago(time.Second), ago(5*time.Minute), ago(5*time.Minute))},
+		},
+		{
+			name: "expired bucket excluded, live one recorded",
+			f: &overlayFile{
+				FiveHour: sb(10, ago(time.Second), ago(5*time.Minute), ago(5*time.Minute)),
+				SevenDay: sb(54, R7, ago(time.Minute), ago(time.Minute)),
+			},
+			wantOK: true, wantAt: ago(time.Minute), want7: 54.0,
+		},
+		{
+			name: "both buckets: at is the latest accepted_at",
+			f: &overlayFile{
+				FiveHour: sb(3, R5, ago(time.Minute), ago(5*time.Minute)),
+				SevenDay: sb(54, R7, ago(time.Minute), ago(40*time.Second)),
+			},
+			wantOK: true, wantAt: ago(40 * time.Second), want5: 3.0, want7: 54.0,
+		},
+		{
+			name: "one bucket still settling holds the pair",
+			f: &overlayFile{
+				FiveHour: sb(3, R5, ago(10*time.Second), ago(10*time.Second)),
+				SevenDay: sb(54, R7, ago(time.Minute), ago(5*time.Minute)),
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			path := filepath.Join(dir, overlayFileName)
+			switch {
+			case tt.raw != "":
+				if err := os.WriteFile(path, []byte(tt.raw), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			case tt.f != nil:
+				f := *tt.f
+				f.V = overlayVersion
+				if err := writeOverlayRaw(path, f); err != nil {
+					t.Fatal(err)
+				}
+			}
+			u, at, ok := PendingStatuslineSample(dir, now)
+			if ok != tt.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tt.wantOK)
+			}
+			if !ok {
+				return
+			}
+			if !at.Equal(tt.wantAt) {
+				t.Errorf("at = %v, want %v", at, tt.wantAt)
+			}
+			util := func(b *Bucket) any {
+				if b == nil {
+					return nil
+				}
+				return b.Utilization
+			}
+			if got := util(u.FiveHour); got != tt.want5 {
+				t.Errorf("FiveHour = %v, want %v", got, tt.want5)
+			}
+			if got := util(u.SevenDay); got != tt.want7 {
+				t.Errorf("SevenDay = %v, want %v", got, tt.want7)
+			}
+			if u.Limits != nil || u.ExtraUsage != nil || u.SevenDaySonnet != nil {
+				t.Errorf("sample carries non-statusline fields: %+v", u)
+			}
+		})
+	}
+}
+
+func TestMarkStatuslineRecorded_SuppressesRepeat(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	now := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
+	R7 := now.Add(72 * time.Hour)
+	f := overlayFile{V: overlayVersion, SevenDay: sb(54, R7, now.Add(-5*time.Second), now.Add(-40*time.Second))}
+	if err := writeOverlayRaw(filepath.Join(dir, overlayFileName), f); err != nil {
+		t.Fatal(err)
+	}
+
+	u, at, ok := PendingStatuslineSample(dir, now)
+	if !ok {
+		t.Fatal("first Pending ok = false, want true")
+	}
+	if err := MarkStatuslineRecorded(dir, u, at); err != nil {
+		t.Fatalf("MarkStatuslineRecorded: %v", err)
+	}
+	if _, _, ok := PendingStatuslineSample(dir, now.Add(time.Minute)); ok {
+		t.Error("Pending after Mark ok = true, want false (same reading already recorded)")
+	}
+
+	// A new stored reading must hold 30s before it is pending again.
+	if _, err := IngestStatusline(dir, StatuslineReading{SevenDay: bk(56, R7)}, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := PendingStatuslineSample(dir, now.Add(time.Minute+10*time.Second)); ok {
+		t.Error("Pending 10s after a new reading ok = true, want false")
+	}
+	u, at, ok = PendingStatuslineSample(dir, now.Add(time.Minute+31*time.Second))
+	if !ok || u.SevenDay == nil || u.SevenDay.Utilization != 56 || !at.Equal(now.Add(time.Minute)) {
+		t.Errorf("Pending after hold = (%+v, %v, %v), want 7d=56 at %v", u.SevenDay, at, ok, now.Add(time.Minute))
+	}
+	// Mark keeps the overlay's readings intact.
+	if ov := ReadOverlay(dir, now.Add(time.Minute+31*time.Second)); ov.SevenDay == nil || ov.SevenDay.Utilization != 56 {
+		t.Errorf("overlay after Mark = %+v, want 7d=56", ov.SevenDay)
+	}
+}

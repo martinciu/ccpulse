@@ -258,15 +258,34 @@ func removeWithSiblings(path string) error {
 	return nil
 }
 
-// RecordUsageSample inserts a row at when.UTC().Unix() with one column per
-// anthro.Usage bucket, plus one usage_limits child row per entry of u.Limits,
-// all in a single transaction. INSERT OR IGNORE: same-second collisions keep
-// the first row — child inserts are gated on the parent insert landing, so
-// parent and children can never mix samples. Nil buckets write NULL into both
-// their pct and resets_at columns.
+// usage_samples.source values. API rows carry every bucket the usage API
+// returned plus usage_limits children; statusline rows (#568) carry only the
+// 5h/7d columns, every other column NULL and no children. History readers
+// select on the column with IS NOT NULL, so both sources feed the line chart
+// and the 7d projection.
+const (
+	SampleSourceAPI        = "api"
+	SampleSourceStatusline = "statusline"
+)
+
+// RecordUsageSample records an API-sourced sample; see RecordUsageSampleFrom.
 func (c *Cache) RecordUsageSample(ctx context.Context, u anthro.Usage, when time.Time) error {
+	return c.RecordUsageSampleFrom(ctx, u, when, SampleSourceAPI)
+}
+
+// RecordUsageSampleFrom inserts a row at when.UTC().Unix() with one column
+// per anthro.Usage bucket, plus one usage_limits child row per entry of
+// u.Limits, all in a single transaction, tagged with source (one of the
+// SampleSource* constants). INSERT OR IGNORE: same-second collisions keep
+// the first row — child inserts are gated on the parent insert landing, so
+// parent and children can never mix samples. Nil buckets write NULL into
+// both their pct and resets_at columns.
+func (c *Cache) RecordUsageSampleFrom(ctx context.Context, u anthro.Usage, when time.Time, source string) error {
+	if source != SampleSourceAPI && source != SampleSourceStatusline {
+		return fmt.Errorf("record usage sample: unknown source %q", source)
+	}
 	ts := when.UTC().Unix()
-	args := []any{ts, "api"}
+	args := []any{ts, source}
 	args = append(args, bucketArgs(u.FiveHour)...)
 	args = append(args, bucketArgs(u.SevenDay)...)
 	args = append(args, bucketArgs(u.SevenDaySonnet)...)

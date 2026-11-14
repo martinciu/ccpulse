@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS meta (
 
 CREATE TABLE IF NOT EXISTS usage_samples (
   ts                              INTEGER PRIMARY KEY,           -- Unix epoch seconds; one row per fetch (INSERT OR IGNORE on collision)
-  source                          TEXT NOT NULL DEFAULT 'api',   -- always 'api' today; reserved
+  source                          TEXT NOT NULL DEFAULT 'api',   -- 'api' (usage API) or 'statusline' (#568: 5h/7d columns only)
 
   five_hour_pct                   REAL,
   five_hour_resets_at             TEXT,
