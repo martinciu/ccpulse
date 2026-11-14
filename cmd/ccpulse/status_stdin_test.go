@@ -77,7 +77,7 @@ func fixturePayload(t *testing.T, mutate func(p map[string]any)) []byte {
 // 7d in 3d; a negative value omits that bucket), a freshly touched
 // transcript and a unique session id. Without the fresh transcript the
 // reading would come from an unknown session with no activity and never be
-// stored (spec §2).
+// stored.
 func statuslinePayload(t *testing.T, five, seven float64) []byte {
 	t.Helper()
 	now := time.Now()
@@ -173,7 +173,7 @@ func TestStatusStdin_IngestsAndReportsStatusline(t *testing.T) {
 	}
 }
 
-// Review Focus 5: non-subscriber payloads leave status --json unchanged.
+// Non-subscriber payloads leave status --json unchanged.
 func TestStatusStdin_NoRateLimitsMatchesPlainStatus(t *testing.T) {
 	payloads := map[string][]byte{
 		"no rate_limits": fixturePayload(t, func(p map[string]any) { delete(p, "rate_limits") }),
@@ -258,7 +258,7 @@ func TestStatusStdin_TerminalStdinErrors(t *testing.T) {
 
 // /dev/null is what tmux #(), cron and launchd hand a command, and what Go
 // reopens a closed fd 0 as. It is missing input, not a terminal: report as
-// usual, exit 0 (spec anti-goal: missing input never changes the exit code).
+// usual, exit 0 — missing input must never change the exit code.
 func TestStatusStdin_DevNullIsEmptyInput(t *testing.T) {
 	cacheDir := statuslineEnv(t, false)
 	f, err := os.Open(os.DevNull)

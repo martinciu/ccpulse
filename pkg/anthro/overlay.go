@@ -27,7 +27,7 @@ const (
 	overlayVersion  = 1
 )
 
-// Freshness knobs for the per-session merge (spec §2).
+// Freshness knobs for the per-session merge.
 const (
 	// unknownSessionFreshFor: a session ccpulse has never heard from only
 	// gets rate_limits after its first API response, so its first report is
@@ -108,8 +108,8 @@ type sessionReport struct {
 	SeenAt   time.Time       `json:"seen_at"`
 }
 
-// recordedSample is the last statusline reading written to usage_samples
-// (spec §6), so a settled reading is recorded once.
+// recordedSample is the last statusline reading written to usage_samples,
+// so a settled reading is recorded once.
 type recordedSample struct {
 	At       time.Time       `json:"at"`
 	FiveHour *reportedBucket `json:"five_hour,omitempty"`
@@ -138,8 +138,8 @@ func toReported(b *Bucket) *reportedBucket {
 	return &reportedBucket{Utilization: b.Utilization, ResetsAt: b.ResetsAt.UTC()}
 }
 
-// mergeReading folds one statusline reading into the stored overlay (spec
-// §2–§3) and reports whether anything changed. It is pure: f is not mutated.
+// mergeReading folds one statusline reading into the stored overlay and
+// reports whether anything changed. It is pure: f is not mutated.
 //
 // Whether the reading is new information is decided once per reading:
 //   - no session id: per bucket, it may only start the stored value, raise it
@@ -388,7 +388,7 @@ func errWithoutPath(err error) error {
 	return err
 }
 
-// History knobs (spec §6). A statusline reading reaches usage_samples only
+// History knobs. A statusline reading reaches usage_samples only
 // once it has settled: held as the stored winner for statuslineSampleHold,
 // with the last recorded statusline row at least statuslineSampleSpacing
 // old. A leading-edge throttle would persist a transient value of a burst

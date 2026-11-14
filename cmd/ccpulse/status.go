@@ -184,7 +184,7 @@ func recordUsageSample(cmd *cobra.Command, c *cache.Cache, cfg config.Config, ap
 }
 
 // recordStatuslineSample files the stored statusline reading as a
-// source='statusline' usage sample once it has settled (spec §6), then marks
+// source='statusline' usage sample once it has settled (held 30 s), then marks
 // it recorded so later runs skip it. Best-effort, like recordUsageSample.
 func recordStatuslineSample(cmd *cobra.Command, c *cache.Cache, cacheDir string, now time.Time) {
 	u, at, ok := anthro.PendingStatuslineSample(cacheDir, now)

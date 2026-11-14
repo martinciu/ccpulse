@@ -48,7 +48,7 @@ func (q Quota) APIUpdatedAt() time.Time {
 	return q.API.UpdatedAt
 }
 
-// MergeQuota merges the API result with the statusline overlay (spec §4).
+// MergeQuota merges the API result with the statusline overlay (#568).
 // Per 5h/7d bucket, the overlay wins when present and its AcceptedAt is
 // newer than the API data (or there is no API data); otherwise the API's
 // bucket wins, even when nil — a newer API "idle" beats older statusline

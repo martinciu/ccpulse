@@ -172,7 +172,7 @@ func TestMergeQuota(t *testing.T) {
 			wantAPIAt:     ago(time.Hour),
 		},
 		{
-			// Final review Important 1: a value the statusline keeps
+			// A value the statusline keeps
 			// confirming must not lose its freshness to an API fetch that
 			// merely landed after it was accepted.
 			name:          "same value, overlay confirmed after the API fetch (re-report shape)",

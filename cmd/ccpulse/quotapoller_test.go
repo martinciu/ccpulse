@@ -126,7 +126,7 @@ func TestQuotaPoller_PicksUpNewReadingWithinTick(t *testing.T) {
 	})
 }
 
-// Review Focus 4: a window expiring with no new readings.
+// A window expiring with no new readings must still reach the TUI.
 func TestQuotaPoller_ExpiryWithoutFileChange(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		dir := t.TempDir()
@@ -274,7 +274,7 @@ func TestQuotaPoller_RecordsOnlyRawAPIResults(t *testing.T) {
 	}
 }
 
-// Final review Important 3: every API attempt refreshes the header, even
+// Every API attempt refreshes the header, even
 // when the merged quota is unchanged — recomputeWindow is what re-evaluates
 // the "resets in" countdowns and the Fable-row age, and an idle TUI behind
 // a long 429 window has no other trigger. Only the re-read tick is gated.

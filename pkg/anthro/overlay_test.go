@@ -413,7 +413,7 @@ func TestIngestStatusline_WritesOnlyWhenChanged(t *testing.T) {
 	}
 }
 
-// Review Focus 1: several sessions rendering at once.
+// Several sessions rendering at once.
 func TestIngestStatusline_ConcurrentWriters(t *testing.T) {
 	t.Parallel()
 	cacheDir := t.TempDir()
@@ -448,7 +448,7 @@ func TestIngestStatusline_ConcurrentWriters(t *testing.T) {
 	}
 }
 
-// Review Focus 2: corrupt or future-version overlay file.
+// A corrupt or future-version overlay file.
 func TestIngestStatusline_RecoversFromCorruptFile(t *testing.T) {
 	t.Parallel()
 	for name, content := range map[string]string{
