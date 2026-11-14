@@ -103,15 +103,24 @@ func ingestStatuslineStdin(cmd *cobra.Command, cacheDir string, now time.Time) e
 	return nil
 }
 
-// isCharDevice reports whether r is an *os.File on a character device — a
-// terminal (or /dev/null), never a pipe from a statusline.
+// isCharDevice reports whether r is an *os.File on a character device
+// other than /dev/null — in practice a terminal, never a pipe from a
+// statusline. /dev/null is excluded: tmux #(), cron and launchd hand it to
+// commands, Go reopens a closed fd 0 as it, and it reads as empty input
+// (EOF at once), which must not fail the command.
 func isCharDevice(r io.Reader) bool {
 	f, ok := r.(*os.File)
 	if !ok {
 		return false
 	}
 	fi, err := f.Stat()
-	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+	if err != nil || fi.Mode()&os.ModeCharDevice == 0 {
+		return false
+	}
+	if null, err := os.Stat(os.DevNull); err == nil && os.SameFile(fi, null) {
+		return false
+	}
+	return true
 }
 
 // readStatusline reads and parses the payload. A non-empty reason names why

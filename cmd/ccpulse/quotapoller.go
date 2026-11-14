@@ -25,6 +25,9 @@ type quotaPollerDeps struct {
 	cacheDir  string
 	send      func(tui.QuotaMsg)
 	recordAPI func(ctx context.Context, res anthro.FetchResult)
+	// fetch is the API seam; nil means anthro.Fetch. Tests stub it to drive
+	// attempts on a synctest clock without a network.
+	fetch func(ctx context.Context, cred anthro.Credential, cacheDir string) (anthro.FetchResult, error)
 }
 
 // runQuotaPoller feeds the TUI quota from two loops sharing one goroutine
@@ -39,17 +42,21 @@ type quotaPollerDeps struct {
 //   - Overlay re-reads every overlayRereadInterval, so statusline readings —
 //     and buckets whose window expired — reach the header within one tick.
 //
-// Every event merges the last successful API result with the overlay and
-// sends a QuotaMsg only when the merged quota changed. Returns when ctx is
-// cancelled.
+// Every event merges the last successful API result with the overlay. An
+// API attempt always sends the result, as the poller did before #568: the
+// TUI's recomputeWindow — which re-evaluates the "resets in" countdowns and
+// the Fable-row age — has no other trigger in an idle session behind a long
+// backoff window. A re-read tick sends only when the merged quota changed.
+// Returns when ctx is cancelled.
 func runQuotaPoller(ctx context.Context, d quotaPollerDeps) {
+	fetch := d.fetchFunc()
 	var lastAPI *anthro.FetchResult
 	var lastSent *anthro.Quota
 
-	publish := func() {
+	publish := func(force bool) {
 		now := time.Now()
 		q, ok := anthro.MergeQuota(lastAPI, anthro.ReadOverlay(d.cacheDir, now), now)
-		if !ok || (lastSent != nil && sameQuota(*lastSent, q)) {
+		if !ok || (!force && lastSent != nil && sameQuota(*lastSent, q)) {
 			return
 		}
 		lastSent = &q
@@ -67,22 +74,11 @@ func runQuotaPoller(ctx context.Context, d quotaPollerDeps) {
 	// API attempt only; the re-read tick logs nothing (#529's lesson: no log
 	// volume per tick).
 	attempt := func() time.Duration {
-		res, err := anthro.Fetch(ctx, *d.cred, d.cacheDir)
+		res, err := fetch(ctx, *d.cred, d.cacheDir)
 		delay, consecutive429 := nextPollDelay(res, err, time.Now())
+		logPollAttempt(res, err, delay, consecutive429)
 		if err != nil {
-			slog.Warn("ccpulse.quotaPoller",
-				"outcome", "fetch_error",
-				"err", err,
-				"next_retry_s", int(delay.Seconds()),
-				"consecutive_429", consecutive429)
 			return delay
-		}
-		if res.Source == "cache_stale" {
-			slog.Warn("ccpulse.quotaPoller",
-				"outcome", "cache_stale",
-				"cache_age_s", int(time.Since(res.UpdatedAt).Seconds()),
-				"next_retry_s", int(delay.Seconds()),
-				"consecutive_429", consecutive429)
 		}
 		if res.Source == "api" && d.recordAPI != nil {
 			d.recordAPI(ctx, res)
@@ -100,7 +96,7 @@ func runQuotaPoller(ctx context.Context, d quotaPollerDeps) {
 		defer apiTimer.Stop()
 		apiC = apiTimer.C
 	} else {
-		publish() // show what the statusline already left behind
+		publish(false) // show what the statusline already left behind
 	}
 	reread := time.NewTicker(overlayRereadInterval)
 	defer reread.Stop()
@@ -110,10 +106,37 @@ func runQuotaPoller(ctx context.Context, d quotaPollerDeps) {
 			return
 		case <-apiC:
 			apiTimer.Reset(attempt())
-			publish()
+			publish(true)
 		case <-reread.C:
-			publish()
+			publish(false)
 		}
+	}
+}
+
+func (d quotaPollerDeps) fetchFunc() func(context.Context, anthro.Credential, string) (anthro.FetchResult, error) {
+	if d.fetch != nil {
+		return d.fetch
+	}
+	return anthro.Fetch
+}
+
+// logPollAttempt emits the per-API-attempt WARN lines: a failed fetch, or a
+// stale cache served in its place. One message, varied by outcome, because
+// the branches share an attribute shape. Healthy attempts log nothing here.
+func logPollAttempt(res anthro.FetchResult, err error, delay time.Duration, consecutive429 int) {
+	switch {
+	case err != nil:
+		slog.Warn("ccpulse.quotaPoller",
+			"outcome", "fetch_error",
+			"err", err,
+			"next_retry_s", int(delay.Seconds()),
+			"consecutive_429", consecutive429)
+	case res.Source == "cache_stale":
+		slog.Warn("ccpulse.quotaPoller",
+			"outcome", "cache_stale",
+			"cache_age_s", int(time.Since(res.UpdatedAt).Seconds()),
+			"next_retry_s", int(delay.Seconds()),
+			"consecutive_429", consecutive429)
 	}
 }
 

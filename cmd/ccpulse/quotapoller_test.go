@@ -273,3 +273,39 @@ func TestQuotaPoller_RecordsOnlyRawAPIResults(t *testing.T) {
 		t.Errorf("recorded %q 7d=%v, want the raw api result (89)", got[0].Source, got[0].Usage.SevenDay)
 	}
 }
+
+// Final review Important 3: every API attempt refreshes the header, even
+// when the merged quota is unchanged — recomputeWindow is what re-evaluates
+// the "resets in" countdowns and the Fable-row age, and an idle TUI behind
+// a long 429 window has no other trigger. Only the re-read tick is gated.
+func TestQuotaPoller_SendsAfterEveryAPIAttempt(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		dir := t.TempDir()
+		start := time.Now()
+		stale := anthro.FetchResult{
+			Usage:     anthro.Usage{SevenDay: bucketAt(54, start.Add(72*time.Hour))},
+			Source:    "cache_stale",
+			UpdatedAt: start.Add(-2 * time.Hour),
+		}
+		var attempts atomic.Int64
+		fetch := func(context.Context, anthro.Credential, string) (anthro.FetchResult, error) {
+			attempts.Add(1)
+			res := stale
+			res.RetryAt = time.Now().Add(10 * time.Minute) // a 429 window
+			return res, nil
+		}
+		var log msgLog
+		stop := startPoller(t, quotaPollerDeps{
+			cred: &anthro.Credential{AccessToken: "tok"}, cacheDir: dir, send: log.send, fetch: fetch,
+		})
+		time.Sleep(25 * time.Minute) // attempts at 0, 10 and 20 min
+		synctest.Wait()
+		if n := attempts.Load(); n != 3 {
+			t.Fatalf("API attempts = %d, want 3 (test setup)", n)
+		}
+		if n := len(log.snapshot()); n != 3 {
+			t.Errorf("QuotaMsgs = %d, want 3: one per API attempt even though the quota is unchanged", n)
+		}
+		stop()
+	})
+}

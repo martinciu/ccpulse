@@ -239,10 +239,11 @@ func TestStatusStdin_GarbageInputStillReports(t *testing.T) {
 
 func TestStatusStdin_TerminalStdinErrors(t *testing.T) {
 	statuslineEnv(t, false)
-	// /dev/null is a character device, the same file mode a terminal has.
-	f, err := os.Open(os.DevNull)
+	// A character device that is not /dev/null stands in for a terminal:
+	// same file mode, and like a tty it would never deliver a payload.
+	f, err := os.Open("/dev/zero")
 	if err != nil {
-		t.Fatal(err)
+		t.Skipf("no /dev/zero: %v", err)
 	}
 	defer f.Close()
 	start := time.Now()
@@ -252,6 +253,31 @@ func TestStatusStdin_TerminalStdinErrors(t *testing.T) {
 	}
 	if el := time.Since(start); el > 400*time.Millisecond {
 		t.Errorf("took %v; a terminal stdin must error immediately, not wait", el)
+	}
+}
+
+// /dev/null is what tmux #(), cron and launchd hand a command, and what Go
+// reopens a closed fd 0 as. It is missing input, not a terminal: report as
+// usual, exit 0 (spec anti-goal: missing input never changes the exit code).
+func TestStatusStdin_DevNullIsEmptyInput(t *testing.T) {
+	cacheDir := statuslineEnv(t, false)
+	f, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	out, stderr, err := execStatus(t, f, "--stdin", "--json")
+	if err != nil {
+		t.Fatalf("status --stdin </dev/null: %v", err)
+	}
+	if stderr != "" {
+		t.Errorf("stderr = %q, want silence", stderr)
+	}
+	if m := parseStatusJSON(t, out); m["ceiling_label"] != "unknown" {
+		t.Errorf("ceiling_label = %v, want the normal no-credential report", m["ceiling_label"])
+	}
+	if overlayExists(t, cacheDir) {
+		t.Error("overlay written for empty input")
 	}
 }
 

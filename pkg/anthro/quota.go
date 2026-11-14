@@ -1,6 +1,9 @@
 package anthro
 
-import "time"
+import (
+	"math"
+	"time"
+)
 
 // SourceStatusline is the Quota.Source (and `status --json` quota_source)
 // value when at least one displayed 5h/7d bucket came from the statusline
@@ -49,8 +52,14 @@ func (q Quota) APIUpdatedAt() time.Time {
 // Per 5h/7d bucket, the overlay wins when present and its AcceptedAt is
 // newer than the API data (or there is no API data); otherwise the API's
 // bucket wins, even when nil — a newer API "idle" beats older statusline
-// numbers. AsOf never decides precedence. Every other field comes from the
-// API as-is, so limits[weekly_all] may disagree with an overlaid seven_day.
+// numbers. Every other field comes from the API as-is, so
+// limits[weekly_all] may disagree with an overlaid seven_day.
+//
+// AsOf decides precedence in one case only: when both sources hold the same
+// reading (sameReading), the overlay's later confirmation wins. The number
+// is identical either way, so this cannot hide a reset or resurrect a stale
+// value; it keeps a reading the statusline keeps confirming from being
+// labelled as old as the last API fetch — hours, while the API 429s.
 //
 // Overlay buckets whose reset has passed at now are ignored. ok is false
 // only when neither source has data. api.Usage is never written through:
@@ -111,7 +120,8 @@ func (m *bucketMerger) note(t time.Time) {
 // pick returns a fresh copy of the winning bucket: the overlay's when it was
 // accepted after the API data was fetched, else the API's (possibly nil).
 func (m *bucketMerger) pick(apiB *Bucket, ovB *OverlayBucket) *Bucket {
-	if ovB != nil && (m.api == nil || ovB.AcceptedAt.After(m.api.UpdatedAt)) {
+	if ovB != nil && (m.api == nil || ovB.AcceptedAt.After(m.api.UpdatedAt) ||
+		(sameReading(apiB, &ovB.Bucket) && ovB.AsOf.After(m.api.UpdatedAt))) {
 		m.fromOverlay = true
 		m.note(ovB.AsOf)
 		return copyBucket(&ovB.Bucket)
@@ -120,6 +130,18 @@ func (m *bucketMerger) pick(apiB *Bucket, ovB *OverlayBucket) *Bucket {
 		m.note(m.api.UpdatedAt)
 	}
 	return copyBucket(apiB)
+}
+
+// sameReading reports whether two buckets show the same thing: the same
+// window (resets_at at minute precision, as the overlay compares reports)
+// and the same displayed percent (the API sends fractions, the statusline
+// headers whole numbers; every display rounds).
+func sameReading(a, b *Bucket) bool {
+	if a == nil || b == nil || a.ResetsAt == nil || b.ResetsAt == nil {
+		return false
+	}
+	return math.Round(a.Utilization) == math.Round(b.Utilization) &&
+		a.ResetsAt.Round(time.Minute).Equal(b.ResetsAt.Round(time.Minute))
 }
 
 func copyBucket(b *Bucket) *Bucket {

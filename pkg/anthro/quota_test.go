@@ -171,6 +171,78 @@ func TestMergeQuota(t *testing.T) {
 			wantUpdatedAt: ago(time.Hour),
 			wantAPIAt:     ago(time.Hour),
 		},
+		{
+			// Final review Important 1: a value the statusline keeps
+			// confirming must not lose its freshness to an API fetch that
+			// merely landed after it was accepted.
+			name:          "same value, overlay confirmed after the API fetch (re-report shape)",
+			api:           &FetchResult{Usage: apiUsage(nil, bk(54, R7)), Source: "cache_fresh", UpdatedAt: ago(30 * time.Minute)},
+			ov:            Overlay{SevenDay: ob(54, R7, ago(time.Minute), ago(2*time.Hour))},
+			wantOK:        true,
+			want5:         nil,
+			want7:         54.0,
+			wantSource:    SourceStatusline,
+			wantUpdatedAt: ago(time.Minute),
+			wantAPIAt:     ago(30 * time.Minute),
+		},
+		{
+			name:          "same value, overlay confirmed after the API fetch (new-info shape)",
+			api:           &FetchResult{Usage: apiUsage(bk(5, R5), bk(54, R7)), Source: "api", UpdatedAt: ago(30 * time.Minute)},
+			ov:            Overlay{FiveHour: ob(7, R5, ago(time.Minute), ago(time.Minute)), SevenDay: ob(54, R7, ago(time.Minute), ago(40*time.Minute))},
+			wantOK:        true,
+			want5:         7.0,
+			want7:         54.0,
+			wantSource:    SourceStatusline,
+			wantUpdatedAt: ago(time.Minute),
+			wantAPIAt:     ago(30 * time.Minute),
+		},
+		{
+			// 7d-only account with the API stuck in 429 after one success.
+			name:          "same value vs cache_stale API, confirmed seconds ago",
+			api:           &FetchResult{Usage: apiUsage(nil, bk(54, R7)), Source: "cache_stale", UpdatedAt: ago(2 * time.Hour)},
+			ov:            Overlay{SevenDay: ob(54, R7, ago(2*time.Second), ago(3*time.Hour))},
+			wantOK:        true,
+			want5:         nil,
+			want7:         54.0,
+			wantSource:    SourceStatusline,
+			wantUpdatedAt: ago(2 * time.Second),
+			wantAPIAt:     ago(2 * time.Hour),
+		},
+		{
+			// The API's fractional value and the header's integer render
+			// the same percent: still the same reading.
+			name:          "same value at display precision",
+			api:           &FetchResult{Usage: apiUsage(nil, bk(54.3, R7.Add(-140*time.Millisecond))), Source: "cache_fresh", UpdatedAt: ago(20 * time.Minute)},
+			ov:            Overlay{SevenDay: ob(54, R7, ago(time.Minute), ago(time.Hour))},
+			wantOK:        true,
+			want5:         nil,
+			want7:         54.0,
+			wantSource:    SourceStatusline,
+			wantUpdatedAt: ago(time.Minute),
+			wantAPIAt:     ago(20 * time.Minute),
+		},
+		{
+			name:          "different value still keys on accepted_at",
+			api:           &FetchResult{Usage: apiUsage(nil, bk(55, R7)), Source: "cache_fresh", UpdatedAt: ago(20 * time.Minute)},
+			ov:            Overlay{SevenDay: ob(54, R7, ago(time.Minute), ago(time.Hour))},
+			wantOK:        true,
+			want5:         nil,
+			want7:         55.0,
+			wantSource:    "cache_fresh",
+			wantUpdatedAt: ago(20 * time.Minute),
+			wantAPIAt:     ago(20 * time.Minute),
+		},
+		{
+			name:          "same percent, different window keys on accepted_at",
+			api:           &FetchResult{Usage: apiUsage(nil, bk(54, R7.Add(7*24*time.Hour))), Source: "cache_fresh", UpdatedAt: ago(20 * time.Minute)},
+			ov:            Overlay{SevenDay: ob(54, R7, ago(time.Minute), ago(time.Hour))},
+			wantOK:        true,
+			want5:         nil,
+			want7:         54.0,
+			wantSource:    "cache_fresh",
+			wantUpdatedAt: ago(20 * time.Minute),
+			wantAPIAt:     ago(20 * time.Minute),
+		},
 		{name: "neither", wantOK: false},
 	}
 	for _, tt := range tests {
