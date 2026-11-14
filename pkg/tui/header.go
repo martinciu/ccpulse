@@ -261,6 +261,38 @@ func scopedLabel(name string) string {
 	return ansi.Truncate(name, scopedLabelMaxW-1, "…") + " "
 }
 
+// scopedStaleAfter is the API-data age past which every scoped row carries
+// a dim "· 3h old" suffix (#568): twice the 30-minute slow cadence the API
+// keeps while statusline data is fresh, so it never shows while the API is
+// healthy. The scoped rows are API-only — the statusline has no model-scoped
+// bucket — so without it a stale Fable row would pass for current.
+const scopedStaleAfter = time.Hour
+
+// ageString renders a coarse age: whole days from 24h, whole hours from 1h,
+// minutes below that.
+func ageString(d time.Duration) string {
+	switch {
+	case d >= 24*time.Hour:
+		return fmt.Sprintf("%dd", int(d/(24*time.Hour)))
+	case d >= time.Hour:
+		return fmt.Sprintf("%dh", int(d/time.Hour))
+	default:
+		return fmt.Sprintf("%dm", int(d/time.Minute))
+	}
+}
+
+// scopedRowLabel is the scoped row's label: scopedLabel(name), plus
+// "· <age> old " once the API data behind the row is older than
+// scopedStaleAfter. The suffix rides inside the label so it renders in the
+// same dim run, and the row's bar shrinks to make room (rebuildScopedBars
+// sizes it from this same label).
+func scopedRowLabel(name string, apiAge time.Duration) string {
+	if apiAge <= scopedStaleAfter {
+		return scopedLabel(name)
+	}
+	return scopedLabel(name) + "· " + ageString(apiAge) + " old "
+}
+
 // renderScopedLimitRow composes one full-width scoped-limit row inside the
 // header box, mirroring renderQuotaSide's layout contract:
 //
