@@ -399,10 +399,17 @@ func staleOrRetry(cached cachedUsage, cacheErr error, bo BackoffState, cause err
 // On a system where flock fails (e.g. ENOLCK on a quirky filesystem), Fetch
 // degrades to its pre-#76 behaviour rather than refusing to fetch.
 func acquireFetchLock(cacheDir string) (release func(), err error) {
+	return acquireFileLock(cacheDir, "usage.json.lock")
+}
+
+// acquireFileLock takes an exclusive advisory flock(2) on cacheDir/name,
+// creating the directory (0700) and lock file (0600) as needed. The returned
+// closure releases the lock and closes the file.
+func acquireFileLock(cacheDir, name string) (release func(), err error) {
 	if err := secfile.MkdirAll(cacheDir); err != nil {
 		return nil, err
 	}
-	f, err := secfile.OpenFile(filepath.Join(cacheDir, "usage.json.lock"), os.O_RDWR|os.O_CREATE)
+	f, err := secfile.OpenFile(filepath.Join(cacheDir, name), os.O_RDWR|os.O_CREATE)
 	if err != nil {
 		return nil, err
 	}
