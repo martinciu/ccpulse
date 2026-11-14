@@ -210,17 +210,17 @@ type FetchResult struct {
 }
 
 // freshFromCache returns a cache_fresh result when the cached entry is valid and
-// younger than cacheTTL. ok is false when there is no usable fresh entry, telling
+// younger than ttl. ok is false when there is no usable fresh entry, telling
 // the caller to fall through to the API path.
 //
 // A cache entry stamped in the future is treated as stale rather than
 // clamped: UpdatedAt is an untrusted timestamp read off disk (clock stepped
 // back after a fetch, a restored cache dir, a hand-edited file), and a
-// negative age is always < cacheTTL — without this check a future stamp
+// negative age is always < ttl — without this check a future stamp
 // would be served as fresh indefinitely, until the wall clock caught up.
-func freshFromCache(cached cachedUsage, cacheErr error, now time.Time) (FetchResult, bool) {
+func freshFromCache(cached cachedUsage, cacheErr error, now time.Time, ttl time.Duration) (FetchResult, bool) {
 	age := now.Sub(cached.UpdatedAt)
-	if cacheErr == nil && age >= 0 && age < cacheTTL {
+	if cacheErr == nil && age >= 0 && age < ttl {
 		return FetchResult{Usage: cached.Usage, Source: "cache_fresh", UpdatedAt: cached.UpdatedAt}, true
 	}
 	return FetchResult{}, false
@@ -247,12 +247,18 @@ func freshFromCache(cached cachedUsage, cacheErr error, now time.Time) (FetchRes
 // hammering a rate-limited endpoint 2,600 times an hour: every one of those
 // invocations is a fresh process, so an in-memory backoff — which the TUI
 // poller used to keep — is invisible to all of them.
+//
+// The cache TTL is dynamic (#568): slowCacheTTL (30 min) while the
+// statusline overlay is fresh, cacheTTL (3 min) otherwise. It lives here, not
+// in the callers, so every reader — statusline-driven `status`, the Stop
+// hook, the TUI poller — obeys the same cadence.
 func Fetch(ctx context.Context, cred Credential, cacheDir string) (res FetchResult, err error) {
 	if cred.AccessToken == "" {
 		return FetchResult{}, errors.New("anthro: empty access token")
 	}
 	cachePath := filepath.Join(cacheDir, "usage.json")
 	now := timeNow()
+	ttl := apiCacheTTL(ReadOverlay(cacheDir, now), now)
 	var lockAcquired bool
 
 	cached, cacheErr := readCache(cachePath)
@@ -265,14 +271,14 @@ func Fetch(ctx context.Context, cred Credential, cacheDir string) (res FetchResu
 		if cacheErr == nil {
 			attrs = append(attrs, "cache_age_s", int(now.Sub(cached.UpdatedAt).Seconds()))
 		}
-		attrs = append(attrs, "lock_acquired", lockAcquired)
+		attrs = append(attrs, "lock_acquired", lockAcquired, "cache_ttl_s", int(ttl/time.Second))
 		if err != nil {
 			attrs = append(attrs, "err", err)
 		}
 		slog.Debug("anthro.Fetch", attrs...)
 	}()
 
-	if res, ok := freshFromCache(cached, cacheErr, now); ok {
+	if res, ok := freshFromCache(cached, cacheErr, now, ttl); ok {
 		return res, nil
 	}
 
@@ -281,7 +287,7 @@ func Fetch(ctx context.Context, cred Credential, cacheDir string) (res FetchResu
 		defer release()
 		now = timeNow()
 		cached, cacheErr = readCache(cachePath)
-		if res, ok := freshFromCache(cached, cacheErr, now); ok {
+		if res, ok := freshFromCache(cached, cacheErr, now, ttl); ok {
 			return res, nil
 		}
 	}
@@ -497,16 +503,17 @@ func fetchAPI(ctx context.Context, token string) (Usage, error) {
 		// 429 is the exception: the status code is the whole message and
 		// the body is a fixed rate_limit_error string, so the snippet only
 		// adds bytes to a line that already repeats once per backoff
-		// window (#529).
+		// window (#529). It carries retry_after_s instead (#568): the
+		// parsed Retry-After in whole seconds, 0 when absent or unparseable.
+		retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"), timeNow())
 		attrs := []any{"status", resp.StatusCode, "dur_ms", durMS}
-		if resp.StatusCode != http.StatusTooManyRequests {
+		if resp.StatusCode == http.StatusTooManyRequests {
+			attrs = append(attrs, "retry_after_s", int(retryAfter/time.Second))
+		} else {
 			attrs = append(attrs, "body_snippet", strconv.Quote(string(snippet)))
 		}
 		slog.Warn("anthro.fetchAPI non-2xx", attrs...)
-		return Usage{}, &StatusError{
-			Code:       resp.StatusCode,
-			RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After"), timeNow()),
-		}
+		return Usage{}, &StatusError{Code: resp.StatusCode, RetryAfter: retryAfter}
 	}
 
 	var u Usage

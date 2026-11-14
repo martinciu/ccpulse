@@ -1018,7 +1018,7 @@ func TestFreshFromCache(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			res, ok := freshFromCache(tt.cached, tt.cacheErr, now)
+			res, ok := freshFromCache(tt.cached, tt.cacheErr, now, cacheTTL)
 			if ok != tt.wantOK {
 				t.Fatalf("ok = %v, want %v", ok, tt.wantOK)
 			}
@@ -1154,5 +1154,102 @@ func TestFetchNoCacheRateLimited_ErrorsAs(t *testing.T) {
 	}
 	if se.Code != http.StatusTooManyRequests || se.RetryAfter != 30*time.Second {
 		t.Errorf("StatusError = %+v, want Code 429 RetryAfter 30s", se)
+	}
+}
+
+// TestFetch_SlowTTLWhileOverlayFresh pins #568's cadence switch: while the
+// statusline overlay is fresh, a 20-minute-old API cache still counts as
+// fresh (no request); once the overlay goes stale, the base TTL is back.
+func TestFetch_SlowTTLWhileOverlayFresh(t *testing.T) {
+	base := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
+	withFrozenClock(t, base)
+	var hits atomic.Int64
+	srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte(sampleAPIBody))
+	})
+	withTestEndpoint(t, srv.URL)
+	cred := Credential{AccessToken: "tok"}
+	reading := StatuslineReading{SevenDay: bk(54, base.Add(72*time.Hour))}
+
+	t.Run("fresh overlay keeps a 20-minute cache", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFixtureCache(t, dir, base.Add(-20*time.Minute))
+		if _, err := IngestStatusline(dir, reading, base.Add(-5*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+		hits.Store(0)
+		res, err := Fetch(context.Background(), cred, dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Source != "cache_fresh" || hits.Load() != 0 {
+			t.Errorf("Source = %q, hits = %d; want cache_fresh, 0", res.Source, hits.Load())
+		}
+	})
+
+	t.Run("stale overlay restores the base TTL", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFixtureCache(t, dir, base.Add(-20*time.Minute))
+		if _, err := IngestStatusline(dir, reading, base.Add(-11*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+		hits.Store(0)
+		res, err := Fetch(context.Background(), cred, dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Source != "api" || hits.Load() != 1 {
+			t.Errorf("Source = %q, hits = %d; want api, 1", res.Source, hits.Load())
+		}
+	})
+}
+
+// TestFetchAPI_429LogsRetryAfter: the 429 WARN carries the parsed
+// Retry-After in whole seconds (0 when absent) and still no body snippet.
+func TestFetchAPI_429LogsRetryAfter(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		header string
+		want   int64
+	}{
+		{"with header", "120", 120},
+		{"without header", "", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			snap := captureLogs(t)
+			srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+				if tc.header != "" {
+					w.Header().Set("Retry-After", tc.header)
+				}
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = w.Write([]byte(`{"type":"error","error":{"type":"rate_limit_error"}}`))
+			})
+			withTestEndpoint(t, srv.URL)
+			if _, err := fetchAPI(context.Background(), "tok"); err == nil {
+				t.Fatal("fetchAPI err = nil, want a 429 StatusError")
+			}
+			var found bool
+			for _, r := range snap() {
+				if r.Message != "anthro.fetchAPI non-2xx" {
+					continue
+				}
+				found = true
+				m := attrMap(r)
+				got, ok := m["retry_after_s"]
+				if !ok {
+					t.Fatalf("retry_after_s missing from %v", m)
+				}
+				if n, _ := got.(int64); n != tc.want {
+					t.Errorf("retry_after_s = %v (%T), want %d", got, got, tc.want)
+				}
+				if _, ok := m["body_snippet"]; ok {
+					t.Error("429 WARN carries body_snippet")
+				}
+			}
+			if !found {
+				t.Fatal("no anthro.fetchAPI non-2xx record")
+			}
+		})
 	}
 }
