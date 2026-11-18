@@ -3042,6 +3042,26 @@ func TestRecordUsageSampleFrom_Collisions(t *testing.T) {
 			wantErr: []bool{false, false},
 		},
 		{
+			// A re-offered reading (racing renders, or a Mark that failed
+			// after the insert) must find its shifted row, not shift again.
+			name: "shifted statusline twice is idempotent",
+			run: func(t *testing.T, c *Cache) []error {
+				ctx := t.Context()
+				if err := c.RecordUsageSampleFrom(ctx, mk(10, 20), base, SampleSourceAPI); err != nil {
+					t.Fatal(err)
+				}
+				return []error{
+					c.RecordUsageSampleFrom(ctx, mk(11, 21), base, SampleSourceStatusline),
+					c.RecordUsageSampleFrom(ctx, mk(11, 21), base, SampleSourceStatusline),
+				}
+			},
+			want: map[int64]row{
+				base.Unix():     {"api", 10, 20},
+				base.Unix() + 1: {"statusline", 11, 21},
+			},
+			wantErr: []bool{false, false},
+		},
+		{
 			name: "all shifts taken by api rows errors and writes nothing",
 			run: func(t *testing.T, c *Cache) []error {
 				ctx := t.Context()

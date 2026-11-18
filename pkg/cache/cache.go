@@ -353,21 +353,27 @@ func insertLimits(ctx context.Context, tx *sql.Tx, ts int64, limits []anthro.Lim
 const statuslineMaxShift = 5
 
 // shiftStatuslineSample handles a statusline insert whose parent row at ts
-// was ignored. args are the insert arguments (args[0] is ts). If the row
-// holding ts is itself a statusline row, it returns landed=false (nothing to
-// do). If it is an API row, the insert is retried at ts+1 … ts+statuslineMaxShift
-// and the ts that landed is returned. All collisions is an error.
+// was ignored. args are the insert arguments (args[0] is ts). Walking
+// forward from ts, a statusline row at any second it reaches means the
+// reading is already recorded — by a racing process, or by an earlier call
+// that shifted it (a reading is re-offered when its mark fails) — so it
+// returns landed=false. An API row moves the insert one second on, up to
+// ts+statuslineMaxShift, and the ts that landed is returned. Running out of
+// seconds is an error.
 func shiftStatuslineSample(ctx context.Context, tx *sql.Tx, ts int64, args []any) (int64, bool, error) {
-	var existing string
-	if err := tx.QueryRowContext(ctx, `SELECT source FROM usage_samples WHERE ts = ?`, ts).Scan(&existing); err != nil {
-		return 0, false, fmt.Errorf("record usage sample: read colliding row: %w", err)
-	}
-	if existing == SampleSourceStatusline {
-		return 0, false, nil
-	}
 	shifted := append([]any(nil), args...)
-	for d := int64(1); d <= statuslineMaxShift; d++ {
-		shifted[0] = ts + d
+	for d := int64(0); ; d++ {
+		var existing string
+		if err := tx.QueryRowContext(ctx, `SELECT source FROM usage_samples WHERE ts = ?`, ts+d).Scan(&existing); err != nil {
+			return 0, false, fmt.Errorf("record usage sample: read colliding row: %w", err)
+		}
+		if existing == SampleSourceStatusline {
+			return 0, false, nil
+		}
+		if d == statuslineMaxShift {
+			return 0, false, fmt.Errorf("record usage sample: no free second within %ds of ts %d (api rows collide)", statuslineMaxShift, ts)
+		}
+		shifted[0] = ts + d + 1
 		res, err := tx.ExecContext(ctx, insertUsageSampleSQL, shifted...)
 		if err != nil {
 			return 0, false, fmt.Errorf("record usage sample: insert shifted sample: %w", err)
@@ -377,10 +383,9 @@ func shiftStatuslineSample(ctx context.Context, tx *sql.Tx, ts int64, args []any
 			return 0, false, fmt.Errorf("record usage sample: rows affected: %w", err)
 		}
 		if n == 1 {
-			return ts + d, true, nil
+			return ts + d + 1, true, nil
 		}
 	}
-	return 0, false, fmt.Errorf("record usage sample: no free second within %ds of ts %d (api rows collide)", statuslineMaxShift, ts)
 }
 
 const insertUsageSampleSQL = `INSERT OR IGNORE INTO usage_samples(
