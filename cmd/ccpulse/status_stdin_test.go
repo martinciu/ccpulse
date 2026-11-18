@@ -492,3 +492,48 @@ func TestStatusStdin_SettledSampleShiftsPastAPIRowSameSecond(t *testing.T) {
 		t.Errorf("row at second+1 source = %q, want statusline", src)
 	}
 }
+
+// A statusline reading accepted after the API fetch wins the merge, yet the
+// 'api' usage_samples row must keep the API's raw numbers: recording the merged
+// quota would file the statusline's value under the wrong source.
+func TestStatus_RecordsRawAPIWhenOverlayWins(t *testing.T) {
+	cacheDir := statuslineEnv(t, true)
+	resets := time.Now().Add(72 * time.Hour).UTC()
+	var ingestErr error
+	withUsageServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		// Lands while the fetch is in flight, stamped after the API result's
+		// UpdatedAt so the overlay wins the freshness merge.
+		_, ingestErr = anthro.IngestStatusline(cacheDir, anthro.StatuslineReading{
+			SevenDay: &anthro.Bucket{Utilization: 60, ResetsAt: &resets},
+		}, time.Now().Add(time.Minute))
+		_, _ = fmt.Fprint(w, sampleAPIBody) // raw 7d = 89
+	})
+
+	out, _, err := execStatus(t, bytes.NewReader(nil), "--json")
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if ingestErr != nil {
+		t.Fatalf("ingest during fetch: %v", ingestErr)
+	}
+	if got := parseStatusJSON(t, out)["quota_source"]; got != "statusline" {
+		t.Fatalf("quota_source = %v, want statusline (overlay must win the merge)", got)
+	}
+
+	dbPath := filepath.Join(cacheDir, "state.db")
+	if n := countSamplesBySource(t, dbPath, "api"); n != 1 {
+		t.Fatalf("api samples = %d, want 1", n)
+	}
+	c, err := cache.Open(t.Context(), dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	var pct float64
+	if err := c.DB().QueryRowContext(t.Context(), `SELECT seven_day_pct FROM usage_samples WHERE source = 'api'`).Scan(&pct); err != nil {
+		t.Fatal(err)
+	}
+	if pct != 89 {
+		t.Errorf("api row seven_day_pct = %v, want the raw API value 89 (not the overlay's 60)", pct)
+	}
+}
