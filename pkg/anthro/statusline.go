@@ -25,6 +25,12 @@ const (
 	sevenDayResetSlack = time.Hour
 )
 
+// maxPlausibleUtilization bounds used_percentage. At-limit readings can
+// exceed 100 (104.2 has been seen) and are kept, but nothing real comes
+// near 1000; a larger value is garbage, and accepting it overflows the
+// projection math downstream (+Inf, which JSON can't encode).
+const maxPlausibleUtilization = 1000.0
+
 // ErrNoStatuslineQuota reports a statusline payload that decoded fine but
 // carries no 5h/7d bucket worth ingesting: rate_limits absent or null (not a
 // subscriber, or no API response yet), only a gateway spend_limit, or every
@@ -89,10 +95,11 @@ type statuslinePayload struct {
 // ParseStatusline decodes and validates a statusline payload at now.
 //
 // Per bucket, a reading is rejected when used_percentage is missing, NaN,
-// infinite or negative, or when resets_at is missing, not after now, or
-// beyond the bucket's window plus slack. Values above 100 are kept: an
-// at-limit reading can exceed 100, and rejecting it would freeze the bar
-// exactly when the user hits the limit (display clamps to 100).
+// infinite, negative or above maxPlausibleUtilization, or when resets_at is
+// missing, not after now, or beyond the bucket's window plus slack. Values
+// above 100 are kept: an at-limit reading can exceed 100, and rejecting it
+// would freeze the bar exactly when the user hits the limit (display clamps
+// to 100).
 //
 // Invalid JSON returns a wrapped decode error; a payload with no usable
 // bucket returns ErrNoStatuslineQuota. Neither error carries payload bytes
@@ -124,7 +131,7 @@ func parseStatuslineBucket(raw json.RawMessage, now time.Time, maxAhead time.Dur
 		return nil
 	}
 	used, resets := sb.UsedPercentage, sb.ResetsAt
-	if !used.ok || math.IsNaN(used.v) || math.IsInf(used.v, 0) || used.v < 0 {
+	if !used.ok || math.IsNaN(used.v) || math.IsInf(used.v, 0) || used.v < 0 || used.v > maxPlausibleUtilization {
 		return nil
 	}
 	// Compare in float seconds before converting, so an absurd epoch can

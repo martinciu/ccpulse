@@ -78,6 +78,21 @@ func TestParseStatusline(t *testing.T) {
 			want: want{seven: f(104.2)},
 		},
 		{
+			name: "absurd",
+			body: `{"rate_limits":{"five_hour":` + bucketJSON(1e308, in2h) + `}}`,
+			want: want{noQuota: true},
+		},
+		{
+			name: "at plausibility bound",
+			body: `{"rate_limits":{"seven_day":` + bucketJSON(1000, in3d) + `}}`,
+			want: want{seven: f(1000)},
+		},
+		{
+			name: "just over plausibility bound",
+			body: `{"rate_limits":{"seven_day":` + bucketJSON(1000.5, in3d) + `}}`,
+			want: want{noQuota: true},
+		},
+		{
 			name: "negative rejects that bucket only",
 			body: `{"rate_limits":{"five_hour":` + bucketJSON(-1, in2h) + `,"seven_day":` + bucketJSON(54, in3d) + `}}`,
 			want: want{seven: f(54)},
