@@ -92,7 +92,11 @@ func ingestStatuslineStdin(cmd *cobra.Command, cacheDir string, now time.Time) e
 
 	changed, err := anthro.IngestStatusline(cacheDir, r, now)
 	if err != nil {
-		slog.Debug("ccpulse.statuslineIngest", "outcome", "skipped", "reason", "write_failed", "buckets", buckets)
+		reason := "write_failed"
+		if errors.Is(err, anthro.ErrOverlayLockBusy) {
+			reason = "lock_busy"
+		}
+		slog.Debug("ccpulse.statuslineIngest", "outcome", "skipped", "reason", reason, "buckets", buckets)
 		return nil
 	}
 	outcome := "unchanged"

@@ -320,10 +320,17 @@ func writeOverlayRaw(path string, f overlayFile) error {
 // IngestStatusline merges one reading into <cacheDir>/usage-statusline.json
 // under the overlay's own lock — never usage.json.lock, which Fetch holds
 // across an HTTP call — and writes only when something changed. A corrupt or
-// unknown-version file is treated as absent and rewritten. If the lock can't
-// be taken, it proceeds unlocked, like Fetch.
+// unknown-version file is treated as absent and rewritten. Contention past
+// overlayLockWait skips the ingest and returns ErrOverlayLockBusy (the next
+// render re-sends the reading). A hard lock failure (e.g. ENOLCK) proceeds
+// unlocked; concurrent unlocked ingests can lose per-session memory entries,
+// which is accepted so the feed still works on such filesystems.
 func IngestStatusline(cacheDir string, r StatuslineReading, now time.Time) (changed bool, err error) {
-	if release, lockErr := acquireFileLock(cacheDir, overlayLockName); lockErr == nil {
+	release, lockErr := acquireFileLockWithin(cacheDir, overlayLockName, overlayLockWait)
+	if errors.Is(lockErr, ErrOverlayLockBusy) {
+		return false, ErrOverlayLockBusy
+	}
+	if lockErr == nil {
 		defer release()
 	}
 	path := overlayPath(cacheDir)
@@ -464,8 +471,14 @@ func (rec *recordedSample) covers(five, seven *storedBucket, now time.Time) bool
 // was recorded to history at at, so PendingStatuslineSample stops offering
 // it. Racing processes that both record the same reading are harmless: the
 // same at is the same usage_samples ts, and the insert is OR IGNORE.
+// Contention past overlayLockWait returns an error wrapping ErrOverlayLockBusy
+// (the sample is offered again later); a hard lock failure proceeds unlocked.
 func MarkStatuslineRecorded(cacheDir string, u Usage, at time.Time) error {
-	if release, lockErr := acquireFileLock(cacheDir, overlayLockName); lockErr == nil {
+	release, lockErr := acquireFileLockWithin(cacheDir, overlayLockName, overlayLockWait)
+	if errors.Is(lockErr, ErrOverlayLockBusy) {
+		return fmt.Errorf("mark statusline sample: %w", ErrOverlayLockBusy)
+	}
+	if lockErr == nil {
 		defer release()
 	}
 	path := overlayPath(cacheDir)

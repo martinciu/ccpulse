@@ -431,6 +431,53 @@ func acquireFileLock(cacheDir, name string) (release func(), err error) {
 	}, nil
 }
 
+// ErrOverlayLockBusy reports that the statusline overlay lock stayed held by
+// another process for longer than overlayLockWait. The caller skips the
+// operation; the next statusline render re-sends the reading.
+var ErrOverlayLockBusy = errors.New("statusline overlay lock busy")
+
+// overlayLockWait bounds how long overlay writers wait for the overlay lock.
+// ccstatusline kills custom commands at 1000 ms by default, while normal
+// holds last milliseconds, so a longer wait only turns a stalled holder into
+// a blank statusline. A var so tests can shorten it.
+var overlayLockWait = 150 * time.Millisecond
+
+// acquireFileLockWithin is acquireFileLock with a deadline: it polls a
+// non-blocking flock(2) until it succeeds or wait elapses. A lock still held
+// by someone else at the deadline yields ErrOverlayLockBusy; any other
+// open/flock error is returned as-is.
+func acquireFileLockWithin(cacheDir, name string, wait time.Duration) (release func(), err error) {
+	if err := secfile.MkdirAll(cacheDir); err != nil {
+		return nil, err
+	}
+	f, err := secfile.OpenFile(filepath.Join(cacheDir, name), os.O_RDWR|os.O_CREATE)
+	if err != nil {
+		return nil, err
+	}
+	deadline := time.Now().Add(wait)
+	for {
+		//nolint:gosec // G115: f.Fd() returns uintptr; OS fds are small ints, no overflow
+		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EAGAIN) {
+			_ = f.Close()
+			return nil, err
+		}
+		if !time.Now().Before(deadline) {
+			_ = f.Close()
+			return nil, ErrOverlayLockBusy
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return func() {
+		//nolint:gosec // G115: f.Fd() returns uintptr; OS fds are small ints, no overflow
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = f.Close()
+	}, nil
+}
+
 // parseRetryAfter interprets an RFC 7231 Retry-After header value: either
 // delta-seconds ("120") or an HTTP-date, evaluated against now. Returns 0
 // for an absent, garbage, negative, overflowing, or already-past value.

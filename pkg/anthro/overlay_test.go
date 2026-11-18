@@ -2,6 +2,7 @@ package anthro
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -715,5 +716,86 @@ func TestMarkStatuslineRecorded_SuppressesRepeat(t *testing.T) {
 	// Mark keeps the overlay's readings intact.
 	if ov := ReadOverlay(dir, now.Add(time.Minute+31*time.Second)); ov.SevenDay == nil || ov.SevenDay.Utilization != 56 {
 		t.Errorf("overlay after Mark = %+v, want 7d=56", ov.SevenDay)
+	}
+}
+
+// holdOverlayLock takes the overlay lock from the test and shortens
+// overlayLockWait. These tests are deliberately not parallel: they mutate a
+// package var that parallel tests read.
+func holdOverlayLock(t *testing.T, dir string) (release func()) {
+	t.Helper()
+	prev := overlayLockWait
+	overlayLockWait = 50 * time.Millisecond
+	t.Cleanup(func() { overlayLockWait = prev })
+	release, err := acquireFileLock(dir, overlayLockName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(release)
+	return release
+}
+
+func TestIngestStatusline_LockBusy(t *testing.T) {
+	dir := t.TempDir()
+	release := holdOverlayLock(t, dir)
+	now := time.Now()
+	r := StatuslineReading{SessionID: "S1", SevenDay: bk(54, now.Add(72*time.Hour))}
+
+	start := time.Now()
+	changed, err := IngestStatusline(dir, r, now)
+	if !errors.Is(err, ErrOverlayLockBusy) || changed {
+		t.Fatalf("ingest under held lock = (%v, %v), want (false, ErrOverlayLockBusy)", changed, err)
+	}
+	if d := time.Since(start); d > 300*time.Millisecond {
+		t.Errorf("ingest waited %v, want bounded near overlayLockWait", d)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, overlayFileName)); !os.IsNotExist(statErr) {
+		t.Errorf("overlay file exists after a busy ingest (stat err %v), want none", statErr)
+	}
+
+	release()
+	if changed, err := IngestStatusline(dir, r, now); err != nil || !changed {
+		t.Fatalf("ingest after release = (%v, %v), want (true, nil)", changed, err)
+	}
+}
+
+func TestMarkStatuslineRecorded_LockBusy(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
+	R7 := now.Add(72 * time.Hour)
+	path := filepath.Join(dir, overlayFileName)
+	f := overlayFile{V: overlayVersion, SevenDay: sb(54, R7, now.Add(-5*time.Second), now.Add(-40*time.Second))}
+	if err := writeOverlayRaw(path, f); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	holdOverlayLock(t, dir)
+
+	u := Usage{SevenDay: bk(54, R7)}
+	if err := MarkStatuslineRecorded(dir, u, now); !errors.Is(err, ErrOverlayLockBusy) {
+		t.Fatalf("Mark under held lock err = %v, want ErrOverlayLockBusy", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Error("overlay changed by a busy MarkStatuslineRecorded")
+	}
+}
+
+func TestAcquireFileLockWithin_FreeLockImmediate(t *testing.T) {
+	t.Parallel()
+	start := time.Now()
+	release, err := acquireFileLockWithin(t.TempDir(), "x.lock", time.Second)
+	if err != nil {
+		t.Fatalf("acquireFileLockWithin: %v", err)
+	}
+	release()
+	if d := time.Since(start); d > 500*time.Millisecond {
+		t.Errorf("free lock took %v, want immediate", d)
 	}
 }
