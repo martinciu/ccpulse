@@ -88,11 +88,14 @@ type breakdownTickMsg struct{ gen int }
 // re-queries. The chart itself scrolls live; only the box is debounced.
 const projectsDebounce = 120 * time.Millisecond
 
-// QuotaMsg is sent when fresh usage data is available.
+// QuotaMsg is sent when fresh usage data is available. Source/UpdatedAt
+// describe the 5h/7d pair; APIUpdatedAt is the age of the API-only fields
+// behind the scoped (Fable) rows, zero when there is no API data (#568).
 type QuotaMsg struct {
-	Usage     *anthro.Usage
-	Source    string
-	UpdatedAt time.Time
+	Usage        *anthro.Usage
+	Source       string
+	UpdatedAt    time.Time
+	APIUpdatedAt time.Time
 }
 
 // Deps wires external dependencies into the TUI model.
@@ -401,10 +404,16 @@ type Model struct {
 	// late-arrival fire, or under reduce_motion in New().
 	quotaIntroPending bool
 
-	window         status.Window
-	quota          *anthro.Usage
-	quotaSource    string
-	quotaUpdatedAt time.Time
+	window            status.Window
+	quota             *anthro.Usage
+	quotaSource       string
+	quotaUpdatedAt    time.Time
+	quotaAPIUpdatedAt time.Time
+	// scopedAPIAge is the API data's age behind the scoped rows, evaluated
+	// once per recomputeWindow (zero when there is no API data). Both
+	// rebuildScopedBars and quotaBars read it, so label width and bar width
+	// can never disagree mid-frame.
+	scopedAPIAge time.Duration
 
 	indexActive bool
 	indexDone   int
@@ -700,6 +709,7 @@ func (m *Model) handleQuotaMsg(msg QuotaMsg) tea.Cmd {
 	m.quota = msg.Usage
 	m.quotaSource = msg.Source
 	m.quotaUpdatedAt = msg.UpdatedAt
+	m.quotaAPIUpdatedAt = msg.APIUpdatedAt
 	m.recomputeWindow()
 	// (#463) recomputeWindow can change scopedRowCount() (e.g. 0→N on
 	// first quota arrival, or N changing on a later poll), which grows
@@ -1088,9 +1098,15 @@ func (m Model) renderFooter() string {
 // Styling note: stale-quota uses the default foreground (intentionally
 // undimmed — it's a warning meant to draw the eye); indexing and [DEV]
 // are dim. The separator is dim.
+//
+// The stale badge describes the 5h/7d bars: shown for cache_stale, and for
+// statusline quota once its freshness evidence is older than
+// anthro.StatuslineFreshFor — the threshold that also drops the API back to
+// its 3-minute cadence (#568).
 func renderIndicators(isDev bool, idx IndexProgress, w status.Window) string {
 	var parts []string
-	if w.QuotaSource == "cache_stale" {
+	if w.QuotaSource == "cache_stale" ||
+		(w.QuotaSource == anthro.SourceStatusline && time.Since(w.QuotaUpdatedAt) > anthro.StatuslineFreshFor) {
 		mins := max(int(time.Since(w.QuotaUpdatedAt).Minutes()), 1)
 		parts = append(parts, fmt.Sprintf("⚠ %dm old", mins))
 	}
@@ -1186,7 +1202,7 @@ func (m Model) quotaBars() string {
 			reset = durString(*sl.MinutesToReset)
 		}
 		rows = append(rows, renderScopedLimitRow(
-			scopedLabel(sl.Model), m.progressScoped[i], float64(sl.Percent)/100.0, reset))
+			scopedRowLabel(sl.Model, m.scopedAPIAge), m.progressScoped[i], float64(sl.Percent)/100.0, reset))
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, rows...)
 }
@@ -1229,14 +1245,19 @@ func (m *Model) recomputeWindow() {
 		return
 	}
 	in := status.QuotaInput{
-		Usage:      m.quota,
-		Source:     m.quotaSource,
-		UpdatedAt:  m.quotaUpdatedAt,
-		TierSlug:   anthro.TierSlug(m.deps.Credential.RateLimitTier),
-		TierPretty: anthro.TierPretty(m.deps.Credential.RateLimitTier),
+		Usage:        m.quota,
+		Source:       m.quotaSource,
+		UpdatedAt:    m.quotaUpdatedAt,
+		APIUpdatedAt: m.quotaAPIUpdatedAt,
+		TierSlug:     anthro.TierSlug(m.deps.Credential.RateLimitTier),
+		TierPretty:   anthro.TierPretty(m.deps.Credential.RateLimitTier),
 	}
 	if w, err := status.Compute(m.ctx, m.deps.Cache.DB(), time.Now(), in); err == nil {
 		m.window = w
+	}
+	m.scopedAPIAge = 0
+	if !m.window.APIUpdatedAt.IsZero() {
+		m.scopedAPIAge = time.Since(m.window.APIUpdatedAt)
 	}
 	m.progress = newProgressBar(m.progressWidth())
 	m.progress7d = newProgressBar(m.progressWidth())
@@ -1284,7 +1305,7 @@ func (m Model) scopedBarWidth(labelW int) int {
 func (m *Model) rebuildScopedBars() {
 	m.progressScoped = nil
 	for _, sl := range m.window.ScopedLimits {
-		labelW := lipgloss.Width(scopedLabel(sl.Model))
+		labelW := lipgloss.Width(scopedRowLabel(sl.Model, m.scopedAPIAge))
 		m.progressScoped = append(m.progressScoped, newProgressBar(m.scopedBarWidth(labelW)))
 	}
 }

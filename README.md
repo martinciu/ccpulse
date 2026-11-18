@@ -159,8 +159,9 @@ and starship recipes.
 #### Claude Code hook
 
 `ccpulse status --quiet` is designed to be called from Claude Code's `Stop`
-hook, which fires after every assistant turn. The internal 3-minute cache
-TTL absorbs the burst rate, so the Anthropic usage API is hit at most
+hook, which fires after every assistant turn. The internal usage-API cache
+(3-minute TTL, 30 minutes while [statusline data](#fresh-quota-from-the-statusline)
+is fresh) absorbs the burst rate, so the Anthropic usage API is hit at most
 once every few minutes even during heavy use — no daemon, no blind
 polling. Add this to `~/.claude/settings.json` (or merge the `"hooks"` key
 if you already have one):
@@ -181,6 +182,55 @@ if you already have one):
 ```
 
 `ccpulse doctor` reports whether this hook is configured.
+
+#### Fresh quota from the statusline
+
+Anthropic's usage endpoint (`/api/oauth/usage`) rate-limits hard: it can
+answer 429 for hours, and the quota bars then show the last cached numbers.
+Claude Code already hands every statusline command fresh 5h and 7d numbers
+after each turn (`rate_limits` in the statusline's stdin JSON, from the
+response headers of the session's latest request), at no request cost.
+`ccpulse status --stdin` reads that payload and stores its readings. Every
+quota reader — `status` with or without `--stdin`, the Stop hook, the TUI —
+then shows the newest 5h/7d reading from either source, and still shows
+statusline numbers when the API call fails or there is no OAuth credential.
+
+Only the 5h and 7d numbers come from the statusline (Claude subscriptions
+only; the payload has no `rate_limits` otherwise). The Fable-scoped weekly
+row, extra usage and the other buckets still come from the usage API, which
+ccpulse asks at most every **30 minutes** while statusline data is fresh
+(otherwise every 3). In `status --json`:
+
+- `quota_source` is `"statusline"` when a shown 5h/7d number came from the
+  statusline; `quota_updated_at` stays the age of the 5h/7d pair.
+- `api_updated_at` is when the API-only fields (the Fable row, extra usage)
+  were fetched; omitted when there is no API data. The TUI adds a dim
+  `· 3h old` to the Fable row once that data is over an hour old.
+
+**ccstatusline** — in a `custom-command` widget, add `--stdin` to the
+`ccpulse status` call inside the command. ccstatusline pipes the statusline
+payload to every custom command, so nothing else changes:
+
+```sh
+ccpulse status --stdin --json | jq -r '"7d \((.percent_7d // 0))%"'
+```
+
+**A plain statusline script** (`statusLine.command` in
+`~/.claude/settings.json`) — read stdin once, then hand it to ccpulse:
+
+```sh
+#!/bin/sh
+input=$(cat)
+printf '%s' "$input" | ccpulse status --stdin --json \
+  | jq -r '"5h \((.percent // 0))% · 7d \((.percent_7d // 0))%"'
+```
+
+Bad, missing or oversized input never fails the command or changes its exit
+code: `--stdin` skips ingestion and reports as usual. The one exception is an
+interactive terminal on stdin, which errors immediately instead of waiting.
+The `Stop` hook payload carries no `rate_limits`, so the hook stays
+`ccpulse status --quiet`; it picks up the stored readings anyway.
+`ccpulse doctor` shows when the last reading arrived.
 
 #### Status-bar integration
 
@@ -215,10 +265,11 @@ format = "[$output]($style) "
 style = "yellow"
 ```
 
-**Latency caveat.** A cached call returns in ~40ms (3-minute usage-API TTL); a
+**Latency caveat.** A cached call returns in ~40ms (usage-API TTL: 3 minutes,
+or 30 while [statusline data](#fresh-quota-from-the-statusline) is fresh); a
 fresh fetch takes ~640ms, capped at 5s when offline. starship's
 `command_timeout` defaults to **500ms**, so a fresh fetch occasionally exceeds
-it (roughly every 3 minutes, when the TTL lapses) and the module silently
+it (roughly once per TTL, when it lapses) and the module silently
 disappears. Two fixes, usable together: keep `ignore_timeout = true` (above),
 and keep the cache warm with the [`status --quiet` Stop hook](#claude-code-hook)
 so almost every prompt hits the 40ms path. tmux is unaffected — it polls on
@@ -273,6 +324,7 @@ Runs a health-check checklist and prints a pass/fail report:
 - Usage-API cache freshness and `parse-errors.log` size
 - Transcript admission over the last 7 days — assistant lines refused (missing `sessionId`/`uuid`, unusable timestamp, or undecodable); ✗ past 1%, a sign Claude Code's transcript format changed
 - Whether the Claude Code `Stop` hook is configured
+- When the last [statusline reading](#fresh-quota-from-the-statusline) arrived
 
 Run this first when something looks wrong.
 

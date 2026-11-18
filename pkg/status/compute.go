@@ -15,11 +15,15 @@ import (
 // Usage == nil → fall back to the JSONL heuristic for MinutesToReset and
 // leave Percent at 0.
 type QuotaInput struct {
-	Usage      *anthro.Usage
-	Source     string
-	UpdatedAt  time.Time
-	TierSlug   string
-	TierPretty string
+	Usage     *anthro.Usage
+	Source    string
+	UpdatedAt time.Time
+	// APIUpdatedAt is when the API-sourced fields (Limits / the Fable row,
+	// ExtraUsage, the other buckets) were fetched; zero when no API data
+	// exists (#568). Source/UpdatedAt describe the 5h/7d pair.
+	APIUpdatedAt time.Time
+	TierSlug     string
+	TierPretty   string
 }
 
 // Compute folds the last 5 hours of messages plus the quota input into
@@ -71,6 +75,7 @@ FROM messages WHERE ts >= ?`, cutoff)
 		w.Quota = q.Usage
 		w.QuotaSource = q.Source
 		w.QuotaUpdatedAt = q.UpdatedAt
+		w.APIUpdatedAt = q.APIUpdatedAt
 		w.Projection = buildProjections(ctx, db, q.Usage, now)
 		w.ScopedLimits = distillScopedLimits(q.Usage, now)
 	}

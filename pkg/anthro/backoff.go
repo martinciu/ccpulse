@@ -16,8 +16,10 @@ import (
 //
 // BaseRetryInterval is the healthy cadence: how long a caller that polls
 // Fetch in a loop should wait between attempts, and the deadline Fetch
-// records after a failure that is not a 429. It matches cacheTTL, so a
-// poller on this cadence finds the cache exactly at its TTL boundary.
+// records after a failure that is not a 429. The API cache TTL it used to
+// match is now dynamic (#568) — cacheTTL (3 min), or slowCacheTTL (30 min)
+// while statusline data is fresh — so between slow-cadence fetches a poller
+// on this interval just gets cache_fresh from disk.
 //
 // Consecutive 429s escalate the deadline exponentially up to backoffCap;
 // the server's Retry-After may push past that cap but never past

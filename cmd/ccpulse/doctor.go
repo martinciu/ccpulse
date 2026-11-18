@@ -132,6 +132,7 @@ func reportCacheArtifacts(out io.Writer, cacheDir string) {
 			return fmt.Sprintf("usage cache: %s old", time.Since(info.ModTime()).Truncate(time.Second))
 		})
 	reportBackoffState(out, cacheDir, time.Now())
+	reportStatuslineFeed(out, cacheDir, time.Now())
 	reportParseErrors(out, cacheDir)
 }
 
@@ -152,6 +153,29 @@ func reportBackoffState(out io.Writer, cacheDir string, now time.Time) {
 	default:
 		fmt.Fprintf(out, "ℹ usage API backoff: retry in %s (%s)\n",
 			st.RetryAt.Sub(now).Truncate(time.Second), backoffCause(st.Consecutive429))
+	}
+}
+
+// reportStatuslineFeed reports whether the statusline quota feed (#568) is
+// alive: when the newest stored reading was last confirmed, expired windows
+// included — liveness is about readings arriving, not about their windows.
+// Informational, like the backoff line: no file is a setup hint, and an
+// unusable file is ignored by every reader (the next ingest rewrites it).
+func reportStatuslineFeed(out io.Writer, cacheDir string, now time.Time) {
+	ov, err := anthro.ReadOverlayFile(cacheDir)
+	switch {
+	case err != nil:
+		fmt.Fprintf(out, "ℹ statusline feed: state file unusable, ignored — %v\n", err)
+	case !ov.Empty():
+		fmt.Fprintf(out, "ℹ statusline feed: last reading %s ago\n", now.Sub(ov.NewestAsOf()).Truncate(time.Second))
+	default:
+		// The file exists once any payload was ingested, even one whose
+		// reading wasn't accepted (an unknown, idle session).
+		if _, statErr := os.Stat(filepath.Join(cacheDir, "usage-statusline.json")); statErr == nil {
+			fmt.Fprintln(out, "ℹ statusline feed: payloads seen, no reading accepted yet")
+			return
+		}
+		fmt.Fprintln(out, "ℹ statusline feed: none yet — add --stdin to the ccpulse status call in your statusline (see README)")
 	}
 }
 
