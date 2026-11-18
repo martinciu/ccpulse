@@ -2972,3 +2972,129 @@ func TestRecordUsageSampleFrom_Source(t *testing.T) {
 		t.Error("unknown source accepted, want an error")
 	}
 }
+
+func TestRecordUsageSampleFrom_Collisions(t *testing.T) {
+	base := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
+	resets := base.Add(72 * time.Hour)
+	mk := func(five, seven float64) anthro.Usage {
+		return anthro.Usage{
+			FiveHour: &anthro.Bucket{Utilization: five, ResetsAt: &resets},
+			SevenDay: &anthro.Bucket{Utilization: seven, ResetsAt: &resets},
+		}
+	}
+	type row struct {
+		source      string
+		five, seven float64
+	}
+	rows := func(t *testing.T, c *Cache) map[int64]row {
+		t.Helper()
+		r, err := c.DB().QueryContext(t.Context(), `SELECT ts, source, five_hour_pct, seven_day_pct FROM usage_samples`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.Close()
+		out := map[int64]row{}
+		for r.Next() {
+			var ts int64
+			var x row
+			if err := r.Scan(&ts, &x.source, &x.five, &x.seven); err != nil {
+				t.Fatal(err)
+			}
+			out[ts] = x
+		}
+		if err := r.Err(); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+
+	tests := []struct {
+		name    string
+		run     func(t *testing.T, c *Cache) (errs []error)
+		want    map[int64]row
+		wantErr []bool
+	}{
+		{
+			name: "statusline shifts past api row",
+			run: func(t *testing.T, c *Cache) []error {
+				ctx := t.Context()
+				if err := c.RecordUsageSampleFrom(ctx, mk(10, 20), base, SampleSourceAPI); err != nil {
+					t.Fatal(err)
+				}
+				return []error{c.RecordUsageSampleFrom(ctx, mk(11, 21), base, SampleSourceStatusline)}
+			},
+			want: map[int64]row{
+				base.Unix():     {"api", 10, 20},
+				base.Unix() + 1: {"statusline", 11, 21},
+			},
+			wantErr: []bool{false},
+		},
+		{
+			name: "statusline twice is idempotent",
+			run: func(t *testing.T, c *Cache) []error {
+				ctx := t.Context()
+				return []error{
+					c.RecordUsageSampleFrom(ctx, mk(11, 21), base, SampleSourceStatusline),
+					c.RecordUsageSampleFrom(ctx, mk(11, 21), base, SampleSourceStatusline),
+				}
+			},
+			want:    map[int64]row{base.Unix(): {"statusline", 11, 21}},
+			wantErr: []bool{false, false},
+		},
+		{
+			name: "all shifts taken by api rows errors and writes nothing",
+			run: func(t *testing.T, c *Cache) []error {
+				ctx := t.Context()
+				for d := range 6 {
+					if err := c.RecordUsageSampleFrom(ctx, mk(10, 20), base.Add(time.Duration(d)*time.Second), SampleSourceAPI); err != nil {
+						t.Fatal(err)
+					}
+				}
+				return []error{c.RecordUsageSampleFrom(ctx, mk(11, 21), base, SampleSourceStatusline)}
+			},
+			want: func() map[int64]row {
+				m := map[int64]row{}
+				for d := range int64(6) {
+					m[base.Unix()+d] = row{"api", 10, 20}
+				}
+				return m
+			}(),
+			wantErr: []bool{true},
+		},
+		{
+			name: "api first row wins over api and statusline",
+			run: func(t *testing.T, c *Cache) []error {
+				ctx := t.Context()
+				e1 := c.RecordUsageSampleFrom(ctx, mk(10, 20), base, SampleSourceAPI)
+				e2 := c.RecordUsageSampleFrom(ctx, mk(99, 99), base, SampleSourceAPI)
+				return []error{e1, e2}
+			},
+			want:    map[int64]row{base.Unix(): {"api", 10, 20}},
+			wantErr: []bool{false, false},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, err := Open(t.Context(), filepath.Join(t.TempDir(), "s.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+			errs := tt.run(t, c)
+			for i, e := range errs {
+				if (e != nil) != tt.wantErr[i] {
+					t.Errorf("call %d error = %v, wantErr %v", i, e, tt.wantErr[i])
+				}
+			}
+			got := rows(t, c)
+			if len(got) != len(tt.want) {
+				t.Fatalf("rows = %v, want %v", got, tt.want)
+			}
+			for ts, w := range tt.want {
+				if got[ts] != w {
+					t.Errorf("row at %d = %+v, want %+v", ts, got[ts], w)
+				}
+			}
+		})
+	}
+}

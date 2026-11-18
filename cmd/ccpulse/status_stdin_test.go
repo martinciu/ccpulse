@@ -454,3 +454,41 @@ func TestStatusPlain_UsesExistingOverlay(t *testing.T) {
 		t.Errorf("quota_source=%v percent_7d=%v, want statusline / 60", m["quota_source"], m["percent_7d"])
 	}
 }
+
+func TestStatusStdin_SettledSampleShiftsPastAPIRowSameSecond(t *testing.T) {
+	cacheDir := statuslineEnv(t, false)
+	at := time.Now().Add(-40 * time.Second)
+	resets := at.Add(72 * time.Hour).UTC()
+	if _, err := anthro.IngestStatusline(cacheDir, anthro.StatuslineReading{
+		SevenDay: &anthro.Bucket{Utilization: 60, ResetsAt: &resets},
+	}, at); err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(cacheDir, "state.db")
+	c, err := cache.Open(t.Context(), dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.RecordUsageSample(t.Context(), anthro.Usage{
+		SevenDay: &anthro.Bucket{Utilization: 50, ResetsAt: &resets},
+	}, at); err != nil {
+		t.Fatal(err)
+	}
+	c.Close()
+
+	if _, _, err := execStatus(t, strings.NewReader("{}"), "--stdin", "--quiet"); err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	c, err = cache.Open(t.Context(), dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	var src string
+	if err := c.DB().QueryRowContext(t.Context(), `SELECT source FROM usage_samples WHERE ts = ?`, at.UTC().Unix()+1).Scan(&src); err != nil {
+		t.Fatalf("no row at second+1: %v", err)
+	}
+	if src != cache.SampleSourceStatusline {
+		t.Errorf("row at second+1 source = %q, want statusline", src)
+	}
+}

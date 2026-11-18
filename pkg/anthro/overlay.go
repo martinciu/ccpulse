@@ -470,9 +470,11 @@ func (rec *recordedSample) covers(five, seven *storedBucket, now time.Time) bool
 // MarkStatuslineRecorded notes, under the overlay lock, that the reading u
 // was recorded to history at at, so PendingStatuslineSample stops offering
 // it. Racing processes that both record the same reading are harmless: the
-// same at is the same usage_samples ts, and the insert is OR IGNORE.
-// Contention past overlayLockWait returns an error wrapping ErrOverlayLockBusy
-// (the sample is offered again later); a hard lock failure proceeds unlocked.
+// same at is the same usage_samples ts, and the cache treats a colliding
+// statusline row as already recorded (an API row at that second makes the
+// cache shift the sample forward instead). Contention past overlayLockWait
+// returns an error wrapping ErrOverlayLockBusy (the sample is offered again
+// later); a hard lock failure proceeds unlocked.
 func MarkStatuslineRecorded(cacheDir string, u Usage, at time.Time) error {
 	release, lockErr := acquireFileLockWithin(cacheDir, overlayLockName, overlayLockWait)
 	if errors.Is(lockErr, ErrOverlayLockBusy) {

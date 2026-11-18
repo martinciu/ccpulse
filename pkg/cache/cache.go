@@ -278,8 +278,13 @@ func (c *Cache) RecordUsageSample(ctx context.Context, u anthro.Usage, when time
 // u.Limits, all in a single transaction, tagged with source (one of the
 // SampleSource* constants). INSERT OR IGNORE: same-second collisions keep
 // the first row — child inserts are gated on the parent insert landing, so
-// parent and children can never mix samples. Nil buckets write NULL into
-// both their pct and resets_at columns.
+// parent and children can never mix samples. Statusline rows yield to API
+// rows: when a statusline insert collides with an 'api' row it is retried at
+// ts+1, ts+2, … up to statuslineMaxShift seconds forward, and an error is
+// returned if all of those are taken (so the caller does not mark the
+// reading recorded). A collision with another 'statusline' row means a
+// racing process recorded the same reading, which is success. Nil buckets
+// write NULL into both their pct and resets_at columns.
 func (c *Cache) RecordUsageSampleFrom(ctx context.Context, u anthro.Usage, when time.Time, source string) error {
 	if source != SampleSourceAPI && source != SampleSourceStatusline {
 		return fmt.Errorf("record usage sample: unknown source %q", source)
@@ -312,17 +317,70 @@ func (c *Cache) RecordUsageSampleFrom(ctx context.Context, u anthro.Usage, when 
 	if err != nil {
 		return fmt.Errorf("record usage sample: rows affected: %w", err)
 	}
+	if n == 0 && source == SampleSourceStatusline {
+		newTs, landed, err := shiftStatuslineSample(ctx, tx, ts, args)
+		if err != nil {
+			return err
+		}
+		if !landed {
+			// A racing process already recorded this same reading.
+			return nil
+		}
+		ts, n = newTs, 1
+	}
 	if n == 1 {
-		for _, l := range u.Limits {
-			if _, err := tx.ExecContext(ctx, insertUsageLimitSQL, limitArgs(ts, l)...); err != nil {
-				return fmt.Errorf("record usage sample: insert limit: %w", err)
-			}
+		if err := insertLimits(ctx, tx, ts, u.Limits); err != nil {
+			return err
 		}
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("record usage sample: commit: %w", err)
 	}
 	return nil
+}
+
+func insertLimits(ctx context.Context, tx *sql.Tx, ts int64, limits []anthro.Limit) error {
+	for _, l := range limits {
+		if _, err := tx.ExecContext(ctx, insertUsageLimitSQL, limitArgs(ts, l)...); err != nil {
+			return fmt.Errorf("record usage sample: insert limit: %w", err)
+		}
+	}
+	return nil
+}
+
+// statuslineMaxShift is how many seconds forward a statusline sample may be
+// moved past colliding API rows before the insert is given up on.
+const statuslineMaxShift = 5
+
+// shiftStatuslineSample handles a statusline insert whose parent row at ts
+// was ignored. args are the insert arguments (args[0] is ts). If the row
+// holding ts is itself a statusline row, it returns landed=false (nothing to
+// do). If it is an API row, the insert is retried at ts+1 … ts+statuslineMaxShift
+// and the ts that landed is returned. All collisions is an error.
+func shiftStatuslineSample(ctx context.Context, tx *sql.Tx, ts int64, args []any) (int64, bool, error) {
+	var existing string
+	if err := tx.QueryRowContext(ctx, `SELECT source FROM usage_samples WHERE ts = ?`, ts).Scan(&existing); err != nil {
+		return 0, false, fmt.Errorf("record usage sample: read colliding row: %w", err)
+	}
+	if existing == SampleSourceStatusline {
+		return 0, false, nil
+	}
+	shifted := append([]any(nil), args...)
+	for d := int64(1); d <= statuslineMaxShift; d++ {
+		shifted[0] = ts + d
+		res, err := tx.ExecContext(ctx, insertUsageSampleSQL, shifted...)
+		if err != nil {
+			return 0, false, fmt.Errorf("record usage sample: insert shifted sample: %w", err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return 0, false, fmt.Errorf("record usage sample: rows affected: %w", err)
+		}
+		if n == 1 {
+			return ts + d, true, nil
+		}
+	}
+	return 0, false, fmt.Errorf("record usage sample: no free second within %ds of ts %d (api rows collide)", statuslineMaxShift, ts)
 }
 
 const insertUsageSampleSQL = `INSERT OR IGNORE INTO usage_samples(
