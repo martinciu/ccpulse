@@ -434,7 +434,16 @@ func TestIngestStatusline_ConcurrentWriters(t *testing.T) {
 				TranscriptPath: paths[i],
 				SevenDay:       bk(float64(40+i), now.Add(72*time.Hour)),
 			}
-			if _, err := IngestStatusline(cacheDir, r, now); err != nil {
+			// A busy lock is skipped and re-sent on the next render; model
+			// that with retries so a slow runner (-race, loaded CI) can't
+			// turn the bounded wait into a false "lost entry".
+			var err error
+			for range 50 {
+				if _, err = IngestStatusline(cacheDir, r, now); !errors.Is(err, ErrOverlayLockBusy) {
+					break
+				}
+			}
+			if err != nil {
 				t.Errorf("ingest %d: %v", i, err)
 			}
 		})

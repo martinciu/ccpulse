@@ -172,7 +172,8 @@ func TestViewFitsWithStaleScopedRow(t *testing.T) {
 }
 
 // A QuotaMsg with nil Usage (the poller's "every bucket expired" signal)
-// drops the quota and the scoped rows without panicking.
+// drops the quota and the scoped rows, and the frame still fits the
+// terminal after the header shrinks back.
 func TestQuotaMsg_NilUsageClearsQuota(t *testing.T) {
 	m := seedIntroModel(t, true)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
@@ -191,5 +192,5 @@ func TestQuotaMsg_NilUsageClearsQuota(t *testing.T) {
 	if m.quota != nil || m.scopedRowCount() != 0 {
 		t.Errorf("after nil-Usage QuotaMsg: quota=%v scopedRows=%d, want nil and 0", m.quota, m.scopedRowCount())
 	}
-	_ = m.View()
+	assertFits(t, m)
 }
