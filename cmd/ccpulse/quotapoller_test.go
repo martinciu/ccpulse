@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -305,6 +306,75 @@ func TestQuotaPoller_SendsAfterEveryAPIAttempt(t *testing.T) {
 		}
 		if n := len(log.snapshot()); n != 3 {
 			t.Errorf("QuotaMsgs = %d, want 3: one per API attempt even though the quota is unchanged", n)
+		}
+		stop()
+	})
+}
+
+// With the overlay as the only source, its last bucket expiring must tell
+// the TUI once to drop the quota, then stay quiet; fresh data resumes sends.
+func TestQuotaPoller_OverlayOnlyExpiryClearsQuota(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		dir := t.TempDir()
+		start := time.Now()
+		ingestNoSession(t, dir, bucketAt(10, start.Add(45*time.Second)), nil, start)
+		var log msgLog
+		stop := startPoller(t, quotaPollerDeps{cacheDir: dir, send: log.send})
+		synctest.Wait()
+		if msgs := log.snapshot(); len(msgs) != 1 || msgs[0].Usage == nil {
+			t.Fatalf("start: %d messages, want 1 with usage", len(msgs))
+		}
+
+		time.Sleep(5 * overlayRereadInterval) // past the reset, several ticks
+		synctest.Wait()
+		msgs := log.snapshot()
+		if len(msgs) != 2 {
+			t.Fatalf("messages = %d, want 2 (one nil-Usage clear, then quiet)", len(msgs))
+		}
+		if msgs[1].Usage != nil {
+			t.Errorf("second QuotaMsg Usage = %+v, want nil", msgs[1].Usage)
+		}
+
+		ingestNoSession(t, dir, bucketAt(20, time.Now().Add(4*time.Hour)), nil, time.Now())
+		time.Sleep(overlayRereadInterval)
+		synctest.Wait()
+		msgs = log.snapshot()
+		if len(msgs) != 3 || msgs[2].Usage == nil || msgs[2].Usage.FiveHour == nil {
+			t.Fatalf("after fresh data: %d messages (last %+v), want a 3rd carrying 5h", len(msgs), msgs[len(msgs)-1])
+		}
+		stop()
+	})
+}
+
+// Credential present but every Fetch failing: same single clear, and forced
+// API attempts must not resend it.
+func TestQuotaPoller_FetchFailingOverlayExpiryClearsQuotaOnce(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		dir := t.TempDir()
+		start := time.Now()
+		ingestNoSession(t, dir, bucketAt(10, start.Add(45*time.Second)), nil, start)
+		var attempts atomic.Int64
+		var log msgLog
+		stop := startPoller(t, quotaPollerDeps{
+			cred: &anthro.Credential{AccessToken: "tok"}, cacheDir: dir, send: log.send,
+			fetch: func(context.Context, anthro.Credential, string) (anthro.FetchResult, error) {
+				attempts.Add(1)
+				return anthro.FetchResult{}, errors.New("boom")
+			},
+		})
+		synctest.Wait()
+		if msgs := log.snapshot(); len(msgs) != 1 || msgs[0].Usage == nil {
+			t.Fatalf("start: %d messages, want 1 with usage", len(msgs))
+		}
+
+		time.Sleep(2 * time.Hour) // several failed API attempts and re-reads
+		synctest.Wait()
+		if attempts.Load() < 2 {
+			t.Fatalf("API attempts = %d, want >= 2 to exercise forced publishes", attempts.Load())
+		}
+		msgs := log.snapshot()
+		if len(msgs) != 2 || msgs[1].Usage != nil {
+			t.Fatalf("messages = %d (last %+v), want exactly one nil-Usage clear after the first", len(msgs), msgs[len(msgs)-1])
 		}
 		stop()
 	})

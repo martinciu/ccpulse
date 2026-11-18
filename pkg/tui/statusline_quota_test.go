@@ -170,3 +170,26 @@ func TestViewFitsWithStaleScopedRow(t *testing.T) {
 		}
 	}
 }
+
+// A QuotaMsg with nil Usage (the poller's "every bucket expired" signal)
+// drops the quota and the scoped rows without panicking.
+func TestQuotaMsg_NilUsageClearsQuota(t *testing.T) {
+	m := seedIntroModel(t, true)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+	updated, _ = m.Update(QuotaMsg{
+		Usage:     quotaUsageScoped(70, 35, "Fable"),
+		Source:    anthro.SourceStatusline,
+		UpdatedAt: time.Now(),
+	})
+	m = updated.(Model)
+	if m.scopedRowCount() == 0 {
+		t.Fatal("setup: expected a scoped row")
+	}
+	updated, _ = m.Update(QuotaMsg{})
+	m = updated.(Model)
+	if m.quota != nil || m.scopedRowCount() != 0 {
+		t.Errorf("after nil-Usage QuotaMsg: quota=%v scopedRows=%d, want nil and 0", m.quota, m.scopedRowCount())
+	}
+	_ = m.View()
+}

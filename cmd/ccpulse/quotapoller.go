@@ -47,27 +47,15 @@ type quotaPollerDeps struct {
 // TUI's recomputeWindow — which re-evaluates the "resets in" countdowns and
 // the Fable-row age — has no other trigger in an idle session behind a long
 // backoff window. A re-read tick sends only when the merged quota changed.
+// When the merge empties out after a send (every bucket expired), one
+// QuotaMsg{Usage: nil} follows so the TUI drops the stale bars.
 // Returns when ctx is cancelled.
 func runQuotaPoller(ctx context.Context, d quotaPollerDeps) {
 	fetch := d.fetchFunc()
 	var lastAPI *anthro.FetchResult
-	var lastSent *anthro.Quota
 
-	publish := func(force bool) {
-		now := time.Now()
-		q, ok := anthro.MergeQuota(lastAPI, anthro.ReadOverlay(d.cacheDir, now), now)
-		if !ok || (!force && lastSent != nil && sameQuota(*lastSent, q)) {
-			return
-		}
-		lastSent = &q
-		u := q.Usage
-		d.send(tui.QuotaMsg{
-			Usage:        &u,
-			Source:       q.Source,
-			UpdatedAt:    q.UpdatedAt,
-			APIUpdatedAt: q.APIUpdatedAt(),
-		})
-	}
+	pub := &quotaPublisher{cacheDir: d.cacheDir, send: d.send}
+	publish := func(force bool) { pub.publish(lastAPI, force) }
 
 	// attempt performs one Fetch, keeps a successful result for the merge,
 	// and returns the delay before the next attempt. The WARN lines are per
@@ -111,6 +99,42 @@ func runQuotaPoller(ctx context.Context, d quotaPollerDeps) {
 			publish(false)
 		}
 	}
+}
+
+// quotaPublisher merges and sends quota messages, remembering the last send
+// so unchanged re-read ticks stay quiet.
+type quotaPublisher struct {
+	cacheDir string
+	send     func(tui.QuotaMsg)
+	lastSent *anthro.Quota
+}
+
+func (p *quotaPublisher) publish(lastAPI *anthro.FetchResult, force bool) {
+	now := time.Now()
+	q, ok := anthro.MergeQuota(lastAPI, anthro.ReadOverlay(p.cacheDir, now), now)
+	if !ok {
+		// Every bucket expired and no API result backs the merge. If the
+		// TUI is still showing a quota, tell it once to fall back to the
+		// JSONL heuristic (as `status` does); lastSent == nil afterwards
+		// keeps forced API attempts and re-read ticks quiet until data
+		// returns.
+		if p.lastSent != nil {
+			p.lastSent = nil
+			p.send(tui.QuotaMsg{})
+		}
+		return
+	}
+	if !force && p.lastSent != nil && sameQuota(*p.lastSent, q) {
+		return
+	}
+	p.lastSent = &q
+	u := q.Usage
+	p.send(tui.QuotaMsg{
+		Usage:        &u,
+		Source:       q.Source,
+		UpdatedAt:    q.UpdatedAt,
+		APIUpdatedAt: q.APIUpdatedAt(),
+	})
 }
 
 func (d quotaPollerDeps) fetchFunc() func(context.Context, anthro.Credential, string) (anthro.FetchResult, error) {
